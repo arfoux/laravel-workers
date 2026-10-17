@@ -10,12 +10,12 @@
 
 PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** → 503 on Free. `laravel-workers` moves all boot to **build time** and ships a tiered Worker: `static` (0 invocations) → `snapshot` (prerendered HTML) → `compiled handler` (router → middleware → handler → D1, **measured 1–6 ms**) → `port` (escape-hatch hand-written JS). Anything uncovered **fails the build** (`--strict`).
 
-**Status: M5 complete (2026-10-18).**
+**Status: M7 complete (2026-10-18).**
 - **M1** View parity — Blade-compiled PHP → dependency-free ESM; `welcome` byte-identical 35,647 B (sha256 `b228c8a2…`); corpus 41/41.
 - **M2** Router integration — `routes → router`, code-gen `controllers/middleware`, build `--strict` PASS, `nearfind-edge` live `/` + `/health` 200.
 - **M3** D1 layer — schema snapshot (`.cache/schema.json` → `dist/schema.json`), `kernel/db.mjs` query builder, `kernel/model.mjs` Model base, mock-D1 tests 8/8, `nearfind-edge` `/dbcheck` via builder, D1 remote has `config` + `_cf_KV`.
 - **M4** Packaging + CI — `package.json` (`laravel-workers@0.3.0`, bin CLI), `.github/workflows/ci.yml`, MIT license, `npm pack --dry-run` clean, tests green.
-- **M5** Hash + Encrypter parity — `kernel/hash.mjs` (bcrypt via `bcryptjs`, `make`/`check`/`needsRehash`), `kernel/encrypter.mjs` (AES-256-CBC + HMAC SHA-256 via WebCrypto, payload `iv`/`value`/`mac`/`tag` byte-compatible with `Illuminate\Encryption\Encrypter` serialize=false), full kernel tests 16/16 incl. MAC-tamper + wrong-key + empty/unicode/long payloads. Full PHP↔JS parity oracle lives in `spikes/encrypter/test.mjs` (requires `php`+`vendor`).
+- **M5** Hash + Encrypter parity — `kernel/hash.mjs` (bcrypt via `bcryptjs`, `make`/`check`/`needsRehash`), `kernel/encrypter.mjs` (AES-256-CBC + HMAC SHA-256 via WebCrypto, payload `iv`/`value`/`mac`/`tag` byte-compatible with `Illuminate\Encryption\Encrypter` serialize=false), full kernel tests 46/46 incl. MAC-tamper + wrong-key + empty/unicode/long payloads. Full PHP↔JS parity oracle lives in `spikes/encrypter/test.mjs` (requires `php`+`vendor`).
 
 ## What's inside
 
