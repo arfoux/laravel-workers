@@ -2,7 +2,7 @@
 
 > Run a Laravel app on Cloudflare Workers with **no PHP at request time** — build-time boot → Workers-native artifact.
 
-**Status: M1 proven.** Blade→JS view compiler produces byte-identical output to Laravel's own render (35647 bytes, sha256 `b228c8a2...`). Corpus 41/41 green. S0 context verified 15/15.
+**Status: M2 complete.** Router integration live � build --strict PASS, ROUTER INTEGRATION PASS, CPU BUDGET PASS, wrangler dev smoke / and /health 200, /dbcheck 200 on remote D1.
 
 ## What's inside
 - `compiler/` — M1 view compiler (Blade-compiled PHP → dependency-free ESM). `bin/transpile.mjs`, `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/`.
@@ -33,3 +33,4 @@
 
 ## License
 TBD (MIT/Apache suggested).
+

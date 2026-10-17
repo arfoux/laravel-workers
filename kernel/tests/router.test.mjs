@@ -62,15 +62,15 @@ assert.equal(m, null, 'multi-segment should not match single {path}');
 
 // dispatch: missing handler -> null
 const handlers = {};
-assert.equal(dispatch({ method: 'GET', path: '/up' }, table, handlers), null);
+assert.equal(await dispatch({ method: 'GET', path: '/up' }, table, handlers), null);
 
 // dispatch: with handler returns response
 handlers['GET /up'] = (ctx) => html('hi ' + (ctx.params.x || ''), 200);
-const r = dispatch({ method: 'GET', path: '/up' }, table, handlers);
+const r = await dispatch({ method: 'GET', path: '/up' }, table, handlers);
 assert.deepEqual(r, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: 'hi ' });
 
 // dispatch: unknown path -> null
-assert.equal(dispatch({ method: 'GET', path: '/nope' }, table, handlers), null);
+assert.equal(await dispatch({ method: 'GET', path: '/nope' }, table, handlers), null);
 
 // duplicate method+uri -> later wins
 const dupTable = normalizeTable([
@@ -94,7 +94,7 @@ assert.deepEqual(text('t', 201), { status: 201, headers: { 'content-type': 'text
 
 // header names lowercased by dispatch
 handlers['GET /dbcheck'] = () => ({ status: 200, headers: { 'X-Foo': 'bar' }, body: 'ok' });
-const r2 = dispatch({ method: 'GET', path: '/dbcheck' }, table, handlers);
+const r2 = await dispatch({ method: 'GET', path: '/dbcheck' }, table, handlers);
 assert.equal(r2.headers['x-foo'], 'bar');
 
 console.log('ROUTER TESTS: PASS');

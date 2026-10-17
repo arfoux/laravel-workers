@@ -104,7 +104,7 @@ export function match(table, req) {
   return null;
 }
 
-export function dispatch(req, table, handlers) {
+export async function dispatch(req, table, handlers, env) {
   const m = match(table, req);
   if (!m) return null;
 
@@ -120,7 +120,7 @@ export function dispatch(req, table, handlers) {
     params: m.params,
     request: { method: (req && req.method) || 'GET', path: (req && req.path) || '/', headers: (req && req.headers) || {} },
   };
-  const res = handler(ctx);
+  const res = await handler(ctx, env);
   if (!res || typeof res.status !== 'number' || typeof res.body !== 'string') {
     throw new Error('handler returned invalid response shape');
   }

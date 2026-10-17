@@ -22,7 +22,7 @@ route = `{ uri: string, name: string|null, methods: string[], domain: string|nul
 - `normalizeTable(routes) -> table` — validates + dedupes (later wins); frozen internal table.
 - `routeKey(route) -> string` — `"<METHOD> <normalizedUri>"` using the first method.
 - `match(table, { method, path }) -> { route, params } | null`
-- `dispatch(req, table, handlers) -> { status, headers, body } | null`
+- `dispatch(req, table, handlers, env?) -> Promise<{ status, headers, body } | null>`
   - `req = { method, path, headers? }`
   - `handlers = { [routeKey]: (ctx) => response }`, `ctx = { params, request }`; handler must return `{ status:number, headers:object, body:string }` (validate; throw otherwise).
   - No route OR no handler → `null` (caller falls back to snapshots/static).

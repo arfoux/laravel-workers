@@ -21,12 +21,13 @@ require $root . '/vendor/autoload.php';
 $app = require $root . '/bootstrap/app.php';
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-$request = Illuminate\Http\Request::create('/', 'GET');
+$request = Illuminate\Http\Request::create($argv[3] ?? '/', 'GET');
 $response = $kernel->handle($request);
 $kernel->terminate($request, $response);
 
 $name = $argv[1] ?? 'welcome';
 $out = $argv[2] ?? null;
+$uri = $argv[3] ?? '/';
 
 $notes = [];
 
