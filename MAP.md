@@ -305,7 +305,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | View-compile spike (S0 dump) | ✅ first artifact produced |
 | Repo name | `laravel-workers` (decided; GitHub/npm checked) |
 | Repo strategy | standalone; extract from `edge/` at M1–M2 |
-| W1–W10 | W1+W2 alpha: ✅ **M1 parity PASS** (byte-identical 35,647 B) · corpus net 🚧 (41 cases) · router kernel spike 🚧 |
+| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (41/41) · router+DB · packaging+CI · hash+encrypter · validator · services · final gates (47/47 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |
 
 ---

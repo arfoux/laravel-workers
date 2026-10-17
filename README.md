@@ -55,19 +55,24 @@ npx laravel-workers build     # inside an edge checkout (requires Laravel vendor
 ## CLI
 
 ```bash
-laravel-workers test          # all kernel tests
-laravel-workers test:hash     # hash + encrypter only
-laravel-workers test:corpus   # transpiler corpus
-
-laravel-workers build         # node build.mjs --strict (needs a Laravel app checkout)
-laravel-workers verify        # php tools/verify-s0.php (SKIP when no parent vendor/)
-laravel-workers test:db       # db/model only
+laravel-workers test            # all kernel tests (47)
+laravel-workers test:db          # db/model only
+laravel-workers test:hash       # hash + encrypter only
+laravel-workers test:validator  # validator only
+laravel-workers test:services   # mail/queue/cache/storage/scheduler
+laravel-workers test:budget     # budget gate only
+laravel-workers test:corpus     # transpiler corpus (41)
+laravel-workers bench           # micro-bench (bench.mjs)
+laravel-workers check:docs      # docs-check 105/105
+laravel-workers build           # node build.mjs --strict (needs Laravel app)
+laravel-workers verify          # php tools/verify-s0.php (SKIP when no parent vendor/)
 
 # npm aliases do the same:
 npm test                      # kernel
 npm run test:corpus
 npm run build
 npm run verify
+# also: npm run bench / npm run check:docs / npm run test:budget / npm run test:services etc.
 ```
 
 ## Architecture (30 s)
@@ -99,7 +104,7 @@ Laravel app (dev truth)
 ## Roadmap (living)
 
 - **M6** Validation kernel — done (M6).
-- **M7** Services kernel � done (M7).
+- **M7** Services kernel — done (M7).
 - **M8** Final gates — done: docs-check 105/105 + bench/budget p95 ≤5ms + CI + pack green.
 
 ## License
