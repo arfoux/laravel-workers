@@ -1,0 +1,20 @@
+{
+  "name": "nearfind-edge",
+  "main": "./dist/src/worker.mjs",
+  "compatibility_date": "2026-08-01",
+  "account_id": "af61c972d2182fc58f7d8d8667833ac1",
+  "assets": {
+    "directory": "./dist/public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nearfind",
+      "database_id": "ad5876a0-c5eb-493c-917e-5e8f0e543200"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

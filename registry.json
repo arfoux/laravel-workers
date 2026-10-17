@@ -1,0 +1,11 @@
+{
+  "autoSnapshot": true,
+  "static": {},
+  "ports": {
+    "/dbcheck": "dbcheck"
+  },
+  "views": {
+    "/": "welcome"
+  },
+  "ignore": {}
+}
