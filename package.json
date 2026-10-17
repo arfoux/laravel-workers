@@ -1,9 +1,29 @@
 {
   "name": "laravel-workers",
   "version": "0.3.0",
-  "description": "Run a Laravel app on Cloudflare Workers with no PHP at request time",
+  "description": "Run any Laravel app on Cloudflare Workers with no PHP at request time — build-time boot to Workers-native artifact (static + snapshot + compiled handlers + D1)",
   "type": "module",
   "license": "MIT",
+  "author": "arfoux",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arfoux/laravel-workers.git"
+  },
+  "homepage": "https://github.com/arfoux/laravel-workers#readme",
+  "bugs": {
+    "url": "https://github.com/arfoux/laravel-workers/issues"
+  },
+  "keywords": [
+    "laravel",
+    "cloudflare",
+    "workers",
+    "edge",
+    "d1",
+    "blade",
+    "transpiler",
+    "workers-native",
+    "build-time"
+  ],
   "bin": {
     "laravel-workers": "bin/laravel-workers.mjs"
   },
@@ -18,8 +38,9 @@
   ],
   "scripts": {
     "setup": "npm install && npm --prefix compiler install",
-    "test": "node --test kernel/tests/router.test.mjs kernel/tests/db.test.mjs",
+    "test": "node --test kernel/tests/router.test.mjs kernel/tests/db.test.mjs kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs",
     "test:db": "node --test kernel/tests/db.test.mjs",
+    "test:hash": "node --test kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs",
     "test:corpus": "node compiler/tests/run-corpus.mjs",
     "build": "node build.mjs --strict",
     "verify": "node bin/laravel-workers.mjs verify"
@@ -28,7 +49,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "bcryptjs": "2.4.3",
     "php-parser": "3.7.0"
   }
 }
-

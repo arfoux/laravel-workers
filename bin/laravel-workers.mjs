@@ -17,9 +17,11 @@ const run = (command, args, options = {}) => {
 };
 
 if (cmd === 'test') {
-  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs']);
 } else if (cmd === 'test:db') {
   run(process.execPath, ['--test', 'kernel/tests/db.test.mjs']);
+} else if (cmd === 'test:hash') {
+  run(process.execPath, ['--test', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs']);
 } else if (cmd === 'test:corpus') {
   run(process.execPath, ['compiler/tests/run-corpus.mjs']);
 } else if (cmd === 'build') {

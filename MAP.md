@@ -292,6 +292,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **M2 complete (2026-10-18):** router integration live — build --strict PASS (2 routes), routes.generated.mjs + controllers, W3 router in worker, ROUTER INTEGRATION PASS, CPU BUDGET PASS (p95 <= 0.04 ms), W3 tests PASS, parity/corpus/verify-s0 green.
 - **M3 complete (2026-10-18):** D1 layer shipped - schema snapshot (`.cache/schema.json` -> `dist/schema.json`), `kernel/db.mjs` query builder, `kernel/model.mjs` Model base, mock-D1 tests PASS (8/8), build `--strict` PASS, `nearfind-edge` redeployed, `/dbcheck` live via builder.
 - **M4 complete (2026-10-18):** packaging + CI shipped - `package.json` (`laravel-workers@0.3.0`, bin CLI), `bin/laravel-workers.mjs`, `.github/workflows/ci.yml`, README status M4, MIT license; kernel tests PASS (9/9), corpus PASS (41/41), `npm pack --dry-run` clean.
+- **M5 complete (2026-10-18):** Hash + Encrypter parity - `kernel/hash.mjs` (`make`/`check`/`needsRehash`, `bcryptjs`) + `kernel/encrypter.mjs` (AES-256-CBC+HMAC, WebCrypto, `encryptString`/`decryptString` byte-compat serialize=false), kernel tests PASS (16/16 incl. MAC-tamper/wrong-key/unicode+long), CI green; `spikes/encrypter/test.mjs` remains PHP↔JS oracle.
 
 ## B. Current state
 
