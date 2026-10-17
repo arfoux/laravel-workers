@@ -1,4 +1,4 @@
-// kernel/cache.mjs — Workers cache padanan (M7). KV or memory+TTL.
+// kernel/cache.mjs — Cache (KV or memory+TTL)
 export function createCache({ kv, ttlMs = 60000 } = {}) {
   if (kv && typeof kv.get === 'function') {
     return {

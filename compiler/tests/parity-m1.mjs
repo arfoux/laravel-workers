@@ -1,7 +1,7 @@
-// edge/compiler/tests/parity-m1.mjs — orchestrator-owned (see CONTRACT-m1.md)
+// compiler/tests/parity-m1.mjs — byte-parity proof (M1)
 // M1 byte-parity proof: compiled JS render of `welcome` vs Laravel's own render.
 //
-// Usage: node edge/compiler/tests/parity-m1.mjs
+// Usage: node compiler/tests/parity-m1.mjs
 // Steps: refresh S0 dump -> transpile -> render via compiled module (strict rt) -> php reference render -> byte-compare.
 
 import { execFileSync } from 'node:child_process';

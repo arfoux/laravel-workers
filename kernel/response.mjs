@@ -1,4 +1,4 @@
-// edge/kernel/response.mjs — W3 response helpers (CONTRACT-w3.md)
+// kernel/response.mjs — Response helpers
 export function html(body, status = 200) {
   return { status, headers: { 'content-type': 'text/html; charset=utf-8' }, body: String(body == null ? '' : body) };
 }

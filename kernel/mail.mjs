@@ -1,4 +1,4 @@
-// kernel/mail.mjs — Workers mail padanan (M7). Pure ESM, fetch only.
+// kernel/mail.mjs — Mail (log/noop/resend)
 export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl } = {}) {
   const f = fetchImpl || globalThis.fetch;
   const sent = [];

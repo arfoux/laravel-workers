@@ -1,4 +1,4 @@
-﻿# Laravel → Cloudflare Workers — The Map
+# Laravel → Cloudflare Workers — The Map
 
 **Repo:** `laravel-workers` (name decided — GitHub/npm checked; see §10)
 **Status:** v1.1 — living doc. Basis: **measured evidence + verified platform limits**, not theory.
@@ -30,7 +30,7 @@ Checked Oct 2026. Prior art is **fragmented** — no end-to-end equivalent found
 
 **What's actually new (claim candidate):** the *end-to-end combination* — Laravel as source of truth → build-time boot → Workers-native artifact with **no PHP at request time**: tiered static/snapshot/compiled/ports + coverage enforcement + D1-backed kernel + parity tests + free-plan budget engineering.
 
-**Claim policy:** "discovery" language only after M1–M2 land (view parity + compiled handlers) *and* the formal prior-art scan (W0) stays clean. Formal W0 scan (2026-10-17): **CLEAN** — see `edge/notes/prior-art-report.md`; re-run before any public claim. Until then: "an approach in progress", backed by measurements.
+**Claim policy:** "discovery" language only after M1–M2 land (view parity + compiled handlers) *and* the formal prior-art scan (W0) stays clean. Formal W0 scan (2026-10-17): **CLEAN** —; re-run before any public claim. Until then: "an approach in progress", backed by measurements.
 
 ---
 
@@ -292,9 +292,9 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **M2 complete (2026-10-18):** router integration live — build --strict PASS (2 routes), routes.generated.mjs + controllers, W3 router in worker, ROUTER INTEGRATION PASS, CPU BUDGET PASS (p95 <= 0.04 ms), W3 tests PASS, parity/corpus/verify-s0 green.
 - **M3 complete (2026-10-18):** D1 layer shipped - schema snapshot (`.cache/schema.json` -> `dist/schema.json`), `kernel/db.mjs` query builder, `kernel/model.mjs` Model base, mock-D1 tests PASS (8/8), build `--strict` PASS, `nearfind-edge` redeployed, `/dbcheck` live via builder.
 - **M4 complete (2026-10-18):** packaging + CI shipped - `package.json` (`laravel-workers@0.3.0`, bin CLI), `bin/laravel-workers.mjs`, `.github/workflows/ci.yml`, README status M4, MIT license; kernel tests PASS (9/9), corpus PASS (41/41), `npm pack --dry-run` clean.
-- **M5 complete (2026-10-18):** Hash + Encrypter parity - `kernel/hash.mjs` (`make`/`check`/`needsRehash`, `bcryptjs`) + `kernel/encrypter.mjs` (AES-256-CBC+HMAC, WebCrypto, `encryptString`/`decryptString` byte-compat serialize=false), kernel tests PASS (16/16 incl. MAC-tamper/wrong-key/unicode+long), CI green; `spikes/encrypter/test.mjs` remains PHP+JS oracle.
-- **M6 complete (2026-10-18):** Validation kernel - kernel/validator.mjs (22 rules, pipe-safe regex, nullable/sometimes, same/confirmed, validated()), CONTRACT-m6 frozen, tests 12/12, total kernel PASS 46/46 with M7.
-- **M7 complete (2026-10-18):** Services kernel - kernel/mail.mjs (log/noop/resend), kernel/queue.mjs (memory + CF Queues send), kernel/cache.mjs (memory+TTL + KV), kernel/storage.mjs (memory + R2), kernel/scheduler.mjs (UTC cron */5, lists, ranges, month/day names, 0|7 Sunday), CONTRACT-m7 frozen, services tests 18/18.
+- **M5 complete (2026-10-18):** Hash + Encrypter parity — `kernel/hash.mjs` (`make`/`check`/`needsRehash`, `bcryptjs`) + `kernel/encrypter.mjs` (AES-256-CBC+HMAC, WebCrypto, `encryptString`/`decryptString` byte-compat), kernel tests PASS (16/16 incl. MAC-tamper/wrong-key/unicode+long), CI green.
+- **M6 complete (2026-10-18):** Validation kernel — `kernel/validator.mjs` (22 rules, pipe-safe regex, nullable/sometimes, same/confirmed, validated()), tests 12/12.
+- **M7 complete (2026-10-18):** Services kernel — `kernel/mail.mjs` (log/noop/resend), `kernel/queue.mjs` (memory + CF Queues), `kernel/cache.mjs` (memory+TTL + KV), `kernel/storage.mjs` (memory + R2), `kernel/scheduler.mjs` (UTC cron), tests 18/18.
 - **M8 complete (2026-10-18):** Final gates - tools/docs-check.mjs 105/105 + tools/bench.mjs + kernel/tests/budget.test.mjs (p95 <=5ms hot, <=30ms encrypter), npm test 47/47 + corpus 41/41 + pack 34 files green, CI now runs docs-check + bench.
 
 ## B. Current state

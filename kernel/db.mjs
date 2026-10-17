@@ -1,4 +1,4 @@
-// edge/kernel/db.mjs — D1 query builder (M3). Pure ESM, zero deps.
+// kernel/db.mjs — D1 query builder
 // SQL is generated with bound parameters; identifiers are quoted.
 
 const ALLOWED_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'NOT LIKE', 'IS', 'IS NOT']);

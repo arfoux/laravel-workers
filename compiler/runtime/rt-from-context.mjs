@@ -1,4 +1,4 @@
-// edge/compiler/runtime/rt-from-context.mjs — build rt from S0 context (CONTRACT-m1)
+// compiler/runtime/rt-from-context.mjs — Runtime helpers (context → rt)
 export function buildRt(context, opts = {}) {
   const strict = !!(opts && opts.strict);
   const ctx = context || {};

@@ -1,4 +1,4 @@
-﻿# laravel-workers
+# laravel-workers
 
 > Run **any Laravel app** on Cloudflare Workers with **no PHP at request time** — build-time boot → Workers-native artifact.
 
@@ -15,7 +15,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M2** Router integration — `routes → router`, code-gen `controllers/middleware`, build `--strict` PASS, `nearfind-edge` live `/` + `/health` 200.
 - **M3** D1 layer — schema snapshot (`.cache/schema.json` → `dist/schema.json`), `kernel/db.mjs` query builder, `kernel/model.mjs` Model base, mock-D1 tests 8/8, `nearfind-edge` `/dbcheck` via builder, D1 remote has `config` + `_cf_KV`.
 - **M4** Packaging + CI — `package.json` (`laravel-workers@0.3.0`, bin CLI), `.github/workflows/ci.yml`, MIT license, `npm pack --dry-run` clean, tests green.
-- **M5** Hash + Encrypter parity (kernel/hash.mjs bcrypt make/check/needsRehash + kernel/encrypter.mjs AES-256-CBC+HMAC WebCrypto, payload iv/value/mac/tag byte-compat, 47/47 incl. MAC-tamper/wrong-key). Parity oracle spikes/encrypter/test.mjs.
+- **M5** Hash + Encrypter parity (kernel/hash.mjs bcrypt make/check/needsRehash + kernel/encrypter.mjs AES-256-CBC+HMAC WebCrypto, payload iv/value/mac/tag byte-compat, 47/47 incl. MAC-tamper/wrong-key)..
 - **M6** Validation kernel (kernel/validator.mjs, 22 rules, pipe-safe regex, nullable/sometimes, 12 subtests)
 - **M7** Services kernel (kernel/mail,queue,cache,storage,scheduler.mjs, 18 subtests)
 - **M8** Final gates (tools/docs-check 105/105 + tools/bench + budget.test p95<=5ms hot)
@@ -26,9 +26,8 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - `compiler/` — **M1 view compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 41, parity, smoke).
 - `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), budget gate (M8).
 - `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
-- `build.mjs` — app build pipeline (copy into a Laravel app's `edge/`; see `CONTRACT-m3` for `dist/kernel` layout + schema snapshot contract).
-- `spikes/encrypter/` — parity oracle (`php-tools.php`, `js-encrypter.mjs`, `test.mjs`, `test-key.b64` throwaway).
-- `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy), `CONTRACT-m2`…`m8`.
+- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot).
+- `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy).
 
 ## Requirements
 
@@ -92,14 +91,14 @@ Laravel app (dev truth)
 
 - `MAP.md` — auto-snapshot semantics, D1 max-queries note, Unknowns-to-verify, and Appendix C (105 docs pages → verdict; no blanks, releases must re-check `laravel/docs@13.x` — W8).
 - `compiler/tests/run-corpus.mjs` — oracle; `compiler/tests/parity-m1` + `tools/verify-s0.php` — green in M1.
-- `kernel/tests/{router,db,hash,encrypter,validator,services,budget}.test.mjs` + `spikes/encrypter/test.mjs` — M5 proves `make`/`check`/`encryptString`/`decryptString` round-trip, tamper, wrong-key, unicode.
+- `kernel/tests/{router,db,hash,encrypter,validator,services,budget}.test.mjs` — M5 proves `make`/`check`/`encryptString`/`decryptString` round-trip, tamper, wrong-key, unicode.
 
 ## Philosophy
 
 - **Laravel stays Laravel** — this is the toolchain, not app code; no fork of framework.
 - **Coverage enforced** — unhandled route = warning; `--strict` = failure. No silent gaps.
 - **Free-plan-first** (`10ms` CPU, `50` subrequests, `5M` D1 reads/day) — Paid is headroom, never a fallback.
-- **Honest claims** — "approach in progress" until M1–M5 measured; formal W0 prior-art scan (2026-10-17, CLEAN, `edge/notes/prior-art-report.md`) must pass before any "discovery" claim.
+- **Honest claims** — "approach in progress" until M1–M5 measured; prior-art scan stays clean before any "discovery" claim.
 
 ## Roadmap (living)
 

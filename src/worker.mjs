@@ -1,5 +1,5 @@
-// nearfind-edge — request path uses the W3 router (M2); no PHP at request time.
-import { normalizeTable, dispatch } from './kernel/router.mjs';
+// src/worker.mjs — Example Worker (router → handler → D1)
+import { normalizeTable, dispatch } from '../kernel/router.mjs';
 import { routeTable, handlers, builtAt } from './routes.generated.mjs';
 
 const table = normalizeTable(routeTable);

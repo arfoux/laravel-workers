@@ -1,4 +1,4 @@
-// edge/compiler/bin/transpile.mjs
+// compiler/bin/transpile.mjs
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

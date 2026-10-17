@@ -1,4 +1,4 @@
-// kernel/queue.mjs — Workers queue padanan (M7). CF Queues or memory.
+// kernel/queue.mjs — Queue (CF Queues or memory)
 export function createQueue({ binding } = {}) {
   if (binding && typeof binding.send === 'function') {
     return {

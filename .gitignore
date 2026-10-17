@@ -4,3 +4,8 @@ dist/
 node_modules/
 
 *.tgz
+notes/
+spikes/
+CONTRACT*.md
+compiler/CONTRACT*.md
+kernel/CONTRACT*.md

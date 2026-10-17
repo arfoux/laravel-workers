@@ -1,4 +1,4 @@
-// edge/kernel/router.mjs — W3 router kernel (CONTRACT-w3.md)
+// kernel/router.mjs — Workers-native router
 function normalizeUri(uri) {
   let u = uri == null ? '' : String(uri);
   if (u === '') u = '/';

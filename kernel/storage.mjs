@@ -1,4 +1,4 @@
-// kernel/storage.mjs — Workers Storage padanan (M7). R2 or memory.
+// kernel/storage.mjs — Storage (R2 or memory)
 export function createStorage({ r2 } = {}) {
   if (r2 && typeof r2.put === 'function') {
     return {

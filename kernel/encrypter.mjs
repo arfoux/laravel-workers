@@ -1,4 +1,4 @@
-// edge/spikes/encrypter/js-encrypter.mjs — Laravel Encrypter (AES-256-CBC) parity, Workers-compatible
+// kernel/encrypter.mjs — Encrypter (AES-256-CBC, Laravel-compatible)
 // Uses only web-standard globals: crypto.subtle, atob/btoa, TextEncoder/TextDecoder.
 
 function b64EncodeBytes(bytes) {

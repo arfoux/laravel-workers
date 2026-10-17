@@ -165,7 +165,7 @@ foreach ($checks as $c) {
 }
 printf("\nVERIFY-S0: %s (%d/%d checks)\n", $fail === 0 ? 'PASS' : 'FAIL', $pass, count($checks));
 
-// compiled-field sha256 registry
+// compiled-field sha256 registry (host Laravel app edge/ — not this package)
 $shaFile = $root . '/edge/notes/welcome.compiled.sha256.txt';
 $sha = hash('sha256', $compiled);
 $line = $sha . '  ' . strlen($compiled) . " bytes\n";

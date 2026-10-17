@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// tools/bench.mjs — micro-budget gate (M8). p95/avg JSON per op → PASS/FAIL.
+// tools/bench.mjs — Micro-bench (p95 gate)
 // Hot paths: router, db.toSql, validator, scheduler, cache/memory, storage/memory, encrypter.
 import { performance } from 'node:perf_hooks';
 

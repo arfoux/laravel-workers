@@ -1,4 +1,4 @@
-// kernel/validator.mjs — Laravel-like validation for Workers (M6). Pure ESM, zero deps.
+// kernel/validator.mjs — Validator
 const DEFAULT_MESSAGES = (field, rule, param) => {
   const t = {
     required: `The ${field} field is required.`,

@@ -1,4 +1,4 @@
-// edge/kernel/model.mjs — small Eloquent-like base (M3). Pure ESM, zero deps.
+// kernel/model.mjs — Model base
 import { table as tableBuilder } from './db.mjs';
 
 function applyCast(value, cast) {

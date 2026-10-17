@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// tools/docs-check.mjs — Appendix C gate: 105 rows, no blanks, verdict in set.
+// tools/docs-check.mjs — Coverage gate (105 rows)
 // Offline-safe: validates the table itself; if a laravel/docs listing is reachable, cross-checks.
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

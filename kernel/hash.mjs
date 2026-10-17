@@ -1,4 +1,4 @@
-// kernel/hash.mjs — bcrypt wrapper matching Laravel BcryptHasher (Workers-compatible)
+// kernel/hash.mjs — Hash (bcrypt)
 // Uses bcryptjs (pure JS, no native).
 import bcrypt from 'bcryptjs';
 
