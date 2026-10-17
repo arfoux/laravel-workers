@@ -30,7 +30,7 @@ Checked Oct 2026. Prior art is **fragmented** — no end-to-end equivalent found
 
 **What's actually new (claim candidate):** the *end-to-end combination* — Laravel as source of truth → build-time boot → Workers-native artifact with **no PHP at request time**: tiered static/snapshot/compiled/ports + coverage enforcement + D1-backed kernel + parity tests + free-plan budget engineering.
 
-**Claim policy:** "discovery" language only after M1–M2 land (view parity + compiled handlers) *and* the formal prior-art scan (W0) stays clean. Until then: "an approach in progress", backed by measurements.
+**Claim policy:** "discovery" language only after M1–M2 land (view parity + compiled handlers) *and* the formal prior-art scan (W0) stays clean. Formal W0 scan (2026-10-17): **CLEAN** — see `edge/notes/prior-art-report.md`; re-run before any public claim. Until then: "an approach in progress", backed by measurements.
 
 ---
 
@@ -277,7 +277,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 
 1. ~~Name~~ → **decided: `laravel-workers`** (GitHub/npm checked 2026-10; nearest collision is a Docker tool, 28★/2019). ~~Repo strategy~~ → **decided: standalone repo.** Development incubates in `edge/` until M1–M2 (first parity proof), then extracts to the standalone repo. PRs to `ntanduy/cloudflare-d1-database` / `workersphp/laravel-bridge` become optional cross-links later, not the home.
 2. **Paid fallback stance:** keep Free-first default (recommended) with Paid as headroom.
-3. **Demo feature shortlist** (drives W10): auth? CRUD? search?
+3. **Demo feature shortlist** (drives W10): deferred by user — decide near the end (demo is projected last); nothing blocked meanwhile.
 
 ---
 
@@ -287,6 +287,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - Prototype worker: 26/26 OK, CPU 1–6ms; static served with 0 invocations.
 - Pipeline shipped: static + snapshot + ports + coverage + one-command ship; `/dbcheck` D1 port live; `/` snapshot byte-verified (title/spacing/Vite tags).
 - Compiled-Blade dump works today (`edge/tools/compile-view.php` → JSON with context: config, routes, vfs) — first compiler artifact.
+- **M1-alpha parity PASS (2026-10-17):** transpiled `welcome` (compiled Blade → JS) rendered via `rt` = `php prerender.php /` output **byte-identical** — 35,647 B, sha256 `b228c8a2…` equal on both sides (strict rt, no warnings). Transpiler: php-parser 3.7.0, fail-loud LW001–LW004. Context: enriched S0 (app/config/vite/files/auth/routes/route_names/urls + legacy).
 
 ## B. Current state
 
@@ -296,7 +297,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | View-compile spike (S0 dump) | ✅ first artifact produced |
 | Repo name | `laravel-workers` (decided; GitHub/npm checked) |
 | Repo strategy | standalone; extract from `edge/` at M1–M2 |
-| W1–W10 | not started |
+| W1–W10 | W1+W2 alpha: ✅ **M1 parity PASS** (byte-identical 35,647 B) · corpus net 🚧 (41 cases) · router kernel spike 🚧 |
 | This map | v1.1 (this file) |
 
 ---
