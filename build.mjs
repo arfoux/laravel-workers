@@ -194,7 +194,7 @@ for (const [route, view] of viewMap) {
       "import main from '../views/" + view + ".mjs';",
       "import context from '../contexts/" + view + ".mjs';",
       "import { buildRt } from '../runtime/rt-from-context.mjs';",
-      "import { html } from '../kernel/response.mjs';",
+      "import { html } from '../../kernel/response.mjs';",
       '',
       'export default function handle(ctx, env) {',
       '  const rt = buildRt(context, { strict: true });',
@@ -223,6 +223,14 @@ for (const [route, name] of portEntries) {
   console.log(`port controller ${route} -> dist/src/controllers/${slug}.mjs`);
 }
 
+// ---------- 3d. schema snapshot (M3) ----------
+mkdirSync(join(edgeDir, '.cache'), { recursive: true });
+const schemaPath = join(edgeDir, '.cache', 'schema.json');
+console.log('\u2022 dumping DB schema');
+execFileSync(PHP, [join(edgeDir, 'tools', 'schema-dump.php'), schemaPath], { cwd: root });
+cpSync(schemaPath, join(dist, 'schema.json'));
+console.log('  -> dist/schema.json');
+
 // ---------- 4. copy static assets ----------
 for (const f of ['build', 'favicon.ico', 'robots.txt']) {
   const src = join(root, 'public', f);
@@ -237,7 +245,7 @@ for (const f of ['build', 'favicon.ico', 'robots.txt']) {
 // ---------- 5. worker + ports + routes ----------
 cpSync(join(edgeDir, 'src/worker.mjs'), join(dist, 'src/worker.mjs'));
 cpSync(join(edgeDir, 'src/ports'), join(dist, 'src/ports'), { recursive: true });
-cpSync(join(edgeDir, 'kernel'), join(dist, 'src', 'kernel'), { recursive: true });
+cpSync(join(edgeDir, 'kernel'), join(dist, 'kernel'), { recursive: true });
 cpSync(join(edgeDir, 'compiler', 'runtime'), join(dist, 'src', 'runtime'), { recursive: true });
 
 const builtAt = new Date().toISOString();
