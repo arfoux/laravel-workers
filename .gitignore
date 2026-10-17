@@ -2,3 +2,5 @@ dist/
 .wrangler/
 .cache/
 node_modules/
+
+*.tgz

@@ -1,0 +1,34 @@
+{
+  "name": "laravel-workers",
+  "version": "0.3.0",
+  "description": "Run a Laravel app on Cloudflare Workers with no PHP at request time",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "laravel-workers": "bin/laravel-workers.mjs"
+  },
+  "files": [
+    "bin",
+    "build.mjs",
+    "compiler/bin",
+    "compiler/src",
+    "compiler/runtime",
+    "kernel",
+    "tools"
+  ],
+  "scripts": {
+    "setup": "npm install && npm --prefix compiler install",
+    "test": "node --test kernel/tests/router.test.mjs kernel/tests/db.test.mjs",
+    "test:db": "node --test kernel/tests/db.test.mjs",
+    "test:corpus": "node compiler/tests/run-corpus.mjs",
+    "build": "node build.mjs --strict",
+    "verify": "node bin/laravel-workers.mjs verify"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "php-parser": "3.7.0"
+  }
+}
+
