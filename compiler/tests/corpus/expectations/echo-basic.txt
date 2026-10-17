@@ -1,0 +1,5 @@
+Hello, world!
+single quoted
+it's escaped
+mix:AB
+end

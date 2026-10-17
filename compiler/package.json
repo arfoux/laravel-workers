@@ -1,0 +1,10 @@
+{
+  "name": "nearfind-edge-compiler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "M1 PHP-subset transpiler: Laravel compiled views -> dependency-free ESM render modules",
+  "dependencies": {
+    "php-parser": "3.7.0"
+  }
+}

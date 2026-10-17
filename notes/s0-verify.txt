@@ -1,0 +1,16 @@
+PASS 15/15 keys — 2026-10-17T18:10:09+00:00
+OK    app.version
+OK    app.locale
+OK    config.app.name
+OK    config.app.locale
+OK    vite.fonts
+OK    vite.invoke
+OK    files.build/manifest.json
+OK    files.build/fonts-manifest.json
+OK    files.hot
+OK    auth.check
+OK    route_names
+OK    urls
+OK    app_version (legacy)
+OK    vfs (legacy)
+OK    routes[]

@@ -1,0 +1,314 @@
+[
+  {
+    "id": "arith-precedence",
+    "file": "cases/arith-precedence.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 25
+  },
+  {
+    "id": "boot-e-quotes",
+    "file": "cases/boot-e-quotes.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 87
+  },
+  {
+    "id": "boot-e-specials",
+    "file": "cases/boot-e-specials.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 107
+  },
+  {
+    "id": "boot-e-types",
+    "file": "cases/boot-e-types.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 27
+  },
+  {
+    "id": "boot-e-unicode",
+    "file": "cases/boot-e-unicode.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 62
+  },
+  {
+    "id": "cmp-eq-basic",
+    "file": "cases/cmp-eq-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 18
+  },
+  {
+    "id": "cmp-int-float",
+    "file": "cases/cmp-int-float.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 12
+  },
+  {
+    "id": "cmp-loose-null",
+    "file": "cases/cmp-loose-null.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 20
+  },
+  {
+    "id": "cmp-mixed-strings",
+    "file": "cases/cmp-mixed-strings.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 12
+  },
+  {
+    "id": "cmp-relational",
+    "file": "cases/cmp-relational.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 18
+  },
+  {
+    "id": "cmp-strict",
+    "file": "cases/cmp-strict.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 18
+  },
+  {
+    "id": "echo-basic",
+    "file": "cases/echo-basic.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 51
+  },
+  {
+    "id": "echo-concat",
+    "file": "cases/echo-concat.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 44
+  },
+  {
+    "id": "echo-float-precision",
+    "file": "cases/echo-float-precision.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 47
+  },
+  {
+    "id": "echo-numbers",
+    "file": "cases/echo-numbers.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 39
+  },
+  {
+    "id": "echo-numeric-strings",
+    "file": "cases/echo-numeric-strings.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 16
+  },
+  {
+    "id": "echo-types",
+    "file": "cases/echo-types.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 91
+  },
+  {
+    "id": "empty-basic",
+    "file": "cases/empty-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 18
+  },
+  {
+    "id": "fn-basic",
+    "file": "cases/fn-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 21
+  },
+  {
+    "id": "fn-defaults",
+    "file": "cases/fn-defaults.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 44
+  },
+  {
+    "id": "fn-recursion",
+    "file": "cases/fn-recursion.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 7
+  },
+  {
+    "id": "for-loop",
+    "file": "cases/for-loop.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 19
+  },
+  {
+    "id": "foreach-basic",
+    "file": "cases/foreach-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 13
+  },
+  {
+    "id": "foreach-keyvalue",
+    "file": "cases/foreach-keyvalue.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 65
+  },
+  {
+    "id": "if-alt",
+    "file": "cases/if-alt.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 14
+  },
+  {
+    "id": "if-braces",
+    "file": "cases/if-braces.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 36
+  },
+  {
+    "id": "interp-basic",
+    "file": "cases/interp-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 63
+  },
+  {
+    "id": "interp-escapes",
+    "file": "cases/interp-escapes.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 99
+  },
+  {
+    "id": "isset-basic",
+    "file": "cases/isset-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 16
+  },
+  {
+    "id": "logic-and-or",
+    "file": "cases/logic-and-or.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 12
+  },
+  {
+    "id": "logic-basic",
+    "file": "cases/logic-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 22
+  },
+  {
+    "id": "match-basic",
+    "file": "cases/match-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 29
+  },
+  {
+    "id": "null-coalesce",
+    "file": "cases/null-coalesce.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 35
+  },
+  {
+    "id": "sprintf-basic",
+    "file": "cases/sprintf-basic.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 41
+  },
+  {
+    "id": "str-case-trim",
+    "file": "cases/str-case-trim.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 51
+  },
+  {
+    "id": "str-replace-basic",
+    "file": "cases/str-replace-basic.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 32
+  },
+  {
+    "id": "str-replace-overlap",
+    "file": "cases/str-replace-overlap.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 15
+  },
+  {
+    "id": "switch-basic",
+    "file": "cases/switch-basic.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 37
+  },
+  {
+    "id": "switch-loose",
+    "file": "cases/switch-loose.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 18
+  },
+  {
+    "id": "ternary",
+    "file": "cases/ternary.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 41
+  },
+  {
+    "id": "while-loop",
+    "file": "cases/while-loop.php",
+    "kind": "UNSUP",
+    "expect": "LW002",
+    "php_exit": 0,
+    "php_bytes": 12
+  }
+]

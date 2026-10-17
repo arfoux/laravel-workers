@@ -1,0 +1,4 @@
+a &amp; b
+&amp;amp; already
+&lt;script&gt;alert(&#039;x&#039;)&lt;/script&gt;
+5 &gt; 3 &amp;&amp; 2 &lt; 4

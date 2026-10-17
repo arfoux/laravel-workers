@@ -1,0 +1,5 @@
+double: line
+esc: "quoted" and $dollar and \ slash
+tab:	end
+single: \n stays and 'quoted' too
+done

@@ -1,0 +1,10 @@
+true=1|
+false=|
+null=|
+int=42|
+neg=-7|
+zero=0|
+float=3.5|
+float-int=2|
+str-zero=0|
+empty=|

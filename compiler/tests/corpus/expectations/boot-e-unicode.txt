@@ -1,0 +1,3 @@
+héllo wörld
+日本語 &lt;テスト&gt;
+emoji 😀 &amp; co

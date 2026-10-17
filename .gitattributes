@@ -1,0 +1,3 @@
+# Byte-exact test artifacts — never let git translate line endings.
+# (corpus expected outputs are compared byte-for-byte by tests/run-corpus.mjs)
+compiler/tests/corpus/expected/** -text

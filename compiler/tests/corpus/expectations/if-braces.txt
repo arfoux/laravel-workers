@@ -1,0 +1,4 @@
+medium
+no
+single-digit-ish
+not flag

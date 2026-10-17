@@ -1,0 +1,2 @@
+He said &quot;hi&quot; and &#039;bye&#039;
+single &amp; &quot;double&quot; &lt;tag&gt;

@@ -1,0 +1,23 @@
+<?php
+$a = null;
+$b = 0;
+$c = "";
+$d = "x";
+echo $a ?? "A", "\n";
+echo $b ?? "B", "\n";
+echo $c ?? "C", "\n";
+echo $d ?? "D", "\n";
+$e = null;
+$e ??= "set";
+echo $e, "\n";
+$f = 0;
+$f ??= 5;
+echo $f, "\n";
+$g = null;
+$g ??= $d ?? "z";
+echo $g, "\n";
+$arr = [];
+echo $arr["k"] ?? "missing", "\n";
+$arr["k"] ??= "added";
+echo $arr["k"], "\n";
+echo $neverSet ?? "undef", "\n";

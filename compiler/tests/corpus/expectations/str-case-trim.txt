@@ -1,0 +1,7 @@
+HELLO
+hello world
+abc123
+padded
+mixed
+mixed
+TOGGLE

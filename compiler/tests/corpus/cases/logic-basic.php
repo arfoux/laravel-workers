@@ -1,0 +1,20 @@
+<?php
+echo (true && true) ? "T" : "F", "\n";
+echo (true && false) ? "T" : "F", "\n";
+echo (false && true) ? "T" : "F", "\n";
+echo (true || false) ? "T" : "F", "\n";
+echo (false || false) ? "T" : "F", "\n";
+echo (!true) ? "T" : "F", "\n";
+echo (!false) ? "T" : "F", "\n";
+$a = 0;
+true && ($a = 1);
+echo $a, "\n";
+$b = 0;
+false && ($b = 1);
+echo $b, "\n";
+$c = 0;
+false || ($c = 1);
+echo $c, "\n";
+$d = 0;
+true || ($d = 1);
+echo $d, "\n";

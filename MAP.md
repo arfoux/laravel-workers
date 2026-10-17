@@ -288,6 +288,8 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - Pipeline shipped: static + snapshot + ports + coverage + one-command ship; `/dbcheck` D1 port live; `/` snapshot byte-verified (title/spacing/Vite tags).
 - Compiled-Blade dump works today (`edge/tools/compile-view.php` → JSON with context: config, routes, vfs) — first compiler artifact.
 - **M1-alpha parity PASS (2026-10-17):** transpiled `welcome` (compiled Blade → JS) rendered via `rt` = `php prerender.php /` output **byte-identical** — 35,647 B, sha256 `b228c8a2…` equal on both sides (strict rt, no warnings). Transpiler: php-parser 3.7.0, fail-loud LW001–LW004. Context: enriched S0 (app/config/vite/files/auth/routes/route_names/urls + legacy).
+- **M1 complete (2026-10-18):** smoke PASS, corpus ALL PASS (41/41), verify-s0 PASS (15/15). Transpiler fixes: `node.expr`->`expression`, null/nullkeyword, boolean, elseif chains, var redecl, compound assign, `.`->rt.concat, `+`->rt.add, rt.e PHP cast, rt.sprintf %%, rt.str_replace empty needle, float formatting.
+ode.expr->expression, null/nullkeyword, boolean, elseif chains, var redecl, compound assign, .->rt.concat, +->rt.add, rt.e PHP cast, rt.sprintf %%, rt.str_replace empty needle, float formatting.
 
 ## B. Current state
 

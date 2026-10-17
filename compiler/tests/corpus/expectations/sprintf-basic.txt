@@ -1,0 +1,7 @@
+a=7
+x-y
+50%
+3 items
+42
+3-4
+no specifiers
