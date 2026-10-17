@@ -1,57 +1,36 @@
-# edge/ — compile the Laravel app into a Workers-native artifact
+# laravel-workers
 
-> Full design map — padanan Laravel → Workers, tolerance model (soft/hard), limits, agent workstreams: **[MAP.md](MAP.md)**
+> Run a Laravel app on Cloudflare Workers with **no PHP at request time** — build-time boot → Workers-native artifact.
 
-The Laravel app in this repo stays the source of truth. `edge/build.mjs` compiles it
-into an artifact whose **request path is 100% static — nothing boots**:
+**Status: M2 complete.** Router integration live � build --strict PASS, ROUTER INTEGRATION PASS, CPU BUDGET PASS, wrangler dev smoke / and /health 200, /dbcheck 200 on remote D1.
 
-1. **Boot happens at build time.** The real Laravel app runs on the build machine:
-   it renders pages (`tools/prerender.php`) and exports its route table
-   (`php artisan route:list --json`).
-2. **Static pages** are prerendered to HTML (see `registry.json` → `static`).
-3. **Dynamic endpoints** are small JS "ports" (`registry.json` → `ports`,
-   `src/ports/*.mjs`) that talk straight to the D1 binding — no framework, no boot.
-4. The build reports (and with `--strict`, fails on) any app route that is not
-   consciously handled.
+## What's inside
+- `compiler/` — M1 view compiler (Blade-compiled PHP → dependency-free ESM). `bin/transpile.mjs`, `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/`.
+- `kernel/` — W3 router + response kernel (compiled-handler tier).
+- `tools/` — build-time PHP tools (`compile-view.php` S0 dump, `prerender.php` reference, `verify-s0.php`).
+- `spikes/` — de-risking spikes (encrypter parity, etc.).
+- `notes/` — research & scan reports, S0 contract.
+- `MAP.md` — full coverage map (105/105 Laravel docs, tolerance model).
 
-## How routes are handled (tiers)
+## Requirements
+- A Laravel app (10.x/11.x/12.x/13.x) as the source of truth.
+- Node ≥22, PHP ≥8.3, `php-parser` (npm) for the compiler.
+- Cloudflare account for deploy.
 
-1. **ports** — live JS handlers, highest priority. A port always wins over a snapshot.
-2. **static** — manual page map in `registry.json`, rendered by Laravel at build time.
-3. **snapshot** — automatic (`autoSnapshot`, default true): every remaining clean GET
-   route (no `{params}`, HTTP 2xx `text/html` at build time) is rendered by Laravel and
-   written as a static page, so **new pages appear at the edge URL on the next deploy**.
-4. **ignore** — consciously skipped, with a reason: `"ignore": { "/x": "reason" }`.
+## Quick start
+1. Point `tools/compile-view.php` at your Laravel app (set `$root`).
+2. `php tools/compile-view.php welcome .cache/welcome.compiled.json`
+3. `node compiler/bin/transpile.mjs .cache/welcome.compiled.json --json --out .cache/welcome.view.mjs`
+4. `node compiler/tests/parity-m1.mjs` — must print `PARITY: PASS`.
+5. `php tools/verify-s0.php` — must print `VERIFY-S0: PASS (15/15)`.
+6. `node compiler/tests/run-corpus.mjs` — must print `CORPUS: 41/41 pass`.
 
-Anything that can't be snapshotted (params, redirects/errors, non-GET, non-HTML) is
-reported as UNHANDLED and can be scaffolded into a port stub.
+## Philosophy
+- Laravel stays Laravel; this is the toolchain, not app code.
+- Coverage enforced (`--strict`): unhandled route = build failure.
+- Free-plan-first (10ms CPU budget); Paid is headroom, never a dependency.
+- Honest claims: "approach in progress" until M1–M2 land.
 
-## Commands
+## License
+TBD (MIT/Apache suggested).
 
-    node edge/build.mjs               # compile -> edge/dist
-    node edge/build.mjs --scaffold    # + generate port stubs for unhandled routes
-    node edge/build.mjs --strict      # CI mode: fail instead of warn on unhandled routes
-    node edge/ship.mjs                # build + deploy in one command
-    cd edge && node ../node_modules/wrangler/bin/wrangler.js deploy   # deploy only
-
-## Keeping the app developable
-
-Laravel development stays normal (`php artisan serve`, add routes/views as usual).
-The build is conditional on whatever `route:list` reports at that moment:
-
-- a new clean GET page lands at the edge automatically (build + deploy),
-- anything that can't be snapshotted is listed as UNHANDLED — never silently lost,
-- `--scaffold` drops a stub port (+ the exact registry.json line to add),
-- routes you consciously postpone go into `registry.json` → `"ignore": { "/x": "reason" }`,
-- `--strict` makes any unhandled route fail the build, so CI stays honest.
-
-## Adding a live endpoint (port)
-
-1. Add the route in the Laravel app (`routes/web.php`).
-2. Create `src/ports/<name>.mjs` exporting `handle(request, env)`.
-3. Map the route in `registry.json` under `"ports"` and rebuild.
-
-## Adding a static page
-
-Nothing to do — clean GET pages are snapshotted automatically. Use the `static`
-map only when you want a fixed file target (e.g. `/` → `index.html`).
