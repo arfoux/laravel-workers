@@ -36,7 +36,7 @@ Fails loud (build error or `LW002`), use a port instead:
 - `compiler/` — **M1 view compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 41, parity, smoke).
 - `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), budget gate (M8).
 - `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
-- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot).
+- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `routes.generated.mjs` route table with names/domains and a `routeNames` map).
 - `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy).
 
 ## Requirements

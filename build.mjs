@@ -58,14 +58,33 @@ const appRoutes = listed.filter((r) => String(r.path || '').startsWith('routes/'
 const normalize = (u) => (u === '/' || u === '' ? '/' : '/' + String(u).replace(/^\/+|\/+$/g, ''));
 const routes = [...new Set(appRoutes.map((r) => normalize(r.uri)))].sort();
 const methodsFor = new Map();
+const metaFor = new Map(); // 'METHOD /uri' -> { name, domain }
 for (const r of appRoutes) {
   const uri = normalize(r.uri);
   const set = methodsFor.get(uri) || new Set();
-  for (const m of String(r.method || 'GET').split('|')) if (m) set.add(m);
+  const methods = String(r.method || 'GET').split('|');
+  for (const m of methods) if (m) set.add(m);
   methodsFor.set(uri, set);
+  for (const m of methods) {
+    if (!m) continue;
+    const key = m.toUpperCase() + ' ' + uri;
+    if (!metaFor.has(key)) metaFor.set(key, { name: r.name ?? null, domain: r.domain ?? null });
+  }
 }
 const otherMethods = (route) =>
   [...(methodsFor.get(route) || new Set())].filter((m) => m !== 'GET' && m !== 'HEAD');
+// first non-null name/domain across the route's methods (they share a uri in the table)
+const metaForRoute = (route) => {
+  let name = null;
+  let domain = null;
+  for (const m of methodsFor.get(route) || []) {
+    const meta = metaFor.get(m + ' ' + route);
+    if (!meta) continue;
+    if (name == null) name = meta.name;
+    if (domain == null) domain = meta.domain;
+  }
+  return { name, domain };
+};
 console.log(`  app routes (${routes.length}): ${routes.join('  ')}`);
 
 // ---------- 2. prerender helper (boots the real app, build time only) ----------
@@ -252,26 +271,26 @@ const builtAt = new Date().toISOString();
 const routeTable = routes.map((route) => {
   if (ignoreMap.some(([r]) => r === route)) {
     const entry = ignoreMap.find(([r]) => r === route);
-    return { uri: route, name: null, methods: [...(methodsFor.get(route) || new Set())], domain: null, kind: 'ignore', reason: entry[1] };
+    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'ignore', reason: entry[1] };
   }
   if (portEntries.some(([r]) => r === route)) {
     const slug = portEntries.find(([r]) => r === route)[1];
-    return { uri: route, name: null, methods: [...(methodsFor.get(route) || new Set())], domain: null, kind: 'port', controller: slug };
+    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'port', controller: slug };
   }
   if (viewMap.some(([r]) => r === route)) {
     const slug = controllerByRoute.get(route);
     const view = viewMap.find(([r]) => r === route)[1];
-    return { uri: route, name: null, methods: [...(methodsFor.get(route) || new Set())], domain: null, kind: 'view', view, controller: slug };
+    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'view', view, controller: slug };
   }
   if (staticMap.some(([r]) => r === route)) {
     const file = staticMap.find(([r]) => r === route)[1];
-    return { uri: route, name: null, methods: [...(methodsFor.get(route) || new Set())], domain: null, kind: 'snapshot', snapshot: file };
+    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'snapshot', snapshot: file };
   }
   if (snapshots.includes(route)) {
     const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
-    return { uri: route, name: null, methods: [...(methodsFor.get(route) || new Set())], domain: null, kind: 'snapshot', snapshot: file };
+    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'snapshot', snapshot: file };
   }
-  return { uri: route, name: null, methods: [...(methodsFor.get(route) || new Set())], domain: null, kind: 'unhandled' };
+  return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'unhandled' };
 });
 
 const controllerImports = [];
@@ -284,6 +303,11 @@ for (const route of routes) {
     controllerImports.push(`import handler${idx} from './controllers/${entry.controller}.mjs';`);
     controllerMap.push({ route, idx });
   }
+}
+
+const routeNames = {};
+for (const [key, meta] of metaFor) {
+  if (meta.name) routeNames[meta.name] = key.slice(key.indexOf(' ') + 1);
 }
 
 const handlersLines = controllerMap.map(({ route, idx }) => {
@@ -299,6 +323,7 @@ writeFileSync(
     ...controllerImports,
     `export const builtAt = ${JSON.stringify(builtAt)};`,
     'export const routeTable = ' + JSON.stringify(routeTable, null, 2) + ';',
+    'export const routeNames = ' + JSON.stringify(routeNames, null, 2) + ';',
     'export const handlers = {',
     ...handlersLines,
     '};',

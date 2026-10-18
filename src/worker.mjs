@@ -13,7 +13,7 @@ export default {
 
     if (DISPATCH_METHODS.has(request.method)) {
       const res = await dispatch(
-        { method: request.method, path: url.pathname + url.search, headers: Object.fromEntries(request.headers) },
+        { method: request.method, path: url.pathname + url.search, host: url.host, headers: Object.fromEntries(request.headers) },
         table,
         handlers,
         env
