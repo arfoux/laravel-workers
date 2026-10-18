@@ -148,6 +148,10 @@ function tx(node) {
     }
     case 'call':
       return txCall(node);
+    case 'closure':
+      return txClosure(node);
+    case 'arrowfunc':
+      return txArrowFunc(node);
     default:
       throw mkErr('LW002', 'unsupported expression kind ' + node.kind, node.loc);
   }
@@ -240,6 +244,8 @@ function txCall(node) {
       'abs', 'round', 'floor', 'ceil', 'intval', 'floatval', 'max', 'min',
       'json_encode', 'json_decode', 'optional',
       'array_sum', 'array_slice', 'array_reverse', 'array_unique', 'array_count_values', 'array_flip',
+      'now',
+      'collect',
     ]);
     if (whitelisted.has(name) || builtins.has(name)) return 'rt.' + name + '(' + args + ')';
     if (FUNCS.has(name)) return fname(name) + '(' + args + ')';
@@ -257,11 +263,93 @@ function txCall(node) {
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
     return obj + '.' + meth + '(' + args + ')';
   }
+  if (what.kind === 'variable') {
+    return tx(what) + '(' + args + ')';
+  }
+  if (what.kind === 'closure' || what.kind === 'arrowfunc') {
+    return tx(what) + '(' + args + ')';
+  }
   if (what.kind === 'call') {
     return tx(what) + '(' + args + ')';
   }
   throw mkErr('LW002', 'unsupported call target', node.loc);
 }
+
+function getUseInfo(u){
+  if(!u) return null;
+  // direct variable with byref flag (php-parser read_byref sets byref:true on variable)
+  if(u.kind==='variable') return { name: u.name, byref: !!u.byref };
+  // wrapped byref node? (some versions)
+  if(u.byref && u.what && u.what.kind==='variable') return { name: u.what.name, byref: true };
+  // fallback for reference kind
+  if(u.kind==='byref' && u.what) return { name: u.what.name || u.what, byref: true };
+  return null;
+}
+
+function txClosure(node){
+  const params=(node.arguments||[]).map(p=>{
+    const pn=vname(p.name && p.name.name ? p.name.name : p.name);
+    return p.value ? pn+' = '+tx(p.value) : pn;
+  });
+  const uses=node.uses||[];
+  const byVal=[];
+  const byRef=[];
+  for(const u of uses){
+    const info=getUseInfo(u);
+    if(!info) continue;
+    if(info.byref) byRef.push(info.name);
+    else byVal.push(info.name);
+  }
+  // build body JS: need to render block children via inline walk? reuse tx for statements by emitting JS function body string
+  // Instead generate JS code for body by simulating walkChildren into string buffer via helper emitClosureBody
+  const bodyCode=emitClosureBody(node.body, byVal, byRef, node.arguments||[]);
+  const fn='function('+params.join(', ')+'){'+bodyCode+'}';
+  if(byVal.length===0){
+    return '('+fn+')';
+  }
+  const caps=byVal.map(n=>vname(n));
+  const capParams=byVal.map(n=>'__cap_'+n);
+  const lets=byVal.map((n,i)=>'let '+caps[i]+'='+capParams[i]+';').join('');
+  const fnWithLets='function('+params.join(', ')+'){'+lets+bodyCode+'}';
+  return '(('+capParams.join(', ')+')=>('+fnWithLets+'))('+caps.join(', ')+')';
+}
+
+function emitClosureBody(body, byVal, byRef, params){
+  if(!body) return '';
+  if(body.kind==='block'){
+    const paramSet=new Set((params||[]).map(p=> String(p.name && p.name.name ? p.name.name : p.name)));
+    const byValSet=new Set(byVal||[]);
+    const byRefSet=new Set(byRef||[]);
+    const scan=(n, set)=>{
+      if(!n||typeof n!=='object') return;
+      if(Array.isArray(n)){ for(const x of n) scan(x,set); return; }
+      if(n.kind==='closure' || n.kind==='arrowfunc') return;
+      if(n.kind==='variable' && n.name) set.add(String(n.name));
+      for(const k of Object.keys(n)){ if(k==='loc') continue; scan(n[k], set); }
+    };
+    const all=new Set();
+    scan(body, all);
+    const locals=[...all].filter(n=> !paramSet.has(n) && !byValSet.has(n) && !byRefSet.has(n));
+    const lines=[];
+    if(locals.length) lines.push('let '+locals.map(vname).join(', ')+';');
+    try{
+      walkChildren(body.children||[], lines, '', {});
+    }catch(e){ throw e; }
+    return lines.join(' ');
+  }
+  return 'return '+tx(body)+';';
+}
+
+function txArrowFunc(node){
+  const params=(node.arguments||[]).map(p=>{
+    const pn=vname(p.name && p.name.name ? p.name.name : p.name);
+    return p.value ? pn+' = '+tx(p.value) : pn;
+  });
+  const expr=tx(node.body);
+  if(params.length===1) return '('+params[0]+'=>('+expr+'))';
+  return '(('+params.join(', ')+')=>('+expr+'))';
+}
+
 
 function txAssignExpr(node) {
   const op = node.operator || '=';
@@ -455,6 +543,19 @@ function collect(node, funcs, vars) {
   if (node.kind === 'function' && node.name) {
     const nm = node.name.name || node.name;
     if (nm) funcs.add(String(nm));
+  }
+  if (node.kind === 'closure' || node.kind === 'arrowfunc') {
+    // do not hoist closure locals/params/uses to top-level; collect only variables outside closure scope
+    // Still recurse into uses (they refer to outer vars, so collect them as outer vars if they are by-ref? Actually uses are outer vars)
+    // For correctness, collect uses variables as outer vars, but not params or body locals
+    const uses=node.uses||[];
+    for(const u of uses){ if(u && u.kind==='variable' && u.name) vars.add(vname(u.name)); else if(u && u.what && u.what.name) vars.add(vname(u.what.name)); }
+    // do not recurse into arguments or body (scoped)
+    for(const k of Object.keys(node)){
+      if(k==='loc'||k==='arguments'||k==='body'||k==='uses') continue;
+      collect(node[k], funcs, vars);
+    }
+    return;
   }
   if (node.kind === 'variable' && node.name) vars.add(vname(node.name));
   for (const k of Object.keys(node)) {

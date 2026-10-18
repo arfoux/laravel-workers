@@ -575,6 +575,160 @@ export function buildRt(context, opts = {}) {
   };
   rt.nl2br = (s) => String(s == null ? '' : s).replace(/\r\n|\r|\n/g, '<br />\n');
 
+  // ---- Collection wrapper (rt.collect) ----
+  class Collection {
+    constructor(items) {
+      this.items = Array.isArray(items) ? items.slice() : [];
+    }
+    count() { return this.items.length; }
+    isEmpty() { return this.items.length === 0; }
+    isNotEmpty() { return this.items.length !== 0; }
+    first(pred) {
+      if (typeof pred === 'function') {
+        for (const v of this.items) if (pred(v)) return v;
+        return null;
+      }
+      return this.items.length ? this.items[0] : null;
+    }
+    last(pred) {
+      if (typeof pred === 'function') {
+        for (let i = this.items.length - 1; i >= 0; i--) if (pred(this.items[i])) return this.items[i];
+        return null;
+      }
+      return this.items.length ? this.items[this.items.length - 1] : null;
+    }
+    firstWhere(key, val) {
+      for (const v of this.items) {
+        if (v != null && typeof v === 'object' && v[key] == val) return v;
+        if (v != null && v[key] === val) return v;
+      }
+      return null;
+    }
+    get(idx, def) {
+      const i = Number(idx);
+      if (Number.isInteger(i) && i >= 0 && i < this.items.length) return this.items[i];
+      if (Object.prototype.hasOwnProperty.call(this.items, idx)) return this.items[idx];
+      return def === undefined ? null : def;
+    }
+    pluck(key) {
+      return new Collection(this.items.map((v) => (v == null ? null : v[key])));
+    }
+    filter(fn) {
+      if (typeof fn === 'function') return new Collection(this.items.filter(fn));
+      return new Collection(this.items.filter((v) => !!v));
+    }
+    map(fn) { return new Collection(this.items.map(fn)); }
+    each(fn) { this.items.forEach(fn); return this; }
+    take(n) {
+      const c = Number(n);
+      if (!Number.isFinite(c)) return new Collection(this.items.slice());
+      if (c < 0) return new Collection(this.items.slice(c));
+      return new Collection(this.items.slice(0, c));
+    }
+    slice(s, n) {
+      const start = Number(s) | 0;
+      if (n === undefined || n === null) return new Collection(this.items.slice(start));
+      const len = Number(n) | 0;
+      return new Collection(this.items.slice(start, start + len));
+    }
+    contains(valOrFn) {
+      if (typeof valOrFn === 'function') return this.items.some(valOrFn);
+      return this.items.includes(valOrFn);
+    }
+    has(key) {
+      const k = Number(key);
+      if (Number.isInteger(k)) return k >= 0 && k < this.items.length;
+      return Object.prototype.hasOwnProperty.call(this.items, key);
+    }
+    sum(key) {
+      const vals = key == null ? this.items : this.items.map((v) => (v == null ? 0 : v[key]));
+      let s = 0;
+      for (const v of vals) {
+        const num = Number(v);
+        if (v != null && !Number.isNaN(num)) s += num;
+      }
+      return s;
+    }
+    avg(key) {
+      if (this.items.length === 0) return null;
+      const vals = key == null ? this.items : this.items.map((v) => (v == null ? null : v[key]));
+      let s = 0;
+      let c = 0;
+      for (const v of vals) {
+        if (v == null) continue;
+        const num = Number(v);
+        if (!Number.isNaN(num)) { s += num; c++; }
+      }
+      if (c === 0) return null;
+      return s / c;
+    }
+    keys() { return new Collection(this.items.map((_, i) => i)); }
+    values() { return new Collection(this.items.slice()); }
+    toArray() { return this.items.slice(); }
+    toJson() { return JSON.stringify(this.items); }
+    all() { return this.items.slice(); }
+  }
+  rt.collect = (arr) => new Collection(Array.isArray(arr) ? arr : arr == null ? [] : [arr]);
+  rt.Collection = Collection;
+
+  // ---- rt.now() minimal Carbon stub (UTC) ----
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const pad4 = (n) => String(n).padStart(4, '0');
+  function makeCarbon(date) {
+    const d = new Date(date.getTime());
+    const api = {
+      _d: d,
+      format(fmt) {
+        const Y = pad4(d.getUTCFullYear());
+        const m = pad2(d.getUTCMonth() + 1);
+        const dd = pad2(d.getUTCDate());
+        const H = pad2(d.getUTCHours());
+        const i = pad2(d.getUTCMinutes());
+        const s = pad2(d.getUTCSeconds());
+        const n = String(d.getUTCMonth() + 1);
+        const j = String(d.getUTCDate());
+        const G = String(d.getUTCHours());
+        const g0 = d.getUTCHours() % 12 || 12;
+        const g = String(g0);
+        const a = d.getUTCHours() < 12 ? 'am' : 'pm';
+        const A = d.getUTCHours() < 12 ? 'AM' : 'PM';
+        const U = String(Math.floor(d.getTime() / 1000));
+        return String(fmt).replace(/Y|m|d|H|i|s|n|j|G|g|a|A|U/g, (ch) => {
+          switch (ch) {
+            case 'Y': return Y;
+            case 'm': return m;
+            case 'd': return dd;
+            case 'H': return H;
+            case 'i': return i;
+            case 's': return s;
+            case 'n': return n;
+            case 'j': return j;
+            case 'G': return G;
+            case 'g': return g;
+            case 'a': return a;
+            case 'A': return A;
+            case 'U': return U;
+            default: return ch;
+          }
+        });
+      },
+      toDateString() { return pad4(d.getUTCFullYear()) + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()); },
+      toDateTimeString() { return pad4(d.getUTCFullYear()) + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()); },
+      get timestamp() { return Math.floor(d.getTime() / 1000); },
+      getTimestamp() { return Math.floor(d.getTime() / 1000); },
+      addDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() + Number(n)); return makeCarbon(nd); },
+      subDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() - Number(n)); return makeCarbon(nd); },
+      addHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() + Number(n)); return makeCarbon(nd); },
+      subHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() - Number(n)); return makeCarbon(nd); },
+      copy() { return makeCarbon(new Date(d.getTime())); },
+      clone() { return makeCarbon(new Date(d.getTime())); },
+      toString() { return pad4(d.getUTCFullYear()) + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()); },
+      valueOf() { return d.getTime(); },
+    };
+    return api;
+  }
+  rt.now = () => makeCarbon(new Date());
+
   return rt;
 }
 export default buildRt;
