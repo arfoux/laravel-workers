@@ -1,0 +1,206 @@
+// kernel/php-json.mjs — PHP json_encode() subset (default flags).
+//
+// Byte-compatible with PHP 8.3 `json_encode($value)` (serialize_precision=-1)
+// — the exact call Illuminate\Session\Store::save() performs when
+// session.serialization === "json" (the Laravel 11+/13 scaffold default) and
+// the call CookieSessionHandler::write() performs for the
+// {"data": ..., "expires": ...} cookie envelope.
+// Verified against PHP 8.3 in kernel/tests/php-json.test.mjs
+// (oracle: tools/php-json-oracle.php).
+//
+// Calibrated formatting rules:
+//   - "/" is escaped as "\/", non-ASCII as lowercase \uXXXX (surrogate pairs
+//     for astral code points); 0x08/09/0a/0c/0d use \b \t \n \f \r; other
+//     control chars become \u00xx; DEL (0x7f) stays raw.
+//   - Floats: plain decimal when the decimal exponent is in [-4..16];
+//     integral doubles print WITHOUT a fraction ("1", "12", but note the
+//     PRESERVE_ZERO_FRACTION flag is not set by Laravel); scientific uses
+//     lowercase "e" with an explicit sign ("1.0e+17", "1.0e-5", "5.0e-324").
+//   - Arrays with keys exactly 0..n-1 in order encode as JSON lists; canonical
+//     decimal string keys are cast to ints (PHP semantics; "-0", "+0", "00"
+//     stay strings — verified against PHP); an empty object encodes as []
+//     (PHP's empty array).
+//   - NAN/INF and lone UTF-16 surrogates fail loud (PHP json_encode() returns
+//     false with "Inf and NaN cannot be JSON encoded" / "Malformed UTF-8
+//     characters").
+//
+// Known normalization (same caveats as kernel/php-serialize.mjs): JS numbers
+// cannot distinguish int from float — invisible here because default
+// json_encode() prints integral doubles exactly like ints ("1.0" → "1") — and
+// lose precision beyond 2^53 (PHP int64 range).
+
+import { phpFloat } from './php-serialize.mjs';
+
+export class PhpJsonError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PhpJsonError';
+  }
+}
+
+// PHP casts a string key to int only for canonical decimal ints (no "-0",
+// "+0" or leading zeros) that fit in a platform int.
+const INT_KEY_RE = /^(?:0|-?[1-9][0-9]*)$/;
+
+function isPlainObject(v) {
+  if (typeof v !== 'object' || v === null) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+const HEX4 = (c) => c.toString(16).padStart(4, '0');
+
+function writeString(s, out) {
+  out.push('"');
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const n = i + 1 < s.length ? s.charCodeAt(i + 1) : -1;
+      if (n < 0xdc00 || n > 0xdfff) {
+        throw new PhpJsonError('malformed UTF-16 (lone high surrogate)');
+      }
+      out.push('\\u', HEX4(c), '\\u', HEX4(n));
+      i++;
+      continue;
+    }
+    if (c >= 0xdc00 && c <= 0xdfff) {
+      throw new PhpJsonError('malformed UTF-16 (lone low surrogate)');
+    }
+    switch (c) {
+      case 0x22:
+        out.push('\\"');
+        break;
+      case 0x5c:
+        out.push('\\\\');
+        break;
+      case 0x2f:
+        out.push('\\/');
+        break;
+      case 0x08:
+        out.push('\\b');
+        break;
+      case 0x09:
+        out.push('\\t');
+        break;
+      case 0x0a:
+        out.push('\\n');
+        break;
+      case 0x0c:
+        out.push('\\f');
+        break;
+      case 0x0d:
+        out.push('\\r');
+        break;
+      default:
+        if (c < 0x20) out.push('\\u', HEX4(c));
+        else if (c <= 0x7f) out.push(String.fromCharCode(c));
+        else out.push('\\u', HEX4(c));
+    }
+  }
+  out.push('"');
+}
+
+function writeValue(value, out) {
+  if (value === null) {
+    out.push('null');
+    return;
+  }
+  if (value === undefined) {
+    throw new PhpJsonError('undefined is not a PHP value');
+  }
+  const t = typeof value;
+  if (t === 'boolean') {
+    out.push(value ? 'true' : 'false');
+    return;
+  }
+  if (t === 'number') {
+    if (Number.isNaN(value) || value === Infinity || value === -Infinity) {
+      throw new PhpJsonError('Inf and NaN cannot be JSON encoded');
+    }
+    if (Object.is(value, -0)) {
+      out.push('-0');
+      return;
+    }
+    if (Number.isSafeInteger(value)) {
+      out.push(String(value));
+      return;
+    }
+    out.push(phpFloat(value, 'e'));
+    return;
+  }
+  if (t === 'string') {
+    writeString(value, out);
+    return;
+  }
+  if (t === 'bigint') {
+    throw new PhpJsonError('bigint is not supported (int64 beyond the JS safe range)');
+  }
+  if (Array.isArray(value)) {
+    out.push('[');
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) out.push(',');
+      writeValue(value[i], out);
+    }
+    out.push(']');
+    return;
+  }
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value);
+    const norm = [];
+    let isList = true;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (INT_KEY_RE.test(key)) {
+        const n = Number(key);
+        if (Number.isSafeInteger(n)) {
+          norm.push(n);
+          if (n !== i) isList = false;
+          continue;
+        }
+      }
+      norm.push(key);
+      isList = false;
+    }
+    if (isList) {
+      // Empty object encodes as [] (PHP empty array); keys exactly 0..n-1
+      // in order encode as a JSON list.
+      out.push('[');
+      for (let i = 0; i < norm.length; i++) {
+        if (i > 0) out.push(',');
+        writeValue(value[keys[i]], out);
+      }
+      out.push(']');
+      return;
+    }
+    out.push('{');
+    for (let i = 0; i < norm.length; i++) {
+      if (i > 0) out.push(',');
+      writeString(typeof norm[i] === 'number' ? String(norm[i]) : norm[i], out);
+      out.push(':');
+      writeValue(value[keys[i]], out);
+    }
+    out.push('}');
+    return;
+  }
+  const name = value?.constructor?.name || t;
+  throw new PhpJsonError(`unsupported value (${name}) — PHP objects are outside the subset`);
+}
+
+export function phpJsonEncode(value) {
+  const out = [];
+  writeValue(value, out);
+  return out.join('');
+}
+
+/**
+ * PHP json_decode($text, true) equivalent for the session subset.
+ *
+ * JSON.parse already produces the matching structures: PHP's empty-object →
+ * empty-array normalization is invisible to byte output because our encoder
+ * writes empty objects back as [] too. Known divergence: PHP's decoder maps
+ * the JSON token -0 back to int 0 (PHP is not round-trip stable there; see
+ * kernel/tests/php-json.test.mjs), and numbers beyond 2^53 lose precision.
+ */
+export function phpJsonDecode(text) {
+  return JSON.parse(text);
+}
