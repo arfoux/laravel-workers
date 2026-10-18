@@ -48,6 +48,16 @@ Fails loud (build error or `LW002`), use a port instead:
 ## Quick start
 
 ```bash
+# 1) As an npm package in a real Laravel app (recommended):
+cd my-laravel-app             # artisan + vendor + public/build there
+npm i laravel-workers
+# create one of: registry.json | laravel-workers.json | edge/registry.json
+# e.g. { "autoSnapshot": true, "static": {}, "ports": {}, "ignore": {}, "views": {} }
+composer install; npm run build
+npx laravel-workers build --strict   # dist/ with --strict (cwd-based, no edge/ required)
+# local preview/deploy: npx wrangler deploy
+
+# 2) From checkout (tests / legacy edge layout):
 git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
@@ -56,9 +66,9 @@ npm test                      # 162/162 - router + db/model + sqlite + hash + en
 npm run test:corpus           # 51/51 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
-# when your Laravel vendor/ is in the parent checkout:
+# verify/build against the parent Laravel checkout (legacy edge/ also works):
 npx laravel-workers verify    # VERIFY-S0 15/15 (else SKIP)
-npx laravel-workers build     # inside an edge checkout (requires Laravel vendor)
+npx laravel-workers build     # --strict build; reads registry.json / edge/registry.json from app cwd
 ```
 
 ## CLI

@@ -113,6 +113,8 @@ Examples: eventual consistency (KV) · async-by-queue instead of synchronous · 
 
 The **single transpiler** (PHP-subset→JS) serves the compiled Blade views today; the same contract is the planned path for controllers/middleware/app classes and generated model metadata. Until then, non-view routes ship as hand-written `ports/*.mjs`.
 
+**Build invocation:** `build.mjs` is **cwd-based** when installed as `laravel-workers` npm package — `registry.json` (or `laravel-workers.json`) in the Laravel app root (npm mode: `appDir !== pkgDir`, `dist/` in app); legacy `edge/registry.json` fallback when developing from checkout.
+
 ---
 
 ## 5. Feature map (the padanan table)
