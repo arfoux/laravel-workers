@@ -269,9 +269,35 @@ export function buildRt(context, opts = {}) {
     return utf8d.decode(bytes.slice(st, end));
   };
   rt.str_repeat = (s, n) => String(s == null ? '' : s).repeat(Math.max(0, Number(n) | 0));
-  rt.str_contains = (h, n) => (String(n) === '' ? true : String(h == null ? '' : h).includes(String(n)));
-  rt.str_starts_with = (h, n) => (String(n) === '' ? true : String(h == null ? '' : h).startsWith(String(n)));
-  rt.str_ends_with = (h, n) => (String(n) === '' ? true : String(h == null ? '' : h).endsWith(String(n)));
+  rt.str_contains = (h, n, ci) => {
+    const hay = String(h == null ? '' : h);
+    const needle = String(n);
+    if (needle === '') return true;
+    if (ci) return hay.toLowerCase().includes(needle.toLowerCase());
+    return hay.includes(needle);
+  };
+  rt.str_starts_with = (h, n, ci) => {
+    const hay = String(h == null ? '' : h);
+    const needle = String(n);
+    if (needle === '') return true;
+    if (ci) return hay.toLowerCase().startsWith(needle.toLowerCase());
+    return hay.startsWith(needle);
+  };
+  rt.str_ends_with = (h, n, ci) => {
+    const hay = String(h == null ? '' : h);
+    const needle = String(n);
+    if (needle === '') return true;
+    if (ci) return hay.toLowerCase().endsWith(needle.toLowerCase());
+    return hay.endsWith(needle);
+  };
+  rt.str_is = (pattern, value) => {
+    const p = String(pattern == null ? '' : pattern);
+    const v = String(value == null ? '' : value);
+    // Laravel Str::is: * wildcard, case-sensitive, full-string match
+    // Escape regex specials except *, then * -> .*
+    const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+    return new RegExp('^' + escaped + '$').test(v);
+  };
   rt.ucfirst = (s) => {
     const x = String(s == null ? '' : s);
     return x === '' ? '' : x[0].toUpperCase() + x.slice(1);

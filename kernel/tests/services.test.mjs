@@ -143,3 +143,74 @@ test('scheduler exec runs handlers', async () => {
   await r.exec();
   assert.equal(ran, 1);
 });
+
+// scheduler — timezone
+test('scheduler tz matches in zone not utc', async () => {
+  const d = new Date('2026-10-18T00:00:00Z'); // 07:00 Asia/Jakarta
+  assert.equal(defineSchedule(()=>{})._match(d, '0 7 * * *', 'Asia/Jakarta'), true);
+  assert.equal(defineSchedule(()=>{})._match(d, '0 0 * * *', 'Asia/Jakarta'), false);
+  assert.equal(defineSchedule(()=>{})._match(d, '0 0 * * *'), true);
+});
+test('scheduler tz invalid throws', async () => {
+  assert.throws(() => defineSchedule(()=>{})._match(new Date(), '* * * * *', 'Nope/Zone'), Error);
+});
+
+// queue — delay
+test('queue delay not popped before availableAt', async () => {
+  const q = createQueue({});
+  await q.push('q', { v: 1 }, { delayMs: 20 });
+  assert.equal(await q.pop('q'), null);
+  await new Promise(r => setTimeout(r, 25));
+  const j = await q.pop('q');
+  assert.equal(j.payload.v, 1);
+});
+// queue — retry/backoff then failed
+test('queue retry backoff then failed', async () => {
+  const q = createQueue({});
+  await q.push('q', { v: 1 }, { tries: 2, backoffMs: 0 });
+  const j1 = await q.pop('q');
+  await q.fail('q', j1);
+  const j2 = await q.pop('q');
+  assert.equal(j2.attempts, 1);
+  await q.fail(j2);
+  assert.equal(await q.pop('q'), null);
+  const failed = await q.failed('q');
+  assert.equal(failed.length, 1);
+});
+
+// cache — tags
+test('cache tags put/flush isolation', async () => {
+  const c = createCache({});
+  const t = c.tags(['tag1']);
+  await t.put('k1', 'v1');
+  await c.put('k2', 'v2');
+  assert.equal(await t.get('k1'), 'v1');
+  await t.flush();
+  assert.equal(await t.get('k1'), null);
+  assert.equal(await c.get('k2'), 'v2');
+});
+test('cache tags empty throws', async () => {
+  const c = createCache({});
+  assert.throws(() => c.tags([]), Error);
+});
+
+// storage — temporary url
+test('storage temporaryUrl sign verify', async () => {
+  const s = createStorage({ secret: 'sec' });
+  const url = await s.temporaryUrl('a/b.txt', 10000);
+  assert.equal(await s.verifyTemporaryUrl(url), true);
+  const tampered = url.replace(/sig=[a-f0-9]+/, 'sig=deadbeef');
+  assert.equal(await s.verifyTemporaryUrl(tampered, 'sec'), false);
+});
+test('storage temporaryUrl expired', async () => {
+  const s = createStorage({});
+  const url = await s.temporaryUrl('k', 0, { secret: 'sec' });
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(await s.verifyTemporaryUrl(url, 'sec'), false);
+});
+test('storage temporaryUrl missing secret throws', async () => {
+  const s = createStorage({});
+  await assert.rejects(() => s.temporaryUrl('k', 1000), Error);
+});
+
+

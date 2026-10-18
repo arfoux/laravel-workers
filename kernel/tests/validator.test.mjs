@@ -327,3 +327,92 @@ test('decimal / timezone / in_array rules', async () => {
   assert.equal(await new Validator({ list: ['a', 'b'], a: 'a' }, { a: 'in_array:list' }).passes(), true);
   assert.equal(await new Validator({ list: ['a', 'b'], a: 'c' }, { a: 'in_array:list' }).fails(), true);
 });
+
+test('required_if single value fails and passes', async () => {
+  let v = new Validator({ status: 'active' }, { reason: 'required_if:status,active' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ status: 'active', reason: 'ok' }, { reason: 'required_if:status,active' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ status: 'inactive' }, { reason: 'required_if:status,active' });
+  assert.equal(await v.passes(), true);
+});
+
+test('required_if multi-value list matches any', async () => {
+  let v = new Validator({ role: 'admin' }, { code: 'required_if:role,admin,editor' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ role: 'editor' }, { code: 'required_if:role,admin,editor' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ role: 'viewer' }, { code: 'required_if:role,admin,editor' });
+  assert.equal(await v.passes(), true);
+});
+
+test('required_unless fails when condition not met', async () => {
+  let v = new Validator({ env: 'production' }, { debug: 'required_unless:env,local' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ env: 'local' }, { debug: 'required_unless:env,local' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({}, { debug: 'required_unless:env,local' });
+  assert.equal(await v.fails(), true);
+});
+
+test('required_with triggers when any listed field present', async () => {
+  let v = new Validator({ a: 'x' }, { b: 'required_with:a,c' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ c: 'y' }, { b: 'required_with:a,c' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({}, { b: 'required_with:a,c' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ a: '' }, { b: 'required_with:a,c' });
+  assert.equal(await v.passes(), true);
+});
+
+test('required_without triggers when any listed field missing', async () => {
+  let v = new Validator({ a: 'x' }, { b: 'required_without:a,c' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ a: 'x', c: 'y' }, { b: 'required_without:a,c' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ a: 'x', c: 'y', b: 'ok' }, { b: 'required_without:a,c' });
+  assert.equal(await v.passes(), true);
+});
+
+test('required_with_all requires all listed present', async () => {
+  let v = new Validator({ a: 'x', b: 'y' }, { c: 'required_with_all:a,b' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ a: 'x' }, { c: 'required_with_all:a,b' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ a: 'x', b: 'y', c: 'ok' }, { c: 'required_with_all:a,b' });
+  assert.equal(await v.passes(), true);
+});
+
+test('required_without_all requires all listed missing', async () => {
+  let v = new Validator({}, { c: 'required_without_all:a,b' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ a: 'x' }, { c: 'required_without_all:a,b' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ c: 'ok' }, { c: 'required_without_all:a,b' });
+  assert.equal(await v.passes(), true);
+});
+
+test('sometimes+nullable skips conditional required when absent/null', async () => {
+  let v = new Validator({}, { note: 'sometimes|required_if:status,active' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ note: null }, { note: 'nullable|required_if:status,active|string' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ status: 'active', note: null }, { note: 'nullable|required_if:status,active|string' });
+  assert.equal(await v.fails(), true);
+});
+
+test('required_with respects empty string as missing', async () => {
+  let v = new Validator({ a: '' }, { b: 'required_with:a' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ a: 'x', b: '' }, { b: 'required_with:a' });
+  assert.equal(await v.fails(), true);
+});
+
+test('required conditional error shape has field/rule/message', async () => {
+  const v = new Validator({ role: 'admin' }, { name: 'required_if:role,admin' });
+  await v.fails();
+  const errs = v.errors();
+  assert.ok(errs.name && errs.name.length === 1);
+  assert.match(errs.name[0], /name/i);
+});

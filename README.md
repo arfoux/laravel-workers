@@ -52,7 +52,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 128/128 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + budget
+npm test                      # 162/162 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + budget
 npm run test:corpus           # 51/51 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -64,7 +64,7 @@ npx laravel-workers build     # inside an edge checkout (requires Laravel vendor
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (128)
+laravel-workers test            # all kernel tests (162)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only

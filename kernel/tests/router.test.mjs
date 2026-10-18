@@ -141,4 +141,105 @@ const r3 = await dispatch({ method: 'POST', path: '/things/1', headers: { 'x-htt
 assert.ok(r3);
 assert.equal(r3.body, 'PUT');
 
+// ---- route-model binding ----
+class FakeBindModel {
+  static query(db) {
+    const chain = {
+      _col: null,
+      _val: null,
+      where(col, val) { this._col = col; this._val = val; return this; },
+      async first() {
+        if (this._val === 'missing') return null;
+        return { __col: this._col, __val: this._val };
+      },
+    };
+    return chain;
+  }
+}
+
+const btable = normalizeTable([
+  { uri: '/posts/{post}', name: 'posts.show', methods: ['GET'], domain: null, bindings: { post: 'Post' } },
+]);
+assert.equal(btable[0].bindings.post, 'Post');
+
+const bhandlers = {};
+let seenModel = null;
+let seenParams = null;
+bhandlers['GET /posts/{post}'] = (ctx) => {
+  seenModel = ctx.models && ctx.models.post;
+  seenParams = ctx.params;
+  assert.equal(ctx.params.post, '42');
+  return text('ok');
+};
+const bres = await dispatch({ method: 'GET', path: '/posts/42' }, btable, bhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' });
+assert.equal(bres.status, 200);
+assert.ok(seenModel, 'handler should see resolved model');
+assert.equal(seenModel.__col, 'id');
+assert.equal(seenModel.__val, '42');
+assert.equal(seenParams.post, '42');
+
+// explicit column binding
+const ctable = normalizeTable([
+  { uri: '/posts/{post}', name: 'posts.show', methods: ['GET'], domain: null, bindings: { post: { model: 'Post', column: 'slug' } } },
+]);
+const chandlers = {};
+let cseen = null;
+chandlers['GET /posts/{post}'] = (ctx) => { cseen = ctx.models.post; return text('ok'); };
+const cres = await dispatch({ method: 'GET', path: '/posts/hello-slug' }, ctable, chandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' });
+assert.equal(cres.status, 200);
+assert.equal(cseen.__col, 'slug');
+assert.equal(cseen.__val, 'hello-slug');
+
+// missing record -> 404
+const mtable2 = normalizeTable([
+  { uri: '/posts/{post}', name: 'posts.show', methods: ['GET'], domain: null, bindings: { post: 'Post' } },
+]);
+const mhandlers = {};
+mhandlers['GET /posts/{post}'] = () => text('should not run');
+await assert.rejects(
+  () => dispatch({ method: 'GET', path: '/posts/missing' }, mtable2, mhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' }),
+  (e) => e && e.status === 404,
+);
+
+// unknown model name -> 500
+const utable = normalizeTable([
+  { uri: '/posts/{post}', name: 'posts.show', methods: ['GET'], domain: null, bindings: { post: 'Nope' } },
+]);
+const uhandlers = {};
+uhandlers['GET /posts/{post}'] = () => text('should not run');
+await assert.rejects(
+  () => dispatch({ method: 'GET', path: '/posts/42' }, utable, uhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' }),
+  (e) => e && e.status === 500,
+);
+
+// no options.models -> params unchanged, no throw, backward compatible
+const ntable = normalizeTable([
+  { uri: '/posts/{post}', name: 'posts.show', methods: ['GET'], domain: null, bindings: { post: 'Post' } },
+]);
+const nhandlers = {};
+let nseenModels = 'UNSET';
+let nseenParams = null;
+nhandlers['GET /posts/{post}'] = (ctx) => {
+  nseenModels = ctx.models;
+  nseenParams = ctx.params;
+  return text('ok ' + ctx.params.post);
+};
+const nres = await dispatch({ method: 'GET', path: '/posts/42' }, ntable, nhandlers);
+assert.ok(nres, 'dispatch should not return null');
+assert.equal(nres.status, 200);
+assert.equal(nres.body, 'ok 42');
+assert.equal(nseenParams.post, '42');
+assert.equal(nseenModels, undefined);
+
+// route without bindings unaffected (even with models provided)
+const rtable = normalizeTable([
+  { uri: '/health', name: 'health', methods: ['GET'], domain: null },
+]);
+const rhandlers = {};
+rhandlers['GET /health'] = (ctx) => text('healthy ' + (ctx.params.id || ''));
+const rres = await dispatch({ method: 'GET', path: '/health' }, rtable, rhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' });
+assert.ok(rres);
+assert.equal(rres.status, 200);
+assert.equal(rres.body, 'healthy ');
+
 console.log('ROUTER TESTS: PASS');

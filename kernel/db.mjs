@@ -55,6 +55,8 @@ export class QueryBuilder {
     this.limitValue = null;
     this.offsetValue = null;
     this.model = null;
+    this._hasSelect = false;
+    this._unions = [];
   }
 
   select(...columns) {
@@ -67,6 +69,11 @@ export class QueryBuilder {
     if (!this._hasSelect && this.columns.length === 1 && this.columns[0] === '*') this.columns = [];
     this.columns.push({ raw: String(sql), params: [...params] });
     this._hasSelect = true;
+    return this;
+  }
+
+  from(table) {
+    this.table = String(table);
     return this;
   }
 
@@ -202,6 +209,38 @@ export class QueryBuilder {
     return this;
   }
 
+  whereExists(term, boolean = 'and') {
+    if (typeof term !== 'function') throw new Error('whereExists expects a function');
+    const sub = new QueryBuilder(this.db, this.table);
+    term(sub);
+    this.wheres.push({ type: 'exists', boolean, query: sub, not: false });
+    return this;
+  }
+  whereNotExists(term, boolean = 'and') {
+    if (typeof term !== 'function') throw new Error('whereNotExists expects a function');
+    const sub = new QueryBuilder(this.db, this.table);
+    term(sub);
+    this.wheres.push({ type: 'exists', boolean, query: sub, not: true });
+    return this;
+  }
+  orWhereExists(term) {
+    return this.whereExists(term, 'or');
+  }
+  orWhereNotExists(term) {
+    return this.whereNotExists(term, 'or');
+  }
+
+  union(other) {
+    if (!(other instanceof QueryBuilder)) throw new Error('union expects a QueryBuilder');
+    this._unions.push({ query: other, all: false });
+    return this;
+  }
+  unionAll(other) {
+    if (!(other instanceof QueryBuilder)) throw new Error('unionAll expects a QueryBuilder');
+    this._unions.push({ query: other, all: true });
+    return this;
+  }
+
   whereGroup(cb, boolean = 'and') {
     const sub = new QueryBuilder(this.db, this.table);
     cb(sub);
@@ -290,6 +329,8 @@ export class QueryBuilder {
     c.limitValue = this.limitValue;
     c.offsetValue = this.offsetValue;
     c.model = this.model;
+    c._hasSelect = this._hasSelect;
+    c._unions = (this._unions || []).map((u) => ({ query: u.query.clone(), all: u.all }));
     return c;
   }
 
@@ -349,6 +390,15 @@ export class QueryBuilder {
     sql += this._groupSql();
     sql += renderClauses(this.havings, params, 'HAVING');
     sql += this._tailSql(params);
+    if (this._unions && this._unions.length) {
+      const parts = ['(' + sql + ')'];
+      for (const u of this._unions) {
+        const sub = u.query.toSql();
+        params.push(...sub.params);
+        parts.push((u.all ? ' UNION ALL ' : ' UNION ') + '(' + sub.sql + ')');
+      }
+      sql = parts.join('');
+    }
     return { sql, params };
   }
 
@@ -545,6 +595,7 @@ function cloneWheres(wheres) {
     if (w.values) copy.values = [...w.values];
     if (w.params) copy.params = [...w.params];
     if (w.wheres) copy.wheres = cloneWheres(w.wheres);
+    if (w.type === 'exists' && w.query && typeof w.query.clone === 'function') copy.query = w.query.clone();
     return copy;
   });
 }
@@ -588,6 +639,10 @@ function renderClauses(clauses, params, keyword = 'WHERE') {
     } else if (w.type === 'group') {
       const inner = renderClauses(w.wheres, params);
       chunk = '(' + inner.replace(/^ (WHERE|HAVING) /, '').replace(/^ (AND|OR) /, '') + ')';
+    } else if (w.type === 'exists') {
+      const sub = w.query.toSql();
+      for (const p2 of sub.params) params.push(p2);
+      chunk = (w.not ? 'NOT EXISTS (' : 'EXISTS (') + sub.sql + ')';
     } else {
       throw new Error('unknown where type: ' + w.type);
     }

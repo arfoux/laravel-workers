@@ -24,6 +24,7 @@ export function normalizeTable(routes) {
     const name = r.name == null ? null : String(r.name);
     const domain = r.domain == null ? null : String(r.domain);
     const entry = { uri, name, methods, domain };
+    if (r.bindings != null) entry.bindings = r.bindings;
 
     // later registration wins for same uri+methods
     let replaced = false;
@@ -144,7 +145,7 @@ export function match(table, req) {
   return null;
 }
 
-export async function dispatch(req, table, handlers, env) {
+export async function dispatch(req, table, handlers, env, options = {}) {
   const m = match(table, req);
   if (!m) return null;
 
@@ -160,6 +161,28 @@ export async function dispatch(req, table, handlers, env) {
     params: m.params,
     request: { method: resolveMethod(req), path: (req && req.path) || '/', headers: (req && req.headers) || {} },
   };
+  const bindings = m.route && m.route.bindings;
+  if (bindings && options && options.models) {
+    ctx.models = {};
+    for (const name of Object.keys(bindings)) {
+      const b = bindings[name];
+      const modelName = b == null ? b : (b.model ?? b);
+      const Model = options.models[modelName];
+      if (!Model) {
+        const err = new Error('unknown model: ' + String(modelName));
+        err.status = 500;
+        throw err;
+      }
+      const column = (b == null) ? 'id' : (b.column || 'id');
+      const instance = await Model.query(options.db).where(column, ctx.params[name]).first();
+      if (!instance) {
+        const err = new Error('not found: ' + String(name));
+        err.status = 404;
+        throw err;
+      }
+      ctx.models[name] = instance;
+    }
+  }
   const res = await handler(ctx, env);
   if (!res || typeof res.status !== 'number' || typeof res.body !== 'string') {
     throw new Error('handler returned invalid response shape');

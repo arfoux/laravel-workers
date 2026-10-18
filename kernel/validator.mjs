@@ -64,6 +64,8 @@ const DEFAULT_MESSAGES = (field, rule, param) => {
     required_unless: `The ${field} field is required unless ${param}.`,
     required_with: `The ${field} field is required when ${param} is present.`,
     required_without: `The ${field} field is required when ${param} is not present.`,
+    required_with_all: `The ${field} field is required when ${param} is present.`,
+    required_without_all: `The ${field} field is required when ${param} is not present.`,
     prohibited: `The ${field} field is prohibited.`,
     prohibited_if: `The ${field} field is prohibited when ${param}.`,
     prohibited_unless: `The ${field} field is prohibited unless ${param}.`,

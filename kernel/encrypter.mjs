@@ -1,4 +1,4 @@
-// kernel/encrypter.mjs â€” Encrypter (AES-256-CBC, Laravel-compatible)
+// kernel/encrypter.mjs — Encrypter (AES-256-CBC, Laravel-compatible)
 // Uses only web-standard globals: crypto.subtle, atob/btoa, TextEncoder/TextDecoder.
 
 function b64EncodeBytes(bytes) {
@@ -29,10 +29,24 @@ function hexToBytes(hex) {
   return out;
 }
 
-function constantTimeEqual(a, b) {
-  if (a.length !== b.length) return false;
+export function timingSafeEqual(a, b) {
+  const toBytes = (v) => {
+    if (v instanceof Uint8Array) return v;
+    if (typeof v === 'string') return new TextEncoder().encode(v);
+    if (typeof Buffer !== 'undefined' && v && Buffer.isBuffer(v)) return new Uint8Array(v);
+    return new TextEncoder().encode(String(v));
+  };
+  const aBytes = toBytes(a);
+  const bBytes = toBytes(b);
+  if (aBytes.length !== bBytes.length) return false;
+  try {
+    const f = globalThis.crypto && globalThis.crypto.timingSafeEqual;
+    if (typeof f === 'function' && typeof Buffer !== 'undefined') {
+      return f(Buffer.from(aBytes), Buffer.from(bBytes));
+    }
+  } catch {}
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
   return diff === 0;
 }
 
@@ -75,10 +89,10 @@ export async function decryptString(payloadBase64, keyBase64) {
   const json = atob(payloadBase64);
   const payload = JSON.parse(json);
 
-  // MAC check (constant-time)
+  // MAC check (constant-time) — replaces early-exit string ===
   const expectedMacBuf = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode(payload.iv + payload.value));
   const expectedMac = bytesToHex(new Uint8Array(expectedMacBuf));
-  if (!constantTimeEqual(expectedMac, payload.mac)) {
+  if (!timingSafeEqual(expectedMac, payload.mac)) {
     throw new Error('MAC invalid');
   }
 
@@ -89,4 +103,4 @@ export async function decryptString(payloadBase64, keyBase64) {
 }
 
 // Convenience sync-ish wrappers not possible (crypto.subtle is async). Export async only.
-export default { encryptString, decryptString };
+export default { encryptString, decryptString, timingSafeEqual };

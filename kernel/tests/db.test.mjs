@@ -611,3 +611,61 @@ test('Model query().scope() runs local scopes', async () => {
   assert.deepEqual(params, [1]);
   assert.throws(() => PostScope.query(db).scope('nope'), /unknown scope/);
 });
+
+test('whereExists with correlated column equality', () => {
+  const { sql, params } = table(mockDb(), 'users')
+    .whereExists((q) => q.from('posts').selectRaw('1').whereColumn('posts.user_id', 'users.id'))
+    .toSql();
+  assert.match(sql, /where exists/i);
+  assert.match(sql, /select 1 from "posts"/i);
+  assert.match(sql, /"posts"\."user_id" = "users"\."id"/);
+  assert.equal(params.length, 0);
+});
+
+test('whereNotExists with numeric bound merges params', () => {
+  const { sql, params } = table(mockDb(), 'users')
+    .where('active', 1)
+    .whereNotExists((q) => q.from('posts').where('posts.user_id', 99))
+    .toSql();
+  assert.match(sql, /not exists/i);
+  assert.deepEqual(params, [1, 99]);
+});
+
+test('orWhereExists variant renders OR EXISTS', () => {
+  const { sql, params } = table(mockDb(), 'users')
+    .where('a', 1)
+    .orWhereExists((q) => q.from('posts').where('x', 2))
+    .toSql();
+  assert.match(sql, / or exists /i);
+  assert.deepEqual(params, [1, 2]);
+});
+
+test('whereExists throws on non-function argument', () => {
+  assert.throws(() => table(mockDb(), 't').whereExists('nope'), /expects a function/);
+  assert.throws(() => table(mockDb(), 't').whereNotExists(null), /expects a function/);
+});
+
+test('union of two simple selects concatenates sql and params', () => {
+  const q1 = table(mockDb(), 'users').select('id').where('active', 1);
+  const q2 = table(mockDb(), 'admins').select('id').where('role', 'admin');
+  const { sql, params } = q1.union(q2).toSql();
+  assert.match(sql, /union/i);
+  assert.match(sql, /\(SELECT "id" FROM "users"/);
+  assert.match(sql, /\(SELECT "id" FROM "admins"/);
+  assert.deepEqual(params, [1, 'admin']);
+});
+
+test('unionAll variant uses UNION ALL and supports chaining', () => {
+  const q1 = table(mockDb(), 'a').select('id').where('x', 1);
+  const q2 = table(mockDb(), 'b').select('id').where('y', 2);
+  const q3 = table(mockDb(), 'c').select('id').where('z', 3);
+  const { sql, params } = q1.unionAll(q2).union(q3).toSql();
+  assert.match(sql, /union all/i);
+  assert.match(sql, /union/i);
+  assert.deepEqual(params, [1, 2, 3]);
+});
+
+test('union throws on non-QueryBuilder', () => {
+  assert.throws(() => table(mockDb(), 't').union('nope'), /expects a QueryBuilder/);
+  assert.throws(() => table(mockDb(), 't').unionAll(123), /expects a QueryBuilder/);
+});

@@ -1,6 +1,7 @@
-// kernel/scheduler.mjs — Scheduler (UTC cron)
+// kernel/scheduler.mjs — Scheduler (UTC cron, optional per-job/per-schedule timezone)
 const MONTHS = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
 const DAYS = { sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6, sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6 };
+const WD = { Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6 };
 
 function parsePart(part, min, max) {
   if (part === '*') return null; // any
@@ -26,12 +27,35 @@ function mapToken(tok, min, max) {
   if (DAYS[low] !== undefined) return DAYS[low];
   const n = Number(low);
   if (!Number.isNaN(n)) {
-    if (n === 7 && min === 0) return 0; // Sunday 7 -> 0
+    if (n === 7 && min === 0 && max === 7) return 0; // Sunday 7 -> 0 (dow only)
     return n;
   }
   return min;
 }
-function match(date, expr) {
+
+function wallParts(date, timeZone) {
+  if (!timeZone) {
+    return { minute: date.getUTCMinutes(), hour: date.getUTCHours(), day: date.getUTCDate(), month: date.getUTCMonth() + 1, weekday: date.getUTCDay() };
+  }
+  let fmt;
+  try {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone, hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+  } catch (e) {
+    throw new Error('Invalid timezone: ' + timeZone);
+  }
+  const parts = fmt.formatToParts(date);
+  const get = (type) => parts.find(p => p.type === type)?.value;
+  const weekday = WD[get('weekday')];
+  return {
+    minute: Number(get('minute')),
+    hour: Number(get('hour')),
+    day: Number(get('day')),
+    month: Number(get('month')),
+    weekday: weekday === undefined ? 0 : weekday,
+  };
+}
+
+function match(date, expr, timeZone) {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return false;
   const [mS, hS, domS, monS, dowS] = parts;
@@ -42,8 +66,8 @@ function match(date, expr) {
     parsePart(monS, 1, 12),
     parsePart(dowS, 0, 7),
   ];
-  const vals = [date.getUTCMinutes(), date.getUTCHours(), date.getUTCDate(), date.getUTCMonth() + 1, date.getUTCDay()];
-  // dow: 7 is Sunday alias
+  const wp = wallParts(date, timeZone);
+  const vals = [wp.minute, wp.hour, wp.day, wp.month, wp.weekday];
   for (let i = 0; i < 5; i++) {
     const set = sets[i];
     if (set === null) continue;
@@ -58,19 +82,32 @@ function match(date, expr) {
   return true;
 }
 
-export function defineSchedule(fn) {
+export function defineSchedule(fn, opts = {}) {
+  const defaultTz = opts && opts.timezone;
+  if (defaultTz) {
+    // validate up front
+    wallParts(new Date(), defaultTz);
+  }
   const jobs = [];
   const api = {
-    call(name, cron, handler) { jobs.push({ name, cron, handler }); return api; },
+    call(name, cron, handler, callOpts = {}) {
+      const tz = (callOpts && callOpts.timezone) !== undefined ? callOpts.timezone : defaultTz;
+      jobs.push({ name, cron, handler, timezone: tz });
+      return api;
+    },
     run(date = new Date()) {
       const due = [];
-      for (const j of jobs) if (match(date, j.cron)) due.push(j);
-      return { due, async exec() { for (const j of due) await j.handler(); return due.map(d=>d.name); } };
+      for (const j of jobs) if (match(date, j.cron, j.timezone)) due.push(j);
+      return { due, async exec() { for (const j of due) await j.handler(); return due.map(d => d.name); } };
     },
-    // Exposed for tests
     _match: match,
   };
   if (typeof fn === 'function') fn(api);
   return api;
 }
 export default { defineSchedule };
+
+
+
+
+
