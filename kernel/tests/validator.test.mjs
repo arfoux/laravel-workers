@@ -215,3 +215,52 @@ test('unique without resolver fails loud', async () => {
     /needs opts\.db or opts\.unique/
   );
 });
+
+test('wildcard rules expand over nested arrays', async () => {
+  const v = new Validator(
+    { items: [{ name: 'a' }, { name: '' }, {}] },
+    { 'items.*.name': 'required|string' }
+  );
+  assert.equal(await v.fails(), true);
+  assert.deepEqual(Object.keys(v.errors()).sort(), ['items.1.name', 'items.2.name']);
+});
+
+test('wildcard validated() re-nests matched paths', async () => {
+  const v = new Validator(
+    { items: [{ name: 'a', qty: 2 }] },
+    { 'items.*.name': 'required|string', 'items.*.qty': 'required|integer' }
+  );
+  assert.equal(await v.passes(), true);
+  assert.deepEqual(v.validated(), { items: [{ name: 'a', qty: 2 }] });
+});
+
+test('wildcard over scalar arrays', async () => {
+  const ok = new Validator({ tags: ['a', 'b'] }, { 'tags.*': 'string' });
+  assert.equal(await ok.passes(), true);
+  const bad = new Validator({ tags: ['a', 2] }, { 'tags.*': 'string' });
+  assert.equal(await bad.fails(), true);
+  assert.deepEqual(Object.keys(bad.errors()), ['tags.1']);
+});
+
+test('dotted field names resolve nested data', async () => {
+  const v = new Validator(
+    { user: { name: 'ada' }, confirm: 'ada' },
+    { 'user.name': 'required|string', confirm: 'same:user.name' }
+  );
+  assert.equal(await v.passes(), true);
+  assert.deepEqual(v.validated(), { user: { name: 'ada' }, confirm: 'ada' });
+
+  const bad = new Validator({ user: { name: 'x' }, confirm: 'y' }, { confirm: 'same:user.name' });
+  assert.equal(await bad.fails(), true);
+});
+
+test('required_if reads nested other field', async () => {
+  const v = new Validator({ mode: { api: '1' }, url: '' }, { url: 'required_if:mode.api,1' });
+  assert.equal(await v.fails(), true);
+  assert.deepEqual(Object.keys(v.errors()), ['url']);
+});
+
+test('wildcard rules with no matching entries validate nothing', async () => {
+  const v = new Validator({ items: [] }, { 'items.*.name': 'required' });
+  assert.equal(await v.passes(), true);
+});

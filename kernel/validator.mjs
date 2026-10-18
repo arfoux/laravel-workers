@@ -185,6 +185,37 @@ function dateValue(v, data) {
   return new Date(v);
 }
 
+// Dot-path helpers: Laravel validation addresses nested data as `a.b.0.c`, and
+// wildcard rules (`items.*.name`) are expanded to those concrete paths.
+function getIn(data, path) {
+  let cur = data;
+  for (const seg of String(path).split('.')) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = cur[seg];
+  }
+  return cur;
+}
+
+function hasIn(data, path) {
+  let cur = data;
+  for (const seg of String(path).split('.')) {
+    if (cur == null || typeof cur !== 'object' || !Object.prototype.hasOwnProperty.call(cur, seg)) return false;
+    cur = cur[seg];
+  }
+  return true;
+}
+
+function setIn(root, path, value) {
+  const segs = String(path).split('.');
+  let cur = root;
+  for (let i = 0; i < segs.length - 1; i++) {
+    const seg = segs[i];
+    if (cur[seg] == null || typeof cur[seg] !== 'object') cur[seg] = /^\d+$/.test(segs[i + 1]) ? [] : {};
+    cur = cur[seg];
+  }
+  cur[segs[segs.length - 1]] = value;
+}
+
 export class Validator {
   constructor(data = {}, rules = {}, customMessages = {}, opts = {}) {
     this.data = data;
@@ -203,10 +234,49 @@ export class Validator {
           throw new Error('unknown validation rule: ' + r.name);
         }
       }
-      this.parsed[field] = parsed;
+      for (const [concrete, rules] of this._expandField(field, parsed)) {
+        this.parsed[concrete] = (this.parsed[concrete] || []).concat(rules);
+      }
     }
     this._errors = null;
     this._asyncDone = false;
+  }
+
+  // Expand a rule key containing `*` into concrete data paths (Laravel's
+  // wildcard data addressing). Non-wildcard keys pass through unchanged.
+  _expandField(field, parsed) {
+    if (!String(field).includes('*')) return [[field, parsed]];
+    const segs = String(field).split('.');
+    const out = [];
+    let seenStar = false;
+    const walk = (idx, path) => {
+      if (idx === segs.length) {
+        out.push([path.join('.'), parsed]);
+        return;
+      }
+      const seg = segs[idx];
+      const container = path.length ? getIn(this.data, path.join('.')) : this.data;
+      if (seg === '*') {
+        if (container == null || typeof container !== 'object') return;
+        seenStar = true;
+        for (const key of Object.keys(container)) walk(idx + 1, [...path, key]);
+        return;
+      }
+      if (container == null || typeof container !== 'object') return;
+      // Before a wildcard the path must exist; after it, missing leaves are
+      // still validated (Laravel reports `items.2.name` when an entry omits it).
+      if (!seenStar && !Object.prototype.hasOwnProperty.call(container, seg)) return;
+      walk(idx + 1, [...path, seg]);
+    };
+    walk(0, []);
+    return out;
+  }
+
+  // Flat-first lookup, then dot-path resolution for nested/wildcard fields.
+  get(field) {
+    if (Object.prototype.hasOwnProperty.call(this.data, field)) return this.data[field];
+    if (String(field).includes('.')) return getIn(this.data, field);
+    return undefined;
   }
 
   _resolve(name) {
@@ -215,27 +285,28 @@ export class Validator {
   }
 
   _isPresent(field) {
-    return Object.prototype.hasOwnProperty.call(this.data, field) && this.data[field] !== undefined;
+    if (Object.prototype.hasOwnProperty.call(this.data, field)) return this.data[field] !== undefined;
+    if (String(field).includes('.')) return hasIn(this.data, field) && getIn(this.data, field) !== undefined;
+    return false;
   }
   _empty(field) {
-    return !this._isPresent(field) || isEmptyValue(this.data[field]);
+    return !this._isPresent(field) || isEmptyValue(this.get(field));
   }
 
   _conditionalRequired(rules) {
     // returns { required: bool, failed: ruleName|null, failedParam } for presence rules
-    const data = this.data;
     for (const r of rules) {
       if (r.name === 'required') return { required: true, rule: 'required', param: null };
       if (r.name === 'required_if') {
         const [other, ...vals] = String(r.param).split(',');
         const has = this._isPresent(other);
-        if (has && vals.map(String).includes(String(data[other]))) {
+        if (has && vals.map(String).includes(String(this.get(other)))) {
           return { required: true, rule: r.name, param: r.param };
         }
       } else if (r.name === 'required_unless') {
         const [other, ...vals] = String(r.param).split(',');
         const has = this._isPresent(other);
-        if (!has || !vals.map(String).includes(String(data[other]))) {
+        if (!has || !vals.map(String).includes(String(this.get(other)))) {
           return { required: true, rule: r.name, param: r.param };
         }
       } else if (r.name === 'required_with') {
@@ -260,12 +331,12 @@ export class Validator {
       if (r.name === 'prohibited') return { prohibited: true };
       if (r.name === 'prohibited_if') {
         const [other, ...vals] = String(r.param).split(',');
-        if (this._isPresent(other) && vals.map(String).includes(String(this.data[other]))) {
+        if (this._isPresent(other) && vals.map(String).includes(String(this.get(other)))) {
           return { prohibited: true };
         }
       } else if (r.name === 'prohibited_unless') {
         const [other, ...vals] = String(r.param).split(',');
-        if (!this._isPresent(other) || !vals.map(String).includes(String(this.data[other]))) {
+        if (!this._isPresent(other) || !vals.map(String).includes(String(this.get(other)))) {
           return { prohibited: true };
         }
       }
@@ -284,7 +355,7 @@ export class Validator {
       const hasPresent = fieldRules.some((r) => r.name === 'present');
       const bail = fieldRules.some((r) => r.name === 'bail');
       const isAbsent = !this._isPresent(field);
-      const value = this.data[field];
+      const value = this.get(field);
 
       if (hasSometimes && isAbsent) continue;
 
@@ -371,7 +442,7 @@ export class Validator {
     for (const field of Object.keys(this.parsed)) {
       const fieldRules = this.parsed[field];
       const bail = fieldRules.some((r) => r.name === 'bail');
-      const value = this.data[field];
+      const value = this.get(field);
       if (!this._isPresent(field)) continue;
       if (value === null || value === '') continue;
       // only run async checks when the field already has no error (or is not bailing)
@@ -408,7 +479,7 @@ export class Validator {
       case 'accepted': return value === true || value === 1 || value === '1' || value === 'yes' || value === 'on' || value === 'true';
       case 'accepted_if': {
         const [other, ...vals] = String(p).split(',');
-        if (this._isPresent(other) && vals.map(String).includes(String(this.data[other]))) {
+        if (this._isPresent(other) && vals.map(String).includes(String(this.get(other)))) {
           return value === true || value === 1 || value === '1' || value === 'yes' || value === 'on' || value === 'true';
         }
         return true;
@@ -466,7 +537,7 @@ export class Validator {
       }
       case 'date_format': return matchDateFormat(value, p);
       case 'gt': case 'gte': case 'lt': case 'lte': {
-        const other = this.data[p];
+        const other = this.get(p);
         const num = hasNumeric && isNumericValue(value) && isNumericValue(other);
         const a = num ? Number(value) : (typeof value === 'string' ? value.length : Array.isArray(value) ? value.length : NaN);
         const b = num ? Number(other) : (typeof other === 'string' ? other.length : Array.isArray(other) ? other.length : NaN);
@@ -518,9 +589,9 @@ export class Validator {
         const list = String(p).split(',');
         return !list.includes(String(value));
       }
-      case 'same': return value === this.data[p];
-      case 'different': return value !== this.data[p];
-      case 'confirmed': return value === this.data[field + '_confirmation'];
+      case 'same': return value === this.get(p);
+      case 'different': return value !== this.get(p);
+      case 'confirmed': return value === this.get(field + '_confirmation');
       case 'regex': {
         if (typeof value !== 'string') return false;
         let pattern = p, flags = '';
@@ -580,7 +651,14 @@ export class Validator {
     const out = {};
     for (const field of Object.keys(this.parsed)) {
       if (this._errors[field] && this._errors[field].length > 0) continue;
-      if (field in this.data && this.data[field] !== undefined) out[field] = this.data[field];
+      const value = this.get(field);
+      if (value === undefined) continue;
+      // Dotted (nested/wildcard) fields are re-nested; flat keys stay flat.
+      if (String(field).includes('.') && !Object.prototype.hasOwnProperty.call(this.data, field)) {
+        setIn(out, field, value);
+      } else {
+        out[field] = value;
+      }
     }
     return out;
   }

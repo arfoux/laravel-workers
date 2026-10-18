@@ -24,7 +24,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 
 Compiles today (byte-parity corpus + kernel tests):
 - **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`/`strlen`/`substr`/`str_repeat`/`str_pad`/`ucfirst`/`lcfirst`, `str_contains`/`str_starts_with`/`str_ends_with`, `count`/`in_array`/`implode`/`explode`/`number_format`/`nl2br`, `array_keys`/`array_values`/`array_merge`/`array_key_exists`.
-- **Kernel**: router (domain rules + `{param}`/`{param?}`/`{param*}`, `X-HTTP-Method-Override`) + response, D1 query builder (where/or + `where(fn)` grouping, join/group/having/distinct, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime`, `sum`/`avg`/`min`/`max`, `upsert`/`insertGetId`/`truncate`/`increment`/`updateOrInsert`/`chunk`), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `firstOrCreate`/`updateOrCreate`, `refresh`/`increment`, casts incl. `json`/`decimal:N`, accessors/mutators `getFooAttribute`/`setFooAttribute`, `hidden`/`visible`/`appends`, `softDeletes` with `trashed`/`restore`/`forceDelete`/`withTrashed`/`onlyTrashed`, `findOrFail`/`firstOrFail`), bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
+- **Kernel**: router (domain rules + `{param}`/`{param?}`/`{param*}`, `X-HTTP-Method-Override`) + response, D1 query builder (where/or + `where(fn)` grouping, join/group/having/distinct, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime`, `sum`/`avg`/`min`/`max`, `upsert`/`insertGetId`/`truncate`/`increment`/`updateOrInsert`/`chunk`), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `firstOrCreate`/`updateOrCreate`, `refresh`/`increment`, casts incl. `json`/`decimal:N`, accessors/mutators `getFooAttribute`/`setFooAttribute`, `hidden`/`visible`/`appends`, `softDeletes` with `trashed`/`restore`/`forceDelete`/`withTrashed`/`onlyTrashed`, `findOrFail`/`firstOrFail`), bcrypt hash, AES encrypter, validator (60+ rules, nested dot paths + `items.*.name` wildcards), mail/queue/cache/storage/scheduler adapters.
 
 Fails loud (build error or `LW002`), use a port instead:
 - Blade layouts/components that compile to `$__env->…` (`@extends`/`@section`/`@yield`/`@include`).
@@ -52,7 +52,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 87/87 — router + db/model + hash + encrypter + validator + services + routes-json + budget
+npm test                      # 93/93 — router + db/model + hash + encrypter + validator + services + routes-json + budget
 npm run test:corpus           # 46/46 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -64,7 +64,7 @@ npx laravel-workers build     # inside an edge checkout (requires Laravel vendor
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (87)
+laravel-workers test            # all kernel tests (93)
 laravel-workers test:db          # db/model only
 laravel-workers test:hash       # hash + encrypter only
 laravel-workers test:validator  # validator only
