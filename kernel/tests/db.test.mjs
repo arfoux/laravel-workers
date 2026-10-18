@@ -81,7 +81,7 @@ test('QueryBuilder insert/update/delete return metadata', async () => {
   assert.equal(deleted.changes, 1);
 
   assert.match(calls[0].sql, /^INSERT INTO "users"/);
-  assert.deepEqual(calls[0].params, ['Ada', true]);
+  assert.deepEqual(calls[0].params, ['Ada', 1]); // boolean bound as 1 (D1/SQLite cannot bind JS booleans)
   assert.match(calls[1].sql, /^UPDATE "users" SET "name" = \? WHERE "id" = \?$/);
   assert.deepEqual(calls[1].params, ['Grace', 42]);
   assert.match(calls[2].sql, /^DELETE FROM "users" WHERE "id" = \?$/);

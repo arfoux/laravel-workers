@@ -61,6 +61,18 @@ Author.table = 'authors';
 class Book extends Model {}
 Book.table = 'books';
 Book.relations = { author: { type: 'belongsTo', model: Author } };
+class Invoice extends Model {}
+Invoice.table = 'invoices';
+Invoice.fillable = ['amount', 'meta', 'paid', 'secret'];
+Invoice.casts = { meta: 'json', amount: 'decimal:2', paid: 'boolean' };
+Invoice.hidden = ['secret'];
+Invoice.appends = ['label'];
+Invoice.prototype.getLabelAttribute = function () {
+  return 'inv-' + this.get('amount');
+};
+Invoice.prototype.setSecretAttribute = function (value) {
+  return String(value).toUpperCase();
+};
 
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
@@ -70,6 +82,7 @@ function fixture() {
     CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
     CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author_id INTEGER);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount TEXT, meta TEXT, paid INTEGER, secret TEXT, created_at TEXT, updated_at TEXT);
   `);
   sqlite.exec(`
     INSERT INTO posts (id, title, published, created_at) VALUES
@@ -80,6 +93,8 @@ function fixture() {
     INSERT INTO comments (id, post_id, body, votes) VALUES (10, 1, 'x', 5), (11, 1, 'y', 3), (12, 2, 'z', 1);
     INSERT INTO authors (id, name) VALUES (7, 'Ada'), (8, 'Bob');
     INSERT INTO books (id, title, author_id) VALUES (1, 'b1', 7), (2, 'b2', 8), (3, 'b3', NULL);
+    INSERT INTO invoices (id, amount, meta, paid, secret, created_at, updated_at)
+      VALUES (1, '10.5', '{"a":1}', 1, 'x', '2024-01-01 00:00:00', '2024-01-01 00:00:00');
   `);
   return d1(sqlite);
 }
@@ -285,6 +300,73 @@ test('sqlite: withSum/withAvg/withMin/withMax expose aggregate attributes', { sk
   assert.deepEqual(maxes.map((p) => p.get('comments_max_votes')), [5, 1, null]);
   assert.throws(() => Post.query(db).withSum('comments'), /needs a column/);
   assert.throws(() => Post.query(db).withSum('nope', 'votes'), /unknown relation/);
+});
+
+test('sqlite: Model casts (json/decimal/boolean) + accessor/appends/hidden on real rows', { skip }, async () => {
+  const db = fixture();
+  const inv = await Invoice.find(db, 1);
+  assert.equal(inv.get('amount'), '10.50');
+  assert.deepEqual(inv.get('meta'), { a: 1 });
+  assert.equal(inv.get('paid'), true);
+  assert.equal(inv.get('secret'), 'x');
+  const json = inv.toJSON();
+  assert.equal(json.secret, undefined);
+  assert.equal(json.label, 'inv-10.50');
+  assert.equal(json.paid, true);
+  assert.deepEqual(json.meta, { a: 1 });
+});
+
+test('sqlite: Model set/save round-trips mutators and casts through SQL', { skip }, async () => {
+  const db = fixture();
+  const inv = await Invoice.find(db, 1);
+  inv.set('secret', 'abc'); // mutator upper-cases
+  inv.set('meta', { b: 2 }); // json cast encoded on save
+  inv.set('paid', false); // boolean cast -> 0, not a JS boolean
+  await inv.save(db);
+  const raw = await table(db, 'invoices').where('id', 1).first();
+  assert.equal(raw.secret, 'ABC');
+  assert.equal(raw.meta, '{"b":2}');
+  assert.equal(Number(raw.paid), 0);
+  assert.ok(raw.updated_at);
+  assert.equal((await Invoice.find(db, 1)).get('paid'), false);
+});
+
+test('sqlite: builder binds booleans/Dates/undefined to D1-safe values', { skip }, async () => {
+  const db = fixture();
+  assert.deepEqual(
+    (await table(db, 'posts').where('published', true).orderBy('id').get()).map((r) => r.id),
+    [1, 3, 4]
+  );
+  await table(db, 'posts').where('id', 1).update({ published: false });
+  assert.equal(Number(await table(db, 'posts').where('id', 1).value('published')), 0);
+  await table(db, 'posts').where('id', 1).update({ updated_at: new Date('2024-05-06T07:08:09.000Z') });
+  assert.equal(await table(db, 'posts').where('id', 1).value('updated_at'), '2024-05-06T07:08:09.000Z');
+  assert.equal(Number(await table(db, 'posts').where('title', undefined).count()), 0);
+  await table(db, 'invoices').insert({ id: 2, amount: '1', meta: null, paid: true, secret: null });
+  assert.equal(Number(await table(db, 'invoices').where('id', 2).value('paid')), 1);
+});
+
+test('sqlite: firstOrCreate/updateOrCreate/increment/refresh/findOrFail on real rows', { skip }, async () => {
+  const db = fixture();
+  const created = await Invoice.firstOrCreate(db, { secret: 'seed' }, { amount: '3' });
+  assert.equal(created.get('secret'), 'SEED');
+  assert.equal(Number(await Invoice.query(db).count()), 2);
+  const again = await Invoice.firstOrCreate(db, { secret: 'SEED' }, { amount: '99' });
+  assert.equal(again.get('id'), created.get('id'));
+  assert.equal(again.get('amount'), '3.00');
+  const updated = await Invoice.updateOrCreate(db, { id: created.get('id') }, { amount: '7' });
+  assert.equal(updated.get('amount'), '7.00');
+  assert.equal(await table(db, 'invoices').where('id', created.get('id')).value('amount'), '7');
+
+  const post = await Post.find(db, 2);
+  assert.equal(Number(post.get('published')), 0);
+  assert.equal(await post.increment(db, 'published', 2), 2);
+  assert.equal(Number(await table(db, 'posts').where('id', 2).value('published')), 2);
+  await table(db, 'posts').where('id', 2).update({ published: 9 });
+  await post.refresh(db);
+  assert.equal(Number(post.get('published')), 9);
+
+  await assert.rejects(() => Post.findOrFail(db, 999), /Post not found: 999/);
 });
 
 test('sqlite: withCount on belongsTo, loadAggregate on one model', { skip }, async () => {

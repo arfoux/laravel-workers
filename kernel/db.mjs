@@ -6,6 +6,17 @@
 const ALLOWED_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'NOT LIKE', 'IS', 'IS NOT']);
 const ALLOWED_JOIN_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
 
+// D1/SQLite only bind null | number | string | ArrayBuffer. Normalize the JS
+// values the builder accepts so callers can pass idiomatic JS: booleans become
+// 1/0 (a raw JS boolean throws in node:sqlite and is rejected by D1), Dates
+// become ISO strings, undefined becomes null.
+function bindValue(value) {
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (value instanceof Date) return value.toISOString();
+  if (value === undefined) return null;
+  return value;
+}
+
 function quoteIdent(name) {
   // Supports `table.column` dot notation → `"table"."column"`.
   return String(name)
@@ -343,7 +354,8 @@ export class QueryBuilder {
 
   _prepare(sql, params) {
     const stmt = this.db.prepare(sql);
-    return params.length ? stmt.bind(...params) : stmt;
+    const bound = params.map(bindValue);
+    return bound.length ? stmt.bind(...bound) : stmt;
   }
 
   async get() {

@@ -197,7 +197,8 @@ export class Model {
   }
 
   static async create(db, attributes = {}) {
-    const instance = new this(attributes);
+    const instance = new this();
+    instance.fill(attributes);
     await instance.save(db);
     return instance;
   }

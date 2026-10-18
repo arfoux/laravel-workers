@@ -24,7 +24,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 
 Compiles today (byte-parity corpus + kernel tests):
 - **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`/`strlen`/`substr`/`str_repeat`/`str_pad`/`ucfirst`/`lcfirst`, `str_contains`/`str_starts_with`/`str_ends_with`, `count`/`in_array`/`implode`/`explode`/`number_format`/`nl2br`, `array_keys`/`array_values`/`array_merge`/`array_key_exists`, `ltrim`/`rtrim`/`ucwords`/`strrev`/`strpos`/`strrpos`/`substr_count`/`strip_tags`/`htmlspecialchars`, `is_null`/`is_bool`/`is_int`/`is_float`/`is_string`/`is_array`/`is_object`/`is_numeric`, `abs`/`round`/`floor`/`ceil`/`intval`/`floatval`/`max`/`min`, `json_encode`/`json_decode`, `array_sum`/`array_slice`/`array_reverse`/`array_unique`/`array_count_values`/`array_flip`/`array_filter`/`array_map` (named-function callbacks).
-- **Kernel**: router (domain rules + `{param}`/`{param?}`/`{param*}`, `X-HTTP-Method-Override`) + response, D1 query builder (where/or + `where(fn)` grouping, join/group/having/distinct, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime`, `sum`/`avg`/`min`/`max`, `upsert`/`insertGetId`/`truncate`/`increment`/`updateOrInsert`/`chunk`), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `firstOrCreate`/`updateOrCreate`, `refresh`/`increment`, casts incl. `json`/`decimal:N`, accessors/mutators `getFooAttribute`/`setFooAttribute`, `hidden`/`visible`/`appends`, `softDeletes` with `trashed`/`restore`/`forceDelete`/`withTrashed`/`onlyTrashed`, `findOrFail`/`firstOrFail`, declared relations with `with()` eager loading + `withCount()` counters + `withSum()`/`withAvg()`/`withMin()`/`withMax()` aggregate attributes + `whereHas()`/`whereDoesntHave()`/`has(rel,'>=',n)` correlated `EXISTS`/`COUNT`, `related()`/`load()` lazy loading, local scopes via `query(db).scope('name')`), bcrypt hash incl. `Hash::isHashed()`, AES encrypter, validator (70+ rules, nested dot paths + `items.*.name` wildcards, `exclude*`/`missing*`/`present*` conditionals), mail/queue/cache/storage/scheduler adapters.
+- **Kernel**: router (domain rules + `{param}`/`{param?}`/`{param*}`, `X-HTTP-Method-Override`) + response, D1 query builder (where/or + `where(fn)` grouping, join/group/having/distinct, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime`, `sum`/`avg`/`min`/`max`, `upsert`/`insertGetId`/`truncate`/`increment`/`updateOrInsert`/`chunk`, D1-safe param binding: boolean→1/0, Date→ISO, undefined→NULL), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `create`/`firstOrCreate`/`updateOrCreate` honouring `fillable` + mutators + casts, `refresh`/`increment`, casts incl. `json`/`decimal:N`, accessors/mutators `getFooAttribute`/`setFooAttribute`, `hidden`/`visible`/`appends`, `softDeletes` with `trashed`/`restore`/`forceDelete`/`withTrashed`/`onlyTrashed`, `findOrFail`/`firstOrFail`, declared relations with `with()` eager loading + `withCount()` counters + `withSum()`/`withAvg()`/`withMin()`/`withMax()` aggregate attributes + `whereHas()`/`whereDoesntHave()`/`has(rel,'>=',n)` correlated `EXISTS`/`COUNT`, `related()`/`load()` lazy loading, local scopes via `query(db).scope('name')`), bcrypt hash incl. `Hash::isHashed()`, AES encrypter, validator (70+ rules, nested dot paths + `items.*.name` wildcards, `exclude*`/`missing*`/`present*` conditionals), mail/queue/cache/storage/scheduler adapters.
 
 Fails loud (build error or `LW002`), use a port instead:
 - Blade layouts/components that compile to `$__env->…` (`@extends`/`@section`/`@yield`/`@include`).
@@ -52,7 +52,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 124/124 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + budget
+npm test                      # 128/128 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + budget
 npm run test:corpus           # 51/51 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -64,7 +64,7 @@ npx laravel-workers build     # inside an edge checkout (requires Laravel vendor
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (124)
+laravel-workers test            # all kernel tests (128)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only
