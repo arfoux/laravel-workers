@@ -22,13 +22,23 @@
 ### Free-plan budget (constraint — free plan first)
 
 Everything in this document must run on **Workers Free**: 100k requests/day, **10 ms CPU per
-invocation** (overshoot = error 1102), 128 MB memory, 50 subrequests/request. Paid ($5/mo) is an
-*option*, never an assumption.
+invocation** as documented (overshoot = error 1102), 128 MB memory, 50 subrequests/request. Paid
+($5/mo) is an *option*, never an assumption.
+
+**Empirically measured** (2026-10-18, probe worker `lw-cpu-bench` deployed on a real Free account;
+`cpuTime`/`outcome` read via `wrangler tail`): enforcement is *softer than the docs*. Each isolate
+keeps a CPU **rollover bank** (Workers lead engineer, community thread: under-limit requests pay
+in, over-limit requests draw down, error only when the bank is empty — and the bank boots padded).
+Observed: wall time unlimited (3 s sleep = 2 ms CPU, ok); single requests up to ≈2 s CPU pass; a
+single >2 s request is killed at exactly **cpu=2020 ms** (1102 `exceededCpu`); 40 back-to-back
+bcrypt requests (≈4 s cumulative CPU over one connection) all passed. Design stance: normal pages
+stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for rare heavy paths
+(login/bcrypt), and a >10 ms CPU path is never put on a per-page hot path.
 
 | Resource | Free limit | Compiled-rung response |
 |---|---|---|
-| CPU per request | 10 ms | handler measured 1–6 ms → normal pages fit; heavy compute gets a route-level **CPU budget check** (tooling 1.5) |
-| password hashing | bcrypt cost 10 ≈ 50–100 ms CPU | does **not** fit Free. Policy: benchmark cost ≤6 in workerd first; else PBKDF2 custom-hasher pair (PHP + compiled, app opt-in); else Paid |
+| CPU per request | 10 ms (docs) — measured: single request ok to ≈2 s, kill at cpu=2020 ms, wall unlimited | handler measured 1–6 ms → normal pages fit; heavy compute gets a route-level **CPU budget check** (tooling 1.5) |
+| password hashing | bcrypt cost 10 ≈ 100 ms CPU (native PHP) | **measured in workerd**: bcryptjs cost6=22 / cost8=43 / cost10=93–104 / cost12=679 ms CPU → all pass on Free; `$2y$`⇄`$2b$` parity **verified both ways** vs PHP 8.3; WASM bcrypt blocked (`WebAssembly.compile` disallowed). Policy: keep bcrypt (bcryptjs) on the login-only path; native PBKDF2 (≤100k iters, measured 22 ms) = strict-10 ms fallback pair |
 | D1 queries / invocation | 50 | eager-load flattening is the defense; `report` flags routes trending over budget |
 | D1 rows written | 100k/day (hard-enforced since 2026-09-01) | cookie session driver = **zero** session writes; throttle only sensitive routes (Fortify-style), never blanket |
 | D1 rows read | 5M/day (hard-enforced) | indexed lookups only; no full scans on hot paths |
@@ -132,8 +142,10 @@ invocation** (overshoot = error 1102), 128 MB memory, 50 subrequests/request. Pa
 
 - Events: sync dispatch (listeners via 1.2), subscribers, wildcard, model events;
   queued listeners flagged *adapter*
-- Hash / Encrypter: done (M5); **bcrypt CPU policy** per the Free-plan budget (cost-tuned or
-  PBKDF2-pair; argon2 → fail loud / port)
+- Hash / Encrypter: done (M5); **bcrypt = bcryptjs** (pure JS; WASM blocked by the runtime's
+  WASM-compile restriction) — measured cost6=22 / cost8=43 / cost10=93–104 / cost12=679 ms CPU;
+  cost tuned per route; `$2y$`/`$2b$` parity verified both ways vs PHP 8.3; native PBKDF2 fallback
+  pair (WebCrypto caps iterations at 100k; 600k rejected); argon2 → fail loud / port
 - Cache / Queue / Mail / Filesystem / Broadcast / Notifications / Scheduler: **call sites and
   class code compile** (jobs, mailables, notifications are classes) — stores/delivery are
   adapter-pending, flagged in `report`, never a silent no-op
@@ -153,6 +165,9 @@ invocation** (overshoot = error 1102), 128 MB memory, 50 subrequests/request. Pa
 7. PHP 8.4/8.5-specific behavior — pinned to 8.3 oracle
 8. float→string / int64 residue beyond declared tolerance — corpus grows, residue declared
 9. `extract()` / variable-variables at arbitrary depth — compiled where analyzable, else fail loud
+10. Runtime `WebAssembly.compile()` — codegen disallowed by the embedder (static `.wasm` imports
+    only); WASM-native crypto libs (hash-wasm etc.) are out — pure-JS equivalents stand in
+    (bcryptjs measured above)
 
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
