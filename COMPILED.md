@@ -176,6 +176,11 @@ Everything else in Laravel's web surface: **compilable** — this document is th
 1. **Shadow harness (1.3)** — proof machine first
 2. **Manifests (1.1) + class compiler (1.2)** — unlocks `$this` / services / container
 3. **Sessions + CSRF + auth core (2)** — despite the pain; tamed via cookie + D1 stores
+   *(kernel layers shipped and PHP 8.3 oracle-verified — M11 `session.mjs`, M12 `ratelimit.mjs`,
+   M13 `csrf.mjs`, M14 `auth.mjs`; the remaining piece is wiring them into the compiled
+   pipeline: EncryptCookies → AddQueuedCookiesToResponse → StartSession → ShareErrorsFromSession
+   → PreventRequestForgery → Throttle → route, plus `Auth::*` / `auth` / `guest` in compiled
+   controllers)*
 4. **Validation flow (3)** — rides on sessions
 5. **Eloquent relations + pagination (4)** — kernel is already most of the way
 6. **Runtime completeness (1.4)** — continuous, corpus-driven, never "done"

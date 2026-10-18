@@ -136,8 +136,8 @@ The escape hatch stays: **ports**.
 | Signed URLs | HMAC in kernel | ✅ | same key derivation | F |
 | Route model binding | Compiled lookup | 🟡 | id-first subset initially | F |
 | Custom middleware | Compiled like controllers | ✅ | | F |
-| Throttle middleware | Counter in D1/KV | 🟡 | approx. counters, distributed | F |
-| CSRF | Token in session store | ✅ | needs session tier | F |
+| Throttle middleware | Counter in D1/KV | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wiring pending | F |
+| CSRF | Token in session store | ✅ | kernel PreventRequestForgery oracle-verified (M13); wiring pending | F |
 | Cookie encryption | Laravel Encrypter parity (AES-CBC + HMAC) via WebCrypto | 🟡 | parity test required; PHP-serialize subset needed | F |
 
 ### B. Views
@@ -180,10 +180,10 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Sessions | D1-backed store + encrypted cookie | 🟡 | write budget is soft; flash works; stateless signed-flash fallback | F |
-| Auth (guard, login/logout, remember) | Kernel + D1 users | 🟡 | | F |
-| Password hashing | **PBKDF2-SHA256 via WebCrypto** + custom Laravel hasher driver | 🟡 | trade documented; bcrypt = pure JS ~100ms+ CPU → only viable on Paid; parity driver keeps both sides verifiable | F (trade) / $ (bcrypt) |
-| Rate limiting | D1/KV counters | 🟡 | approx. | F |
+| Sessions | D1-backed store + encrypted cookie | 🟡 | kernel Store + cookie/D1 handlers, oracle byte-parity (M11); pipeline wiring pending | F |
+| Auth (guard, login/logout, remember) | Kernel + D1 users | 🟡 | kernel SessionGuard, EloquentUserProvider, BcryptHasher, `auth`/`guest` middleware oracle-verified (M14); wiring pending | F |
+| Password hashing | bcrypt via bcryptjs (`$2y$` parity) | ✅ | kernel BcryptHasher make/check/needsRehash/verifyConfiguration (M5); free-plan CPU banked (measured) | F |
+| Rate limiting | D1/KV counters | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wiring pending | F |
 
 ### F. Platform services
 
@@ -340,7 +340,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | ai | ⛔ | dev tooling (Boost/AI guidelines) |
 | ai-sdk | 🟡 ph3 | HTTP + streaming via fetch fits |
 | artisan | ⛔ | local-only; edge CLI equivalents |
-| authentication | 🟡 | kernel auth; PBKDF2 trade |
+| authentication | 🟡 | kernel SessionGuard oracle-verified (M14); wiring pending |
 | authorization | 🟡 ph2 | gates/policies compile |
 | billing | 🟡 ph3 | Cashier via fetch; webhooks = HMAC routes |
 | blade | ✅ | views compile (echo/if/loops/expr); layouts (`$__env`) via port |
