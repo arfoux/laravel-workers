@@ -216,8 +216,23 @@ export function buildRt(context, opts = {}) {
     if (strict) return arr.some((x) => x === needle && typeof x === typeof needle);
     return arr.some((x) => x == needle); // eslint-disable-line eqeqeq
   };
-  rt.implode = (glue, arr) => (Array.isArray(arr) ? arr.join(glue == null ? '' : String(glue)) : '');
+  const isObj = (v) => v !== null && typeof v === 'object';
+  const arrValues = (v) => (Array.isArray(v) ? v.slice() : (isObj(v) ? Object.keys(v).map((k) => v[k]) : []));
+  rt.implode = (glue, arr) => arrValues(arr).map((x) => (x == null ? '' : String(x))).join(glue == null ? '' : String(glue));
   rt.explode = (delim, str, limit) => String(str).split(String(delim));
+  rt.array_key_exists = (k, arr) => (isObj(arr) ? Object.prototype.hasOwnProperty.call(arr, k) : false);
+  rt.array_keys = (arr) => (isObj(arr) ? Object.keys(arr).map((k) => (/^\d+$/.test(k) ? Number(k) : k)) : []);
+  rt.array_values = (arr) => arrValues(arr);
+  rt.array_merge = (...arrs) => {
+    if (arrs.every((a) => Array.isArray(a))) {
+      const out = [];
+      for (const a of arrs) for (const v of a) out.push(v);
+      return out;
+    }
+    const out = {};
+    for (const a of arrs) if (isObj(a)) for (const k of Object.keys(a)) out[k] = a[k];
+    return out;
+  };
   rt.sprintf = (fmt, ...args) => {
     let i = 0;
     // collapse %% -> % first (PHP: literal percent)
@@ -232,6 +247,55 @@ export function buildRt(context, opts = {}) {
   rt.strtolower = (s) => String(s).toLowerCase();
   rt.strtoupper = (s) => String(s).toUpperCase();
   rt.trim = (s) => String(s).trim();
+
+  // ---- byte-oriented string helpers (PHP length semantics) ----
+  const utf8 = new TextEncoder();
+  const utf8d = new TextDecoder();
+  const byteLen = (s) => utf8.encode(String(s)).length;
+  rt.strlen = (s) => (s == null ? 0 : byteLen(s));
+  rt.substr = (s, start, len) => {
+    const bytes = utf8.encode(s == null ? '' : String(s));
+    const n = bytes.length;
+    let st = Number(start) | 0;
+    if (st < 0) st = Math.max(n + st, 0);
+    if (st > n) st = n;
+    let end = n;
+    if (len !== undefined && len !== null) {
+      const l = Number(len) | 0;
+      end = l < 0 ? n + l : st + l;
+    }
+    if (end < st) end = st;
+    if (end > n) end = n;
+    return utf8d.decode(bytes.slice(st, end));
+  };
+  rt.str_repeat = (s, n) => String(s == null ? '' : s).repeat(Math.max(0, Number(n) | 0));
+  rt.str_contains = (h, n) => (String(n) === '' ? true : String(h == null ? '' : h).includes(String(n)));
+  rt.str_starts_with = (h, n) => (String(n) === '' ? true : String(h == null ? '' : h).startsWith(String(n)));
+  rt.str_ends_with = (h, n) => (String(n) === '' ? true : String(h == null ? '' : h).endsWith(String(n)));
+  rt.ucfirst = (s) => {
+    const x = String(s == null ? '' : s);
+    return x === '' ? '' : x[0].toUpperCase() + x.slice(1);
+  };
+  rt.lcfirst = (s) => {
+    const x = String(s == null ? '' : s);
+    return x === '' ? '' : x[0].toLowerCase() + x.slice(1);
+  };
+  rt.str_pad = (s, len, pad, type) => {
+    const x = String(s == null ? '' : s);
+    const target = Math.max(0, Number(len) | 0);
+    const cur = byteLen(x);
+    if (cur >= target) return x;
+    let p = pad === undefined || pad === null || pad === '' ? ' ' : String(pad);
+    const need = target - cur;
+    const fill = (count) => p.repeat(Math.ceil(count / p.length)).slice(0, count);
+    const t = type === undefined ? 1 : Number(type);
+    if (t === 0) return fill(need) + x; // STR_PAD_LEFT
+    if (t === 2) {
+      const left = Math.floor(need / 2);
+      return fill(left) + x + fill(need - left); // STR_PAD_BOTH
+    }
+    return x + fill(need); // STR_PAD_RIGHT (default)
+  };
 
   // ---- PHP truthiness / logic ----
   rt.truthy = (v) => {

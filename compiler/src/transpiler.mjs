@@ -220,6 +220,8 @@ function txCall(node) {
     const builtins = new Set([
       'isset', 'empty', 'unset', 'count', 'in_array', 'implode', 'explode',
       'sprintf', 'strtolower', 'strtoupper', 'trim', 'number_format', 'nl2br',
+      'strlen', 'substr', 'str_repeat', 'str_contains', 'str_starts_with', 'str_ends_with',
+      'ucfirst', 'lcfirst', 'str_pad', 'array_key_exists', 'array_keys', 'array_values', 'array_merge',
     ]);
     if (whitelisted.has(name) || builtins.has(name)) return 'rt.' + name + '(' + args + ')';
     if (FUNCS.has(name)) return fname(name) + '(' + args + ')';

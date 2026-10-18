@@ -11,7 +11,7 @@
 PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** → 503 on Free. `laravel-workers` moves all boot to **build time** and ships a tiered Worker: `static` (0 invocations) → `snapshot` (prerendered HTML) → `compiled handler` (router → handler → D1, **measured 1–6 ms**) → `port` (escape-hatch hand-written JS). Anything uncovered **fails the build** (`--strict`).
 
 **Status: M8 complete (2026-10-18).**
-- **M1** View parity — Blade-compiled PHP → dependency-free ESM; `welcome` byte-identical 35,647 B (sha256 `b228c8a2…`); corpus 41/41.
+- **M1** View parity — Blade-compiled PHP → dependency-free ESM; `welcome` byte-identical 35,647 B (sha256 `b228c8a2…`); corpus 46/46.
 - **M2** Router integration — `routes → router`, code-gen `controllers/middleware`, build `--strict` PASS, `nearfind-edge` live `/` + `/health` 200.
 - **M3** D1 layer — schema snapshot (`.cache/schema.json` → `dist/schema.json`), `kernel/db.mjs` query builder, `kernel/model.mjs` Model base, mock-D1 tests 8/8, `nearfind-edge` `/dbcheck` via builder, D1 remote has `config` + `_cf_KV`.
 - **M4** Packaging + CI — `package.json` (`laravel-workers@0.3.0`, bin CLI), `.github/workflows/ci.yml`, MIT license, `npm pack --dry-run` clean, tests green.
@@ -23,7 +23,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 ## Supported vs unsupported
 
 Compiles today (byte-parity corpus + kernel tests):
-- **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`.
+- **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`/`strlen`/`substr`/`str_repeat`/`str_pad`/`ucfirst`/`lcfirst`, `str_contains`/`str_starts_with`/`str_ends_with`, `count`/`in_array`/`implode`/`explode`/`number_format`/`nl2br`, `array_keys`/`array_values`/`array_merge`/`array_key_exists`.
 - **Kernel**: router (domain rules + `{param}`/`{param?}`/`{param*}`, `X-HTTP-Method-Override`) + response, D1 query builder (where/or/join/group/having/distinct/aggregate), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `firstOrCreate`/`updateOrCreate`, `refresh`/`increment`), bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
 
 Fails loud (build error or `LW002`), use a port instead:
@@ -33,7 +33,7 @@ Fails loud (build error or `LW002`), use a port instead:
 
 ## What's inside
 
-- `compiler/` — **M1 view compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 41, parity, smoke).
+- `compiler/` — **M1 view compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 46, parity, smoke).
 - `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), budget gate (M8).
 - `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
 - `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `routes.generated.mjs` route table with names/domains and a `routeNames` map).
@@ -53,7 +53,7 @@ cd laravel-workers
 npm run setup                 # root + compiler deps
 
 npm test                      # 73/73 — router + db/model + hash + encrypter + validator + services + budget
-npm run test:corpus           # 41/41 — M1 transpiler corpus
+npm run test:corpus           # 46/46 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
 # when your Laravel vendor/ is in the parent checkout:
@@ -70,7 +70,7 @@ laravel-workers test:hash       # hash + encrypter only
 laravel-workers test:validator  # validator only
 laravel-workers test:services   # mail/queue/cache/storage/scheduler
 laravel-workers test:budget     # budget gate only
-laravel-workers test:corpus     # transpiler corpus (41)
+laravel-workers test:corpus     # transpiler corpus (46)
 laravel-workers bench           # micro-bench (bench.mjs)
 laravel-workers check:docs      # docs-check 105/105
 laravel-workers build           # node build.mjs --strict (needs Laravel app)

@@ -7,6 +7,13 @@
     "php_bytes": 25
   },
   {
+    "id": "array-helpers",
+    "file": "cases/array-helpers.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 22
+  },
+  {
     "id": "boot-e-quotes",
     "file": "cases/boot-e-quotes.php",
     "kind": "SUP",
@@ -238,11 +245,32 @@
     "php_bytes": 41
   },
   {
+    "id": "str-case-first",
+    "file": "cases/str-case-first.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 26
+  },
+  {
     "id": "str-case-trim",
     "file": "cases/str-case-trim.php",
     "kind": "SUP",
     "php_exit": 0,
     "php_bytes": 51
+  },
+  {
+    "id": "str-len-substr",
+    "file": "cases/str-len-substr.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 22
+  },
+  {
+    "id": "str-repeat-pad",
+    "file": "cases/str-repeat-pad.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 22
   },
   {
     "id": "str-replace-basic",
@@ -257,6 +285,13 @@
     "kind": "SUP",
     "php_exit": 0,
     "php_bytes": 15
+  },
+  {
+    "id": "str-search",
+    "file": "cases/str-search.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 14
   },
   {
     "id": "switch-basic",
