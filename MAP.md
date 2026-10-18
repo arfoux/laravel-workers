@@ -94,7 +94,7 @@ Examples: eventual consistency (KV) · async-by-queue instead of synchronous · 
 | — unhandled | build flag / `--strict` fail | — | — |
 
 - **Auto-snapshot:** any clean GET route that returns HTML at build time is rendered by real Laravel and written as a static page — appears at the edge on next deploy, zero config (`autoSnapshot`).
-- **Build path (PHP allowed here only):** dump route table → compile views & controllers → schema snapshot → freeze config → prerender/snapshots → parity tests → bundle → deploy (`node edge/ship.mjs`).
+- **Build path (PHP allowed here only):** dump route table → compile views → schema snapshot → freeze config → prerender/snapshots → parity tests → bundle → deploy (`wrangler deploy`).
 
 ---
 
@@ -108,9 +108,9 @@ Examples: eventual consistency (KV) · async-by-queue instead of synchronous · 
 | S3 | Parity tests: Laravel output vs compiled output | build/CI | golden tests |
 | S4 | Coverage + `--strict` gate | build | `build.mjs` |
 | S5 | Assets: snapshots + `public/` copy | build | `build.mjs` |
-| S6 | Deploy | ship | `ship.mjs` (works today) |
+| S6 | Deploy | Cloudflare | `wrangler deploy` after build |
 
-The **single transpiler** (PHP-subset→JS) serves three consumers: compiled Blade (views), controllers/middleware/app classes, and generated model metadata. One contract, one failure surface.
+The **single transpiler** (PHP-subset→JS) serves the compiled Blade views today; the same contract is the planned path for controllers/middleware/app classes and generated model metadata. Until then, non-view routes ship as hand-written `ports/*.mjs`.
 
 ---
 
@@ -323,7 +323,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | authentication | 🟡 | kernel auth; PBKDF2 trade |
 | authorization | 🟡 ph2 | gates/policies compile |
 | billing | 🟡 ph3 | Cashier via fetch; webhooks = HMAC routes |
-| blade | ✅ | compiler core (directives subset) |
+| blade | ✅ | views compile (echo/if/concat); loops+layouts via port |
 | boost | ⛔ | dev tooling only |
 | broadcasting | 🔴 | SSE/polling padanan; WS via DO/external |
 | cache | 🟡 | KV/D1 drivers; tag emulation |
@@ -336,11 +336,11 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | ✅ | compiled; resource controllers ph2 |
+| controllers | 🟡 | views compiled; controllers via hand-written ports |
 | csrf | ✅ | session token; @csrf/@method |
-| database | 🟡 | D1 builder subset |
+| database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |
-| deployment | ✅ | this pipeline (ship.mjs) |
+| deployment | ✅ | build → `wrangler deploy` (D1 + assets) |
 | documentation | ⛔ | meta (TOC page) |
 | dusk | ⛔ | local browser tests |
 | eloquent | 🟡 | schema-driven ORM subset |
@@ -374,7 +374,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | logging | ✅ | console + fetch sinks |
 | mail | ✅ | HTTP providers; SMTP impossible (hard) |
 | mcp | 🟡 ph3 | HTTP/SSE servers compile; stdio ⛔ |
-| middleware | ✅ | compiled pipeline |
+| middleware | 🟡 | captured metadata; chain wired in port |
 | migrations | ✅ | ops-time; remote via wrangler/SQL |
 | mix | ⛔ | legacy; Vite is the path |
 | mocking | ⛔ | local; harness mocks fetch |
@@ -392,7 +392,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | prompts | ⛔ | CLI-only |
 | providers | 🟡 | compile-time registration subset |
 | pulse | 🟡 ph3 | D1-backed; or CF analytics padanan |
-| queries | 🟡 | builder subset |
+| queries | 🟡 | builder: where/or/join/group/having/distinct |
 | queues | 🟡 | CF Queues (free tier) / D1 queue |
 | rate-limiting | 🟡 | D1/KV counters |
 | readme | ⛔ | meta |
@@ -418,11 +418,11 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | upgrade | ⛔ | meta; upgrade = recompile + parity |
 | urls | ✅ | url/route/asset; signed URLs |
 | valet | ⛔ | local env |
-| validation | 🟡 | rule subset; unique/exists via D1 |
+| validation | 🟡 | 60+ rules; unique/exists via D1 |
 | verification | 🟡 | signed URLs + mail |
-| views | ✅ | compiler core |
+| views | ✅ | compiled view handlers (echo/if/concat subset) |
 | vite | ✅ | manifest shims; proven today |
 
-**Tally: 105/105 pages have a verdict — 29 ✅ · 46 🟡 · 5 🔴 (each with padanan) · 25 ⛔ (local-only/meta). Zero blanks.**
+**Tally: 105/105 pages have a verdict — 27 ✅ · 48 🟡 · 5 🔴 (each with padanan) · 25 ⛔ (local-only/meta). Zero blanks.**
 
 *Keep this doc tight. Update the tables; don't grow prose.*

@@ -1,4 +1,4 @@
-﻿// compiler/src/transpiler.mjs
+// compiler/src/transpiler.mjs
 import parser from 'php-parser';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
@@ -31,7 +31,7 @@ function tx(node) {
     case 'nullkeyword':
       return 'null';
     case 'name': {
-      // bare identifier as value â€” not allowed in M1 (no variables/constants)
+      // bare identifier as value — not allowed in M1 (no variables/constants)
       throw mkErr('LW002', 'bare identifier not allowed: ' + node.name, node.loc);
     }
     case 'variable': {

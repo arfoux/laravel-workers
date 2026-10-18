@@ -1,6 +1,6 @@
 # laravel-workers
 
-> Run **any Laravel app** on Cloudflare Workers with **no PHP at request time** — build-time boot → Workers-native artifact.
+> Run a Laravel app on Cloudflare Workers with **no PHP at request time** — build-time boot → Workers-native artifact. Blade views compile to ESM; anything outside the supported subset **fails the build** and falls back to a hand-written port.
 
 [![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm](https://img.shields.io/badge/npm-laravel--workers-9cf.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -8,17 +8,28 @@
 
 ## Why
 
-PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** → 503 on Free. `laravel-workers` moves all boot to **build time** and ships a tiered Worker: `static` (0 invocations) → `snapshot` (prerendered HTML) → `compiled handler` (router → middleware → handler → D1, **measured 1–6 ms**) → `port` (escape-hatch hand-written JS). Anything uncovered **fails the build** (`--strict`).
+PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** → 503 on Free. `laravel-workers` moves all boot to **build time** and ships a tiered Worker: `static` (0 invocations) → `snapshot` (prerendered HTML) → `compiled handler` (router → handler → D1, **measured 1–6 ms**) → `port` (escape-hatch hand-written JS). Anything uncovered **fails the build** (`--strict`).
 
 **Status: M8 complete (2026-10-18).**
 - **M1** View parity — Blade-compiled PHP → dependency-free ESM; `welcome` byte-identical 35,647 B (sha256 `b228c8a2…`); corpus 41/41.
 - **M2** Router integration — `routes → router`, code-gen `controllers/middleware`, build `--strict` PASS, `nearfind-edge` live `/` + `/health` 200.
 - **M3** D1 layer — schema snapshot (`.cache/schema.json` → `dist/schema.json`), `kernel/db.mjs` query builder, `kernel/model.mjs` Model base, mock-D1 tests 8/8, `nearfind-edge` `/dbcheck` via builder, D1 remote has `config` + `_cf_KV`.
 - **M4** Packaging + CI — `package.json` (`laravel-workers@0.3.0`, bin CLI), `.github/workflows/ci.yml`, MIT license, `npm pack --dry-run` clean, tests green.
-- **M5** Hash + Encrypter parity (kernel/hash.mjs bcrypt make/check/needsRehash + kernel/encrypter.mjs AES-256-CBC+HMAC WebCrypto, payload iv/value/mac/tag byte-compat, 47/47 incl. MAC-tamper/wrong-key)..
-- **M6** Validation kernel (kernel/validator.mjs, 22 rules, pipe-safe regex, nullable/sometimes, 12 subtests)
+- **M5** Hash + Encrypter parity (kernel/hash.mjs bcrypt make/check/needsRehash + kernel/encrypter.mjs AES-256-CBC+HMAC WebCrypto, payload iv/value/mac/tag byte-compat, incl. MAC-tamper/wrong-key)..
+- **M6** Validation kernel (kernel/validator.mjs, 60+ rules incl. `unique`/`exists` via D1, pipe-safe regex, nullable/sometimes, bail, 26 subtests)
 - **M7** Services kernel (kernel/mail,queue,cache,storage,scheduler.mjs, 18 subtests)
 - **M8** Final gates (tools/docs-check 105/105 + tools/bench + budget.test p95<=5ms hot)
+
+## Supported vs unsupported
+
+Compiles today (byte-parity corpus + kernel tests):
+- **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/else`, string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`, interpolation escapes.
+- **Kernel**: router + response, D1 query builder (where/or/join/group/having/distinct/aggregate), Model base, bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
+
+Fails loud (build error or `LW002`), use a port instead:
+- PHP loops (`for`/`while`/`foreach`), comparisons/logic/ternary/`??`, function definitions.
+- Blade layouts/components that compile to `$__env->…` (`@extends`/`@section`/`@yield`/`@include`).
+- Non-view routes: PHP controllers are **not** transpiled — write a `ports/*.mjs` handler.
 
 
 ## What's inside
@@ -42,7 +53,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 47/47 — router + db + hash + encrypter + validator + services + budget
+npm test                      # 70/70 — router + db + hash + encrypter + validator + services + budget
 npm run test:corpus           # 41/41 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -54,7 +65,7 @@ npx laravel-workers build     # inside an edge checkout (requires Laravel vendor
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (47)
+laravel-workers test            # all kernel tests (70)
 laravel-workers test:db          # db/model only
 laravel-workers test:hash       # hash + encrypter only
 laravel-workers test:validator  # validator only
@@ -84,7 +95,7 @@ Laravel app (dev truth)
   └─ golden tests       S3  Laravel render vs compiled render byte-equal
   └─ --strict gate      S4  uncovered route → fail
   └─ prerender          S5  clean GET → static snapshot (0-invocation tier)
-  └─ ship.mjs           S6  deploy → Workers + D1
+  └─ wrangler deploy    S6  deploy → Workers + D1
 ```
 
 ## Docs & checks

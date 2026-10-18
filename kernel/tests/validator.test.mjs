@@ -103,3 +103,115 @@ test('validate helper', async () => {
   const r2 = await validate({ name: 'John' }, { name: 'required|min:3' });
   assert.equal(r2.ok, true);
 });
+
+test('accepted/declined', async () => {
+  assert.equal(await new Validator({ t: 'yes' }, { t: 'accepted' }).passes(), true);
+  assert.equal(await new Validator({ t: 'no' }, { t: 'accepted' }).passes(), false);
+  assert.equal(await new Validator({ t: false }, { t: 'declined' }).passes(), true);
+  assert.equal(await new Validator({ t: true }, { t: 'declined' }).passes(), false);
+  assert.equal(await new Validator({ t: 'yes', role: 'admin' }, { t: 'accepted_if:role,admin' }).passes(), true);
+});
+
+test('digits/digits_between/multiple_of', async () => {
+  assert.equal(await new Validator({ n: '12345' }, { n: 'digits:5' }).passes(), true);
+  assert.equal(await new Validator({ n: '123' }, { n: 'digits:5' }).passes(), false);
+  assert.equal(await new Validator({ n: '123' }, { n: 'digits_between:2,5' }).passes(), true);
+  assert.equal(await new Validator({ n: 10 }, { n: 'numeric|multiple_of:5' }).passes(), true);
+  assert.equal(await new Validator({ n: 7 }, { n: 'numeric|multiple_of:5' }).passes(), false);
+});
+
+test('format rules: uuid/ip/mac/json/ascii/case/hex', async () => {
+  assert.equal(await new Validator({ u: '123e4567-e89b-12d3-a456-426614174000' }, { u: 'uuid' }).passes(), true);
+  assert.equal(await new Validator({ u: 'nope' }, { u: 'uuid' }).passes(), false);
+  assert.equal(await new Validator({ i: '192.168.0.1' }, { i: 'ip' }).passes(), true);
+  assert.equal(await new Validator({ i: '999.1.1.1' }, { i: 'ipv4' }).passes(), false);
+  assert.equal(await new Validator({ i: '::1' }, { i: 'ipv6' }).passes(), true);
+  assert.equal(await new Validator({ m: 'AA:BB:CC:DD:EE:FF' }, { m: 'mac_address' }).passes(), true);
+  assert.equal(await new Validator({ j: '{"a":1}' }, { j: 'json' }).passes(), true);
+  assert.equal(await new Validator({ j: '{bad' }, { j: 'json' }).passes(), false);
+  assert.equal(await new Validator({ a: 'plain ascii' }, { a: 'ascii' }).passes(), true);
+  assert.equal(await new Validator({ s: 'abc' }, { s: 'lowercase' }).passes(), true);
+  assert.equal(await new Validator({ s: 'ABC' }, { s: 'uppercase' }).passes(), true);
+  assert.equal(await new Validator({ c: '#ff00aa' }, { c: 'hex_color' }).passes(), true);
+});
+
+test('starts_with/ends_with', async () => {
+  assert.equal(await new Validator({ s: 'hello' }, { s: 'starts_with:he,yo' }).passes(), true);
+  assert.equal(await new Validator({ s: 'hello' }, { s: 'ends_with:lo' }).passes(), true);
+  assert.equal(await new Validator({ s: 'hello' }, { s: 'ends_with:xy' }).passes(), false);
+});
+
+test('before/after/date_format', async () => {
+  assert.equal(await new Validator({ d: '2020-01-01' }, { d: 'before:2021-01-01' }).passes(), true);
+  assert.equal(await new Validator({ d: '2022-01-01' }, { d: 'after:2021-01-01' }).passes(), true);
+  assert.equal(await new Validator({ d: '2021-01-01' }, { d: 'date_equals:2021-01-01' }).passes(), true);
+  assert.equal(await new Validator({ d: '2021-05-04' }, { d: 'date_format:Y-m-d' }).passes(), true);
+  assert.equal(await new Validator({ d: '05/04/2021' }, { d: 'date_format:Y-m-d' }).passes(), false);
+});
+
+test('gt/gte/lt/lte field compare', async () => {
+  assert.equal(await new Validator({ a: 5, b: 3 }, { a: 'numeric|gt:b' }).passes(), true);
+  assert.equal(await new Validator({ a: 3, b: 3 }, { a: 'numeric|gte:b' }).passes(), true);
+  assert.equal(await new Validator({ a: 2, b: 3 }, { a: 'numeric|lt:b' }).passes(), true);
+  assert.equal(await new Validator({ a: 3, b: 3 }, { a: 'numeric|lte:b' }).passes(), true);
+});
+
+test('distinct array', async () => {
+  assert.equal(await new Validator({ a: [1, 2, 3] }, { a: 'array|distinct' }).passes(), true);
+  assert.equal(await new Validator({ a: [1, 1] }, { a: 'array|distinct' }).passes(), false);
+});
+
+test('conditional required: if/unless/with/without', async () => {
+  assert.equal(await new Validator({ role: 'admin' }, { name: 'required_if:role,admin' }).passes(), false);
+  assert.equal(await new Validator({ role: 'user' }, { name: 'required_if:role,admin' }).passes(), true);
+  assert.equal(await new Validator({}, { name: 'required_unless:role,admin' }).passes(), false);
+  assert.equal(await new Validator({ a: 'x' }, { b: 'required_with:a' }).passes(), false);
+  assert.equal(await new Validator({}, { b: 'required_without:a' }).passes(), false);
+});
+
+test('prohibited', async () => {
+  assert.equal(await new Validator({ a: 'x' }, { a: 'prohibited' }).passes(), false);
+  assert.equal(await new Validator({}, { a: 'prohibited' }).passes(), true);
+});
+
+test('bail stops at first error', async () => {
+  const v = new Validator({ email: 'bad' }, { email: 'bail|email|ends_with:.com' });
+  await v.fails();
+  assert.equal(v.errors().email.length, 1);
+});
+
+test('unknown rule fails loud', () => {
+  assert.throws(() => new Validator({ a: 'x' }, { a: 'required|bogus_rule' }), /unknown validation rule: bogus_rule/);
+});
+
+test('unique/exists via injected resolvers', async () => {
+  const taken = new Set(['ada@example.com']);
+  const unique = async ({ value }) => !taken.has(value);
+  assert.equal(await new Validator({ email: 'new@example.com' }, { email: 'unique:users,email' }, {}, { unique }).passes(), true);
+  assert.equal(await new Validator({ email: 'ada@example.com' }, { email: 'unique:users,email' }, {}, { unique }).passes(), false);
+  const exists = async ({ value }) => taken.has(value);
+  assert.equal(await new Validator({ email: 'ada@example.com' }, { email: 'exists:users,email' }, {}, { exists }).passes(), true);
+  assert.equal(await new Validator({ email: 'no@example.com' }, { email: 'exists:users,email' }, {}, { exists }).passes(), false);
+});
+
+test('unique/exists via D1-style db binding', async () => {
+  const db = {
+    prepare(sql) {
+      const stmt = {
+        params: [],
+        bind(...p) { this.params = p; return this; },
+        async first() { return sql.includes('WHERE "email"') && this.params[0] === 'ada@example.com' ? { aggregate: 1 } : { aggregate: 0 }; },
+      };
+      return stmt;
+    },
+  };
+  assert.equal(await new Validator({ email: 'ada@example.com' }, { email: 'unique:users,email' }, {}, { db }).passes(), false);
+  assert.equal(await new Validator({ email: 'ada@example.com' }, { email: 'exists:users,email' }, {}, { db }).passes(), true);
+});
+
+test('unique without resolver fails loud', async () => {
+  await assert.rejects(
+    () => new Validator({ email: 'a@b.c' }, { email: 'unique:users,email' }).passes(),
+    /needs opts\.db or opts\.unique/
+  );
+});

@@ -161,3 +161,92 @@ test('DB.table alias works', () => {
   assert.equal(typeof DB.table, 'function');
   assert.ok(new QueryBuilder(mockDb(), 'x') instanceof QueryBuilder);
 });
+
+test('orWhere / orWhereIn / orWhereNull render flat OR', () => {
+  const b = table(mockDb(), 't')
+    .where('a', 1)
+    .orWhere('b', 2)
+    .orWhereIn('c', [3, 4])
+    .orWhereNull('d');
+  const { sql, params } = b.toSql();
+  assert.equal(sql, 'SELECT * FROM "t" WHERE "a" = ? OR "b" = ? OR "c" IN (?, ?) OR "d" IS NULL');
+  assert.deepEqual(params, [1, 2, 3, 4]);
+});
+
+test('whereGroup nests with parentheses', () => {
+  const { sql, params } = table(mockDb(), 't')
+    .where('a', 1)
+    .orWhereGroup((q) => q.where('x', 10).where('y', 20))
+    .toSql();
+  assert.equal(sql, 'SELECT * FROM "t" WHERE "a" = ? OR ("x" = ? AND "y" = ?)');
+  assert.deepEqual(params, [1, 10, 20]);
+});
+
+test('whereBetween / whereNotBetween / whereNotIn / whereLike / whereColumn', () => {
+  const a = table(mockDb(), 't').whereBetween('age', [18, 30]).toSql();
+  assert.equal(a.sql, 'SELECT * FROM "t" WHERE "age" BETWEEN ? AND ?');
+  assert.deepEqual(a.params, [18, 30]);
+
+  const b = table(mockDb(), 't').whereNotBetween('age', [18, 30]).toSql();
+  assert.equal(b.sql, 'SELECT * FROM "t" WHERE "age" NOT BETWEEN ? AND ?');
+
+  const c = table(mockDb(), 't').whereNotIn('id', [1, 2]).toSql();
+  assert.equal(c.sql, 'SELECT * FROM "t" WHERE "id" NOT IN (?, ?)');
+  assert.deepEqual(c.params, [1, 2]);
+
+  const d = table(mockDb(), 't').whereLike('name', 'A%').toSql();
+  assert.equal(d.sql, 'SELECT * FROM "t" WHERE "name" LIKE ?');
+  assert.deepEqual(d.params, ['A%']);
+
+  const e = table(mockDb(), 't').whereColumn('a', '>', 'b').toSql();
+  assert.equal(e.sql, 'SELECT * FROM "t" WHERE "a" > "b"');
+  assert.deepEqual(e.params, []);
+});
+
+test('whereRaw binds and keeps order', () => {
+  const { sql, params } = table(mockDb(), 't').where('a', 1).whereRaw('LOWER("x") = ?', ['y']).toSql();
+  assert.equal(sql, 'SELECT * FROM "t" WHERE "a" = ? AND LOWER("x") = ?');
+  assert.deepEqual(params, [1, 'y']);
+});
+
+test('join / leftJoin render ON clause', () => {
+  const { sql } = table(mockDb(), 'posts')
+    .select('posts.id', 'users.name')
+    .join('users', 'users.id', '=', 'posts.user_id')
+    .leftJoin('tags', 'tags.post_id', '=', 'posts.id')
+    .toSql();
+  assert.equal(sql, 'SELECT "posts"."id", "users"."name" FROM "posts" INNER JOIN "users" ON "users"."id" = "posts"."user_id" LEFT JOIN "tags" ON "tags"."post_id" = "posts"."id"');
+});
+
+test('selectRaw / groupBy / having / distinct', () => {
+  const { sql, params } = table(mockDb(), 'orders')
+    .selectRaw('customer_id, COUNT(*) AS n', [])
+    .groupBy('customer_id')
+    .having('n', '>', 5)
+    .distinct()
+    .toSql();
+  assert.equal(sql, 'SELECT DISTINCT customer_id, COUNT(*) AS n FROM "orders" GROUP BY "customer_id" HAVING "n" > ?');
+  assert.deepEqual(params, [5]);
+});
+
+test('selectRaw params precede where params', () => {
+  const { sql, params } = table(mockDb(), 't').selectRaw('COALESCE(?, "x") AS v', ['d']).where('a', 1).toSql();
+  assert.equal(sql, 'SELECT COALESCE(?, "x") AS v FROM "t" WHERE "a" = ?');
+  assert.deepEqual(params, ['d', 1]);
+});
+
+test('orderByDesc / latest / oldest', () => {
+  assert.equal(table(mockDb(), 't').orderByDesc('id').toSql().sql, 'SELECT * FROM "t" ORDER BY "id" DESC');
+  assert.equal(table(mockDb(), 't').latest().toSql().sql, 'SELECT * FROM "t" ORDER BY "created_at" DESC');
+  assert.equal(table(mockDb(), 't').oldest('id').toSql().sql, 'SELECT * FROM "t" ORDER BY "id" ASC');
+});
+
+test('exists / value / pluck', async () => {
+  const db = mockDb({
+    first: (sql) => (/SELECT 1 AS "e"/.test(sql) ? { e: 1 } : { id: 7 }),
+    all: () => ({ results: [{ id: 1 }, { id: 2 }] }),
+  });
+  assert.equal(await table(db, 't').where('a', 1).exists(), true);
+  assert.equal(await table(db, 't').value('id'), 7);
+  assert.deepEqual(await table(db, 't').pluck('id'), [1, 2]);
+});

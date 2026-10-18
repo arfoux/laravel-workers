@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// edge/compiler/tests/run-corpus.mjs — M1 corpus regression net.
+// compiler/tests/run-corpus.mjs — corpus regression net.
 // For each case in cases.json:
 //   SUP   : transpile via CLI -> import emitted module -> run main(rt) -> byte-compare rt.__output to expectations/<id>.txt
 //   UNSUP : transpile via CLI -> expect exit 1 + stderr JSON code == expected (no render)

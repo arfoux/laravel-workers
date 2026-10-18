@@ -4,11 +4,14 @@ import { routeTable, handlers, builtAt } from './routes.generated.mjs';
 
 const table = normalizeTable(routeTable);
 
+// Every method the router may dispatch. Anything else falls through to assets.
+const DISPATCH_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'PUT' || request.method === 'POST') {
+    if (DISPATCH_METHODS.has(request.method)) {
       const res = await dispatch(
         { method: request.method, path: url.pathname + url.search, headers: Object.fromEntries(request.headers) },
         table,
@@ -22,7 +25,7 @@ export default {
     }
 
     if (url.pathname === '/health') {
-      return Response.json({ ok: true, worker: 'nearfind-edge', builtAt });
+      return Response.json({ ok: true, worker: 'laravel-workers', builtAt });
     }
 
     return env.ASSETS.fetch(request);

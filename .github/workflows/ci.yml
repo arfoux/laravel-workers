@@ -18,3 +18,7 @@ jobs:
       - run: npm run test:corpus
       - run: node tools/docs-check.mjs
       - run: node tools/bench.mjs
+      - name: Syntax check shipped ESM
+        run: find build.mjs kernel compiler/src compiler/runtime bin tools -name '*.mjs' -print0 | xargs -0 -n1 node --check
+      - name: Pack dry-run
+        run: npm pack --dry-run

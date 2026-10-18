@@ -6,6 +6,7 @@ node_modules/
 *.tgz
 notes/
 spikes/
+.opencode/
 CONTRACT*.md
 compiler/CONTRACT*.md
 kernel/CONTRACT*.md
