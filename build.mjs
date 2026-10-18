@@ -409,16 +409,18 @@ for (const [route, name] of portEntries) {
   console.log(`port controller ${route} -> dist/src/controllers/${slug}.mjs`);
 }
 
-// ---------- 3c2. transpile controllers (GET-only routes that still need a port) ----------
+// ---------- 3c2. transpile controllers (single-method routes that still need a port) ----------
 // A route only leaves the "needs a port" list when its controller method was fully
-// transpiled at build time. Anything outside the supported subset (POST flows, auth,
-// relations, unknown calls, non-scalar params, ...) stays blocked under --strict or
-// keeps needing a port — the build never silently degrades.
+// transpiled at build time. Only routes with exactly one non-HEAD verb (GET or POST) are
+// attempted; a route that answers several verbs on the same uri still needs a port,
+// because one handler key can only be registered for one verb. Anything outside the
+// supported subset (auth flows, relations, unknown calls, non-scalar params, ...) stays
+// blocked under --strict or keeps needing a port — the build never silently degrades.
 const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
 {
   const methodsOk = (route) => {
     const others = [...(methodsFor.get(route) || new Set())].filter((m) => m !== 'HEAD');
-    return others.length === 1 && others[0] === 'GET';
+    return others.length === 1 && (others[0] === 'GET' || others[0] === 'POST');
   };
   // Routes on the default web/api groups are transpiled. auth/guest are honoured
   // by kernel/http.mjs, so they are benign at transpile time too. Any other

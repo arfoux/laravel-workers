@@ -183,9 +183,10 @@ Everything else in Laravel's web surface: **compilable** — this document is th
    middleware), proven by an 11-step oracle scenario (`tools/php-http-pipeline-oracle.php`)
    that compares status, headers, Set-Cookie attributes, bodies and the raw session payload
    bytes per step. Still open: `throttle` needs the D1-backed cache store (build blocks those
-   routes), 419/429/500 HTML bodies are status-only stubs, and POST actions still need a port.
+   routes), 419/429/500 HTML bodies are status-only stubs, and multi-verb routes still need a port.
    `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `request()`
-   and `Request $request` injection in compiled controllers shipped in M16)*
+   and `Request $request` injection in compiled controllers shipped in M16; single-method `POST`
+   actions joined the compiled set in M17 (handler registered under `METHOD uri`)*
 4. **Validation flow (3)** — rides on sessions
 5. **Eloquent relations + pagination (4)** — kernel is already most of the way
 6. **Runtime completeness (1.4)** — continuous, corpus-driven, never "done"

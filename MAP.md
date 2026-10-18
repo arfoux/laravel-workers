@@ -154,7 +154,7 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Controllers / closures | PHP-subset → JS | ✅ | GET/HEAD controllers compiled: scalar params + `Request $request` injection, model chains + views, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`; fail loud elsewhere | F |
+| Controllers / closures | PHP-subset → JS | ✅ | single-verb GET/HEAD/POST controllers compiled: scalar params + `Request $request` injection, model chains + views, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`; fail loud elsewhere | F |
 | Service classes / helpers | PHP-subset → JS | ✅ | | F |
 | Form Requests | Compile rules + authorize | 🟡 | | F |
 | Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | | F |
@@ -356,7 +356,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | GET/HEAD controllers compiled (M10); POST/auth/session → ports |
+| controllers | 🟡 | single-verb GET/HEAD/POST controllers compiled (M10/M17); multi-verb/auth/session-gated routes → ports |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |
