@@ -14,7 +14,8 @@
 // preloadedAssets (font-preload dedupe) and would drop <link rel="preload"> tags
 // from a second capture on the same instance.
 
-$root = dirname(__DIR__, 2);
+require_once __DIR__ . '/_root.php';
+$root = lw_app_root();
 
 require $root . '/vendor/autoload.php';
 

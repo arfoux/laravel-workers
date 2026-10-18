@@ -6,7 +6,8 @@
 //   - body is included only for 2xx
 //   - location is included only for 3xx
 
-$root = dirname(__DIR__, 2);
+require_once __DIR__ . '/_root.php';
+$root = lw_app_root();
 
 require $root . '/vendor/autoload.php';
 

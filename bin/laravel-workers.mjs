@@ -80,7 +80,7 @@ if (cmd === 'test') {
     console.log('VERIFY-S0: SKIP (no Laravel vendor/ found — run from your Laravel app root via npx laravel-workers verify).');
     process.exit(0);
   }
-  run(php, [verifyPath], { cwd: appDir });
+  run(php, [verifyPath], { cwd: appDir, env: { ...process.env, LW_APP_ROOT: appDir } });
 } else {
   console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | init | build | verify`);
   process.exit(1);

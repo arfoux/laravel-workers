@@ -7,7 +7,8 @@
 // Usage: php edge/tools/verify-s0.php [--json]
 // Exit: 0 iff all checks pass (and compiled-field sha256 matches the registry).
 
-$root = dirname(__DIR__, 2);
+require_once __DIR__ . '/_root.php';
+$root = lw_app_root();
 require $root . '/vendor/autoload.php';
 $app = require $root . '/bootstrap/app.php';
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
@@ -15,7 +16,18 @@ $request = Illuminate\Http\Request::create('/', 'GET');
 $response = $kernel->handle($request);
 $kernel->terminate($request, $response);
 
-$dumpPath = $root . '/edge/.cache/welcome.compiled.json';
+$dumpCandidates = [
+    $root . '/edge/.cache/welcome.compiled.json',
+    $root . '/.cache/laravel-workers/welcome.compiled.json',
+];
+$dumpPath = null;
+foreach ($dumpCandidates as $candidate) {
+    if (is_file($candidate)) { $dumpPath = $candidate; break; }
+}
+if ($dumpPath === null) {
+    echo "VERIFY-S0: SKIP (no S0 dump at " . implode(' or ', $dumpCandidates) . " — run a build with a views map first)\n";
+    exit(0);
+}
 $dump = json_decode(file_get_contents($dumpPath), true);
 if (!is_array($dump) || !isset($dump['context'])) {
     fwrite(STDERR, "cannot read dump context\n");

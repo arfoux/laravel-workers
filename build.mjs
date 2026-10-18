@@ -112,11 +112,14 @@ const prerender = (route) => {
   let out;
   try {
     out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(pkgDir, 'tools/prerender.php'), route], {
-      cwd: root,
+      cwd: appDir,
+      env: { ...process.env, LW_APP_ROOT: appDir },
     }).toString('utf8');
   } catch (e) {
     const stderr = String(e.stderr || '').trim();
-    fail(`prerender crashed for ${route}${stderr ? `:\n${stderr}` : ''}`);
+    const stdout = String(e.stdout || '').trim();
+    const detail = (stderr || stdout || String(e.message || '')).slice(-2000);
+    fail(`prerender crashed for ${route}${detail ? `:\n${detail}` : ''}`);
   }
   try {
     return JSON.parse(out);
@@ -214,7 +217,10 @@ for (const [route, view] of viewMap) {
   const slug = slugifyRoute(route);
   const dumpPath = join(cacheDir, view + '.compiled.json');
   console.log(`compiling view ${view} for ${route}`);
-  execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, route], { cwd: appDir });
+  execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, route], {
+    cwd: appDir,
+    env: { ...process.env, LW_APP_ROOT: appDir },
+  });
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
   if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + route);
 
@@ -264,7 +270,10 @@ for (const [route, name] of portEntries) {
 mkdirSync(cacheDir, { recursive: true });
 const schemaPath = join(cacheDir, 'schema.json');
 console.log('\u2022 dumping DB schema');
-execFileSync(PHP, [join(pkgDir, 'tools', 'schema-dump.php'), schemaPath], { cwd: appDir });
+execFileSync(PHP, [join(pkgDir, 'tools', 'schema-dump.php'), schemaPath], {
+  cwd: appDir,
+  env: { ...process.env, LW_APP_ROOT: appDir },
+});
 cpSync(schemaPath, join(dist, 'schema.json'));
 console.log('  -> dist/schema.json');
 
@@ -280,7 +289,11 @@ for (const f of ['build', 'favicon.ico', 'robots.txt']) {
 }
 
 // ---------- 5. worker + ports + routes ----------
-cpSync(join(pkgDir, 'src/worker.mjs'), join(dist, 'src/worker.mjs'));
+const workerCandidates = [join(appDir, 'src/worker.mjs'), join(pkgDir, 'src/worker.mjs')];
+let workerSrc = null;
+for (const p of workerCandidates) if (existsSync(p)) { workerSrc = p; break; }
+if (!workerSrc) fail('no worker template found — looked for src/worker.mjs in the app and in the package (reinstall laravel-workers)');
+cpSync(workerSrc, join(dist, 'src/worker.mjs'));
 const portsCandidates = [
   join(appDir, 'src/ports'),
   join(appDir, 'ports'),
@@ -290,7 +303,12 @@ const portsCandidates = [
 let portsSrc = null;
 for (const p of portsCandidates) if (existsSync(p)) { portsSrc = p; break; }
 if (!portsSrc) portsSrc = join(pkgDir, 'src/ports');
-cpSync(portsSrc, join(dist, 'src/ports'), { recursive: true });
+if (existsSync(portsSrc)) {
+  cpSync(portsSrc, join(dist, 'src/ports'), { recursive: true });
+} else {
+  mkdirSync(join(dist, 'src/ports'), { recursive: true });
+  console.log('  ! no ports directory found — created empty dist/src/ports');
+}
 cpSync(join(pkgDir, 'kernel'), join(dist, 'kernel'), { recursive: true });
 cpSync(join(pkgDir, 'compiler', 'runtime'), join(dist, 'src', 'runtime'), { recursive: true });
 

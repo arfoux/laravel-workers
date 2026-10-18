@@ -35,6 +35,7 @@
     "compiler/src",
     "compiler/runtime",
     "kernel",
+    "src",
     "tools"
   ],
   "scripts": {
