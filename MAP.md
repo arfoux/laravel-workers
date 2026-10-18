@@ -305,6 +305,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **Static-assets routing (2026-10-18):** new `tools/routes-json.mjs` (`routeToPatterns`, `buildRoutesJson`) emits `dist/public/_routes.json` so only dynamic (view/port) routes invoke the Worker and `/build/*` is excluded; `build.mjs` writes it after the route table. New `kernel/tests/routes-json.test.mjs` (3 subtests) -> npm test **87/87**.
 - **Validator wildcards (2026-10-18):** `kernel/validator.mjs` now resolves nested dot paths (`user.name`) and expands wildcard keys (`items.*.name`) into concrete paths, with missing leaves still validated (`items.2.name`), `validated()` re-nesting dotted fields, and conditional/`same`/`gt`-style rules reading nested "other" fields. +6 subtests -> npm test **93/93**.
 - **Model widening (2026-10-18):** `kernel/model.mjs` adds casts (`json`/`array`/`object`/`collection`, `decimal:N`, `timestamp`, scalar/temporal), accessors/mutators (`getFooAttribute`/`setFooAttribute`), `hidden`/`visible`/`appends` in `toJSON`, json casts encoded on save, soft deletes (`query` filters, `trashed`, `withTrashed`/`onlyTrashed`, `delete` stamps, `restore`, `forceDelete`), and `findOrFail`/`firstOrFail`. +4 subtests -> npm test **84/84**.
+- **Hash widening (2026-10-18):** `kernel/hash.mjs` adds `Hash::isHashed()` (bcrypt `$2a/$2b/$2y$` + argon2 digests), so callers don't double-hash. +1 subtest -> npm test **94/94**.
 
 ## B. Current state
 
@@ -314,7 +315,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | View-compile spike (S0 dump) | ✅ first artifact produced |
 | Repo name | `laravel-workers` (decided; GitHub/npm checked) |
 | Repo strategy | standalone; extract from `edge/` at M1–M2 |
-| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (51/51) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (93/93 + 105/105 + bench p95<=5ms) |
+| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (51/51) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (94/94 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |
 
 ---

@@ -22,4 +22,12 @@ export function needsRehash(hashed, { rounds = 10 } = {}) {
   }
 }
 
-export default { make, check, needsRehash };
+// Laravel `Hash::isHashed()`: true when the value already looks like a bcrypt
+// (or argon2) digest, so callers don't double-hash.
+const HASHED_RE = /^\$(2[aby]\$\d{2}\$|argon2(id|i|d)\$)/;
+
+export function isHashed(value) {
+  return typeof value === 'string' && HASHED_RE.test(value);
+}
+
+export default { make, check, needsRehash, isHashed };
