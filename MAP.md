@@ -111,7 +111,7 @@ Examples: eventual consistency (KV) · async-by-queue instead of synchronous · 
 | S5 | Assets: snapshots + `public/` copy | build | `build.mjs` |
 | S6 | Deploy | Cloudflare | `wrangler deploy` after build |
 
-The **single transpiler** (PHP-subset→JS) serves the compiled Blade views today; the same contract is the planned path for controllers/middleware/app classes and generated model metadata. Until then, non-view routes ship as hand-written `ports/*.mjs`.
+The **single transpiler** (PHP-subset→JS) serves the compiled Blade views *and* compiled controllers today, plus generated model metadata. Routes outside the compiled subset (POST actions, relations, validation, custom middleware) still ship as hand-written `ports/*.mjs`.
 
 **Build invocation:** `build.mjs` is **cwd-based** when installed as `laravel-workers` npm package — `registry.json` (or `laravel-workers.json`) in the Laravel app root (npm mode: `appDir !== pkgDir`, `dist/` in app); legacy `edge/registry.json` fallback when developing from checkout.
 
@@ -154,7 +154,7 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Controllers / closures | PHP-subset → JS | ✅ | M10 v1: GET/HEAD controllers compiled (scalar params, model chains + views); fail loud elsewhere | F |
+| Controllers / closures | PHP-subset → JS | ✅ | GET/HEAD controllers compiled: scalar params + `Request $request` injection, model chains + views, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`; fail loud elsewhere | F |
 | Service classes / helpers | PHP-subset → JS | ✅ | | F |
 | Form Requests | Compile rules + authorize | 🟡 | | F |
 | Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | | F |

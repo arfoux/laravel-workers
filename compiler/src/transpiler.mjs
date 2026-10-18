@@ -244,9 +244,66 @@ const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'p
 
 const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
-function txAwait(expr, node) {
+// ---------------------------------------------------------------------------
+// HTTP helpers available inside a compiled controller (7b)
+// ---------------------------------------------------------------------------
+// `session()`, `old()`, `csrf_token()`, `csrf_field()`, `request()` map straight
+// onto rt.* (which reads the live session/request handed down by the kernel).
+// `auth()` / `Auth::*` need the request context too and the guard resolves the
+// user asynchronously (Timebox), so in controller mode those calls are awaited.
+const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'request']);
+// Recaller/guard methods that return a promise at the edge.
+const AUTH_ASYNC = new Set(['check', 'guest', 'user', 'id', 'attempt', 'once', 'login', 'logout']);
+const AUTH_FACADE_RE = /^rt\.auth\((?:[^()]*)\)(?:\.guard\((?:[^()]*)\))?$/;
+
+// $request->method() allowlist (sync unless listed in REQUEST_ASYNC). Anything
+// else fails loud at build time so the route falls back to a port instead of
+// silently returning wrong data at the edge.
+const REQUEST_CALL = new Set([
+  'input', 'all', 'query', 'post', 'has', 'hasAny', 'filled', 'isNotFilled', 'missing',
+  'only', 'except', 'string', 'integer', 'float', 'boolean', 'date', 'isMethod', 'method',
+  'path', 'url', 'fullUrl', 'ajax', 'pjax', 'expectsJson', 'wantsJson', 'accepts',
+  'acceptsAnyContentType', 'acceptsJson', 'prefetch', 'header', 'headers', 'hasHeader',
+  'bearerToken', 'cookie', 'hasCookie', 'ip', 'userAgent', 'route', 'session', 'old',
+]);
+const REQUEST_ASYNC = new Set(['user']);
+const REQUEST_DENY = new Set([
+  'validate', 'validateWithBag', 'file', 'files', 'allFiles', 'hasFile', 'hasValidFile', 'fileIsValid',
+]);
+
+function txRequestCall(node, args) {
+  const what = node.what;
+  if (!what || what.kind !== 'propertylookup') return null;
+  const inner = what.what;
+  if (!inner || inner.kind !== 'variable') return null;
+  if (!CTX || !CTX.requestVars || !CTX.requestVars.has(vname(inner.name))) return null;
+  const meth = what.offset && what.offset.name;
+  if (typeof meth !== 'string') {
+    throw mkErr('LW002', 'unsupported $request property access', node.loc, PORT_HINT);
+  }
+  if (REQUEST_DENY.has(meth)) {
+    throw mkErr(
+      'LW002',
+      '$request->' + meth + '() is not supported by the compiled rung yet (validation/files need D1 + a port) — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if (!REQUEST_CALL.has(meth)) {
+    throw mkErr(
+      'LW002',
+      'unsupported $request->' + meth + '() — allowed: ' + [...REQUEST_CALL].join(', ') + '; ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  const expr = vname(inner.name) + '.' + meth + '(' + args + ')';
+  return REQUEST_ASYNC.has(meth) ? txAwait(expr, node, '$request->' + meth + '()') : expr;
+}
+
+function txAwait(expr, node, label = 'database query') {
   if (CLOSURE_DEPTH > 0) {
-    throw mkErr('LW002', 'database query inside a closure is not supported — move the query outside the closure', node.loc, PORT_HINT);
+    throw mkErr('LW002', label + ' inside a closure is not supported — move the query outside the closure', node.loc, PORT_HINT);
   }
   return '(await ' + expr + ')';
 }
@@ -369,6 +426,8 @@ function txCall(node) {
     if (redir) return redir;
     const chain = modelChain(node);
     if (chain) return txModelChain(chain, node);
+    const reqCall = txRequestCall(node, args);
+    if (reqCall) return reqCall;
   }
   if (what.kind === 'name') {
     const name = what.name;
@@ -387,6 +446,29 @@ function txCall(node) {
       const cb = cbRef(argNodes[1]);
       if (argNodes.length > 1 && !cb) throw mkErr('LW001', 'array_filter callback must be a named function', node.loc);
       return 'rt.array_filter(' + tx(argNodes[0]) + (cb ? ', ' + cb : '') + ')';
+    }
+    if (CTX && CTX.controller && HTTP_HELPERS.has(name)) {
+      const a = node.arguments || [];
+      if (name === 'session') {
+        if (a.length === 0) return 'rt.session()';
+        if (a.length > 2) throw mkErr('LW002', 'session() supports at most 2 arguments', node.loc, PORT_HINT);
+        if (a[0].kind === 'array') {
+          throw mkErr('LW002', "session(['k' => v]) is not supported — use session()->put([...])", node.loc, PORT_HINT);
+        }
+        return 'rt.session().get(' + a.map(tx).join(', ') + ')';
+      }
+      if (name === 'old') {
+        if (a.length === 0 || a.length > 2) throw mkErr('LW002', 'old() needs 1-2 arguments', node.loc, PORT_HINT);
+        return 'rt.old(' + args + ')';
+      }
+      if (name === 'csrf_token' || name === 'csrf_field') {
+        if (a.length) throw mkErr('LW002', name + '() takes no arguments', node.loc, PORT_HINT);
+        return 'rt.' + name + '()';
+      }
+      if (name === 'request') {
+        if (a.length) throw mkErr('LW002', 'request(...) with arguments is not supported', node.loc, PORT_HINT);
+        return 'rt.request()';
+      }
     }
     if (CTX) {
       if (name === 'view') {
@@ -432,13 +514,29 @@ function txCall(node) {
     const cls = what.what && what.what.name;
     const meth = what.offset && what.offset.name;
     if (cls === 'Route' && meth === 'has') return 'rt.Route.has(' + args + ')';
+    if ((cls === 'Auth' || cls === 'Illuminate\\Support\\Facades\\Auth') && CTX && CTX.controller) {
+      if (!AUTH_ASYNC.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Auth::' + meth + '() is not supported — allowed: ' + [...AUTH_ASYNC].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return txAwait('rt.auth().' + meth + '(' + args + ')', node, 'Auth::' + meth + '()');
+    }
     throw mkErr('LW003', 'unknown class/static ' + cls + '::' + meth, node.loc);
   }
   if (what.kind === 'propertylookup') {
     const obj = tx(what.what);
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
-    return obj + '.' + meth + '(' + args + ')';
+    const expr = obj + '.' + meth + '(' + args + ')';
+    // auth()->user() / auth()->guard()->attempt() resolve the user async (Timebox).
+    if (CTX && CTX.controller && AUTH_FACADE_RE.test(obj) && AUTH_ASYNC.has(meth)) {
+      return txAwait(expr, node, 'an authenticated call');
+    }
+    return expr;
   }
   if (what.kind === 'variable') {
     return tx(what) + '(' + args + ')';
@@ -814,7 +912,12 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   const vars = new Set();
   collect(bodyChildren || [], funcs, vars);
   FUNCS = funcs;
-  CTX = { models: opts.models || new Set(), views: opts.views || new Set() };
+  CTX = {
+    models: opts.models || new Set(),
+    views: opts.views || new Set(),
+    controller: true,
+    requestVars: opts.requestVars || new Set(),
+  };
   CLOSURE_DEPTH = 0;
   const indent = opts.indent || '';
   const paramVars = opts.paramVars || new Set();

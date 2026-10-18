@@ -220,7 +220,7 @@ test('emit: a non-model class (Log) fails with LW003', () => {
   assert.match(res.errors[0].message, /App\\Http\\Controllers\\Log|Log/);
 });
 
-test('emit: non-scalar params (Request injection) are rejected', () => {
+test('emit: Request $request is injected (other services still fail loud)', () => {
   const src = `<?php
 namespace App\\Http\\Controllers;
 use Illuminate\\Http\\Request;
@@ -232,9 +232,81 @@ class C {
 }
 `;
   const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /let v_request = rt\.request\(\);/);
+  assert.match(res.code, /http: ctx/);
+});
+
+test('emit: Request $request does not consume a route segment', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function update(Request $request, string $id)\n' +
+    '    {\n' +
+    "        return response()->json(['id' => $id, 'email' => $request->input('email')]);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'update', { routeUri: '/x/{id}', routeParams: ['id'], models: [], views: [] });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /let v_request = rt\.request\(\);/);
+  assert.match(res.code, /let v_id = rt\.param\(ctx\.params, "id"/);
+  assert.match(res.code, /v_request\.input\(["']email["']\)/);
+});
+
+test('emit: an aliased service type named Request is not injected', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Support\\Dingus as Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $dingus)\n    {\n        return redirect(\'/\');\n    }\n}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
   assert.match(res.errors[0].message, /unsupported type/);
+});
+
+test('emit: $request->validate() fails loud (validation at the edge is not wired yet)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    "        $request->validate(['email' => 'required']);\n" +
+    "        return redirect('/');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /\$request->validate/);
+});
+
+test('emit: session()/old()/csrf_token()/csrf_field()/auth() map to the rt HTTP helpers', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Auth;\n' +
+    'class C {\n' +
+    '    public function form()\n' +
+    '    {\n' +
+    "        $email = old('email');\n" +
+    '        $token = csrf_token();\n' +
+    '        $field = csrf_field();\n' +
+    "        $name = session('name');\n" +
+    '        $flag = auth()->check();\n' +
+    '        $uid = Auth::id();\n' +
+    "        return response()->json(compact('email', 'token', 'field', 'name', 'flag', 'uid'));\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'form', { routeUri: '/form', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /rt\.old\(["']email["']\)/);
+  assert.match(res.code, /rt\.csrf_token\(\)/);
+  assert.match(res.code, /rt\.csrf_field\(\)/);
+  assert.match(res.code, /rt\.session\(\)\.get\(["']name["']\)/);
+  assert.match(res.code, /\(await rt\.auth\(\)\.check\(\)\)/);
+  assert.match(res.code, /\(await rt\.auth\(\)\.id\(\)\)/);
 });
 
 // ---------------------------------------------------------------------------
@@ -468,4 +540,81 @@ test('runtime: rt.prop reads model attributes with casts', async () => {
   assert.equal(rt.prop(instance, 'title'), 'Hello Edge');
   assert.equal(rt.prop(instance, 'missing'), null);
   assert.equal(rt.prop(null, 'title'), null);
+});
+
+async function handlerFromSource(src, method, meta) {
+  const code = emitController(src, method, meta);
+  assert.deepEqual(code.errors, [], 'expected a clean emit for ' + method);
+  const file = path.join(tmpRoot, 'src', 'controllers', method + '-http.mjs');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, code.code);
+  const mod = await import(pathToFileURL(file).href + '?v=' + method);
+  return mod.default;
+}
+
+test('runtime: session()/old()/csrf_token()/csrf_field()/auth()/request() read the live HTTP ctx', async () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'use Illuminate\\Support\\Facades\\Auth;\n' +
+    'class C {\n' +
+    '    public function form(Request $request, string $id)\n' +
+    '    {\n' +
+    "        $email = old('email');\n" +
+    '        $token = csrf_token();\n' +
+    '        $field = csrf_field();\n' +
+    "        $name = session('name');\n" +
+    '        $uid = Auth::id();\n' +
+    "        $in = $request->input('email');\n" +
+    "        return response()->json(compact('email', 'token', 'field', 'name', 'uid', 'in', 'id'));\n" +
+    '    }\n' +
+    '}\n';
+  const handle = await handlerFromSource(src, 'form', {
+    routeUri: '/form/{id}',
+    routeParams: ['id'],
+    models: [],
+    views: [],
+  });
+
+  const TOKEN = 'A'.repeat(40);
+  const store = {
+    _old: { email: 'old@example.com' },
+    getOldInput(k, d) {
+      return Object.prototype.hasOwnProperty.call(this._old, k) ? this._old[k] : d;
+    },
+    get(k, d) {
+      return k === 'name' ? 'Farosy' : d;
+    },
+    token() {
+      return TOKEN;
+    },
+  };
+  const auth = {
+    check: async () => true,
+    guest: async () => false,
+    user: async () => ({ id: 7 }),
+    id: async () => 7,
+    guard: () => ({}),
+  };
+  const request = { input: (k) => (k === 'email' ? 'new@example.com' : null) };
+
+  const res = await handle({ params: { id: '42' }, request, session: store, auth }, { DB: dbWithRow });
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(res.body), {
+    email: 'old@example.com',
+    token: TOKEN,
+    field: '<input type="hidden" name="_token" value="' + TOKEN + '" autocomplete="off">',
+    name: 'Farosy',
+    uid: 7,
+    in: 'new@example.com',
+    id: '42',
+  });
+});
+
+test('runtime: session()/request() fail loud without an HTTP ctx (static evaluation)', async () => {
+  const { buildRt } = await import(pathToFileURL(path.join(tmpRoot, 'src', 'runtime', 'rt-from-context.mjs')).href);
+  const rt = buildRt(null, { runtime: true });
+  assert.throws(() => rt.session(), /no HTTP context/);
+  assert.throws(() => rt.request(), /no HTTP context/);
+  assert.throws(() => rt.old('email'), /no HTTP context/);
 });

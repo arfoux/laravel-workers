@@ -175,12 +175,60 @@ export function buildRt(context, opts = {}) {
   // ---- rt.Route ----
   rt.Route = { has: (n) => routeNames.indexOf(n) !== -1 };
 
-  // ---- rt.auth ----
-  rt.auth = () => ({
-    guard: () => ({
+  // ---- rt.session / rt.request / rt.auth (compiled HTTP context) ----
+  // `opts.http` is the request context handed down by the HTTP kernel
+  // (`{ request, session, auth, user, route, routeParams }`). When it is
+  // present these helpers read the live session/guard; when it is absent
+  // (static snapshot or build-time evaluation) they fall back to the captured
+  // context and the session/request helpers fail loud rather than invent state.
+  const liveSession = (opts && opts.http && opts.http.session) ? opts.http.session : null;
+  const liveRequest = (opts && opts.http && opts.http.request) ? opts.http.request : null;
+  const liveAuth = (opts && opts.http && opts.http.auth) ? opts.http.auth : null;
+
+  const noHttp = (fn) => {
+    throw new Error(fn + '(): no HTTP context (static snapshot / build-time evaluation)');
+  };
+  rt.request = () => (liveRequest || noHttp('request'));
+  rt.session = () => (liveSession || noHttp('session'));
+  // Laravel's old($key, $default) -> session()->getOldInput($key, $default).
+  rt.old = (key, def = null) => (liveSession ? liveSession.getOldInput(key, def) : noHttp('old'));
+  rt.csrf_token = () => rt.session().token();
+  // Illuminate\Foundation\helpers.php csrf_field(): no escaping (the token is
+  // Str::random(40), alphanumeric) — kept byte-exact.
+  rt.csrf_field = () =>
+    '<input type="hidden" name="_token" value="' + String(rt.session().token()) + '" autocomplete="off">';
+
+  rt.auth = (name) => {
+    if (liveAuth) {
+      return {
+        check: (n) => liveAuth.check(n ?? name),
+        guest: (n) => liveAuth.guest(n ?? name),
+        user: (n) => liveAuth.user(n ?? name),
+        id: (n) => liveAuth.id(n ?? name),
+        guard: (n) => liveAuth.guard(n ?? name),
+        attempt: (c, r, n) => liveAuth.guard(n ?? name).attempt(c, r),
+        once: (c, n) => liveAuth.guard(n ?? name).once(c),
+        login: (u, r, n) => liveAuth.guard(n ?? name).login(u, r),
+        logout: (n) => liveAuth.guard(n ?? name).logout(),
+      };
+    }
+    const unsupported = (m) => () => {
+      throw new Error(
+        'auth()->' + m + '() needs the request context (compiled controller) — not available during static/build-time evaluation'
+      );
+    };
+    return {
       check: () => !!authCtx.check,
-    }),
-  });
+      guest: () => !authCtx.check,
+      user: unsupported('user'),
+      id: unsupported('id'),
+      attempt: unsupported('attempt'),
+      once: unsupported('once'),
+      login: unsupported('login'),
+      logout: unsupported('logout'),
+      guard: () => ({ check: () => !!authCtx.check, user: unsupported('guard()->user') }),
+    };
+  };
 
   // ---- rt.url / rt.route ----
   const runtime = !!(opts && opts.runtime);

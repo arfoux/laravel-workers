@@ -28,7 +28,7 @@ const TYPE_MAP = {
 };
 
 // Static classes that are allowed even though they are not Eloquent models.
-const NON_MODEL_STATICS = new Set(['Route', 'self', 'static', 'parent']);
+const NON_MODEL_STATICS = new Set(['Route', 'self', 'static', 'parent', 'Auth', 'Illuminate\\Support\\Facades\\Auth']);
 
 function lwErr(code, message, loc, hint) {
   return {
@@ -131,7 +131,20 @@ function literalOf(node) {
   return { ok: false };
 }
 
-function analyzeParams(method) {
+// The only class type a compiled controller can be handed is the HTTP Request;
+// anything else is a service and must ride through a port.
+const REQUEST_FQCN = 'Illuminate\\Http\\Request';
+
+// Resolve a type hint name the way PHP would in this file (use aliases first,
+// then the controller's own namespace).
+function resolveTypeFqcn(tn, uses, nsName) {
+  if (!tn) return null;
+  if (uses && Object.prototype.hasOwnProperty.call(uses, tn)) return uses[tn];
+  if (tn.indexOf('\\') !== -1) return tn.replace(/^\\/, '');
+  return nsName ? nsName + '\\' + tn : tn;
+}
+
+function analyzeParams(method, uses = null, nsName = null) {
   const params = [];
   for (const p of method.arguments || []) {
     const entry = {
@@ -139,6 +152,7 @@ function analyzeParams(method) {
       type: 'raw',
       typeOk: true,
       typeHint: null,
+      inject: null,
       hasDefault: p.value != null,
       default: null,
       defaultOk: true,
@@ -150,6 +164,10 @@ function analyzeParams(method) {
       const lowered = tn == null ? null : tn.toLowerCase();
       if (lowered && TYPE_MAP[lowered]) {
         entry.type = TYPE_MAP[lowered];
+        entry.typeHint = tn;
+      } else if (resolveTypeFqcn(tn, uses, nsName) === REQUEST_FQCN) {
+        // Request $request — injected from the HTTP context, not a route segment.
+        entry.inject = 'request';
         entry.typeHint = tn;
       } else {
         entry.typeOk = false;
@@ -211,7 +229,7 @@ export function extractController(source, methodName) {
     return { ok: false, errors: [lwErr('LW004', `method ${methodName}() not found in ${fqcn}`, classNode.loc, PORT_HINT)] };
   }
 
-  const params = analyzeParams(method);
+  const params = analyzeParams(method, uses, nsName);
   const classSet = new Set();
   const viewSet = new Set();
   scanBody(method.body, classSet, viewSet);
@@ -251,6 +269,7 @@ export function emitController(source, methodName, meta = {}) {
     String(s).replace(/[?*]$/, '')
   );
 
+  let segIndex = 0;
   for (let i = 0; i < params.length; i++) {
     const p = params[i];
     if (p.variadic) errors.push(lwErr('LW002', `parameter $${p.name} is variadic — ` + PORT_HINT, null, PORT_HINT));
@@ -259,18 +278,28 @@ export function emitController(source, methodName, meta = {}) {
       errors.push(
         lwErr(
           'LW002',
-          `parameter $${p.name} has unsupported type "${p.typeHint}" — only scalar parameters (string/int/float/bool) are supported here; ` +
-            'request injection is out of scope in v1 — ' +
+          `parameter $${p.name} has unsupported type "${p.typeHint}" — only scalar parameters (string/int/float/bool) and Illuminate\\Http\\Request are supported here; ` +
+            'other services need a port — ' +
             PORT_HINT,
           null,
           PORT_HINT
         )
       );
     }
+    if (p.inject) {
+      // Injected params are never filled from the URL, so they do not consume a
+      // route segment and cannot carry a default.
+      if (p.hasDefault) {
+        errors.push(
+          lwErr('LW002', `injected parameter $${p.name} cannot have a default value — ` + PORT_HINT, null, PORT_HINT)
+        );
+      }
+      continue;
+    }
     if (!p.defaultOk) {
       errors.push(lwErr('LW002', `parameter $${p.name} has a non-literal default value — ` + PORT_HINT, null, PORT_HINT));
     }
-    if (i >= routeParams.length && !p.hasDefault) {
+    if (segIndex >= routeParams.length && !p.hasDefault) {
       errors.push(
         lwErr(
           'LW002',
@@ -281,6 +310,7 @@ export function emitController(source, methodName, meta = {}) {
         )
       );
     }
+    segIndex++;
   }
 
   const modelAliases = new Set((meta.models || []).map((m) => m.alias));
@@ -301,11 +331,13 @@ export function emitController(source, methodName, meta = {}) {
   if (errors.length) return { code: null, errors };
 
   const paramVars = new Set(params.map((p) => vname(p.name)));
+  const requestVars = new Set(params.filter((p) => p.inject === 'request').map((p) => vname(p.name)));
   const emitted = transpileControllerMethod((info.methodNode.body && info.methodNode.body.children) || [], {
     models: modelAliases,
     views: new Set(info.views),
     indent: '    ',
     paramVars,
+    requestVars,
   });
   if (emitted.errors.length) return { code: null, errors: emitted.errors };
 
@@ -317,8 +349,14 @@ export function emitController(source, methodName, meta = {}) {
     viewEntries.push(`  ${JSON.stringify(v)}: { main: V${i}, context: VC${i} }`);
   });
 
-  const paramLines = params.map((p, i) => {
-    const segName = i < routeParams.length ? routeParams[i] : p.name;
+  let seg = 0;
+  const paramLines = params.map((p) => {
+    if (p.inject === 'request') {
+      // Request $request — handed down by the HTTP kernel through the handler ctx.
+      return `    let ${vname(p.name)} = rt.request();`;
+    }
+    const segName = seg < routeParams.length ? routeParams[seg] : p.name;
+    seg++;
     const def = p.hasDefault ? JSON.stringify(p.default === undefined ? null : p.default) : 'null';
     return (
       `    let ${vname(p.name)} = rt.param(ctx.params, ${JSON.stringify(segName)}, ` +
@@ -345,6 +383,8 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    views: VIEWS,');
   lines.push("    origin: ctx && ctx.request && ctx.request.host ? 'https://' + ctx.request.host : null,");
   lines.push('    routeMap: LW_ROUTE_MAP,');
+  lines.push('    // Live HTTP wiring from the compiled kernel: session()/old()/csrf_*()/auth().');
+  lines.push('    http: ctx,');
   lines.push('  });');
   lines.push('  try {');
   for (const l of paramLines) lines.push(l);
