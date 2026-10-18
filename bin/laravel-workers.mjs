@@ -19,7 +19,7 @@ const run = (command, args, options = {}) => {
 };
 
 if (cmd === 'test') {
-  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/budget.test.mjs'], { cwd: pkgDir });
+  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/registry-json.test.mjs', 'kernel/tests/budget.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:db') {
   run(process.execPath, ['--test', 'kernel/tests/db.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:sqlite') {
@@ -66,7 +66,7 @@ if (cmd === 'test') {
   if (!existsSync(join(cwd, 'artisan'))) {
     console.error('laravel-workers build: artisan not found — run from your Laravel app root via npx laravel-workers build (cwd must contain artisan).');
   }
-  run(process.execPath, [buildPath, '--strict'], { cwd });
+  run(process.execPath, [buildPath, '--strict', ...process.argv.slice(3)], { cwd });
 } else if (cmd === 'verify') {
   const php = process.env.PHP_BIN ?? 'php';
   const verifyPath = join(pkgDir, 'tools', 'verify-s0.php');

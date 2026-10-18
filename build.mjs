@@ -15,6 +15,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { buildRoutesJson } from './tools/routes-json.mjs';
+import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import {
   cpSync,
   existsSync,
@@ -408,8 +409,8 @@ if (!blocked)
 if (scaffold && needsPort.length) {
   const slugify = (route) =>
     route.replace(/^\//, '').replace(/[{}]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'home';
-  for (const { route } of needsPort) {
-    const slug = slugify(route);
+  const entries = needsPort.map(({ route }) => ({ route, slug: slugify(route) }));
+  for (const { route, slug } of entries) {
     const stubDir = isNpmMode ? (portsSrc !== join(pkgDir, 'src/ports') ? portsSrc : join(appDir, 'src/ports')) : join(pkgDir, 'src/ports');
     mkdirSync(stubDir, { recursive: true });
     const stub = join(stubDir, `${slug}.mjs`);
@@ -433,11 +434,19 @@ if (scaffold && needsPort.length) {
       );
       console.log(`  scaffolded src/ports/${slug}.mjs`);
     }
-    console.log(`     registry.json line:  ${JSON.stringify(route)}: ${JSON.stringify(slug)}  (under "ports")`);
+  }
+  const { registry: nextRegistry, added } = mergePorts(JSON.parse(readFileSync(registryPath, 'utf8')), entries);
+  if (added.length) {
+    writeFileSync(registryPath, serializeRegistry(nextRegistry));
+    for (const { route, slug } of added) {
+      console.log(`  registry.json: "ports" += ${JSON.stringify(route)}: ${JSON.stringify(slug)}`);
+    }
+  } else {
+    console.log('  registry.json: all scaffolded ports already registered');
   }
 }
-if (blocked && !scaffold) console.log('  (tip: run `node build.mjs --scaffold` to generate port stubs)');
-if (strict && blocked) fail('coverage check failed (--strict)');
+if (blocked && !scaffold) console.log('  (tip: re-run with --scaffold to generate + register port stubs)');
+if (strict && blocked) fail('coverage check failed (--strict)' + (scaffold ? ' — port stubs were scaffolded + registered; implement them, then re-run' : ''));
 
 console.log(
   `done. dist: ${relative(appDir, dist)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, ignored: ${ignoreMap.length})`

@@ -64,7 +64,7 @@ cd my-laravel-app             # artisan + vendor + public/build there
 npm i laravel-workers
 npx laravel-workers init             # writes registry.json + wrangler.jsonc, updates .gitignore
 composer install; npm run build
-npx laravel-workers build --strict   # dist/ with --strict (cwd-based, no edge/ required)
+npx laravel-workers build --strict   # dist/ (cwd-based, no edge/ required); --scaffold for port stubs
 # local preview/deploy: npx wrangler deploy
 
 # 2) From checkout (tests / legacy edge layout):
@@ -72,7 +72,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 162/162 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + budget
+npm test                      # 165/165 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + registry-json + budget
 npm run test:corpus           # 51/51 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -84,7 +84,7 @@ npx laravel-workers build     # --strict build; reads registry.json / edge/regis
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (162)
+laravel-workers test            # all kernel tests (165)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only
@@ -95,7 +95,7 @@ laravel-workers test:corpus     # transpiler corpus (51)
 laravel-workers bench           # micro-bench (bench.mjs)
 laravel-workers check:docs      # docs-check 105/105
 laravel-workers init            # scaffold registry.json + wrangler.jsonc (needs Laravel app root)
-laravel-workers build           # node build.mjs --strict (needs Laravel app)
+laravel-workers build           # --strict (needs Laravel app); --scaffold generates + registers port stubs
 laravel-workers verify          # php tools/verify-s0.php (SKIP when no parent vendor/)
 
 # npm aliases do the same:
