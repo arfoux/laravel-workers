@@ -1,0 +1,6 @@
+hi edge
+edge!
+count=7, twice=14
+map: V
+map2: V
+adjacent: edge7

@@ -289,6 +289,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - Compiled-Blade dump works today (`edge/tools/compile-view.php` → JSON with context: config, routes, vfs) — first compiler artifact.
 - **M1-alpha parity PASS (2026-10-17):** transpiled `welcome` (compiled Blade → JS) rendered via `rt` = `php prerender.php /` output **byte-identical** — 35,647 B, sha256 `b228c8a2…` equal on both sides (strict rt, no warnings). Transpiler: php-parser 3.7.0, fail-loud LW001–LW004. Context: enriched S0 (app/config/vite/files/auth/routes/route_names/urls + legacy).
 - **M1 complete (2026-10-18):** smoke PASS, corpus ALL PASS (41/41), verify-s0 PASS (15/15). Transpiler fixes: `node.expr`->`expression`, null/nullkeyword, boolean, elseif chains, var redecl, compound assign, `.`->rt.concat, `+`->rt.add, rt.e PHP cast, rt.sprintf %%, rt.str_replace empty needle, float formatting.
+- **M1-transpiler widened (2026-10-18):** PHP-subset now covers `for`/`while`/`foreach` (incl. `key => value`), comparison (`==`/`!=`/`===`/`!==`/relational) + logic (`&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), full string interpolation. php-parser is PHP 7, so mixed `.`/`+`/`-` chains are re-associated to PHP 8 precedence. Verified against a **PHP 8.3 oracle** (`php case.php` → `expectations/*.txt`); the 25 former-UNSUP cases flipped to SUP, corpus now **41/41 SUP byte-exact**.
 - **M2 complete (2026-10-18):** router integration live — build --strict PASS (2 routes), routes.generated.mjs + controllers, W3 router in worker, ROUTER INTEGRATION PASS, CPU BUDGET PASS (p95 <= 0.04 ms), W3 tests PASS, parity/corpus/verify-s0 green.
 - **M3 complete (2026-10-18):** D1 layer shipped - schema snapshot (`.cache/schema.json` -> `dist/schema.json`), `kernel/db.mjs` query builder, `kernel/model.mjs` Model base, mock-D1 tests PASS (8/8), build `--strict` PASS, `nearfind-edge` redeployed, `/dbcheck` live via builder.
 - **M4 complete (2026-10-18):** packaging + CI shipped - `package.json` (`laravel-workers@0.3.0`, bin CLI), `bin/laravel-workers.mjs`, `.github/workflows/ci.yml`, README status M4, MIT license; kernel tests PASS (9/9), corpus PASS (41/41), `npm pack --dry-run` clean.
@@ -323,7 +324,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | authentication | 🟡 | kernel auth; PBKDF2 trade |
 | authorization | 🟡 ph2 | gates/policies compile |
 | billing | 🟡 ph3 | Cashier via fetch; webhooks = HMAC routes |
-| blade | ✅ | views compile (echo/if/concat); loops+layouts via port |
+| blade | ✅ | views compile (echo/if/loops/expr); layouts (`$__env`) via port |
 | boost | ⛔ | dev tooling only |
 | broadcasting | 🔴 | SSE/polling padanan; WS via DO/external |
 | cache | 🟡 | KV/D1 drivers; tag emulation |

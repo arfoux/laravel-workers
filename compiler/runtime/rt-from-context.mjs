@@ -233,6 +233,116 @@ export function buildRt(context, opts = {}) {
   rt.strtoupper = (s) => String(s).toUpperCase();
   rt.trim = (s) => String(s).trim();
 
+  // ---- PHP truthiness / logic ----
+  rt.truthy = (v) => {
+    if (v === null || v === undefined) return false;
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') return v !== '' && v !== '0';
+    if (Array.isArray(v)) return v.length !== 0;
+    if (typeof v === 'object') return Object.keys(v).length !== 0;
+    return true;
+  };
+  rt.not = (v) => !rt.truthy(v);
+  rt.and = (fa, fb) => (rt.truthy(fa()) ? rt.truthy(fb()) : false);
+  rt.or = (fa, fb) => (rt.truthy(fa()) ? true : rt.truthy(fb()));
+
+  // ---- PHP comparison semantics ----
+  const isNumericStr = (s) => /^\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*$/.test(s);
+  const tagOf = (v) => {
+    if (v === null || v === undefined) return 'null';
+    if (typeof v === 'boolean') return 'bool';
+    if (typeof v === 'number') return 'num';
+    if (typeof v === 'string') return 'str';
+    return 'arr';
+  };
+  const arrEmpty = (v) => (Array.isArray(v) ? v.length === 0 : (v && typeof v === 'object' ? Object.keys(v).length === 0 : true));
+
+  rt.looseEq = (a, b) => {
+    const ta = tagOf(a), tb = tagOf(b);
+    if (ta === 'null' && tb === 'null') return true;
+    if (ta === 'bool' || tb === 'bool') return rt.truthy(a) === rt.truthy(b);
+    if (ta === 'null') {
+      if (tb === 'num') return Number(b) === 0;
+      if (tb === 'str') return b === '';
+      if (tb === 'arr') return arrEmpty(b);
+      return false;
+    }
+    if (tb === 'null') return rt.looseEq(b, a);
+    if (ta === 'num' && tb === 'num') return a === b;
+    if (ta === 'str' && tb === 'str') {
+      if (isNumericStr(a) && isNumericStr(b)) return Number(a) === Number(b);
+      return a === b;
+    }
+    if (ta === 'num' && tb === 'str') return isNumericStr(b) ? a === Number(b) : String(a) === String(b);
+    if (ta === 'str' && tb === 'num') return isNumericStr(a) ? Number(a) === b : String(a) === String(b);
+    return a === b;
+  };
+  rt.looseNe = (a, b) => !rt.looseEq(a, b);
+
+  rt.strictEq = (a, b, la, lb) => {
+    const na = a === undefined ? null : a;
+    const nb = b === undefined ? null : b;
+    const ta = tagOf(na), tb = tagOf(nb);
+    if (ta !== tb) return false;
+    if (ta === 'num' && (!!la !== !!lb)) return false;
+    return na === nb;
+  };
+  rt.strictNe = (a, b, la, lb) => !rt.strictEq(a, b, la, lb);
+
+  const numVal = (v) => (typeof v === 'number' ? v : (typeof v === 'string' && isNumericStr(v) ? Number(v) : null));
+  const relPair = (a, b) => {
+    const na = numVal(a), nb = numVal(b);
+    if (na !== null && nb !== null) return [na, nb];
+    return [phpToStr(a), phpToStr(b)];
+  };
+  rt.lt = (a, b) => { const p = relPair(a, b); return p[0] < p[1]; };
+  rt.gt = (a, b) => { const p = relPair(a, b); return p[0] > p[1]; };
+  rt.lte = (a, b) => { const p = relPair(a, b); return p[0] <= p[1]; };
+  rt.gte = (a, b) => { const p = relPair(a, b); return p[0] >= p[1]; };
+
+  // ---- PHP arithmetic ----
+  rt.sub = (a, b) => phpToNum(a) - phpToNum(b);
+  rt.mul = (a, b) => phpToNum(a) * phpToNum(b);
+  rt.div = (a, b) => phpToNum(a) / phpToNum(b);
+  rt.mod = (a, b) => phpToNum(a) % phpToNum(b);
+  rt.pow = (a, b) => Math.pow(phpToNum(a), phpToNum(b));
+
+  // ---- null coalescing ----
+  rt.coalesce = (a, b) => (a === null || a === undefined ? b : a);
+  rt.coalesceAssign = (get, set, val) => { const cur = get(); if (cur === null || cur === undefined) set(val); return get(); };
+
+  // ---- match (strict) ----
+  rt.match = (v, ...arms) => {
+    let dflt;
+    for (const a of arms) {
+      const conds = a[0], body = a[1];
+      if (conds === null) { dflt = body; continue; }
+      for (const c of conds) if (rt.strictEq(v, c, false, false)) return body();
+    }
+    if (dflt) return dflt();
+    throw new Error('match: unhandled value');
+  };
+
+  // ---- foreach over PHP arrays/objects ----
+  rt.entries = (src) => {
+    if (src && typeof src === 'object') {
+      const keyOf = (k) => (/^\d+$/.test(k) ? Number(k) : k);
+      return Object.keys(src).map((k) => [keyOf(k), src[k]]);
+    }
+    return [];
+  };
+
+  rt.str = phpToStr;
+  rt.number_format = (n, dec = 0, dp = '.', ts = ',') => {
+    const x = Number(n);
+    const s = Math.abs(x).toFixed(dec);
+    const [ip, fp] = s.split('.');
+    const grouped = ip.replace(/\B(?=(\d{3})+(?!\d))/g, ts);
+    return (x < 0 ? '-' : '') + grouped + (fp ? dp + fp : '');
+  };
+  rt.nl2br = (s) => String(s == null ? '' : s).replace(/\r\n|\r|\n/g, '<br />\n');
+
   return rt;
 }
 export default buildRt;

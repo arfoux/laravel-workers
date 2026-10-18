@@ -1,0 +1,7 @@
+big
+odd
+anon
+warm
+empty-ish
+yes
+zero-str

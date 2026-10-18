@@ -23,11 +23,10 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 ## Supported vs unsupported
 
 Compiles today (byte-parity corpus + kernel tests):
-- **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/else`, string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`, interpolation escapes.
+- **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`.
 - **Kernel**: router + response, D1 query builder (where/or/join/group/having/distinct/aggregate), Model base, bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
 
 Fails loud (build error or `LW002`), use a port instead:
-- PHP loops (`for`/`while`/`foreach`), comparisons/logic/ternary/`??`, function definitions.
 - Blade layouts/components that compile to `$__env->…` (`@extends`/`@section`/`@yield`/`@include`).
 - Non-view routes: PHP controllers are **not** transpiled — write a `ports/*.mjs` handler.
 
