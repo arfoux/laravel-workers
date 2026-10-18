@@ -878,19 +878,21 @@ export class DatabaseSessionHandler {
     return '';
   }
 
-  defaultPayload(data) {
+  defaultPayload(data, resolvedInfo = undefined) {
     const payload = { payload: utf8ToBase64(data), last_activity: this.now() };
-    if (this.info) {
-      const extra = this.info() || {};
-      for (const [k, v] of Object.entries(extra)) {
-        if (v !== undefined) payload[k] = v;
-      }
+    const extra =
+      (resolvedInfo !== undefined ? resolvedInfo : this.info ? this.info() : null) || {};
+    for (const [k, v] of Object.entries(extra)) {
+      if (v !== undefined) payload[k] = v;
     }
     return payload;
   }
 
   async write(sessionId, data) {
-    const payload = this.defaultPayload(data);
+    // `info` may be async (the auth guard's id() can hit the database), so it is
+    // resolved here rather than inside the synchronous defaultPayload().
+    const info = this.info ? await this.info() : null;
+    const payload = this.defaultPayload(data, info);
     if (!this.exists) await this.read(sessionId);
     if (this.exists) {
       await this.query().where('id', sessionId).update(payload);

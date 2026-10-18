@@ -131,14 +131,14 @@ The escape hatch stays: **ports**.
 |---|---|---|---|---|
 | Basic routes, params | Compiled router (pattern match) | ✅ | from `route:list` dump | F |
 | Named routes, `route()`, `url()` | Frozen name map | ✅ | | F |
-| Route groups / middleware | Compiled pipeline | ✅ | | F |
+| Route groups / middleware | Compiled pipeline | ✅ | `handleHttp` runs web group + `auth`/`guest`/`throttle`; 11-step oracle parity (M15) | F |
 | Redirects | `Response` redirect | ✅ | | F |
 | Signed URLs | HMAC in kernel | ✅ | same key derivation | F |
 | Route model binding | Compiled lookup | 🟡 | id-first subset initially | F |
 | Custom middleware | Compiled like controllers | ✅ | | F |
-| Throttle middleware | Counter in D1/KV | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wiring pending | F |
-| CSRF | Token in session store | ✅ | kernel PreventRequestForgery oracle-verified (M13); wiring pending | F |
-| Cookie encryption | Laravel Encrypter parity (AES-CBC + HMAC) via WebCrypto | 🟡 | parity test required; PHP-serialize subset needed | F |
+| Throttle middleware | Counter in D1/KV | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wired in `handleHttp` but needs the D1-backed cache store — build blocks `throttle` routes until then | F |
+| CSRF | Token in session store | ✅ | kernel PreventRequestForgery wired in `handleHttp` + end-to-end oracle parity (M15) | F |
+| Cookie encryption | Laravel Encrypter parity (AES-CBC + HMAC) via WebCrypto | ✅ | EncryptCookies wired in `handleHttp`; round-trip + prefix parity in `cookies.test.mjs` | F |
 
 ### B. Views
 
@@ -180,10 +180,10 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Sessions | D1-backed store + encrypted cookie | 🟡 | kernel Store + cookie/D1 handlers, oracle byte-parity (M11); pipeline wiring pending | F |
-| Auth (guard, login/logout, remember) | Kernel + D1 users | 🟡 | kernel SessionGuard, EloquentUserProvider, BcryptHasher, `auth`/`guest` middleware oracle-verified (M14); wiring pending | F |
+| Sessions | D1-backed store + encrypted cookie | ✅ | kernel Store + cookie/D1 handlers, oracle byte-parity (M11); wired in `handleHttp`, payload bytes compared per step (M15) | F |
+| Auth (guard, login/logout, remember) | Kernel + D1 users | ✅ | kernel SessionGuard, EloquentUserProvider, BcryptHasher, `auth`/`guest` middleware oracle-verified (M14); wired in the compiled pipeline + end-to-end parity (M15) | F |
 | Password hashing | bcrypt via bcryptjs (`$2y$` parity) | ✅ | kernel BcryptHasher make/check/needsRehash/verifyConfiguration (M5); free-plan CPU banked (measured) | F |
-| Rate limiting | D1/KV counters | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wiring pending | F |
+| Rate limiting | D1/KV counters | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wired, blocked on the D1 cache store | F |
 
 ### F. Platform services
 

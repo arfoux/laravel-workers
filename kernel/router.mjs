@@ -25,6 +25,7 @@ export function normalizeTable(routes) {
     const domain = r.domain == null ? null : String(r.domain);
     const entry = { uri, name, methods, domain };
     if (r.bindings != null) entry.bindings = r.bindings;
+    if (r.middleware != null) entry.middleware = r.middleware;
 
     // later registration wins for same uri+methods
     let replaced = false;
@@ -159,13 +160,14 @@ export async function dispatch(req, table, handlers, env, options = {}) {
 
   const ctx = {
     params: m.params,
-    request: {
+    request: options.ctxRequest ?? {
       method: resolveMethod(req),
       path: (req && req.path) || '/',
       headers: (req && req.headers) || {},
       host: (req && (req.host || req.hostname)) || null,
     },
   };
+  Object.assign(ctx, options.ctxExtra || {});
   const bindings = m.route && m.route.bindings;
   if (bindings && options && options.models) {
     ctx.models = {};
