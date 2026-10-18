@@ -39,9 +39,13 @@ export class Model {
   static timestamps = true;
   static softDeletes = false;
   static deletedAtColumn = 'deleted_at';
+  // Declared relations, used by `with()` / `related()` (Laravel's `$with`):
+  //   static relations = { comments: { type: 'hasMany', model: Comment } };
+  static relations = {};
 
   constructor(attributes = {}) {
     this.attributes = { ...attributes };
+    this._relations = {};
     this.exists = this.attributes[this.constructor.primaryKey] != null;
   }
 
@@ -88,6 +92,11 @@ export class Model {
       out[key] = this.get(key);
     }
     for (const key of ctor.appends || []) out[key] = this.get(key);
+    for (const key of Object.keys(this._relations || {})) {
+      const rel = this._relations[key];
+      if (Array.isArray(rel)) out[key] = rel.map((r) => (r && r.toJSON ? r.toJSON() : r));
+      else out[key] = rel && rel.toJSON ? rel.toJSON() : rel;
+    }
     return out;
   }
 
@@ -100,6 +109,30 @@ export class Model {
   static _newQuery(db) {
     const builder = tableBuilder(db, this.table);
     builder.model = this;
+    // Eager-loading + local-scope support on the returned builder.
+    builder.eagerLoads = [];
+    const baseGet = builder.get.bind(builder);
+    const baseFirst = builder.first.bind(builder);
+    builder.with = (...names) => {
+      for (const n of names.flat()) builder.eagerLoads.push(n);
+      return builder;
+    };
+    builder.scope = (name, ...args) => {
+      const fn = this.prototype['scope' + studly(name)];
+      if (typeof fn !== 'function') throw new Error('unknown scope "' + name + '" on ' + this.name);
+      fn.call(null, builder, ...args);
+      return builder;
+    };
+    builder.get = async (...args) => {
+      const rows = await baseGet(...args);
+      await eagerLoad(db, this, rows, builder.eagerLoads);
+      return rows;
+    };
+    builder.first = async (...args) => {
+      const row = await baseFirst(...args);
+      if (row) await eagerLoad(db, this, [row], builder.eagerLoads);
+      return row;
+    };
     return builder;
   }
 
@@ -212,6 +245,33 @@ export class Model {
     return res;
   }
 
+  // ---- declared relations: eager (`with`) + lazy (`related`) ----
+  setRelation(name, value) {
+    this._relations = this._relations || {};
+    this._relations[name] = value;
+    return this;
+  }
+
+  getRelation(name) {
+    return this._relations ? this._relations[name] : undefined;
+  }
+
+  relationLoaded(name) {
+    return !!(this._relations && Object.prototype.hasOwnProperty.call(this._relations, name));
+  }
+
+  async related(db, name) {
+    const rel = (this.constructor.relations || {})[name];
+    if (!rel) throw new Error('unknown relation "' + name + '" on ' + this.constructor.name);
+    await loadRelation(db, this.constructor, [this], name, rel);
+    return this.getRelation(name);
+  }
+
+  async load(db, ...names) {
+    await eagerLoad(db, this.constructor, [this], names.flat());
+    return this;
+  }
+
   // ---- relations (explicit `db`, like the rest of the kernel) ----
   hasMany(db, Related, foreignKey, localKey) {
     const lk = localKey || this.constructor.primaryKey;
@@ -271,6 +331,56 @@ function defaultForeignKey(Related) {
 function applyWhere(builder, where) {
   for (const key of Object.keys(where || {})) builder.where(key, where[key]);
   return builder;
+}
+
+// Eager-load declared relations for a batch of already-fetched rows.
+async function eagerLoad(db, ModelClass, rows, names) {
+  if (!rows || !rows.length || !names || !names.length) return;
+  const declared = ModelClass.relations || {};
+  await Promise.all(names.map((name) => {
+    const rel = declared[name];
+    if (!rel) throw new Error('unknown relation "' + name + '" on ' + ModelClass.name);
+    return loadRelation(db, ModelClass, rows, name, rel);
+  }));
+}
+
+async function loadRelation(db, ModelClass, rows, name, rel) {
+  const Related = rel.model;
+  const type = rel.type || 'hasMany';
+  const idsOf = (get) => [...new Set(rows.map(get).filter((v) => v != null))];
+
+  if (type === 'belongsTo') {
+    const ownerKey = rel.ownerKey || Related.primaryKey;
+    const fk = rel.foreignKey || defaultForeignKey(Related);
+    const ids = idsOf((r) => r.get(fk));
+    if (!ids.length) {
+      for (const r of rows) r.setRelation(name, null);
+      return;
+    }
+    const owners = await Related.query(db).whereIn(ownerKey, ids).get();
+    const byKey = new Map(owners.map((o) => [String(o.get(ownerKey)), o]));
+    for (const r of rows) r.setRelation(name, byKey.get(String(r.get(fk))) || null);
+    return;
+  }
+
+  const lk = rel.localKey || ModelClass.primaryKey;
+  const fk = rel.foreignKey || defaultForeignKey(ModelClass);
+  const ids = idsOf((r) => r.get(lk));
+  if (!ids.length) {
+    for (const r of rows) r.setRelation(name, type === 'hasOne' ? null : []);
+    return;
+  }
+  const children = await Related.query(db).whereIn(fk, ids).get();
+  const grouped = new Map();
+  for (const c of children) {
+    const key = String(c.get(fk));
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(c);
+  }
+  for (const r of rows) {
+    const list = grouped.get(String(r.get(lk))) || [];
+    r.setRelation(name, type === 'hasOne' ? (list[0] || null) : list);
+  }
 }
 
 export default { Model, applyCast };

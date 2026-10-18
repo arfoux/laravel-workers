@@ -505,3 +505,109 @@ test('Model findOrFail / firstOrFail', async () => {
   assert.equal((await RelModel.firstOrFail(hit)).get('id'), 1);
   await assert.rejects(() => RelModel.firstOrFail(miss), /not found/);
 });
+
+// Table-aware mock: routes `all`/`first` to a store keyed by table name.
+function tableDb(store) {
+  return {
+    prepare(sql) {
+      const pick = () => {
+        for (const name of Object.keys(store)) if (sql.includes('"' + name + '"')) return store[name];
+        return [];
+      };
+      return {
+        params: [],
+        bind(...p) {
+          this.params = p;
+          return this;
+        },
+        async all() { return { results: pick() }; },
+        async first() { return pick()[0] || null; },
+        async run() { return { success: true, meta: { changes: 1, last_row_id: 1 } }; },
+      };
+    },
+  };
+}
+
+test('Model with() eager-loads declared hasMany relations', async () => {
+  class Comment extends Model {}
+  Comment.table = 'comments';
+  class Post extends Model {}
+  Post.table = 'posts';
+  Post.relations = { comments: { type: 'hasMany', model: Comment } };
+  const db = tableDb({
+    posts: [{ id: 1, title: 'a' }, { id: 2, title: 'b' }],
+    comments: [{ id: 10, post_id: 1, body: 'x' }, { id: 11, post_id: 1, body: 'y' }, { id: 12, post_id: 2, body: 'z' }],
+  });
+  const posts = await Post.query(db).with('comments').get();
+  assert.equal(posts.length, 2);
+  assert.deepEqual(posts[0].getRelation('comments').map((c) => c.get('body')), ['x', 'y']);
+  assert.deepEqual(posts[1].getRelation('comments').map((c) => c.get('body')), ['z']);
+  assert.deepEqual(posts[0].toJSON().comments.map((c) => c.id), [10, 11]);
+});
+
+test('Model with() eager-loads belongsTo via default foreign key', async () => {
+  class Author extends Model {}
+  Author.table = 'authors';
+  class Book extends Model {}
+  Book.table = 'books';
+  Book.relations = { author: { type: 'belongsTo', model: Author } };
+  const db = tableDb({
+    books: [{ id: 1, author_id: 7 }, { id: 2, author_id: 8 }, { id: 3, author_id: 9 }],
+    authors: [{ id: 7, name: 'Ada' }, { id: 8, name: 'Bob' }],
+  });
+  const books = await Book.query(db).with('author').get();
+  assert.equal(books[0].getRelation('author').get('name'), 'Ada');
+  assert.equal(books[1].getRelation('author').get('name'), 'Bob');
+  assert.equal(books[2].getRelation('author'), null);
+});
+
+test('Model with() eager-loads hasOne as a single row', async () => {
+  class Profile extends Model {}
+  Profile.table = 'profiles';
+  class User extends Model {}
+  User.table = 'users';
+  User.relations = { profile: { type: 'hasOne', model: Profile } };
+  const db = tableDb({
+    users: [{ id: 1 }, { id: 2 }],
+    profiles: [{ id: 5, user_id: 1, bio: 'hi' }],
+  });
+  const users = await User.query(db).with('profile').get();
+  assert.equal(users[0].getRelation('profile').get('bio'), 'hi');
+  assert.equal(users[1].getRelation('profile'), null);
+});
+
+test('Model related()/load() resolve declared relations lazily', async () => {
+  class Comment extends Model {}
+  Comment.table = 'comments';
+  class Post extends Model {}
+  Post.table = 'posts';
+  Post.relations = { comments: { type: 'hasMany', model: Comment } };
+  const db = tableDb({ posts: [{ id: 1 }], comments: [{ id: 10, post_id: 1 }] });
+  const p = new Post({ id: 1 });
+  assert.equal(p.relationLoaded('comments'), false);
+  const rel = await p.related(db, 'comments');
+  assert.deepEqual(rel.map((c) => c.get('id')), [10]);
+  assert.equal(p.relationLoaded('comments'), true);
+  await assert.rejects(() => p.related(db, 'nope'), /unknown relation/);
+  const p2 = new Post({ id: 1 });
+  await p2.load(db, 'comments');
+  assert.equal(p2.relationLoaded('comments'), true);
+});
+
+test('Model with() rejects unknown relations', async () => {
+  class Thing extends Model {}
+  Thing.table = 'things';
+  const db = tableDb({ things: [{ id: 1 }] });
+  await assert.rejects(() => Thing.query(db).with('nope').get(), /unknown relation/);
+});
+
+test('Model query().scope() runs local scopes', async () => {
+  class PostScope extends Model {}
+  PostScope.table = 'posts';
+  PostScope.prototype.scopePublished = (q) => q.where('published', 1);
+  const db = tableDb({ posts: [] });
+  const { sql, params } = PostScope.query(db).scope('published').toSql();
+  assert.match(sql, /"published" = \?/);
+  assert.deepEqual(params, [1]);
+  assert.throws(() => PostScope.query(db).scope('nope'), /unknown scope/);
+});
