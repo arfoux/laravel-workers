@@ -16,16 +16,18 @@
 import { execFileSync } from 'node:child_process';
 import { buildRoutesJson } from './tools/routes-json.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
+import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
 import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const pkgDir = dirname(fileURLToPath(import.meta.url));
@@ -49,7 +51,11 @@ const fail = (msg) => {
   process.exit(1);
 };
 
+const lwConfig = process.env.LW_CONFIG ? resolve(appDir, process.env.LW_CONFIG) : null;
+if (lwConfig && !existsSync(lwConfig))
+  fail(`LW_CONFIG is set to "${process.env.LW_CONFIG}" but that file was not found (resolved: ${lwConfig})`);
 const registryCandidates = [
+  ...(lwConfig ? [lwConfig] : []),
   join(appDir, 'registry.json'),
   join(appDir, 'laravel-workers.json'),
   join(appDir, 'edge/registry.json'),
@@ -57,8 +63,17 @@ const registryCandidates = [
 ];
 let registryPath = null;
 for (const p of registryCandidates) if (existsSync(p)) { registryPath = p; break; }
-if (!registryPath) fail('registry.json not found — searched: ' + registryCandidates.join(', ') + ' — create registry.json or laravel-workers.json in your Laravel root (or edge/registry.json) — run `npx laravel-workers init` first');
-const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+if (lwConfig && registryPath === lwConfig) console.log(`• registry: LW_CONFIG -> ${registryPath}`);
+let registry = {};
+if (registryPath) {
+  registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+} else {
+  registryPath = join(appDir, 'registry.json');
+  console.log('• registry: none found — using defaults (autoSnapshot on, no ports/ignore); add registry.json or set LW_CONFIG to declare routes');
+}
+const lwPortsDir = process.env.LW_PORTS_DIR ? resolve(appDir, process.env.LW_PORTS_DIR) : null;
+if (lwPortsDir && !existsSync(lwPortsDir))
+  fail(`LW_PORTS_DIR is set to "${process.env.LW_PORTS_DIR}" but that directory was not found (resolved: ${lwPortsDir})`);
 const autoSnapshot = registry.autoSnapshot !== false;
 const staticMap = Object.entries(registry.static || {});
 const portEntries = Object.entries(registry.ports || {});
@@ -105,6 +120,17 @@ const metaForRoute = (route) => {
   return { name, domain };
 };
 console.log(`  app routes (${routes.length}): ${routes.join('  ')}`);
+const skippedRoutes = [
+  ...new Set(listed.filter((r) => !String(r.path || '').startsWith('routes/')).map((r) => normalize(r.uri))),
+];
+if (skippedRoutes.length) {
+  const shown = skippedRoutes.slice(0, 5).join(', ');
+  console.log(
+    `  skipped ${skippedRoutes.length} route(s) defined outside routes/ (not part of the edge build): ${shown}${
+      skippedRoutes.length > 5 ? ', …' : ''
+    }`
+  );
+}
 
 // ---------- 2. prerender helper (boots the real app, build time only) ----------
 const originRe = /(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//g;
@@ -136,7 +162,34 @@ if (existsSync(hotFile)) {
   renameSync(hotFile, hotAside);
   console.log('  (moved public/hot aside for the build)');
 }
-rmSync(dist, { recursive: true, force: true });
+// Clean dist/. On Windows a running `wrangler dev` (or editor) can hold a handle on
+// dist/ or a subdirectory: file deletion still works, so fall back to wiping the
+// contents and keeping the locked directory shells — the build rewrites everything
+// fresh and the watcher picks the changes up.
+for (const entry of readdirSync(appDir)) {
+  if (entry.startsWith('dist.old-')) {
+    try {
+      rmSync(join(appDir, entry), { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+    } catch {
+      /* still locked — try again next build */
+    }
+  }
+}
+try {
+  rmSync(dist, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+} catch {
+  if (existsSync(dist)) {
+    for (const entry of readdirSync(dist)) {
+      try {
+        rmSync(join(dist, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch {
+        console.log(
+          `  (warning: ${relative(appDir, join(dist, entry))} is locked by a running process — restart the dev server if build output looks stale)`
+        );
+      }
+    }
+  }
+}
 mkdirSync(join(dist, 'public'), { recursive: true });
 mkdirSync(join(dist, 'src'), { recursive: true });
 
@@ -296,6 +349,7 @@ for (const p of workerCandidates) if (existsSync(p)) { workerSrc = p; break; }
 if (!workerSrc) fail('no worker template found — looked for src/worker.mjs in the app and in the package (reinstall laravel-workers)');
 cpSync(workerSrc, join(dist, 'src/worker.mjs'));
 const portsCandidates = [
+  ...(lwPortsDir ? [lwPortsDir] : []),
   join(appDir, 'src/ports'),
   join(appDir, 'ports'),
   join(appDir, 'edge/src/ports'),
@@ -304,6 +358,16 @@ const portsCandidates = [
 let portsSrc = null;
 for (const p of portsCandidates) if (existsSync(p)) { portsSrc = p; break; }
 if (!portsSrc) portsSrc = join(pkgDir, 'src/ports');
+if (portsSrc === lwPortsDir) console.log(`• ports: LW_PORTS_DIR -> ${portsSrc}`);
+const missingPortFiles = portEntries
+  .map(([route, name]) => [route, String(name)])
+  .filter(([, slug]) => !existsSync(join(portsSrc, slug + '.mjs')));
+if (missingPortFiles.length)
+  fail(
+    'port file(s) missing in ' + portsSrc + ': ' +
+      missingPortFiles.map(([route, slug]) => `${route} -> ${slug}.mjs`).join(', ') +
+      ' — create them, fix the "ports" mapping in registry.json, or point LW_PORTS_DIR at the right directory'
+  );
 if (existsSync(portsSrc)) {
   cpSync(portsSrc, join(dist, 'src/ports'), { recursive: true });
 } else {
@@ -391,7 +455,8 @@ const unknown = [
     ...ignoreMap.map(([r]) => r),
   ]),
 ].filter((r) => !routes.includes(r));
-const blocked = needsPort.length > 0 || partials.length > 0 || unknown.length > 0;
+const stubPorts = findStubPorts(portsSrc);
+const blocked = needsPort.length > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0;
 
 if (snapshots.length) console.log(`• auto-snapshots (${snapshots.length}): ${snapshots.join(', ')}`);
 for (const p of partials)
@@ -400,6 +465,12 @@ for (const n of needsPort) console.log(`  UNHANDLED ${n.route}: ${n.reason}`);
 if (needsPort.length)
   console.log('  -> add a port, a "static" entry, or "ignore" (with a reason) in registry.json');
 if (unknown.length) console.log(`  registry entries not found in route:list: ${unknown.join(', ')}`);
+if (stubPorts.length)
+  console.log(
+    `  STUB ${stubPorts.length} port(s) not implemented yet (returning 501): ${stubPorts
+      .map((n) => relative(appDir, join(portsSrc, n)))
+      .join(', ')}`
+  );
 if (!blocked)
   console.log(
     `• coverage: all ${routes.length} route(s) handled — static ${staticMap.length}, snapshots ${snapshots.length}, ports ${portEntries.length}, ignored ${ignoreMap.length}`
@@ -415,27 +486,13 @@ if (scaffold && needsPort.length) {
     mkdirSync(stubDir, { recursive: true });
     const stub = join(stubDir, `${slug}.mjs`);
     if (existsSync(stub)) {
-      console.log(`  scaffold: src/ports/${slug}.mjs already exists`);
+      console.log(`  scaffold: ${relative(appDir, stub)} already exists`);
     } else {
-      writeFileSync(
-        stub,
-        [
-          `// Port for GET ${route} — TODO: implement against env.DB and return a Response.`,
-          route.includes('{')
-            ? '// NOTE: dynamic segments ({...}) are not matched by the worker router yet — check worker.mjs.'
-            : '',
-          'export async function handle(request, env) {',
-          `  return Response.json({ error: 'not implemented', route: ${JSON.stringify(route)} }, { status: 501 });`,
-          '}',
-          '',
-        ]
-          .filter(Boolean)
-          .join('\n')
-      );
-      console.log(`  scaffolded src/ports/${slug}.mjs`);
+      writeFileSync(stub, buildStubSource(route));
+      console.log(`  scaffolded ${relative(appDir, stub)} (${STUB_MARKER} — build --strict fails until implemented)`);
     }
   }
-  const { registry: nextRegistry, added } = mergePorts(JSON.parse(readFileSync(registryPath, 'utf8')), entries);
+  const { registry: nextRegistry, added } = mergePorts(registry, entries);
   if (added.length) {
     writeFileSync(registryPath, serializeRegistry(nextRegistry));
     for (const { route, slug } of added) {
@@ -445,8 +502,20 @@ if (scaffold && needsPort.length) {
     console.log('  registry.json: all scaffolded ports already registered');
   }
 }
-if (blocked && !scaffold) console.log('  (tip: re-run with --scaffold to generate + register port stubs)');
-if (strict && blocked) fail('coverage check failed (--strict)' + (scaffold ? ' — port stubs were scaffolded + registered; implement them, then re-run' : ''));
+if (blocked && !scaffold) {
+  if (needsPort.length) console.log('  (tip: re-run with --scaffold to generate + register port stubs)');
+  else if (stubPorts.length) console.log('  (tip: implement the stub port(s), then re-run)');
+}
+if (strict && blocked) {
+  const stubNote = stubPorts.length
+    ? ` — ${stubPorts.length} port(s) are still scaffold stubs (returning 501): ${stubPorts.join(', ')}`
+    : '';
+  fail(
+    'coverage check failed (--strict)' +
+      (scaffold ? ' — port stubs were scaffolded + registered; implement them, then re-run' : '') +
+      stubNote
+  );
+}
 
 console.log(
   `done. dist: ${relative(appDir, dist)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, ignored: ${ignoreMap.length})`

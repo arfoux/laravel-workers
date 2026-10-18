@@ -19,6 +19,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M6** Validation kernel (kernel/validator.mjs, 60+ rules incl. `unique`/`exists` via D1, pipe-safe regex, nullable/sometimes, bail, 26 subtests)
 - **M7** Services kernel (kernel/mail,queue,cache,storage,scheduler.mjs, 18 subtests)
 - **M8** Final gates (tools/docs-check 105/105 + tools/bench + budget.test p95<=5ms hot)
+- **M9** Zero-touch hardening (2026-10-18) — scaffold stubs now follow the controller contract (default export, `{status, headers, body}`, `laravel-workers:stub` marker); `build --strict` fails on unimplemented stubs + missing port files; `LW_CONFIG`/`LW_PORTS_DIR` let registry + ports live outside the repo; `registry.json` optional (defaults + notice); routes defined outside `routes/` are listed as skipped. Verified: stub `501` keeps the worker alive → implement → `200` via local D1; external config+ports E2E; fresh Laravel 13.37 zero-config build PASS. `tools/ports.mjs` + 5 tests → npm test **170/170**.
 
 ## Supported vs unsupported
 
@@ -72,7 +73,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 165/165 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + registry-json + budget
+npm test                      # 170/170 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + registry-json + ports + budget
 npm run test:corpus           # 51/51 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -84,7 +85,7 @@ npx laravel-workers build     # --strict build; reads registry.json / edge/regis
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (165)
+laravel-workers test            # all kernel tests (170)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only
@@ -106,6 +107,39 @@ npm run verify
 # also: npm run bench / npm run check:docs / npm run test:budget / npm run test:services etc.
 ```
 
+## Zero-touch / CI (Workers Builds)
+
+Keep the repo pure Laravel — config and ports can live outside it:
+
+- `LW_CONFIG=../edge-config/registry.json` — registry path override (relative to the app root; a set-but-missing file **fails the build**).
+- `LW_PORTS_DIR=../edge-ports` — port directory override, checked before `src/ports`, `ports/`, `edge/src/ports` (a set-but-missing dir **fails the build**).
+- `registry.json` is **optional**: without it the build uses defaults (`autoSnapshot` on, no ports/ignore). Unhandled routes still fail `--strict`, and a registered port without a matching file fails the build.
+- `--scaffold` stubs carry a `laravel-workers:stub` marker and return `501`; `build --strict` keeps failing until every stub is implemented.
+- Building while `wrangler dev` is running is safe: if the OS locks `dist/`, the build wipes its contents (keeping the dir shells) and the dev server hot-reloads the fresh output.
+
+Workers Builds (Dashboard → Workers → connect the GitHub repo) — config is injected in the build command, nothing is committed:
+
+```bash
+touch database/database.sqlite
+cat > registry.json <<'JSON'
+{ "autoSnapshot": true, "ports": {} }
+JSON
+cat > wrangler.jsonc <<'JSONC'
+{ "name": "my-app", "main": "./dist/src/worker.mjs", "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+  "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<wrangler d1 create id>" } ],
+  "observability": { "enabled": true } }
+JSONC
+composer install --no-interaction
+cp .env.example .env && php artisan key:generate
+php artisan migrate --force
+npm run build
+npx -y laravel-workers@0.3.0 build --strict
+# deploy command: npx wrangler deploy
+```
+
+The build image must provide PHP ≥ 8.3 + Composer (build time only).
+
 ## Architecture (30 s)
 
 ```
@@ -123,7 +157,7 @@ Laravel app (dev truth)
 
 - `MAP.md` — auto-snapshot semantics, D1 max-queries note, Unknowns-to-verify, and Appendix C (105 docs pages → verdict; no blanks, releases must re-check `laravel/docs@13.x` — W8).
 - `compiler/tests/run-corpus.mjs` — oracle; `compiler/tests/parity-m1` + `tools/verify-s0.php` — green in M1.
-- `kernel/tests/{router,db,hash,encrypter,validator,services,budget}.test.mjs` — M5 proves `make`/`check`/`encryptString`/`decryptString` round-trip, tamper, wrong-key, unicode.
+- `kernel/tests/{router,db,hash,encrypter,validator,services,routes-json,registry-json,ports,budget}.test.mjs` — M5 proves `make`/`check`/`encryptString`/`decryptString` round-trip, tamper, wrong-key, unicode.
 
 ## Philosophy
 
@@ -137,6 +171,7 @@ Laravel app (dev truth)
 - **M6** Validation kernel — done (M6).
 - **M7** Services kernel — done (M7).
 - **M8** Final gates — done: docs-check 105/105 + bench/budget p95 ≤5ms + CI + pack green.
+- **M9** Zero-touch hardening — done: stubs fail loud, `LW_CONFIG`/`LW_PORTS_DIR`, optional registry, fresh-Laravel e2e job in CI.
 
 ## License
 

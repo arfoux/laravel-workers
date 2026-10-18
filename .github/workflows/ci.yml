@@ -22,3 +22,39 @@ jobs:
         run: find build.mjs kernel compiler/src compiler/runtime bin tools -name '*.mjs' -print0 | xargs -0 -n1 node --check
       - name: Pack dry-run
         run: npm pack --dry-run
+
+  e2e-fresh-laravel:
+    name: e2e (fresh Laravel, zero config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, sqlite3
+      - name: Create a fresh Laravel app
+        run: composer create-project laravel/laravel e2e-app --no-interaction --prefer-dist
+      - name: Prepare the app
+        run: |
+          cd e2e-app
+          touch database/database.sqlite
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force
+          npm ci
+          npm run build
+      - name: Zero-config strict build with laravel-workers
+        run: |
+          cd e2e-app
+          npm i --no-save --no-package-lock --install-links "$GITHUB_WORKSPACE"
+          npx laravel-workers build
+      - name: Assert the dist artifact
+        run: |
+          test -f e2e-app/dist/src/worker.mjs
+          test -f e2e-app/dist/src/routes.generated.mjs
+          test -f e2e-app/dist/public/index.html
+          test -f e2e-app/dist/schema.json

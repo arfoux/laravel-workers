@@ -19,7 +19,7 @@ const run = (command, args, options = {}) => {
 };
 
 if (cmd === 'test') {
-  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/registry-json.test.mjs', 'kernel/tests/budget.test.mjs'], { cwd: pkgDir });
+  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/registry-json.test.mjs', 'kernel/tests/ports.test.mjs', 'kernel/tests/budget.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:db') {
   run(process.execPath, ['--test', 'kernel/tests/db.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:sqlite') {
