@@ -4,11 +4,13 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
+const appDir = process.cwd();
 const cmd = process.argv[2] ?? 'test';
 
 const run = (command, args, options = {}) => {
-  const res = spawnSync(command, args, { cwd: root, stdio: 'inherit', ...options });
+  const { cwd = pkgDir, ...rest } = options;
+  const res = spawnSync(command, args, { cwd, stdio: 'inherit', ...rest });
   if (res.error) {
     console.error(res.error.message);
     process.exit(1);
@@ -17,42 +19,57 @@ const run = (command, args, options = {}) => {
 };
 
 if (cmd === 'test') {
-  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/budget.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/budget.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:db') {
-  run(process.execPath, ['--test', 'kernel/tests/db.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/db.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:sqlite') {
-  run(process.execPath, ['--test', 'kernel/tests/sqlite-integration.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/sqlite-integration.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:hash') {
-  run(process.execPath, ['--test', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:validator') {
-  run(process.execPath, ['--test', 'kernel/tests/validator.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/validator.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:services') {
-  run(process.execPath, ['--test', 'kernel/tests/services.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/services.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:budget') {
-  run(process.execPath, ['--test', 'kernel/tests/budget.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/budget.test.mjs'], { cwd: pkgDir });
 } else if (cmd === 'test:corpus') {
-  run(process.execPath, ['compiler/tests/run-corpus.mjs']);
+  run(process.execPath, ['compiler/tests/run-corpus.mjs'], { cwd: pkgDir });
 } else if (cmd === 'bench') {
-  run(process.execPath, ['tools/bench.mjs']);
+  run(process.execPath, ['tools/bench.mjs'], { cwd: pkgDir });
 } else if (cmd === 'check:docs') {
-  run(process.execPath, ['tools/docs-check.mjs']);
+  run(process.execPath, ['tools/docs-check.mjs'], { cwd: pkgDir });
 } else if (cmd === 'build') {
-  if (!existsSync(join(root, 'build.mjs'))) {
-    console.error('laravel-workers build: build.mjs not found — run inside a Laravel app edge checkout.');
+  const buildPath = join(pkgDir, 'build.mjs');
+  if (!existsSync(buildPath)) {
+    console.error('laravel-workers build: build.mjs not found in package — reinstall laravel-workers. Run from your Laravel app root via npx laravel-workers build.');
     process.exit(1);
   }
-  run(process.execPath, ['build.mjs', '--strict']);
+  let cwd = appDir;
+  if (existsSync(join(appDir, 'artisan'))) {
+    cwd = appDir;
+  } else if (existsSync(join(dirname(pkgDir), 'artisan'))) {
+    cwd = dirname(pkgDir);
+  } else {
+    cwd = appDir;
+  }
+  if (!existsSync(join(cwd, 'artisan'))) {
+    console.error('laravel-workers build: artisan not found — run from your Laravel app root via npx laravel-workers build (cwd must contain artisan).');
+  }
+  run(process.execPath, [buildPath, '--strict'], { cwd });
 } else if (cmd === 'verify') {
   const php = process.env.PHP_BIN ?? 'php';
-  if (!existsSync(join(root, 'tools', 'verify-s0.php'))) {
-    console.error('laravel-workers verify: tools/verify-s0.php not found.');
+  const verifyPath = join(pkgDir, 'tools', 'verify-s0.php');
+  if (!existsSync(verifyPath)) {
+    console.error('laravel-workers verify: tools/verify-s0.php not found in package.');
     process.exit(1);
   }
-  if (!existsSync(join(dirname(root), 'vendor', 'autoload.php'))) {
-    console.log('VERIFY-S0: SKIP (no Laravel vendor/ in parent checkout).');
+  const vendorInApp = existsSync(join(appDir, 'vendor', 'autoload.php'));
+  const vendorInParent = existsSync(join(dirname(pkgDir), 'vendor', 'autoload.php'));
+  if (!vendorInApp && !vendorInParent) {
+    console.log('VERIFY-S0: SKIP (no Laravel vendor/ found — run from your Laravel app root via npx laravel-workers verify).');
     process.exit(0);
   }
-  run(php, ['tools/verify-s0.php']);
+  run(php, [verifyPath], { cwd: appDir });
 } else {
   console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | build | verify`);
   process.exit(1);

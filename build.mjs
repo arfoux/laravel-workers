@@ -27,9 +27,18 @@ import {
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const edgeDir = dirname(fileURLToPath(import.meta.url));
-const root = dirname(edgeDir);
-const dist = join(edgeDir, 'dist');
+const pkgDir = dirname(fileURLToPath(import.meta.url));
+let appDir;
+if (existsSync(join(process.cwd(), 'artisan')) && existsSync(join(process.cwd(), 'vendor'))) {
+  appDir = process.cwd();
+} else if (existsSync(join(dirname(pkgDir), 'artisan'))) {
+  appDir = dirname(pkgDir);
+} else {
+  appDir = process.cwd();
+}
+const isNpmMode = appDir !== pkgDir && existsSync(join(appDir, 'artisan'));
+const dist = isNpmMode ? join(appDir, 'dist') : join(pkgDir, 'dist');
+const cacheDir = isNpmMode ? join(appDir, '.cache', 'laravel-workers') : join(pkgDir, '.cache');
 const strict = process.argv.includes('--strict');
 const scaffold = process.argv.includes('--scaffold');
 const PHP = process.env.PHP_BIN || 'php';
@@ -39,21 +48,29 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// ---------- 0. sanity ----------
-const registry = JSON.parse(readFileSync(join(edgeDir, 'registry.json'), 'utf8'));
+const registryCandidates = [
+  join(appDir, 'registry.json'),
+  join(appDir, 'laravel-workers.json'),
+  join(appDir, 'edge/registry.json'),
+  join(pkgDir, 'registry.json'),
+];
+let registryPath = null;
+for (const p of registryCandidates) if (existsSync(p)) { registryPath = p; break; }
+if (!registryPath) fail('registry.json not found — searched: ' + registryCandidates.join(', ') + ' — create registry.json or laravel-workers.json in your Laravel root (or edge/registry.json)');
+const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
 const autoSnapshot = registry.autoSnapshot !== false;
 const staticMap = Object.entries(registry.static || {});
 const portEntries = Object.entries(registry.ports || {});
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
-if (!existsSync(join(root, 'vendor/autoload.php'))) fail('vendor/ not found — run composer install');
-if (!existsSync(join(root, 'public/build/manifest.json')))
+if (!existsSync(join(appDir, 'vendor/autoload.php'))) fail('vendor/ not found — run composer install');
+if (!existsSync(join(appDir, 'public/build/manifest.json')))
   fail('public/build/manifest.json not found — run `npm run build` first');
 
 // ---------- 1. export routes from the Laravel app ----------
 console.log('• exporting routes via `php artisan route:list --json`');
 const listed = JSON.parse(
-  execFileSync(PHP, ['artisan', 'route:list', '--json'], { cwd: root }).toString('utf8')
+  execFileSync(PHP, ['artisan', 'route:list', '--json'], { cwd: appDir }).toString('utf8')
 );
 const appRoutes = listed.filter((r) => String(r.path || '').startsWith('routes/'));
 const normalize = (u) => (u === '/' || u === '' ? '/' : '/' + String(u).replace(/^\/+|\/+$/g, ''));
@@ -94,7 +111,7 @@ const originRe = /(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//
 const prerender = (route) => {
   let out;
   try {
-    out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(edgeDir, 'tools/prerender.php'), route], {
+    out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(pkgDir, 'tools/prerender.php'), route], {
       cwd: root,
     }).toString('utf8');
   } catch (e) {
@@ -109,8 +126,8 @@ const prerender = (route) => {
 };
 
 // ---------- 3. dist skeleton + prerendered pages ----------
-const hotFile = join(root, 'public/hot');
-const hotAside = join(root, 'public/hot.edge-build-aside');
+const hotFile = join(appDir, 'public/hot');
+const hotAside = join(appDir, 'public/hot.edge-build-aside');
 if (existsSync(hotFile)) {
   renameSync(hotFile, hotAside);
   console.log('  (moved public/hot aside for the build)');
@@ -195,14 +212,14 @@ const controllerByRoute = new Map();
 
 for (const [route, view] of viewMap) {
   const slug = slugifyRoute(route);
-  const dumpPath = join(edgeDir, '.cache', view + '.compiled.json');
+  const dumpPath = join(cacheDir, view + '.compiled.json');
   console.log(`compiling view ${view} for ${route}`);
-  execFileSync(PHP, [join(edgeDir, 'tools', 'compile-view.php'), view, dumpPath, route], { cwd: root });
+  execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, route], { cwd: appDir });
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
   if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + route);
 
   const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
-  execFileSync('node', [join(edgeDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: root });
+  execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
 
   const contextPath = join(dist, 'src', 'contexts', view + '.mjs');
   writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
@@ -244,16 +261,16 @@ for (const [route, name] of portEntries) {
 }
 
 // ---------- 3d. schema snapshot ----------
-mkdirSync(join(edgeDir, '.cache'), { recursive: true });
-const schemaPath = join(edgeDir, '.cache', 'schema.json');
+mkdirSync(cacheDir, { recursive: true });
+const schemaPath = join(cacheDir, 'schema.json');
 console.log('\u2022 dumping DB schema');
-execFileSync(PHP, [join(edgeDir, 'tools', 'schema-dump.php'), schemaPath], { cwd: root });
+execFileSync(PHP, [join(pkgDir, 'tools', 'schema-dump.php'), schemaPath], { cwd: appDir });
 cpSync(schemaPath, join(dist, 'schema.json'));
 console.log('  -> dist/schema.json');
 
 // ---------- 4. copy static assets ----------
 for (const f of ['build', 'favicon.ico', 'robots.txt']) {
-  const src = join(root, 'public', f);
+  const src = join(appDir, 'public', f);
   if (!existsSync(src)) {
     console.log(`  ! public/${f} missing — skipped`);
     continue;
@@ -263,10 +280,19 @@ for (const f of ['build', 'favicon.ico', 'robots.txt']) {
 }
 
 // ---------- 5. worker + ports + routes ----------
-cpSync(join(edgeDir, 'src/worker.mjs'), join(dist, 'src/worker.mjs'));
-cpSync(join(edgeDir, 'src/ports'), join(dist, 'src/ports'), { recursive: true });
-cpSync(join(edgeDir, 'kernel'), join(dist, 'kernel'), { recursive: true });
-cpSync(join(edgeDir, 'compiler', 'runtime'), join(dist, 'src', 'runtime'), { recursive: true });
+cpSync(join(pkgDir, 'src/worker.mjs'), join(dist, 'src/worker.mjs'));
+const portsCandidates = [
+  join(appDir, 'src/ports'),
+  join(appDir, 'ports'),
+  join(appDir, 'edge/src/ports'),
+  join(pkgDir, 'src/ports'),
+];
+let portsSrc = null;
+for (const p of portsCandidates) if (existsSync(p)) { portsSrc = p; break; }
+if (!portsSrc) portsSrc = join(pkgDir, 'src/ports');
+cpSync(portsSrc, join(dist, 'src/ports'), { recursive: true });
+cpSync(join(pkgDir, 'kernel'), join(dist, 'kernel'), { recursive: true });
+cpSync(join(pkgDir, 'compiler', 'runtime'), join(dist, 'src', 'runtime'), { recursive: true });
 
 const builtAt = new Date().toISOString();
 const routeTable = routes.map((route) => {
@@ -366,7 +392,9 @@ if (scaffold && needsPort.length) {
     route.replace(/^\//, '').replace(/[{}]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'home';
   for (const { route } of needsPort) {
     const slug = slugify(route);
-    const stub = join(edgeDir, 'src/ports', `${slug}.mjs`);
+    const stubDir = isNpmMode ? (portsSrc !== join(pkgDir, 'src/ports') ? portsSrc : join(appDir, 'src/ports')) : join(pkgDir, 'src/ports');
+    mkdirSync(stubDir, { recursive: true });
+    const stub = join(stubDir, `${slug}.mjs`);
     if (existsSync(stub)) {
       console.log(`  scaffold: src/ports/${slug}.mjs already exists`);
     } else {
@@ -394,5 +422,5 @@ if (blocked && !scaffold) console.log('  (tip: run `node build.mjs --scaffold` t
 if (strict && blocked) fail('coverage check failed (--strict)');
 
 console.log(
-  `done. dist: ${relative(root, dist)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, ignored: ${ignoreMap.length})`
+  `done. dist: ${relative(appDir, dist)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, ignored: ${ignoreMap.length})`
 );
