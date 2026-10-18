@@ -75,6 +75,9 @@ export function buildRt(context, opts = {}) {
 
   // ---- rt.echo (PHP echo semantics) ----
   rt.echo = (v) => {
+    if (v instanceof Promise) {
+      throw new Error('unresolved promise rendered — await the query in a single chain (Post::where(...)->get())');
+    }
     let s;
     if (v === null || v === undefined) s = '';
     else if (v === true) s = '1';
@@ -180,6 +183,31 @@ export function buildRt(context, opts = {}) {
   });
 
   // ---- rt.url / rt.route ----
+  const runtime = !!(opts && opts.runtime);
+  const origin = (opts && typeof opts.origin === 'string' && opts.origin) ? String(opts.origin).replace(/\/+$/, '') : '';
+  const routeMap = (opts && opts.routeMap && typeof opts.routeMap === 'object') ? opts.routeMap : null;
+  const modelRouteKey = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'object') {
+      if (typeof v.get === 'function' && v.attributes) return v.get('id');
+      if (v.id !== undefined) return v.id;
+    }
+    return v;
+  };
+  // Runtime route() generation: name → uri pattern (built at build time). Only used
+  // when args are passed or when the captured build-time value does not apply.
+  const genUrl = (name, args) => {
+    if (!routeMap || !Object.prototype.hasOwnProperty.call(routeMap, name)) return null;
+    const uri = String(routeMap[name]);
+    let i = 0;
+    const path = uri.split('/').map((seg) => {
+      const m = /^\{([A-Za-z_][A-Za-z0-9_]*)\??\}$/.exec(seg);
+      if (!m) return seg;
+      const raw = modelRouteKey(args[i++]);
+      return encodeURIComponent(raw == null ? '' : String(raw));
+    }).join('/');
+    return origin + '/' + path;
+  };
   const lookupUrl = (key) => {
     if (!Object.prototype.hasOwnProperty.call(urlsCtx, key)) {
       throw new Error('url/route: uncaptured ' + JSON.stringify(key));
@@ -188,10 +216,23 @@ export function buildRt(context, opts = {}) {
     if (v && typeof v === 'object' && v.error) throw new Error('url/route: ' + v.error);
     return v;
   };
-  rt.url = (p) => lookupUrl(String(p));
+  rt.url = (p) => {
+    const s = String(p);
+    if (runtime && s.startsWith('/')) return origin + s;
+    return lookupUrl(s);
+  };
   rt.route = (n, ...rest) => {
-    if (rest.length > 0) throw new Error('route: uncaptured extra args');
-    return lookupUrl(String(n));
+    const key = String(n);
+    if (rest.length > 0) {
+      const g = genUrl(key, rest);
+      if (g != null) return g;
+      throw new Error('route: uncaptured extra args');
+    }
+    if (runtime) {
+      const g = genUrl(key, []);
+      if (g != null) return g;
+    }
+    return lookupUrl(key);
   };
 
   // ---- builtins (flat on rt) ----
@@ -728,6 +769,186 @@ export function buildRt(context, opts = {}) {
     return api;
   }
   rt.now = () => makeCarbon(new Date());
+
+  // ---- controller runtime (view data, models, responses) ----
+  // rt.var reads runtime view data (injected by controller renders). When no data is
+  // present the value is `undefined` — byte-identical to pre-data-injection behavior.
+  const dataCtx = (opts && opts.data && typeof opts.data === 'object') ? opts.data : {};
+
+  // Blade's compiled @foreach bookkeeping calls $__env->addLoop() /
+  // incrementLoopIndices() / getLastLoop() / popLoop(). Provide a per-rt loop
+  // stack that mirrors Illuminate\View\Concerns\ManagesLoops so compiled views
+  // with loops render at runtime.
+  const loopsStack = [];
+  const bladeEnv = {
+    addLoop(dataSrc) {
+      let length = null;
+      if (Array.isArray(dataSrc)) length = dataSrc.length;
+      else if (dataSrc instanceof Map) length = dataSrc.size;
+      else if (dataSrc && typeof dataSrc === 'object') {
+        length = typeof dataSrc.length === 'number' ? dataSrc.length : Object.keys(dataSrc).length;
+      }
+      const parent = loopsStack.length ? { ...loopsStack[loopsStack.length - 1] } : null;
+      loopsStack.push({
+        iteration: 0,
+        index: 0,
+        remaining: length,
+        count: length,
+        first: true,
+        last: length === null ? null : length === 1,
+        odd: false,
+        even: true,
+        depth: loopsStack.length + 1,
+        parent,
+      });
+    },
+    incrementLoopIndices() {
+      const loop = loopsStack[loopsStack.length - 1];
+      if (!loop) return;
+      const iteration = loop.iteration;
+      loop.iteration = iteration + 1;
+      loop.index = iteration;
+      loop.first = iteration === 0;
+      loop.odd = !loop.odd;
+      loop.even = !loop.even;
+      const hasCount = loop.count !== null && loop.count !== undefined;
+      loop.remaining = hasCount ? loop.remaining - 1 : null;
+      loop.last = hasCount ? iteration === loop.count - 1 : null;
+    },
+    popLoop() {
+      loopsStack.pop();
+    },
+    getLastLoop() {
+      return loopsStack.length ? loopsStack[loopsStack.length - 1] : null;
+    },
+    getLoopStack() {
+      return loopsStack;
+    },
+  };
+
+  rt.var = (k) => {
+    if (Object.prototype.hasOwnProperty.call(dataCtx, k)) return dataCtx[k];
+    if (k === '__env') return bladeEnv;
+    return undefined;
+  };
+
+  // rt.prop: PHP `->` property access on models (attributes via get()), plain
+  // objects and arrays. Missing values become null (PHP null-ish read).
+  rt.prop = (obj, key) => {
+    if (obj === null || obj === undefined) return null;
+    if (obj instanceof Promise) {
+      throw new Error('unresolved promise — await the query in a single chain before reading ->' + key);
+    }
+    if (typeof obj.get === 'function' && obj.attributes && typeof obj.attributes === 'object') {
+      const v = obj.get(key);
+      return v === undefined ? null : v;
+    }
+    if (typeof obj === 'object') return obj[key] === undefined ? null : obj[key];
+    return null;
+  };
+
+  const statusErr = (status, message) => {
+    const e = new Error(message == null ? '' : String(message));
+    e.status = Number(status) || 500;
+    return e;
+  };
+  rt.statusErr = statusErr;
+  rt.abort = (code, message) => { throw statusErr(code, message || ('HTTP ' + code)); };
+  rt.errorResponse = (e) => ({
+    status: (e && e.status) || 500,
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+    body: (e && e.message) ? String(e.message) : ('HTTP ' + (((e && e.status) || 500))),
+  });
+  rt.json = (value, status) => ({
+    status: Number(status) || 200,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(value == null ? null : value),
+  });
+  rt.redirect = (location, status) => ({
+    status: Number(status) || 302,
+    headers: { location: String(location == null ? '' : location) },
+    body: '',
+  });
+
+  // rt.param: route parameter → PHP method argument coercion (Laravel matches by position;
+  // controllers bind after checking the route segment name).
+  rt.param = (params, name, type, hasDefault, def) => {
+    const v = params && typeof params === 'object' ? params[name] : undefined;
+    if (v === undefined || v === null) return hasDefault ? def : null;
+    if (type === 'int') return rt.intval(v);
+    if (type === 'float') return rt.floatval(v);
+    if (type === 'bool') return rt.truthy(v);
+    if (type === 'raw') return v;
+    return String(v);
+  };
+
+  // ---- model facades (rt.model) ----
+  const modelsMap = (opts && opts.models && typeof opts.models === 'object') ? opts.models : {};
+  const viewsMap = (opts && opts.views && typeof opts.views === 'object') ? opts.views : {};
+  const db = (opts && opts.db) || null;
+
+  const wrapBuilder = (b) => {
+    if (b && typeof b.firstOrFail !== 'function') {
+      b.firstOrFail = async () => {
+        const r = await b.first();
+        if (r === null || r === undefined) throw statusErr(404, 'not found');
+        return r;
+      };
+    }
+    return b;
+  };
+  const facadeCache = new Map();
+  const makeFacade = (M) => {
+    if (facadeCache.has(M)) return facadeCache.get(M);
+    if (!db) throw new Error('rt.model: no database binding (env.DB) available');
+    const name = M.name || 'Model';
+    const facade = {
+      find: (id) => M.find(db, id),
+      findOrFail: async (id) => {
+        const row = await M.find(db, id);
+        if (row === null || row === undefined) throw statusErr(404, name + ' not found');
+        return row;
+      },
+      all: () => M.all(db),
+      where: (...a) => wrapBuilder(M.query(db).where(...a)),
+      whereIn: (...a) => wrapBuilder(M.query(db).whereIn(...a)),
+    };
+    facadeCache.set(M, facade);
+    return facade;
+  };
+  rt.model = (name) => {
+    const key = String(name);
+    const M = modelsMap[key];
+    if (!M) throw new Error('rt.model: unknown model ' + JSON.stringify(key));
+    return makeFacade(M);
+  };
+
+  // rt.view: render a compiled Blade view with runtime data.
+  rt.view = (name, data) => {
+    const key = String(name);
+    const entry = viewsMap[key];
+    if (!entry || typeof entry.main !== 'function') {
+      throw new Error('view not compiled: ' + JSON.stringify(key) + ' — write a port for this route');
+    }
+    const d = data == null ? {} : data;
+    for (const k of Object.keys(d)) {
+      if (d[k] instanceof Promise) {
+        throw new Error('view data ' + JSON.stringify(k) + ' is an unresolved promise — await the query in a single chain');
+      }
+    }
+    const sub = buildRt(entry.context || {}, {
+      strict: strict,
+      runtime: runtime,
+      data: d,
+      db: db,
+      models: modelsMap,
+      views: viewsMap,
+      origin: origin,
+      routeMap: routeMap,
+    });
+    entry.main(sub);
+    return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: sub.__output };
+  };
 
   return rt;
 }

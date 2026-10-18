@@ -154,7 +154,7 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Controllers / closures | PHP-subset → JS | ✅ | fail loud on unsupported constructs | F |
+| Controllers / closures | PHP-subset → JS | ✅ | M10 v1: GET/HEAD controllers compiled (scalar params, model chains + views); fail loud elsewhere | F |
 | Service classes / helpers | PHP-subset → JS | ✅ | | F |
 | Form Requests | Compile rules + authorize | 🟡 | | F |
 | Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | | F |
@@ -356,7 +356,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | views compiled; controllers via hand-written ports |
+| controllers | 🟡 | GET/HEAD controllers compiled (M10); POST/auth/session → ports |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |

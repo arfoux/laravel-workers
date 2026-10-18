@@ -30,7 +30,7 @@ export function buildRoutesJson(routeTable, opts = {}) {
   const extraInclude = opts.extraInclude || [];
   const include = new Set(extraInclude);
   for (const entry of routeTable || []) {
-    if (entry.kind !== 'view' && entry.kind !== 'port') continue;
+    if (entry.kind !== 'view' && entry.kind !== 'port' && entry.kind !== 'controller') continue;
     for (const p of routeToPatterns(entry.uri)) include.add(p);
   }
   const includeList = [...include].sort();

@@ -88,7 +88,16 @@ console.log('• exporting routes via `php artisan route:list --json`');
 const listed = JSON.parse(
   execFileSync(PHP, ['artisan', 'route:list', '--json'], { cwd: appDir }).toString('utf8')
 );
-const appRoutes = listed.filter((r) => String(r.path || '').startsWith('routes/'));
+// Laravel only reports `path` for closure routes — controller-action routes
+// (Route::get('/x', [XController::class, 'm']), Route::resource, invokable
+// controllers) come back with path === null even though they live in routes/.
+const isAppRoute = (r) => {
+  const p = String(r.path || '');
+  if (p) return p.startsWith('routes/');
+  const action = String(r.action || '');
+  return action !== '' && action !== 'Closure';
+};
+const appRoutes = listed.filter(isAppRoute);
 const normalize = (u) => (u === '/' || u === '' ? '/' : '/' + String(u).replace(/^\/+|\/+$/g, ''));
 const routes = [...new Set(appRoutes.map((r) => normalize(r.uri)))].sort();
 const methodsFor = new Map();
@@ -102,7 +111,7 @@ for (const r of appRoutes) {
   for (const m of methods) {
     if (!m) continue;
     const key = m.toUpperCase() + ' ' + uri;
-    if (!metaFor.has(key)) metaFor.set(key, { name: r.name ?? null, domain: r.domain ?? null });
+    if (!metaFor.has(key)) metaFor.set(key, { name: r.name ?? null, domain: r.domain ?? null, action: r.action ?? null, middleware: Array.isArray(r.middleware) ? r.middleware : null });
   }
 }
 const otherMethods = (route) =>
@@ -119,9 +128,30 @@ const metaForRoute = (route) => {
   }
   return { name, domain };
 };
+// route:list action for a route (prefer GET — the only method controller
+// transpilation supports today).
+const actionForRoute = (route) => {
+  const getMeta = metaFor.get('GET ' + route);
+  if (getMeta && getMeta.action) return getMeta.action;
+  for (const m of methodsFor.get(route) || []) {
+    const meta = metaFor.get(m + ' ' + route);
+    if (meta && meta.action) return meta.action;
+  }
+  return null;
+};
+// route:list middleware for a route (prefer GET — see above).
+const middlewareForRoute = (route) => {
+  const getMeta = metaFor.get('GET ' + route);
+  if (getMeta && getMeta.middleware) return getMeta.middleware;
+  for (const m of methodsFor.get(route) || []) {
+    const meta = metaFor.get(m + ' ' + route);
+    if (meta && meta.middleware) return meta.middleware;
+  }
+  return null;
+};
 console.log(`  app routes (${routes.length}): ${routes.join('  ')}`);
 const skippedRoutes = [
-  ...new Set(listed.filter((r) => !String(r.path || '').startsWith('routes/')).map((r) => normalize(r.uri))),
+  ...new Set(listed.filter((r) => !isAppRoute(r)).map((r) => normalize(r.uri))),
 ];
 if (skippedRoutes.length) {
   const shown = skippedRoutes.slice(0, 5).join(', ');
@@ -135,6 +165,10 @@ if (skippedRoutes.length) {
 // ---------- 2. prerender helper (boots the real app, build time only) ----------
 const originRe = /(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//g;
 
+// The framework can write an error page to stdout around our payload (console
+// exception renderers bypass PHP output buffering), so prerender.php terminates
+// its stdout with a marker and the JSON that follows it.
+const PRERENDER_MARKER = '---LW-PRERENDER-JSON---';
 const prerender = (route) => {
   let out;
   try {
@@ -148,10 +182,12 @@ const prerender = (route) => {
     const detail = (stderr || stdout || String(e.message || '')).slice(-2000);
     fail(`prerender crashed for ${route}${detail ? `:\n${detail}` : ''}`);
   }
+  const idx = out.lastIndexOf(PRERENDER_MARKER);
+  const jsonText = idx >= 0 ? out.slice(idx + PRERENDER_MARKER.length) : out;
   try {
-    return JSON.parse(out);
+    return JSON.parse(jsonText);
   } catch {
-    fail(`prerender returned non-JSON for ${route}: ${out.slice(0, 200)}`);
+    fail(`prerender returned non-JSON for ${route}: ${jsonText.trim().slice(0, 200)}`);
   }
 };
 
@@ -250,7 +286,8 @@ try {
       needsPort.push({ route, reason: `HTTP ${res.status} non-HTML (${res.content_type || '?'})` });
     } else {
       const to = res.location ? ` -> ${res.location}` : '';
-      needsPort.push({ route, reason: `HTTP ${res.status}${to}` });
+      const why = res.error ? `: ${res.error}` : '';
+      needsPort.push({ route, reason: `HTTP ${res.status}${to}${why}` });
     }
   }
 } finally {
@@ -318,6 +355,272 @@ for (const [route, name] of portEntries) {
   );
   controllerByRoute.set(route, slug);
   console.log(`port controller ${route} -> dist/src/controllers/${slug}.mjs`);
+}
+
+// ---------- 3c2. transpile controllers (GET-only routes that still need a port) ----------
+// A route only leaves the "needs a port" list when its controller method was fully
+// transpiled at build time. Anything outside the supported subset (POST flows, auth,
+// relations, unknown calls, non-scalar params, ...) stays blocked under --strict or
+// keeps needing a port — the build never silently degrades.
+const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
+{
+  const methodsOk = (route) => {
+    const others = [...(methodsFor.get(route) || new Set())].filter((m) => m !== 'HEAD');
+    return others.length === 1 && others[0] === 'GET';
+  };
+  // Only routes on the default web/api groups are transpiled: any other
+  // middleware (auth, verified, throttle, custom) would be bypassed at the
+  // edge, so those routes stay "needs a port" instead of silently opening up.
+  const benignMiddleware = new Set(['web', 'api', 'substitute_bindings', 'bindings']);
+  const targets = [];
+  for (const { route } of needsPort) {
+    if (!methodsOk(route)) continue;
+    const action = actionForRoute(route);
+    if (!action || action === 'Closure') continue;
+    const blocking = (middlewareForRoute(route) || []).filter((m) => !benignMiddleware.has(String(m)));
+    if (blocking.length) {
+      console.log(`  skip controller ${route}: middleware [${blocking.join(', ')}] not transpiled — write a port`);
+      continue;
+    }
+    const at = action.lastIndexOf('@');
+    const fqcn = at >= 0 ? action.slice(0, at) : action;
+    const method = at >= 0 ? action.slice(at + 1) : '__invoke';
+    if (!/^[A-Za-z_][A-Za-z0-9_\\]*$/.test(fqcn) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(method)) continue;
+    targets.push({ route, fqcn, method });
+  }
+
+  if (targets.length) {
+    console.log(`• controller routes: trying to transpile ${targets.length} route(s)`);
+
+    const formatControllerError = (e) => {
+      const raw = String(e.stderr || e.stdout || e.message || '').trim();
+      try {
+        const errs = JSON.parse(raw);
+        if (Array.isArray(errs) && errs.length) {
+          return errs
+            .map((x) => `${x.code || 'LW'} ${x.message || ''}${x.line ? ` (line ${x.line})` : ''}`)
+            .join('; ');
+        }
+      } catch {
+        /* not a JSON error payload */
+      }
+      return raw.slice(0, 300) || 'unknown error';
+    };
+
+    // resolve controller PHP files through the app's composer PSR-4 map
+    let psr4 = {};
+    try {
+      const composer = JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8'));
+      psr4 = Object.fromEntries(
+        Object.entries((composer.autoload && composer.autoload['psr-4']) || {}).map(([prefix, dirs]) => [
+          prefix,
+          Array.isArray(dirs) ? dirs : [dirs],
+        ])
+      );
+    } catch {
+      /* defaults below win */
+    }
+    const resolvePsr4 = (fqcn) => {
+      let best = null;
+      for (const [prefix, dirs] of Object.entries(psr4)) {
+        if (fqcn.startsWith(prefix) && (!best || prefix.length > best[0].length)) best = [prefix, dirs];
+      }
+      if (!best) return null;
+      const rest = fqcn.slice(best[0].length).replace(/\\/g, '/') + '.php';
+      for (const d of best[1]) {
+        const p = join(appDir, String(d).replace(/[\\/]+$/, ''), rest);
+        if (existsSync(p)) return p;
+      }
+      return null;
+    };
+
+    mkdirSync(join(dist, 'src', 'controllers'), { recursive: true });
+    mkdirSync(join(dist, 'src', 'views'), { recursive: true });
+    mkdirSync(join(dist, 'src', 'contexts'), { recursive: true });
+    const metaDir = join(cacheDir, 'controllers');
+    mkdirSync(metaDir, { recursive: true });
+
+    // phase A: extract method metadata (params, model classes, views)
+    const prepared = [];
+    for (const t of targets) {
+      const file = resolvePsr4(t.fqcn);
+      if (!file) {
+        console.log(`  controller ${t.route}: skipped — cannot resolve ${t.fqcn} via composer autoload`);
+        continue;
+      }
+      try {
+        const out = execFileSync(
+          process.execPath,
+          [join(pkgDir, 'compiler', 'bin', 'controller.mjs'), 'extract', '--file', file, '--method', t.method],
+          { cwd: appDir }
+        ).toString('utf8');
+        prepared.push({ ...t, file, meta: JSON.parse(out) });
+      } catch (e) {
+        console.log(`  controller ${t.route}: skipped — ${formatControllerError(e)}`);
+      }
+    }
+
+    if (prepared.length) {
+      // phase B: model metadata (one PHP dump for every referenced class)
+      const aliasToFqcns = new Map(); // alias -> Set(fqcn)
+      for (const p of prepared) {
+        for (const c of p.meta.classes || []) {
+          const set = aliasToFqcns.get(c.alias) || new Set();
+          set.add(c.fqcn);
+          aliasToFqcns.set(c.alias, set);
+        }
+      }
+      const allFqcns = [...new Set([...aliasToFqcns.values()].flatMap((s) => [...s]))];
+      const modelDump = new Map();
+      if (allFqcns.length) {
+        console.log(`• dumping model metadata (${allFqcns.length}): ${allFqcns.join(', ')}`);
+        try {
+          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...allFqcns], {
+            cwd: appDir,
+            env: { ...process.env, LW_APP_ROOT: appDir },
+          }).toString('utf8');
+          for (const d of JSON.parse(raw)) modelDump.set(d.fqcn, d);
+        } catch (e) {
+          console.log(
+            `  model dump failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
+              .trim()
+              .slice(0, 200)}`
+          );
+        }
+      }
+
+      // views used by prepared controllers (compiled once; skipped views block their routes)
+      const neededViews = new Set();
+      for (const p of prepared) for (const v of p.meta.views || []) neededViews.add(v);
+      const compiledViews = new Set();
+      for (const view of neededViews) {
+        const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
+        if (existsSync(viewModulePath)) {
+          compiledViews.add(view);
+          continue;
+        }
+        console.log(`compiling view ${view} (controller)`);
+        try {
+          const dumpPath = join(cacheDir, view + '.compiled.json');
+          execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, '/'], {
+            cwd: appDir,
+            env: { ...process.env, LW_APP_ROOT: appDir },
+          });
+          const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+          if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
+          execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], {
+            cwd: appDir,
+          });
+          writeFileSync(join(dist, 'src', 'contexts', view + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
+          compiledViews.add(view);
+        } catch (e) {
+          console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
+        }
+      }
+
+      // generated model classes + route-name -> uri map (imported by controller handlers)
+      const classVarNames = new Map(); // fqcn -> generated class identifier
+      const modelLines = ['// generated by laravel-workers — do not edit', "import { Model } from '../kernel/model.mjs';", ''];
+      for (const [, fqcns] of aliasToFqcns) {
+        for (const fqcn of fqcns) {
+          if (classVarNames.has(fqcn)) continue;
+          const d = modelDump.get(fqcn);
+          if (!d || !d.model) continue;
+          const varName = 'M_' + fqcn.replace(/[^A-Za-z0-9]/g, '_');
+          classVarNames.set(fqcn, varName);
+          modelLines.push(`export class ${varName} extends Model {}`);
+          modelLines.push(`${varName}.table = ${JSON.stringify(d.table)};`);
+          modelLines.push(`${varName}.primaryKey = ${JSON.stringify(d.primaryKey || 'id')};`);
+          modelLines.push(`${varName}.casts = ${JSON.stringify(d.casts || {})};`);
+          modelLines.push(`${varName}.timestamps = ${d.timestamps === false ? 'false' : 'true'};`);
+          modelLines.push(`${varName}.softDeletes = ${d.softDeletes ? 'true' : 'false'};`);
+          modelLines.push(`${varName}.hidden = ${JSON.stringify(d.hidden || [])};`);
+          modelLines.push(`${varName}.appends = ${JSON.stringify(d.appends || [])};`);
+          modelLines.push('');
+        }
+      }
+      const mapPairs = [];
+      for (const [alias, fqcns] of aliasToFqcns) {
+        if (fqcns.size !== 1) continue; // ambiguous alias: never guessed
+        const fqcn = [...fqcns][0];
+        if (!classVarNames.has(fqcn)) continue;
+        mapPairs.push(`${JSON.stringify(alias)}: ${classVarNames.get(fqcn)}`);
+        mapPairs.push(`${JSON.stringify(fqcn)}: ${classVarNames.get(fqcn)}`);
+      }
+      modelLines.push('export const models = { ' + mapPairs.join(', ') + ' };');
+      const routeMapObj = {};
+      for (const route of routes) {
+        const { name } = metaForRoute(route);
+        if (name && !(name in routeMapObj)) routeMapObj[name] = route.replace(/^\//, '');
+      }
+      modelLines.push('export const routeMap = ' + JSON.stringify(routeMapObj) + ';');
+      modelLines.push('');
+      writeFileSync(join(dist, 'src', 'models.generated.mjs'), modelLines.join('\n'));
+
+      // phase C: emit one handler module per transpilable route
+      let emittedCount = 0;
+      for (const p of prepared) {
+        const ambiguous = (p.meta.classes || []).find((c) => (aliasToFqcns.get(c.alias) || new Set()).size > 1);
+        if (ambiguous) {
+          console.log(`  controller ${p.route}: skipped — model alias "${ambiguous.alias}" is ambiguous between namespaces`);
+          continue;
+        }
+        const badModel = (p.meta.classes || []).find((c) => {
+          const d = modelDump.get(c.fqcn);
+          return !d || !d.model;
+        });
+        if (badModel) {
+          const d = modelDump.get(badModel.fqcn);
+          console.log(
+            `  controller ${p.route}: skipped — ${badModel.fqcn} is not a usable Eloquent model${
+              d && d.error ? ' (' + d.error + ')' : ''
+            }`
+          );
+          continue;
+        }
+        const missingView = (p.meta.views || []).find((v) => !compiledViews.has(v));
+        if (missingView) {
+          console.log(`  controller ${p.route}: skipped — view "${missingView}" did not compile`);
+          continue;
+        }
+        const slug = slugifyRoute(p.route);
+        const meta = {
+          routeUri: p.route,
+          routeParams: (p.route.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1).replace(/[?*]$/, '')),
+          models: (p.meta.classes || []).map((c) => ({ alias: c.alias, fqcn: c.fqcn })),
+          views: p.meta.views || [],
+        };
+        const metaPath = join(metaDir, slug + '.meta.json');
+        writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+        const outPath = join(dist, 'src', 'controllers', slug + '.mjs');
+        try {
+          execFileSync(
+            process.execPath,
+            [
+              join(pkgDir, 'compiler', 'bin', 'controller.mjs'),
+              'emit',
+              '--file', p.file,
+              '--method', p.method,
+              '--meta', metaPath,
+              '--out', outPath,
+            ],
+            { cwd: appDir }
+          );
+          controllerRoutes.set(p.route, { slug, fqcn: p.fqcn, method: p.method });
+          emittedCount++;
+          console.log(`  controller ${p.route} -> dist/src/controllers/${slug}.mjs (${p.fqcn}@${p.method})`);
+        } catch (e) {
+          console.log(`  controller ${p.route}: skipped — ${formatControllerError(e)}`);
+        }
+      }
+      if (emittedCount) {
+        console.log(`• controllers transpiled: ${emittedCount}/${targets.length}`);
+        for (let i = needsPort.length - 1; i >= 0; i--) {
+          if (controllerRoutes.has(needsPort[i].route)) needsPort.splice(i, 1);
+        }
+      }
+    }
+  }
 }
 
 // ---------- 3d. schema snapshot ----------
@@ -392,6 +695,10 @@ const routeTable = routes.map((route) => {
     const view = viewMap.find(([r]) => r === route)[1];
     return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'view', view, controller: slug };
   }
+  if (controllerRoutes.has(route)) {
+    const info = controllerRoutes.get(route);
+    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'controller', controller: info.slug };
+  }
   if (staticMap.some(([r]) => r === route)) {
     const file = staticMap.find(([r]) => r === route)[1];
     return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'snapshot', snapshot: file };
@@ -408,7 +715,7 @@ const controllerMap = [];
 let controllerIndex = 0;
 for (const route of routes) {
   const entry = routeTable.find((r) => r.uri === route);
-  if (entry && (entry.kind === 'view' || entry.kind === 'port')) {
+  if (entry && (entry.kind === 'view' || entry.kind === 'port' || entry.kind === 'controller')) {
     const idx = controllerIndex++;
     controllerImports.push(`import handler${idx} from './controllers/${entry.controller}.mjs';`);
     controllerMap.push({ route, idx });
@@ -473,7 +780,7 @@ if (stubPorts.length)
   );
 if (!blocked)
   console.log(
-    `• coverage: all ${routes.length} route(s) handled — static ${staticMap.length}, snapshots ${snapshots.length}, ports ${portEntries.length}, ignored ${ignoreMap.length}`
+    `• coverage: all ${routes.length} route(s) handled — static ${staticMap.length}, snapshots ${snapshots.length}, ports ${portEntries.length}, controllers ${controllerRoutes.size}, ignored ${ignoreMap.length}`
   );
 
 // ---------- 7. scaffold stubs for routes that need a port ----------
@@ -518,5 +825,5 @@ if (strict && blocked) {
 }
 
 console.log(
-  `done. dist: ${relative(appDir, dist)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, ignored: ${ignoreMap.length})`
+  `done. dist: ${relative(appDir, dist)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, controllers: ${controllerRoutes.size}, ignored: ${ignoreMap.length})`
 );

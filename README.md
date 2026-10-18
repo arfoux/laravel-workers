@@ -20,6 +20,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M7** Services kernel (kernel/mail,queue,cache,storage,scheduler.mjs, 18 subtests)
 - **M8** Final gates (tools/docs-check 105/105 + tools/bench + budget.test p95<=5ms hot)
 - **M9** Zero-touch hardening (2026-10-18) — scaffold stubs now follow the controller contract (default export, `{status, headers, body}`, `laravel-workers:stub` marker); `build --strict` fails on unimplemented stubs + missing port files; `LW_CONFIG`/`LW_PORTS_DIR` let registry + ports live outside the repo; `registry.json` optional (defaults + notice); routes defined outside `routes/` are listed as skipped. Verified: stub `501` keeps the worker alive → implement → `200` via local D1; external config+ports E2E; fresh Laravel 13.37 zero-config build PASS. `tools/ports.mjs` + 5 tests → npm test **170/170**.
+- **M10** Controller transpilation v1 (2026-10-18) — `GET`/`HEAD` routes with a resolvable controller method are compiled at build time to `dist/src/controllers/*.mjs` (handler `(ctx, env)`): scalar route params, Eloquent chains (`find`/`findOrFail`/`all`/`where*`/`orderBy*`/`limit` + `first`/`get`/`count`/`pluck`/`value`), `view()`/`redirect()`/`abort()`/`compact()`/`response()->json()`, `route()`/`url()` from the frozen name map; model metadata dumped per FQCN; unsupported constructs fail loud (LW001–LW004 with a "write a port" hint). Verified on a fresh Laravel 13.37 app end-to-end: `--strict` build (snapshot `/` + 2 controllers) and `wrangler dev` against local D1 (`/posts` list, `/posts/1` detail, `/posts/999` → 404 via `findOrFail`). npm test **195/195**, corpus 51/51.
 
 ## Supported vs unsupported
 
@@ -29,14 +30,14 @@ Compiles today (byte-parity corpus + kernel tests):
 
 Fails loud (build error or `LW002`), use a port instead:
 - Blade layouts/components that compile to `$__env->…` (`@extends`/`@section`/`@yield`/`@include`).
-- Non-view routes: PHP controllers are **not** transpiled — write a `ports/*.mjs` handler.
+- Controller code outside the M10 subset: only `GET`/`HEAD` actions with a resolvable class method and the supported PHP subset are transpiled. POST/form/auth/session/CSRF flows, route-model binding parameters, `paginate`, Eloquent relations, `$this`, and unknown constructs fail loud — write a `ports/*.mjs` handler.
 
 
 ## What's inside
 
-- `compiler/` — **M1 view compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 51, parity, smoke).
+- `compiler/` — **M1 view compiler** + **M10 controller compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `bin/controller.mjs`, `src/transpiler.mjs`, `src/controller.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 51, parity, smoke, controller).
 - `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), budget gate (M8).
-- `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
+- `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `model-dump.php` (M10 Eloquent metadata), `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
 - `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `routes.generated.mjs` route table with names/domains and a `routeNames` map + `public/_routes.json` for Cloudflare Static Assets).
 - `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy).
 

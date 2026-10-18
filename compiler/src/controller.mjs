@@ -1,0 +1,363 @@
+// compiler/src/controller.mjs — controller extraction + transpilation (build time).
+//
+// A controller route can become an async edge handler when the method body stays
+// inside the supported subset (see README "controller transpilation"). Everything
+// else fails loud here at build time and the route stays in the "needs a port"
+// list — the build never silently degrades.
+//
+// Two phases (also exposed through compiler/bin/controller.mjs):
+//   extractController(source, method) -> what the build needs to resolve
+//     (params, model classes, view names) before it can emit code;
+//   emitController(source, method, meta) -> the final handler module source.
+import parser from 'php-parser';
+import { transpileControllerMethod } from './transpiler.mjs';
+
+const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
+
+const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
+
+const TYPE_MAP = {
+  string: 'string',
+  int: 'int',
+  integer: 'int',
+  float: 'float',
+  double: 'float',
+  bool: 'bool',
+  boolean: 'bool',
+  mixed: 'raw',
+};
+
+// Static classes that are allowed even though they are not Eloquent models.
+const NON_MODEL_STATICS = new Set(['Route', 'self', 'static', 'parent']);
+
+function lwErr(code, message, loc, hint) {
+  return {
+    code,
+    message,
+    line: loc?.start?.line ?? 0,
+    column: loc?.start?.column ?? 0,
+    hint: hint || '',
+  };
+}
+
+function parseSource(source) {
+  let ast;
+  try {
+    ast = phpParser.parseCode(source);
+  } catch (e) {
+    return { error: lwErr('LW004', 'parse error: ' + (e.message || String(e)), null) };
+  }
+  if (ast && ast.errors && ast.errors.length) {
+    const first = ast.errors[0];
+    return { error: lwErr('LW004', 'parse error: ' + (first.msg || first.message || JSON.stringify(first)), first.loc) };
+  }
+  return { ast };
+}
+
+const nodeName = (n) => {
+  if (n == null) return '';
+  if (typeof n === 'string') return n;
+  if (typeof n.name === 'string') return n.name;
+  if (n.name && typeof n.name.name === 'string') return n.name.name;
+  return '';
+};
+
+// Program -> namespaces (files without a namespace get a virtual '' namespace).
+function collectNamespaces(ast) {
+  const out = [];
+  for (const node of (ast && ast.children) || []) {
+    if (node.kind === 'namespace') {
+      out.push({ name: nodeName(node.name), children: node.children || [] });
+    } else {
+      out.push({ name: '', children: [node] });
+    }
+  }
+  return out;
+}
+
+function findClass(ast) {
+  for (const ns of collectNamespaces(ast)) {
+    for (const node of ns.children) {
+      if (node.kind === 'class') return { nsName: ns.name, classNode: node, children: ns.children };
+    }
+  }
+  return null;
+}
+
+function collectUses(children) {
+  const uses = {};
+  for (const n of children) {
+    if (n.kind === 'usegroup') {
+      for (const item of n.items || []) {
+        const full = nodeName(item.name);
+        if (!full) continue;
+        const alias = item.alias ? nodeName(item.alias) : full.split('\\').pop();
+        uses[alias] = full;
+      }
+    } else if (n.kind === 'use') {
+      const full = nodeName(n.name);
+      if (!full) continue;
+      uses[full.split('\\').pop()] = full;
+    }
+  }
+  return uses;
+}
+
+function typeName(t) {
+  if (!t) return null;
+  if (typeof t === 'string') return t;
+  if (t.kind === 'nullabletype') return typeName(t.what);
+  if (t.kind === 'uniontype') return null; // unions are rejected (fail loud)
+  if (t.kind === 'intersectiontype') return null;
+  const n = t.name !== undefined ? t.name : null;
+  if (typeof n === 'string') return n;
+  if (n && typeof n.name === 'string') return n.name;
+  if (typeof t.value === 'string') return t.value;
+  return null;
+}
+
+function literalOf(node) {
+  if (!node) return { ok: false };
+  if (node.kind === 'number') return { ok: true, value: Number(node.value) };
+  if (node.kind === 'string') return { ok: true, value: String(node.value) };
+  if (node.kind === 'boolean') return { ok: true, value: !!node.value };
+  if (node.kind === 'nullkeyword' || node.kind === 'null') return { ok: true, value: null };
+  if (node.kind === 'unary' && (node.type === '-' || node.type === '+')) {
+    const inner = literalOf(node.what || node.expr || node.operand);
+    if (inner.ok && typeof inner.value === 'number') {
+      return { ok: true, value: node.type === '-' ? -inner.value : inner.value };
+    }
+  }
+  return { ok: false };
+}
+
+function analyzeParams(method) {
+  const params = [];
+  for (const p of method.arguments || []) {
+    const entry = {
+      name: nodeName(p.name),
+      type: 'raw',
+      typeOk: true,
+      typeHint: null,
+      hasDefault: p.value != null,
+      default: null,
+      defaultOk: true,
+      variadic: !!p.variadic,
+      byRef: !!p.byref,
+    };
+    const tn = typeName(p.type);
+    if (p.type) {
+      const lowered = tn == null ? null : tn.toLowerCase();
+      if (lowered && TYPE_MAP[lowered]) {
+        entry.type = TYPE_MAP[lowered];
+        entry.typeHint = tn;
+      } else {
+        entry.typeOk = false;
+        entry.typeHint = tn || 'complex (union/intersection)';
+      }
+    }
+    if (entry.hasDefault) {
+      const dv = literalOf(p.value);
+      if (dv.ok) entry.default = dv.value;
+      else entry.defaultOk = false;
+    }
+    params.push(entry);
+  }
+  return params;
+}
+
+// Walk the method body for static class references and literal view() names.
+function scanBody(node, classes, views) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const n of node) scanBody(n, classes, views);
+    return;
+  }
+  if (node.kind === 'call') {
+    const what = node.what;
+    if (what && what.kind === 'staticlookup') {
+      const alias = what.what && what.what.name;
+      if (typeof alias === 'string') classes.add(alias);
+    }
+    if (what && what.kind === 'name' && what.name === 'view') {
+      const a0 = (node.arguments || [])[0];
+      if (a0 && a0.kind === 'string') views.add(String(a0.value));
+    }
+  }
+  for (const k of Object.keys(node)) {
+    if (k === 'loc') continue;
+    scanBody(node[k], classes, views);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// extract
+// ---------------------------------------------------------------------------
+
+export function extractController(source, methodName) {
+  const parsed = parseSource(source);
+  if (parsed.error) return { ok: false, errors: [parsed.error] };
+  const found = findClass(parsed.ast);
+  if (!found) return { ok: false, errors: [lwErr('LW004', 'no class found in controller file', null, PORT_HINT)] };
+
+  const { nsName, classNode, children } = found;
+  const className = nodeName(classNode.name);
+  if (!className) return { ok: false, errors: [lwErr('LW004', 'controller class has no name', classNode.loc, PORT_HINT)] };
+  const fqcn = nsName ? nsName + '\\' + className : className;
+
+  const uses = collectUses(children);
+  const method = (classNode.body || []).find((n) => n.kind === 'method' && nodeName(n.name) === methodName);
+  if (!method) {
+    return { ok: false, errors: [lwErr('LW004', `method ${methodName}() not found in ${fqcn}`, classNode.loc, PORT_HINT)] };
+  }
+
+  const params = analyzeParams(method);
+  const classSet = new Set();
+  const viewSet = new Set();
+  scanBody(method.body, classSet, viewSet);
+
+  const classes = [...classSet]
+    .filter((alias) => !NON_MODEL_STATICS.has(alias))
+    .map((alias) => ({ alias, fqcn: uses[alias] || (nsName ? nsName + '\\' + alias : alias) }))
+    .sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
+
+  return {
+    ok: true,
+    fqcn,
+    namespace: nsName,
+    className,
+    method: methodName,
+    uses,
+    params,
+    classes,
+    views: [...viewSet].sort(),
+    methodNode: method,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// emit
+// ---------------------------------------------------------------------------
+
+const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
+
+export function emitController(source, methodName, meta = {}) {
+  const info = extractController(source, methodName);
+  if (!info.ok) return { code: null, errors: info.errors };
+
+  const errors = [];
+  const params = info.params;
+  const routeParams = (Array.isArray(meta.routeParams) ? meta.routeParams : []).map((s) =>
+    String(s).replace(/[?*]$/, '')
+  );
+
+  for (let i = 0; i < params.length; i++) {
+    const p = params[i];
+    if (p.variadic) errors.push(lwErr('LW002', `parameter $${p.name} is variadic — ` + PORT_HINT, null, PORT_HINT));
+    if (p.byRef) errors.push(lwErr('LW002', `parameter $${p.name} is by-reference — ` + PORT_HINT, null, PORT_HINT));
+    if (!p.typeOk) {
+      errors.push(
+        lwErr(
+          'LW002',
+          `parameter $${p.name} has unsupported type "${p.typeHint}" — only scalar parameters (string/int/float/bool) are supported here; ` +
+            'request injection is out of scope in v1 — ' +
+            PORT_HINT,
+          null,
+          PORT_HINT
+        )
+      );
+    }
+    if (!p.defaultOk) {
+      errors.push(lwErr('LW002', `parameter $${p.name} has a non-literal default value — ` + PORT_HINT, null, PORT_HINT));
+    }
+    if (i >= routeParams.length && !p.hasDefault) {
+      errors.push(
+        lwErr(
+          'LW002',
+          `parameter $${p.name} has no matching route segment and no default — Laravel would fail at request time; ` +
+            PORT_HINT,
+          null,
+          PORT_HINT
+        )
+      );
+    }
+  }
+
+  const modelAliases = new Set((meta.models || []).map((m) => m.alias));
+  for (const c of info.classes) {
+    if (!modelAliases.has(c.alias)) {
+      errors.push(
+        lwErr(
+          'LW003',
+          `${c.fqcn} is not a registered Eloquent model for this route — only Eloquent models (find/findOrFail/all/where/whereIn) and Route::has transpile; ` +
+            PORT_HINT,
+          null,
+          PORT_HINT
+        )
+      );
+    }
+  }
+
+  if (errors.length) return { code: null, errors };
+
+  const paramVars = new Set(params.map((p) => vname(p.name)));
+  const emitted = transpileControllerMethod((info.methodNode.body && info.methodNode.body.children) || [], {
+    models: modelAliases,
+    views: new Set(info.views),
+    indent: '    ',
+    paramVars,
+  });
+  if (emitted.errors.length) return { code: null, errors: emitted.errors };
+
+  const importLines = [];
+  const viewEntries = [];
+  info.views.forEach((v, i) => {
+    importLines.push(`import V${i} from '../views/${v}.mjs';`);
+    importLines.push(`import VC${i} from '../contexts/${v}.mjs';`);
+    viewEntries.push(`  ${JSON.stringify(v)}: { main: V${i}, context: VC${i} }`);
+  });
+
+  const paramLines = params.map((p, i) => {
+    const segName = i < routeParams.length ? routeParams[i] : p.name;
+    const def = p.hasDefault ? JSON.stringify(p.default === undefined ? null : p.default) : 'null';
+    return (
+      `    let ${vname(p.name)} = rt.param(ctx.params, ${JSON.stringify(segName)}, ` +
+      `${JSON.stringify(p.type)}, ${p.hasDefault ? 'true' : 'false'}, ${def});`
+    );
+  });
+
+  const lines = [];
+  lines.push(`// generated by laravel-workers — ${info.fqcn}@${methodName} (do not edit)`);
+  lines.push("import { buildRt } from '../runtime/rt-from-context.mjs';");
+  for (const l of importLines) lines.push(l);
+  lines.push("import { models as LW_MODELS, routeMap as LW_ROUTE_MAP } from '../models.generated.mjs';");
+  lines.push('');
+  lines.push('const VIEWS = {');
+  for (const e of viewEntries) lines.push(e + ',');
+  lines.push('};');
+  lines.push('');
+  lines.push('export default async function handle(ctx, env) {');
+  lines.push('  const rt = buildRt(null, {');
+  lines.push('    strict: true,');
+  lines.push('    runtime: true,');
+  lines.push('    db: env && env.DB ? env.DB : null,');
+  lines.push('    models: LW_MODELS,');
+  lines.push('    views: VIEWS,');
+  lines.push("    origin: ctx && ctx.request && ctx.request.host ? 'https://' + ctx.request.host : null,");
+  lines.push('    routeMap: LW_ROUTE_MAP,');
+  lines.push('  });');
+  lines.push('  try {');
+  for (const l of paramLines) lines.push(l);
+  if (emitted.code) lines.push(emitted.code);
+  lines.push('    throw new Error(' + JSON.stringify('controller ' + info.fqcn + '@' + methodName + ' returned no response') + ');');
+  lines.push('  } catch (e) {');
+  lines.push('    if (e && e.status) return rt.errorResponse(e);');
+  lines.push('    throw e;');
+  lines.push('  }');
+  lines.push('}');
+  lines.push('');
+
+  return { code: lines.join('\n'), errors: [] };
+}
+
+export default { extractController, emitController };

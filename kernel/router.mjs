@@ -159,7 +159,12 @@ export async function dispatch(req, table, handlers, env, options = {}) {
 
   const ctx = {
     params: m.params,
-    request: { method: resolveMethod(req), path: (req && req.path) || '/', headers: (req && req.headers) || {} },
+    request: {
+      method: resolveMethod(req),
+      path: (req && req.path) || '/',
+      headers: (req && req.headers) || {},
+      host: (req && (req.host || req.hostname)) || null,
+    },
   };
   const bindings = m.route && m.route.bindings;
   if (bindings && options && options.models) {

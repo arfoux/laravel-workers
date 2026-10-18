@@ -7,9 +7,9 @@ const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositio
 const vname = (name) => 'v_' + String(name).replace(/^\\$/, '').replace(/[^A-Za-z0-9_]/g, '_');
 const fname = (name) => 'fn_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 
-function mkErr(code, message, loc) {
+function mkErr(code, message, loc, hint) {
   const e = new Error(message);
-  e.lw = { code, message, line: loc?.start?.line ?? 0, column: loc?.start?.column ?? 0, hint: '' };
+  e.lw = { code, message, line: loc?.start?.line ?? 0, column: loc?.start?.column ?? 0, hint: hint || '' };
   return e;
 }
 
@@ -85,6 +85,9 @@ function tx(node) {
     case 'identifier':
       return JSON.stringify(String(node.name));
     case 'variable':
+      if (node.name === 'this' && CTX) {
+        throw mkErr('LW002', '$this is not supported in transpiled controllers — ' + PORT_HINT, node.loc, PORT_HINT);
+      }
       return vname(node.name);
     case 'encapsed': {
       const parts = node.parts || node.value || [];
@@ -99,6 +102,15 @@ function tx(node) {
     case 'offsetlookup': {
       return tx(node.what) + '[' + txOffsetKey(node.offset) + ']';
     }
+    case 'propertylookup': {
+      const name = node.offset && node.offset.name;
+      if (typeof name !== 'string') {
+        throw mkErr('LW002', 'unsupported property access', node.loc);
+      }
+      return 'rt.prop(' + tx(node.what) + ', ' + JSON.stringify(name) + ')';
+    }
+    case 'nullsafeproperty':
+      throw mkErr('LW002', 'nullsafe property access (?->) is not supported', node.loc);
     case 'bin':
       return txBin(node);
     case 'unary': {
@@ -211,9 +223,153 @@ function txBin(node) {
 // function table is injected by `transpile` (module-level, per-parse)
 let FUNCS = new Set();
 
+// ---- controller transpilation state (injected by `transpileControllerMethod`) ----
+// CTX is null when compiling Blade views; set to {models, views} when compiling a
+// controller method body. It enables: model query chains, redirect()/response()->json(),
+// view()/abort()/compact(), and await-based async codegen for D1 queries.
+let CTX = null;
+let CLOSURE_DEPTH = 0;
+
+// Static model calls that START a chain (return a query builder, no await).
+const MODEL_STATIC_START = new Set(['where', 'whereIn']);
+// Static model calls that are terminal (return a Promise, must be awaited).
+const MODEL_STATIC_TERMINAL = new Set(['find', 'findOrFail', 'all']);
+// Chainable builder methods (kernel db.mjs API). Keep in sync with kernel/db.mjs.
+const MODEL_CHAIN_BUILDER = new Set([
+  'where', 'orWhere', 'whereIn', 'whereNotIn', 'whereNull', 'whereNotNull',
+  'orderBy', 'orderByDesc', 'latest', 'oldest', 'limit', 'offset', 'select',
+]);
+// Terminal builder methods (return a Promise).
+const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'pluck', 'value']);
+
+const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
+
+function txAwait(expr, node) {
+  if (CLOSURE_DEPTH > 0) {
+    throw mkErr('LW002', 'database query inside a closure is not supported — move the query outside the closure', node.loc, PORT_HINT);
+  }
+  return '(await ' + expr + ')';
+}
+
+// Detects a model query chain starting at a model class static call.
+// Returns { root, segments } or null. segments[0] is the static call; the rest are ->method() calls.
+function modelChain(node) {
+  if (!CTX || !CTX.models) return null;
+  const segs = [];
+  let root = null;
+  let cur = node;
+  while (cur && cur.kind === 'call') {
+    const what = cur.what;
+    if (!what) return null;
+    if (what.kind === 'propertylookup') {
+      const name = what.offset && what.offset.name;
+      if (typeof name !== 'string') return null;
+      segs.unshift({ name, node: cur });
+      cur = what.what;
+    } else if (what.kind === 'staticlookup') {
+      const cls = what.what && what.what.name;
+      const name = what.offset && what.offset.name;
+      if (typeof cls !== 'string' || typeof name !== 'string') return null;
+      if (!CTX.models.has(cls)) return null;
+      segs.unshift({ name, node: cur });
+      root = cls;
+      break;
+    } else {
+      return null;
+    }
+  }
+  if (!root) return null;
+  return { root, segments: segs };
+}
+
+function txModelChain(chain, node) {
+  const { root, segments } = chain;
+  const first = segments[0];
+  const firstArgs = (first.node.arguments || []).map(tx).join(', ');
+  const clsLit = JSON.stringify(root);
+  let expr;
+  if (MODEL_STATIC_START.has(first.name)) {
+    expr = 'rt.model(' + clsLit + ').' + first.name + '(' + firstArgs + ')';
+  } else if (MODEL_STATIC_TERMINAL.has(first.name)) {
+    if (segments.length > 1) {
+      throw mkErr('LW003', root + '::' + first.name + '() cannot be chained — ' + PORT_HINT, node.loc, PORT_HINT);
+    }
+    expr = txAwait('rt.model(' + clsLit + ').' + first.name + '(' + firstArgs + ')', first.node);
+  } else {
+    throw mkErr('LW003', 'unsupported static call ' + root + '::' + first.name + '() — only find, findOrFail, all, where, whereIn transpile at the edge', node.loc, PORT_HINT);
+  }
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i];
+    const at = (seg.node.arguments || []).map(tx).join(', ');
+    if (MODEL_CHAIN_BUILDER.has(seg.name)) {
+      expr += '.' + seg.name + '(' + at + ')';
+    } else if (MODEL_CHAIN_TERMINAL.has(seg.name)) {
+      if (i !== segments.length - 1) {
+        throw mkErr('LW003', 'cannot chain past ->' + seg.name + '() — ' + PORT_HINT, seg.node.loc, PORT_HINT);
+      }
+      expr = txAwait(expr + '.' + seg.name + '(' + at + ')', seg.node);
+    } else {
+      throw mkErr('LW003', 'unsupported query method ->' + seg.name + '() — ' + PORT_HINT, seg.node.loc, PORT_HINT);
+    }
+  }
+  return expr;
+}
+
+// redirect(...), redirect()->route(...), redirect()->to(...), response()->json(...)
+function txRedirectChain(node) {
+  const what = node.what;
+  if (!what) return null;
+  if (what.kind === 'name' && what.name === 'redirect') {
+    const argNodes = node.arguments || [];
+    if (argNodes.length === 0) {
+      throw mkErr('LW002', "redirect() with no target is not supported — use redirect('/path') or redirect()->route('name')", node.loc, PORT_HINT);
+    }
+    if (argNodes.length > 2) throw mkErr('LW002', 'redirect() supports at most 2 arguments', node.loc, PORT_HINT);
+    return 'rt.redirect(' + argNodes.map(tx).join(', ') + ')';
+  }
+  if (what.kind === 'propertylookup') {
+    const inner = what.what;
+    const m = what.offset && what.offset.name;
+    if (!inner || inner.kind !== 'call' || !inner.what || inner.what.kind !== 'name') return null;
+    const base = inner.what.name;
+    const innerArgs = inner.arguments || [];
+    if (base === 'redirect') {
+      if (innerArgs.length !== 0) throw mkErr('LW002', 'unsupported redirect(...) usage', node.loc, PORT_HINT);
+      if (m === 'route') {
+        const a = node.arguments || [];
+        if (!a.length) throw mkErr('LW002', 'redirect()->route() needs a route name', node.loc, PORT_HINT);
+        if (a[0].kind !== 'string') throw mkErr('LW002', 'redirect()->route() name must be a string literal', node.loc, PORT_HINT);
+        return 'rt.redirect(rt.route(' + a.map(tx).join(', ') + '))';
+      }
+      if (m === 'to') {
+        const a = node.arguments || [];
+        if (!a.length) throw mkErr('LW002', 'redirect()->to() needs a location', node.loc, PORT_HINT);
+        return 'rt.redirect(' + a.map(tx).join(', ') + ')';
+      }
+      throw mkErr('LW002', 'unsupported redirect()->' + m + '() — ' + PORT_HINT, node.loc, PORT_HINT);
+    }
+    if (base === 'response') {
+      if (innerArgs.length !== 0) throw mkErr('LW002', 'unsupported response(...) usage', node.loc, PORT_HINT);
+      if (m === 'json') {
+        const a = node.arguments || [];
+        if (a.length < 1 || a.length > 2) throw mkErr('LW002', 'response()->json() needs 1-2 arguments', node.loc, PORT_HINT);
+        return 'rt.json(' + a.map(tx).join(', ') + ')';
+      }
+      throw mkErr('LW002', 'unsupported response()->' + m + '() — ' + PORT_HINT, node.loc, PORT_HINT);
+    }
+  }
+  return null;
+}
+
 function txCall(node) {
   const args = (node.arguments || []).map(tx).join(', ');
   const what = node.what;
+  if (CTX) {
+    const redir = txRedirectChain(node);
+    if (redir) return redir;
+    const chain = modelChain(node);
+    if (chain) return txModelChain(chain, node);
+  }
   if (what.kind === 'name') {
     const name = what.name;
     if (name === 'app') {
@@ -231,6 +387,27 @@ function txCall(node) {
       const cb = cbRef(argNodes[1]);
       if (argNodes.length > 1 && !cb) throw mkErr('LW001', 'array_filter callback must be a named function', node.loc);
       return 'rt.array_filter(' + tx(argNodes[0]) + (cb ? ', ' + cb : '') + ')';
+    }
+    if (CTX) {
+      if (name === 'view') {
+        const vn = argNodes[0];
+        if (!vn || vn.kind !== 'string') {
+          throw mkErr('LW002', 'view() name must be a string literal so it can be compiled at build time', node.loc, PORT_HINT);
+        }
+        if (CTX.views && !CTX.views.has(vn.value)) {
+          throw mkErr('LW002', 'view "' + vn.value + '" was not compiled for this controller — ' + PORT_HINT, node.loc, PORT_HINT);
+        }
+        return 'rt.view(' + args + ')';
+      }
+      if (name === 'abort') return 'rt.abort(' + args + ')';
+      if (name === 'compact') {
+        const keys = [];
+        for (const a of argNodes) {
+          if (a.kind !== 'string') throw mkErr('LW001', 'compact() requires string literal variable names', node.loc, PORT_HINT);
+          keys.push(a.value);
+        }
+        return '{ ' + keys.map((k) => JSON.stringify(k) + ': ' + vname(k)).join(', ') + ' }';
+      }
     }
     const whitelisted = new Set(['e', 'str_replace', 'config', 'public_path', 'file_exists', 'url', 'route', 'auth']);
     const builtins = new Set([
@@ -332,12 +509,20 @@ function emitClosureBody(body, byVal, byRef, params){
     const locals=[...all].filter(n=> !paramSet.has(n) && !byValSet.has(n) && !byRefSet.has(n));
     const lines=[];
     if(locals.length) lines.push('let '+locals.map(vname).join(', ')+';');
+    CLOSURE_DEPTH++;
     try{
       walkChildren(body.children||[], lines, '', {});
-    }catch(e){ throw e; }
+    }finally{
+      CLOSURE_DEPTH--;
+    }
     return lines.join(' ');
   }
-  return 'return '+tx(body)+';';
+  CLOSURE_DEPTH++;
+  try {
+    return 'return '+tx(body)+';';
+  } finally {
+    CLOSURE_DEPTH--;
+  }
 }
 
 function txArrowFunc(node){
@@ -345,7 +530,13 @@ function txArrowFunc(node){
     const pn=vname(p.name && p.name.name ? p.name.name : p.name);
     return p.value ? pn+' = '+tx(p.value) : pn;
   });
-  const expr=tx(node.body);
+  CLOSURE_DEPTH++;
+  let expr;
+  try {
+    expr=tx(node.body);
+  } finally {
+    CLOSURE_DEPTH--;
+  }
   if(params.length===1) return '('+params[0]+'=>('+expr+'))';
   return '(('+params.join(', ')+')=>('+expr+'))';
 }
@@ -544,6 +735,12 @@ function collect(node, funcs, vars) {
     const nm = node.name.name || node.name;
     if (nm) funcs.add(String(nm));
   }
+  if (node.kind === 'call' && node.what && node.what.kind === 'name' && node.what.name === 'compact') {
+    // compact('post') reads $post — count it as a variable so it is declared/hoisted.
+    for (const a of node.arguments || []) {
+      if (a && a.kind === 'string') vars.add(vname(a.value));
+    }
+  }
   if (node.kind === 'closure' || node.kind === 'arrowfunc') {
     // do not hoist closure locals/params/uses to top-level; collect only variables outside closure scope
     // Still recurse into uses (they refer to outer vars, so collect them as outer vars if they are by-ref? Actually uses are outer vars)
@@ -589,7 +786,14 @@ export function transpile(compiledSource) {
 
   const lines = [];
   lines.push('export default function main(rt) {');
-  if (vars.size) lines.push('  let ' + Array.from(vars).join(', ') + ';');
+  if (vars.size) {
+    lines.push('  let ' + Array.from(vars).join(', ') + ';');
+    // Runtime view data injection: v_x = rt.var('x'). For static snapshots the rt has
+    // no data → rt.var returns undefined → identical semantics to the pre-data era.
+    for (const v of vars) {
+      lines.push('  ' + v + ' = rt.var(' + JSON.stringify(String(v).replace(/^v_/, '')) + ');');
+    }
+  }
   try {
     walkChildren(ast.children || [], lines, '  ', {});
   } catch (e) {
@@ -600,6 +804,33 @@ export function transpile(compiledSource) {
 
   const code = lines.join('\n') + '\n';
   return { code, errors: [] };
+}
+
+// ---- controller method transpilation (used by compiler/src/controller.mjs) ----
+// Returns { code, errors }; code is the JS body of an async request handler
+// (no wrapper function — the caller generates the handler skeleton).
+export function transpileControllerMethod(bodyChildren, opts = {}) {
+  const funcs = new Set();
+  const vars = new Set();
+  collect(bodyChildren || [], funcs, vars);
+  FUNCS = funcs;
+  CTX = { models: opts.models || new Set(), views: opts.views || new Set() };
+  CLOSURE_DEPTH = 0;
+  const indent = opts.indent || '';
+  const paramVars = opts.paramVars || new Set();
+  const declared = Array.from(vars).filter((v) => !paramVars.has(v));
+  const lines = [];
+  if (declared.length) lines.push(indent + 'let ' + declared.join(', ') + ';');
+  try {
+    walkChildren(bodyChildren || [], lines, indent, {});
+  } catch (e) {
+    const lw = e.lw || { code: 'LW002', message: e.message, line: 0, column: 0, hint: '' };
+    return { code: null, errors: [lw] };
+  } finally {
+    CTX = null;
+    CLOSURE_DEPTH = 0;
+  }
+  return { code: lines.join('\n'), errors: [] };
 }
 
 export default transpile;
