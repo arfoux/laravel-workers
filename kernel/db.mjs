@@ -133,6 +133,8 @@ export class QueryBuilder {
   }
 
   // Date-part filters. SQLite has no YEAR()/MONTH(); use date()/strftime().
+  // The bound value is cast to TEXT because date()/time()/strftime() return
+  // TEXT: binding a JS number would compare INTEGER vs TEXT and never match.
   whereDate(column, operatorOrValue, value) {
     return this._whereDatePart('and', (c) => `date(${quoteIdent(c)})`, column, operatorOrValue, value);
   }
@@ -140,20 +142,25 @@ export class QueryBuilder {
     return this._whereDatePart('or', (c) => `date(${quoteIdent(c)})`, column, operatorOrValue, value);
   }
   whereYear(column, operatorOrValue, value) {
-    return this._whereDatePart('and', (c) => `strftime('%Y', ${quoteIdent(c)})`, column, operatorOrValue, value);
+    return this._whereDatePart('and', (c) => `strftime('%Y', ${quoteIdent(c)})`, column, operatorOrValue, value, 4);
   }
   whereMonth(column, operatorOrValue, value) {
-    return this._whereDatePart('and', (c) => `strftime('%m', ${quoteIdent(c)})`, column, operatorOrValue, value);
+    return this._whereDatePart('and', (c) => `strftime('%m', ${quoteIdent(c)})`, column, operatorOrValue, value, 2);
   }
   whereDay(column, operatorOrValue, value) {
-    return this._whereDatePart('and', (c) => `strftime('%d', ${quoteIdent(c)})`, column, operatorOrValue, value);
+    return this._whereDatePart('and', (c) => `strftime('%d', ${quoteIdent(c)})`, column, operatorOrValue, value, 2);
   }
   whereTime(column, operatorOrValue, value) {
     return this._whereDatePart('and', (c) => `time(${quoteIdent(c)})`, column, operatorOrValue, value);
   }
-  _whereDatePart(boolean, fn, column, operatorOrValue, value) {
+  _whereDatePart(boolean, fn, column, operatorOrValue, value, pad = 0) {
     const { operator, val } = normalizeOp(operatorOrValue, value);
-    this.wheres.push({ type: 'raw', boolean, sql: `${fn(column)} ${operator} ?`, params: [val] });
+    // Stringify + zero-pad the bound value: date()/strftime()/time() return
+    // TEXT (`%m`/`%d` are zero-padded), and some drivers (node:sqlite; D1
+    // historically) bind JS numbers as REAL, which would make CAST(? AS TEXT)
+    // yield '2024.0'/'2' and never match '2024'/'02'.
+    const bound = pad > 0 && val != null && val !== '' ? String(val).padStart(pad, '0') : val;
+    this.wheres.push({ type: 'raw', boolean, sql: `${fn(column)} ${operator} CAST(? AS TEXT)`, params: [bound] });
     return this;
   }
 

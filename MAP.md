@@ -308,6 +308,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **Validator widening (2026-10-18):** `kernel/validator.mjs` adds `exclude`/`exclude_if`/`exclude_unless`/`exclude_with`/`exclude_without` (dropped from `validated()`), `missing*`, `present_if`/`present_unless`/`present_with(_all)`, and value rules `doesnt_start_with`/`doesnt_end_with`/`list`/`required_array_keys`/`array_keys`/`in_array`/`decimal`/`timezone`. +6 tests -> npm test **100/100**.
 - **Model eager loading (2026-10-18):** `kernel/model.mjs` adds declared relations (`static relations`), `query(db).with('name')` batch eager loading (hasMany/hasOne/belongsTo, default foreign keys), `related()`/`load()` lazy loading, `setRelation`/`getRelation`/`relationLoaded`, relations included in `toJSON()`, and local scopes via `query(db).scope('name')` -> `scopeName(builder)`. Unknown relations/scopes fail loud. +6 subtests -> npm test **106/106**.
 - **Eager loading + EXISTS + real-SQL tests (2026-10-18):** `kernel/model.mjs` adds `query(db).withCount('comments')` (exposes `comments_count`), `whereHas()`/`whereDoesntHave()`/`has()`/`doesntHave()` as correlated `EXISTS` subqueries (relation callback constraints inlined), and `instance.loadCount()`. New `kernel/tests/sqlite-integration.test.mjs` (8 tests) runs the builder + Model layer against **in-memory SQLite** (`node:sqlite`, Node >= 22, D1-shaped `prepare/bind/all/first/run` adapter) so joins, `EXISTS`, `whereIn`, soft deletes and `create/save/delete` are verified on real SQL, not string-matched. -> npm test **114/114**.
+- **Date-part filter fix + wider real-SQL suite (2026-10-18):** `kernel/db.mjs` `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime` now compare against `CAST(? AS TEXT)` with zero-padded bounds (`%m`/`%d` are padded), so numeric/string bounds actually match TEXT date columns — previously `whereMonth('created_at', 2)` returned **no rows** (real bug the SQLite suite caught). `kernel/tests/sqlite-integration.test.mjs` extended to 15 tests covering `where(fn)` grouping, `whereIn`/`between`/`like`/`column`/`notIn`, date parts, aggregates + `groupBy`/`having`/`distinct`, `upsert` (DO UPDATE / DO NOTHING), `insertGetId`, `increment`/`decrement`, `updateOrInsert`, `truncate`, `chunk`, `paginate`, `pluck`/`value`/`exists` on real SQL. -> npm test **121/121**.
 - **Hash widening (2026-10-18):** `kernel/hash.mjs` adds `Hash::isHashed()` (bcrypt `$2a/$2b/$2y$` + argon2 digests), so callers don't double-hash. +1 subtest -> npm test **94/94**.
 
 ## B. Current state
@@ -318,7 +319,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | View-compile spike (S0 dump) | ✅ first artifact produced |
 | Repo name | `laravel-workers` (decided; GitHub/npm checked) |
 | Repo strategy | standalone; extract from `edge/` at M1–M2 |
-| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (51/51) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (114/114 + 105/105 + bench p95<=5ms) |
+| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (51/51) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (121/121 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |
 
 ---

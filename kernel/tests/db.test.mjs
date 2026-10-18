@@ -346,23 +346,23 @@ test('where(fn) nests a group (Laravel closure grouping)', () => {
 test('whereDate / whereYear / whereMonth / whereDay / whereTime', () => {
   assert.equal(
     table(mockDb(), 't').whereDate('created_at', '2026-01-02').toSql().sql,
-    'SELECT * FROM "t" WHERE date("created_at") = ?'
+    'SELECT * FROM "t" WHERE date("created_at") = CAST(? AS TEXT)'
   );
   assert.equal(
     table(mockDb(), 't').whereYear('created_at', '>', 2025).toSql().sql,
-    'SELECT * FROM "t" WHERE strftime(\'%Y\', "created_at") > ?'
+    'SELECT * FROM "t" WHERE strftime(\'%Y\', "created_at") > CAST(? AS TEXT)'
   );
   assert.equal(
     table(mockDb(), 't').whereMonth('created_at', 3).toSql().sql,
-    'SELECT * FROM "t" WHERE strftime(\'%m\', "created_at") = ?'
+    'SELECT * FROM "t" WHERE strftime(\'%m\', "created_at") = CAST(? AS TEXT)'
   );
   assert.equal(
     table(mockDb(), 't').whereDay('created_at', 9).toSql().sql,
-    'SELECT * FROM "t" WHERE strftime(\'%d\', "created_at") = ?'
+    'SELECT * FROM "t" WHERE strftime(\'%d\', "created_at") = CAST(? AS TEXT)'
   );
   assert.equal(
     table(mockDb(), 't').whereTime('created_at', '12:00:00').toSql().sql,
-    'SELECT * FROM "t" WHERE time("created_at") = ?'
+    'SELECT * FROM "t" WHERE time("created_at") = CAST(? AS TEXT)'
   );
 });
 
