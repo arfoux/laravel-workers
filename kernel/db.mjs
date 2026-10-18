@@ -18,6 +18,18 @@ function isPlainObject(v) {
   return v != null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// Normalize the (column, operatorOrValue, value) trio used by where-like APIs.
+function normalizeOp(operatorOrValue, value) {
+  let operator = '=';
+  let val = operatorOrValue;
+  if (value !== undefined) {
+    operator = String(operatorOrValue).toUpperCase();
+    val = value;
+    if (!ALLOWED_OPS.has(operator)) throw new Error('unsupported operator: ' + operator);
+  }
+  return { operator, val };
+}
+
 export class QueryBuilder {
   constructor(db, table) {
     this.db = db;
@@ -53,9 +65,12 @@ export class QueryBuilder {
   }
 
   where(column, operatorOrValue, value) {
+    // where(fn) → nested group, mirroring Laravel's closure grouping.
+    if (typeof column === 'function') return this.whereGroup(column, 'and');
     return this._whereBasic('and', column, operatorOrValue, value);
   }
   orWhere(column, operatorOrValue, value) {
+    if (typeof column === 'function') return this.whereGroup(column, 'or');
     return this._whereBasic('or', column, operatorOrValue, value);
   }
   _whereBasic(boolean, column, operatorOrValue, value) {
@@ -115,6 +130,31 @@ export class QueryBuilder {
   }
   whereNotLike(column, value) {
     return this._whereBasic('and', column, 'NOT LIKE', value);
+  }
+
+  // Date-part filters. SQLite has no YEAR()/MONTH(); use date()/strftime().
+  whereDate(column, operatorOrValue, value) {
+    return this._whereDatePart('and', (c) => `date(${quoteIdent(c)})`, column, operatorOrValue, value);
+  }
+  orWhereDate(column, operatorOrValue, value) {
+    return this._whereDatePart('or', (c) => `date(${quoteIdent(c)})`, column, operatorOrValue, value);
+  }
+  whereYear(column, operatorOrValue, value) {
+    return this._whereDatePart('and', (c) => `strftime('%Y', ${quoteIdent(c)})`, column, operatorOrValue, value);
+  }
+  whereMonth(column, operatorOrValue, value) {
+    return this._whereDatePart('and', (c) => `strftime('%m', ${quoteIdent(c)})`, column, operatorOrValue, value);
+  }
+  whereDay(column, operatorOrValue, value) {
+    return this._whereDatePart('and', (c) => `strftime('%d', ${quoteIdent(c)})`, column, operatorOrValue, value);
+  }
+  whereTime(column, operatorOrValue, value) {
+    return this._whereDatePart('and', (c) => `time(${quoteIdent(c)})`, column, operatorOrValue, value);
+  }
+  _whereDatePart(boolean, fn, column, operatorOrValue, value) {
+    const { operator, val } = normalizeOp(operatorOrValue, value);
+    this.wheres.push({ type: 'raw', boolean, sql: `${fn(column)} ${operator} ?`, params: [val] });
+    return this;
   }
 
   whereBetween(column, [min, max]) {
@@ -326,6 +366,25 @@ export class QueryBuilder {
     return Number(row.aggregate ?? row['COUNT(*)'] ?? 0);
   }
 
+  async _aggregate(fn, column) {
+    const params = [];
+    const agg = column === undefined || column === '*' ? '*' : quoteIdent(column);
+    let sql = `SELECT ${fn}(${agg}) AS "aggregate" FROM ${quoteIdent(this.table)}`;
+    sql += this._joinSql();
+    sql += renderClauses(this.wheres, params);
+    sql += this._groupSql();
+    sql += renderClauses(this.havings, params, 'HAVING');
+    const stmt = this._prepare(sql, params);
+    const res = await stmt.first();
+    const row = res || {};
+    return row.aggregate == null ? null : Number(row.aggregate);
+  }
+
+  async sum(column) { return this._aggregate('SUM', column); }
+  async avg(column) { return this._aggregate('AVG', column); }
+  async min(column) { return this._aggregate('MIN', column); }
+  async max(column) { return this._aggregate('MAX', column); }
+
   async exists() {
     const params = [];
     let sql = `SELECT 1 AS "e" FROM ${quoteIdent(this.table)}`;
@@ -381,6 +440,68 @@ export class QueryBuilder {
     const stmt = this._prepare(sql, params);
     const res = await stmt.run();
     return { success: !!(res && res.success), changes: res?.meta?.changes ?? 0, meta: res?.meta ?? {} };
+  }
+
+  async truncate() {
+    const stmt = this.db.prepare(`DELETE FROM ${quoteIdent(this.table)}`);
+    const res = await stmt.run();
+    return { success: !!(res && res.success), changes: res?.meta?.changes ?? 0, meta: res?.meta ?? {} };
+  }
+
+  async insertGetId(data) {
+    const res = await this.insert(data);
+    return res.lastInsertRowid;
+  }
+
+  // SQLite/D1 upsert: multi-row INSERT ... ON CONFLICT (unique) DO UPDATE|NOTHING.
+  async upsert(rows, uniqueBy, updateColumns) {
+    const list = Array.isArray(rows) ? rows : [rows];
+    if (!list.length) throw new Error('upsert expects at least one row');
+    const columns = Object.keys(list[0]);
+    const unique = Array.isArray(uniqueBy) ? uniqueBy.map(String) : [String(uniqueBy)];
+    const update = (updateColumns == null ? [] : (Array.isArray(updateColumns) ? updateColumns : [updateColumns]))
+      .map(String)
+      .filter((c) => !unique.includes(c));
+    const params = [];
+    const tuples = list.map((row) => '(' + columns.map((c) => { params.push(row[c] ?? null); return '?'; }).join(', ') + ')');
+    let sql = `INSERT INTO ${quoteIdent(this.table)} (${columns.map(quoteIdent).join(', ')}) VALUES ${tuples.join(', ')}`;
+    sql += ` ON CONFLICT (${unique.map(quoteIdent).join(', ')}) `;
+    if (update.length) sql += `DO UPDATE SET ${update.map((c) => `${quoteIdent(c)} = excluded.${quoteIdent(c)}`).join(', ')}`;
+    else sql += 'DO NOTHING';
+    const stmt = this._prepare(sql, params);
+    const res = await stmt.run();
+    return { success: !!(res && res.success), changes: res?.meta?.changes ?? 0, meta: res?.meta ?? {} };
+  }
+
+  async increment(column, amount = 1) {
+    const params = [Number(amount)];
+    let sql = `UPDATE ${quoteIdent(this.table)} SET ${quoteIdent(column)} = ${quoteIdent(column)} + ?`;
+    sql += renderClauses(this.wheres, params);
+    const stmt = this._prepare(sql, params);
+    const res = await stmt.run();
+    return { success: !!(res && res.success), changes: res?.meta?.changes ?? 0, meta: res?.meta ?? {} };
+  }
+
+  async decrement(column, amount = 1) {
+    return this.increment(column, -Number(amount));
+  }
+
+  async updateOrInsert(where, values) {
+    const q = new QueryBuilder(this.db, this.table);
+    for (const [k, v] of Object.entries(where || {})) q.where(k, v);
+    const existing = await q.clone().first();
+    if (existing) return q.update(values);
+    return this.insert({ ...(where || {}), ...(values || {}) });
+  }
+
+  async chunk(size, cb) {
+    const n = Math.max(1, Number(size) || 1);
+    for (let page = 1; ; page++) {
+      const rows = await this.clone().limit(n).offset((page - 1) * n).get();
+      if (!rows.length) return;
+      const stop = await cb(rows, page);
+      if (rows.length < n || stop === false) return;
+    }
   }
 
   async paginate(perPage = 15, page = 1) {

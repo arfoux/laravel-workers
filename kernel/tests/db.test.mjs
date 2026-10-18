@@ -332,3 +332,104 @@ test('Model refresh / increment', async () => {
   assert.equal(next, 7);
   assert.equal(m.get('score'), 7);
 });
+
+test('where(fn) nests a group (Laravel closure grouping)', () => {
+  const { sql, params } = table(mockDb(), 'posts')
+    .where('active', true)
+    .where((q) => q.where('a', 1).orWhere('b', 2))
+    .orWhere((q) => q.where('c', 3))
+    .toSql();
+  assert.equal(sql, 'SELECT * FROM "posts" WHERE "active" = ? AND ("a" = ? OR "b" = ?) OR ("c" = ?)');
+  assert.deepEqual(params, [true, 1, 2, 3]);
+});
+
+test('whereDate / whereYear / whereMonth / whereDay / whereTime', () => {
+  assert.equal(
+    table(mockDb(), 't').whereDate('created_at', '2026-01-02').toSql().sql,
+    'SELECT * FROM "t" WHERE date("created_at") = ?'
+  );
+  assert.equal(
+    table(mockDb(), 't').whereYear('created_at', '>', 2025).toSql().sql,
+    'SELECT * FROM "t" WHERE strftime(\'%Y\', "created_at") > ?'
+  );
+  assert.equal(
+    table(mockDb(), 't').whereMonth('created_at', 3).toSql().sql,
+    'SELECT * FROM "t" WHERE strftime(\'%m\', "created_at") = ?'
+  );
+  assert.equal(
+    table(mockDb(), 't').whereDay('created_at', 9).toSql().sql,
+    'SELECT * FROM "t" WHERE strftime(\'%d\', "created_at") = ?'
+  );
+  assert.equal(
+    table(mockDb(), 't').whereTime('created_at', '12:00:00').toSql().sql,
+    'SELECT * FROM "t" WHERE time("created_at") = ?'
+  );
+});
+
+test('aggregates sum/avg/min/max read the aggregate column', async () => {
+  const db = mockDb({ first: () => ({ aggregate: 12.5 }) });
+  assert.equal(await table(db, 't').sum('amount'), 12.5);
+  assert.equal(await table(db, 't').avg('amount'), 12.5);
+  assert.equal(await table(db, 't').min('amount'), 12.5);
+  assert.equal(await table(db, 't').max('amount'), 12.5);
+  const nullDb = mockDb({ first: () => ({ aggregate: null }) });
+  assert.equal(await table(nullDb, 't').sum('amount'), null);
+});
+
+test('upsert builds ON CONFLICT DO UPDATE / DO NOTHING', async () => {
+  const calls = [];
+  const db = mockDb({ run: (sql, params) => { calls.push({ sql, params }); return { success: true, meta: { changes: 2 } }; } });
+  const r = await table(db, 'users').upsert([{ id: 1, name: 'A' }, { id: 2, name: 'B' }], ['id'], ['name']);
+  assert.equal(r.changes, 2);
+  assert.equal(calls[0].sql, 'INSERT INTO "users" ("id", "name") VALUES (?, ?), (?, ?) ON CONFLICT ("id") DO UPDATE SET "name" = excluded."name"');
+  assert.deepEqual(calls[0].params, [1, 'A', 2, 'B']);
+  await table(db, 'users').upsert({ id: 1, name: 'A' }, 'id', []);
+  assert.equal(calls[1].sql, 'INSERT INTO "users" ("id", "name") VALUES (?, ?) ON CONFLICT ("id") DO NOTHING');
+});
+
+test('insertGetId / truncate / increment / decrement', async () => {
+  const calls = [];
+  const db = mockDb({ run: (sql, params) => { calls.push({ sql, params }); return { success: true, meta: { changes: 1, last_row_id: 9 } }; } });
+  assert.equal(await table(db, 't').insertGetId({ name: 'A' }), 9);
+  assert.match(calls[0].sql, /^INSERT INTO "t"/);
+  const tr = await table(db, 't').truncate();
+  assert.equal(tr.success, true);
+  assert.equal(calls[1].sql, 'DELETE FROM "t"');
+  await table(db, 't').where('id', 3).increment('views', 2);
+  assert.equal(calls[2].sql, 'UPDATE "t" SET "views" = "views" + ? WHERE "id" = ?');
+  assert.deepEqual(calls[2].params, [2, 3]);
+  await table(db, 't').where('id', 3).decrement('views', 2);
+  assert.deepEqual(calls[3].params, [-2, 3]);
+});
+
+test('updateOrInsert updates when found, inserts otherwise', async () => {
+  const calls = [];
+  let found = { id: 1, name: 'A' };
+  const db = mockDb({
+    all: () => (found ? { results: [{ ...found }] } : { results: [] }),
+    run: (sql, params) => { calls.push({ sql, params }); return { success: true, meta: { changes: 1, last_row_id: 5 } }; },
+  });
+  const upd = await table(db, 't').updateOrInsert({ id: 1 }, { name: 'B' });
+  assert.equal(upd.changes, 1);
+  assert.match(calls[0].sql, /^UPDATE "t" SET "name" = \? WHERE "id" = \?$/);
+  assert.deepEqual(calls[0].params, ['B', 1]);
+
+  found = null;
+  await table(db, 't').updateOrInsert({ id: 2 }, { name: 'C' });
+  assert.match(calls[1].sql, /^INSERT INTO "t" \("id", "name"\) VALUES \(\?, \?\)$/);
+  assert.deepEqual(calls[1].params, [2, 'C']);
+});
+
+test('chunk paginates until exhausted', async () => {
+  const rows = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  const db = mockDb({
+    all: (sql, params) => {
+      const limit = params[params.length - 2];
+      const offset = params[params.length - 1];
+      return { results: rows.slice(offset, offset + limit) };
+    },
+  });
+  const seen = [];
+  await table(db, 't').chunk(2, (batch, page) => { seen.push([page, batch.length]); });
+  assert.deepEqual(seen, [[1, 2], [2, 1]]);
+});
