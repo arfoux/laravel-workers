@@ -67,6 +67,15 @@ const DEFAULT_MESSAGES = (field, rule, param) => {
     prohibited: `The ${field} field is prohibited.`,
     prohibited_if: `The ${field} field is prohibited when ${param}.`,
     prohibited_unless: `The ${field} field is prohibited unless ${param}.`,
+    missing: `The ${field} field must be missing.`,
+    present: `The ${field} field must be present.`,
+    list: `The ${field} field must be a list.`,
+    required_array_keys: `The ${field} field must contain entries for: ${param}.`,
+    decimal: `The ${field} field must have ${param} decimal places.`,
+    timezone: `The ${field} field must be a valid timezone.`,
+    in_array: `The selected ${field} is invalid.`,
+    doesnt_start_with: `The ${field} field must not start with one of the following: ${param}.`,
+    doesnt_end_with: `The ${field} field must not end with one of the following: ${param}.`,
   };
   return t[rule] || `The ${field} is invalid.`;
 };
@@ -99,9 +108,15 @@ const PRESENCE_RULES = new Set([
   'prohibited', 'prohibited_if', 'prohibited_unless',
 ]);
 const ASYNC_RULES = new Set(['unique', 'exists']);
+const EXCLUDE_RULES = new Set(['exclude', 'exclude_if', 'exclude_unless', 'exclude_with', 'exclude_without']);
+const MISSING_RULES = new Set(['missing', 'missing_if', 'missing_unless', 'missing_with', 'missing_with_all']);
+const PRESENT_RULES = new Set(['present', 'present_if', 'present_unless', 'present_with', 'present_with_all']);
 const KNOWN_RULES = new Set([
   ...MODIFIERS,
   ...PRESENCE_RULES,
+  ...EXCLUDE_RULES,
+  ...MISSING_RULES,
+  ...PRESENT_RULES,
   ...ASYNC_RULES,
   'string', 'integer', 'numeric', 'boolean', 'array', 'email', 'url', 'date', 'alpha',
   'alpha_num', 'alpha_dash', 'min', 'max', 'between', 'size', 'in', 'not_in', 'same',
@@ -110,6 +125,8 @@ const KNOWN_RULES = new Set([
   'json', 'ascii', 'lowercase', 'uppercase', 'hex_color', 'starts_with', 'ends_with',
   'before', 'after', 'before_or_equal', 'after_or_equal', 'date_equals', 'date_format',
   'gt', 'gte', 'lt', 'lte', 'distinct',
+  'doesnt_start_with', 'doesnt_end_with', 'list', 'required_array_keys', 'array_keys',
+  'in_array', 'decimal', 'timezone',
 ]);
 
 function parsePipeString(str) {
@@ -239,6 +256,7 @@ export class Validator {
       }
     }
     this._errors = null;
+    this._excluded = new Set();
     this._asyncDone = false;
   }
 
@@ -344,6 +362,63 @@ export class Validator {
     return { prohibited: false };
   }
 
+  // `exclude*` rules: when triggered the field is dropped from validated data
+  // and no other rule for it runs (Laravel semantics).
+  _excludeApplies(rules) {
+    for (const r of rules) {
+      const p = String(r.param == null ? '' : r.param);
+      if (r.name === 'exclude') return true;
+      if (r.name === 'exclude_if' || r.name === 'exclude_unless') {
+        const [other, ...vals] = p.split(',').map((s) => s.trim());
+        const has = this._isPresent(other);
+        const match = has && vals.includes(String(this.get(other)));
+        if (r.name === 'exclude_if' ? match : !match) return true;
+      } else if (r.name === 'exclude_with') {
+        if (p.split(',').map((s) => s.trim()).some((o) => this._isPresent(o))) return true;
+      } else if (r.name === 'exclude_without') {
+        if (p.split(',').map((s) => s.trim()).every((o) => !this._isPresent(o))) return true;
+      }
+    }
+    return false;
+  }
+
+  // `missing*` rules: the field must be absent (or empty) when triggered.
+  _missingEnforced(rules) {
+    for (const r of rules) {
+      const p = String(r.param == null ? '' : r.param);
+      if (r.name === 'missing') return { enforced: true, rule: 'missing', param: null };
+      if (r.name === 'missing_if' || r.name === 'missing_unless') {
+        const [other, ...vals] = p.split(',').map((s) => s.trim());
+        const has = this._isPresent(other);
+        const match = has && vals.includes(String(this.get(other)));
+        if (r.name === 'missing_if' ? match : !match) return { enforced: true, rule: r.name, param: p };
+      } else if (r.name === 'missing_with') {
+        if (p.split(',').map((s) => s.trim()).some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+      } else if (r.name === 'missing_with_all') {
+        if (p.split(',').map((s) => s.trim()).every((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+      }
+    }
+    return { enforced: false };
+  }
+
+  // `present*` rules (beyond plain `present`): the field must be present.
+  _presentEnforced(rules) {
+    for (const r of rules) {
+      const p = String(r.param == null ? '' : r.param);
+      if (r.name === 'present_if' || r.name === 'present_unless') {
+        const [other, ...vals] = p.split(',').map((s) => s.trim());
+        const has = this._isPresent(other);
+        const match = has && vals.includes(String(this.get(other)));
+        if (r.name === 'present_if' ? match : !match) return { enforced: true, rule: r.name, param: p };
+      } else if (r.name === 'present_with') {
+        if (p.split(',').map((s) => s.trim()).some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+      } else if (r.name === 'present_with_all') {
+        if (p.split(',').map((s) => s.trim()).every((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+      }
+    }
+    return { enforced: false };
+  }
+
   _ensureSync() {
     if (this._errors !== null) return;
     this._errors = {};
@@ -358,6 +433,23 @@ export class Validator {
       const value = this.get(field);
 
       if (hasSometimes && isAbsent) continue;
+
+      if (this._excludeApplies(fieldRules)) {
+        this._excluded.add(field);
+        continue;
+      }
+
+      const miss = this._missingEnforced(fieldRules);
+      if (miss.enforced) {
+        if (!isAbsent && !isEmptyValue(value)) this._addError(field, miss.rule, miss.param);
+        continue;
+      }
+
+      const pres = this._presentEnforced(fieldRules);
+      if (pres.enforced) {
+        if (isAbsent) this._addError(field, pres.rule, pres.param);
+        continue;
+      }
 
       if (hasPresent && isAbsent) {
         this._addError(field, 'required', null);
@@ -392,6 +484,7 @@ export class Validator {
 
       for (const r of fieldRules) {
         if (MODIFIERS.has(r.name) || PRESENCE_RULES.has(r.name)) continue;
+        if (EXCLUDE_RULES.has(r.name) || MISSING_RULES.has(r.name) || PRESENT_RULES.has(r.name)) continue;
         if (ASYNC_RULES.has(r.name)) continue; // handled async
         const ok = this._checkRule(field, value, r, hasNumeric);
         if (!ok) {
@@ -440,6 +533,7 @@ export class Validator {
     if (this._asyncDone) return;
     this._ensureSync();
     for (const field of Object.keys(this.parsed)) {
+      if (this._excluded.has(field)) continue;
       const fieldRules = this.parsed[field];
       const bail = fieldRules.some((r) => r.name === 'bail');
       const value = this.get(field);
@@ -612,6 +706,49 @@ export class Validator {
         }
         try { return !new RegExp(pattern, flags).test(value); } catch { return false; }
       }
+      case 'doesnt_start_with': {
+        const list = String(p == null ? '' : p).split(',').map((s) => s.trim()).filter((s) => s !== '');
+        return !(typeof value === 'string') || !list.some((pre) => value.startsWith(pre));
+      }
+      case 'doesnt_end_with': {
+        const list = String(p == null ? '' : p).split(',').map((s) => s.trim()).filter((s) => s !== '');
+        return !(typeof value === 'string') || !list.some((suf) => value.endsWith(suf));
+      }
+      case 'list':
+        return Array.isArray(value);
+      case 'required_array_keys': {
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+        const keys = String(p == null ? '' : p).split(',').map((s) => s.trim());
+        return keys.every((k) => Object.prototype.hasOwnProperty.call(value, k));
+      }
+      case 'array_keys': {
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+        const keys = String(p == null ? '' : p).split(',').map((s) => s.trim());
+        return Object.keys(value).every((k) => keys.includes(k));
+      }
+      case 'in_array': {
+        // `in_array:other` / `in_array:other.*` — value must be one of that array's values.
+        const other = String(p == null ? '' : p).replace(/\.\*$/, '');
+        const arr = this.get(other);
+        return Array.isArray(arr) && arr.some((x) => String(x) === String(value));
+      }
+      case 'decimal': {
+        if (!isNumericValue(value)) return false;
+        const [mn, mx] = String(p == null ? '' : p).split(',').map((s) => Number(s.trim()));
+        const digits = String(value).includes('.') ? String(value).split('.')[1].length : 0;
+        if (Number.isFinite(mn) && digits < mn) return false;
+        if (Number.isFinite(mx) && digits > mx) return false;
+        return true;
+      }
+      case 'timezone': {
+        if (typeof value !== 'string') return false;
+        try {
+          if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+            return Intl.supportedValuesOf('timeZone').includes(value);
+          }
+        } catch { /* fall through to regex */ }
+        return value === 'UTC' || /^[A-Za-z]+\/[A-Za-z_+\-0-9]+$/.test(value);
+      }
       default:
         // Unknown rules are rejected at construction; reaching here is a bug.
         throw new Error('unhandled validation rule: ' + rule.name);
@@ -650,6 +787,7 @@ export class Validator {
     this._ensureSync();
     const out = {};
     for (const field of Object.keys(this.parsed)) {
+      if (this._excluded.has(field)) continue;
       if (this._errors[field] && this._errors[field].length > 0) continue;
       const value = this.get(field);
       if (value === undefined) continue;

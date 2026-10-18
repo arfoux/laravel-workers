@@ -264,3 +264,66 @@ test('wildcard rules with no matching entries validate nothing', async () => {
   const v = new Validator({ items: [] }, { 'items.*.name': 'required' });
   assert.equal(await v.passes(), true);
 });
+
+test('exclude rules drop fields from validated output', async () => {
+  const v = new Validator(
+    { name: 'ada', secret: 'x', role: 'admin', token: 't' },
+    {
+      name: 'required|string',
+      secret: 'exclude',
+      role: 'exclude_if:name,ada|string',
+      token: 'exclude_unless:role,user|string',
+    }
+  );
+  assert.equal(await v.passes(), true);
+  assert.deepEqual(v.validated(), { name: 'ada' });
+});
+
+test('exclude skips other rules for that field', async () => {
+  const v = new Validator({ a: 'x' }, { a: 'exclude|integer' });
+  assert.equal(await v.passes(), true);
+  assert.deepEqual(v.validated(), {});
+});
+
+test('missing rules require the field to be absent', async () => {
+  let v = new Validator({}, { a: 'missing' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ a: 'x' }, { a: 'missing' });
+  assert.equal(await v.fails(), true);
+  assert.deepEqual(Object.keys(v.errors()), ['a']);
+  v = new Validator({ flag: '1', a: 'x' }, { a: 'missing_if:flag,1' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ flag: '0', a: 'x' }, { a: 'missing_if:flag,1' });
+  assert.equal(await v.passes(), true);
+});
+
+test('present_if requires the field to be present', async () => {
+  let v = new Validator({ flag: '1' }, { a: 'present_if:flag,1|string' });
+  assert.equal(await v.fails(), true);
+  v = new Validator({ flag: '1', a: '' }, { a: 'present_if:flag,1|nullable|string' });
+  assert.equal(await v.passes(), true);
+  v = new Validator({ flag: '0' }, { a: 'present_if:flag,1|string' });
+  assert.equal(await v.passes(), true);
+});
+
+test('doesnt_start_with / doesnt_end_with / list / array key rules', async () => {
+  assert.equal(await new Validator({ a: 'foo-bar' }, { a: 'doesnt_start_with:baz' }).passes(), true);
+  assert.equal(await new Validator({ a: 'foo-bar' }, { a: 'doesnt_start_with:foo' }).fails(), true);
+  assert.equal(await new Validator({ a: 'foo-bar' }, { a: 'doesnt_end_with:bar' }).fails(), true);
+  assert.equal(await new Validator({ a: ['x', 'y'] }, { a: 'list' }).passes(), true);
+  assert.equal(await new Validator({ a: { k: 1 } }, { a: 'list' }).fails(), true);
+  assert.equal(await new Validator({ a: { k: 1, j: 2 } }, { a: 'required_array_keys:k,j' }).passes(), true);
+  assert.equal(await new Validator({ a: { k: 1 } }, { a: 'required_array_keys:k,j' }).fails(), true);
+  assert.equal(await new Validator({ a: { k: 1 } }, { a: 'array_keys:k' }).passes(), true);
+  assert.equal(await new Validator({ a: { k: 1, z: 2 } }, { a: 'array_keys:k' }).fails(), true);
+});
+
+test('decimal / timezone / in_array rules', async () => {
+  assert.equal(await new Validator({ a: 1.25 }, { a: 'decimal:2' }).passes(), true);
+  assert.equal(await new Validator({ a: 1.2 }, { a: 'decimal:2' }).fails(), true);
+  assert.equal(await new Validator({ a: 1.234 }, { a: 'decimal:1,2' }).fails(), true);
+  assert.equal(await new Validator({ a: 'Asia/Jakarta' }, { a: 'timezone' }).passes(), true);
+  assert.equal(await new Validator({ a: 'Not/AZone' }, { a: 'timezone' }).fails(), true);
+  assert.equal(await new Validator({ list: ['a', 'b'], a: 'a' }, { a: 'in_array:list' }).passes(), true);
+  assert.equal(await new Validator({ list: ['a', 'b'], a: 'c' }, { a: 'in_array:list' }).fails(), true);
+});
