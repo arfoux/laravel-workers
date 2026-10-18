@@ -298,6 +298,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **M7 complete (2026-10-18):** Services kernel — `kernel/mail.mjs` (log/noop/resend), `kernel/queue.mjs` (memory + CF Queues), `kernel/cache.mjs` (memory+TTL + KV), `kernel/storage.mjs` (memory + R2), `kernel/scheduler.mjs` (UTC cron), tests 18/18.
 - **M8 complete (2026-10-18):** Final gates - tools/docs-check.mjs 105/105 + tools/bench.mjs + kernel/tests/budget.test.mjs (p95 <=5ms hot, <=30ms encrypter), npm test 47/47 + corpus 41/41 + pack 34 files green, CI now runs docs-check + bench.
 - **Model relations (2026-10-18):** `kernel/model.mjs` gains `hasMany`/`hasOne`/`belongsTo` (default foreign key = related model snake_case + `_id`), `firstOrCreate`/`updateOrCreate`, `refresh`, `increment`. `kernel/tests/db.test.mjs` +3 subtests -> npm test **73/73**.
+- **Router hardening (2026-10-18):** `kernel/router.mjs` now enforces `domain` rules (incl. `{sub}.example.com` param capture, port stripping), supports catch-all `{param*}`, and honours `X-HTTP-Method-Override` / `methodOverride` (POST only) with `ctx.request.method` reflecting the effective verb. `kernel/tests/router.test.mjs` extended (wildcard, domain, override).
 
 ## B. Current state
 

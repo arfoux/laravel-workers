@@ -97,4 +97,48 @@ handlers['GET /dbcheck'] = () => ({ status: 200, headers: { 'X-Foo': 'bar' }, bo
 const r2 = await dispatch({ method: 'GET', path: '/dbcheck' }, table, handlers);
 assert.equal(r2.headers['x-foo'], 'bar');
 
+// wildcard {path*} captures multiple segments
+const wtable = normalizeTable([{ uri: '/files/{path*}', name: 'files', methods: ['GET'], domain: null }]);
+m = match(wtable, { method: 'GET', path: '/files/a/b/c.txt' });
+assert.ok(m, 'wildcard should match multi-segment');
+assert.equal(m.params.path, 'a/b/c.txt');
+
+// wildcard must be the last segment
+assert.throws(
+  () => match(normalizeTable([{ uri: '/{a*}/x', name: null, methods: ['GET'], domain: null }]), { method: 'GET', path: '/a/x' }),
+  /must be the last segment/,
+);
+
+// domain enforcement + domain param capture
+const dtable = normalizeTable([
+  { uri: '/', name: 'root', methods: ['GET'], domain: null },
+  { uri: '/admin', name: 'admin', methods: ['GET'], domain: 'admin.example.com' },
+  { uri: '/tenant', name: 'tenant', methods: ['GET'], domain: '{sub}.example.com' },
+]);
+m = match(dtable, { method: 'GET', path: '/admin', host: 'admin.example.com' });
+assert.ok(m);
+assert.equal(m.route.name, 'admin');
+assert.equal(match(dtable, { method: 'GET', path: '/admin', host: 'www.example.com' }), null, 'wrong host must not match');
+assert.equal(match(dtable, { method: 'GET', path: '/admin' }), null, 'missing host must not match domain route');
+m = match(dtable, { method: 'GET', path: '/tenant', host: 'acme.example.com' });
+assert.ok(m);
+assert.equal(m.params.sub, 'acme');
+m = match(dtable, { method: 'GET', path: '/admin', host: 'admin.example.com:8787' });
+assert.ok(m, 'port must be stripped from host');
+
+// method override (POST + header -> PUT)
+const mtable = normalizeTable([{ uri: '/things/1', name: 'update', methods: ['PUT'], domain: null }]);
+m = match(mtable, { method: 'POST', path: '/things/1', headers: { 'x-http-method-override': 'PUT' } });
+assert.ok(m, 'POST + override header should match PUT route');
+assert.equal(m.route.name, 'update');
+assert.equal(match(mtable, { method: 'DELETE', path: '/things/1', headers: { 'x-http-method-override': 'PUT' } }), null, 'override ignored for non-POST');
+m = match(mtable, { method: 'GET', path: '/things/1', methodOverride: 'PUT' });
+assert.ok(m, 'explicit methodOverride should work');
+
+// dispatch exposes effective method after override
+handlers['PUT /things/1'] = (ctx) => text(ctx.request.method);
+const r3 = await dispatch({ method: 'POST', path: '/things/1', headers: { 'x-http-method-override': 'PUT' } }, mtable, handlers);
+assert.ok(r3);
+assert.equal(r3.body, 'PUT');
+
 console.log('ROUTER TESTS: PASS');

@@ -24,7 +24,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 
 Compiles today (byte-parity corpus + kernel tests):
 - **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`.
-- **Kernel**: router + response, D1 query builder (where/or/join/group/having/distinct/aggregate), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `firstOrCreate`/`updateOrCreate`, `refresh`/`increment`), bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
+- **Kernel**: router (domain rules + `{param}`/`{param?}`/`{param*}`, `X-HTTP-Method-Override`) + response, D1 query builder (where/or/join/group/having/distinct/aggregate), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `firstOrCreate`/`updateOrCreate`, `refresh`/`increment`), bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
 
 Fails loud (build error or `LW002`), use a port instead:
 - Blade layouts/components that compile to `$__env->…` (`@extends`/`@section`/`@yield`/`@include`).

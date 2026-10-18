@@ -53,7 +53,14 @@ function uriToRegex(uri) {
   const norm = normalizeUri(uri);
   const segs = norm.split('/');
   // handle root: '' segments
-  const parts = segs.map((seg) => {
+  const parts = segs.map((seg, i) => {
+    const wild = seg.match(/^\{(\w+)\*\}$/);
+    if (wild) {
+      if (i !== segs.length - 1) {
+        throw new Error('wildcard {param*} must be the last segment: ' + norm);
+      }
+      return '(?<' + wild[1] + '>.+)';
+    }
     const m = seg.match(/^\{(\w+)\??\}$/);
     if (m) {
       const name = m[1];
@@ -66,6 +73,33 @@ function uriToRegex(uri) {
   return new RegExp('^' + pattern + '/?$');
 }
 
+function domainToRegex(domain) {
+  const parts = String(domain).split('.').map((seg) => {
+    const m = seg.match(/^\{(\w+)\}$/);
+    if (m) return '(?<' + m[1] + '>[^.]+)';
+    if (seg === '*') return '[^.]+';
+    return escapeRegex(seg);
+  });
+  return new RegExp('^' + parts.join('\\.') + '$', 'i');
+}
+
+function hostMatches(route, host) {
+  if (!route.domain) return true;
+  if (!host) return false;
+  const h = String(host).split(':')[0];
+  return domainToRegex(route.domain).test(h);
+}
+
+function resolveMethod(req) {
+  let method = String((req && req.method) || 'GET').toUpperCase();
+  if (req && req.methodOverride) return String(req.methodOverride).toUpperCase();
+  const headers = (req && req.headers) || {};
+  // Laravel's form spoofing, via header equivalent; only POST may be overridden.
+  const override = headers['x-http-method-override'] || headers['X-HTTP-Method-Override'];
+  if (override && method === 'POST') return String(override).toUpperCase();
+  return method;
+}
+
 function methodMatches(route, method) {
   const m = String(method || 'GET').toUpperCase();
   const methods = (route.methods || []).map((x) => String(x).toUpperCase());
@@ -76,7 +110,7 @@ function methodMatches(route, method) {
 }
 
 export function match(table, req) {
-  const method = (req && req.method) || 'GET';
+  const method = resolveMethod(req);
   let path = (req && req.path) || '/';
   // strip query string
   const qIdx = path.indexOf('?');
@@ -84,9 +118,11 @@ export function match(table, req) {
   // normalize trailing slashes (except root)
   if (path.length > 1 && path.endsWith('/')) path = path.replace(/\/+$/, '');
 
+  const host = req && (req.host || req.hostname);
   const tbl = Array.isArray(table) ? table : (table && table.routes) || [];
   for (const route of tbl) {
     if (!methodMatches(route, method)) continue;
+    if (!hostMatches(route, host)) continue;
     const rx = uriToRegex(route.uri);
     const m = rx.exec(path);
     if (!m) continue;
@@ -98,6 +134,10 @@ export function match(table, req) {
           catch (e) { params[k] = m.groups[k]; }
         }
       }
+    }
+    if (route.domain && host) {
+      const dm = domainToRegex(route.domain).exec(String(host).split(':')[0]);
+      if (dm && dm.groups) for (const k of Object.keys(dm.groups)) params[k] = dm.groups[k];
     }
     return { route, params };
   }
@@ -118,7 +158,7 @@ export async function dispatch(req, table, handlers, env) {
 
   const ctx = {
     params: m.params,
-    request: { method: (req && req.method) || 'GET', path: (req && req.path) || '/', headers: (req && req.headers) || {} },
+    request: { method: resolveMethod(req), path: (req && req.path) || '/', headers: (req && req.headers) || {} },
   };
   const res = await handler(ctx, env);
   if (!res || typeof res.status !== 'number' || typeof res.body !== 'string') {
