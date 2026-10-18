@@ -38,8 +38,9 @@
   ],
   "scripts": {
     "setup": "npm install && npm --prefix compiler install",
-    "test": "node --test kernel/tests/router.test.mjs kernel/tests/db.test.mjs kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs kernel/tests/validator.test.mjs kernel/tests/services.test.mjs kernel/tests/routes-json.test.mjs kernel/tests/budget.test.mjs",
+    "test": "node --test kernel/tests/router.test.mjs kernel/tests/db.test.mjs kernel/tests/sqlite-integration.test.mjs kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs kernel/tests/validator.test.mjs kernel/tests/services.test.mjs kernel/tests/routes-json.test.mjs kernel/tests/budget.test.mjs",
     "test:db": "node --test kernel/tests/db.test.mjs",
+    "test:sqlite": "node --test kernel/tests/sqlite-integration.test.mjs",
     "test:hash": "node --test kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs",
     "test:validator": "node --test kernel/tests/validator.test.mjs",
     "test:corpus": "node compiler/tests/run-corpus.mjs",

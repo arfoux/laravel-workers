@@ -111,12 +111,21 @@ export class Model {
     builder.model = this;
     // Eager-loading + local-scope support on the returned builder.
     builder.eagerLoads = [];
+    builder.countLoads = [];
     const baseGet = builder.get.bind(builder);
     const baseFirst = builder.first.bind(builder);
     builder.with = (...names) => {
       for (const n of names.flat()) builder.eagerLoads.push(n);
       return builder;
     };
+    builder.withCount = (...names) => {
+      for (const n of names.flat()) builder.countLoads.push(n);
+      return builder;
+    };
+    builder.whereHas = (name, cb) => addHas(builder, db, this, name, cb, false);
+    builder.has = (name, cb) => addHas(builder, db, this, name, cb, false);
+    builder.whereDoesntHave = (name, cb) => addHas(builder, db, this, name, cb, true);
+    builder.doesntHave = (name, cb) => addHas(builder, db, this, name, cb, true);
     builder.scope = (name, ...args) => {
       const fn = this.prototype['scope' + studly(name)];
       if (typeof fn !== 'function') throw new Error('unknown scope "' + name + '" on ' + this.name);
@@ -126,11 +135,15 @@ export class Model {
     builder.get = async (...args) => {
       const rows = await baseGet(...args);
       await eagerLoad(db, this, rows, builder.eagerLoads);
+      await loadCounts(db, this, rows, builder.countLoads);
       return rows;
     };
     builder.first = async (...args) => {
       const row = await baseFirst(...args);
-      if (row) await eagerLoad(db, this, [row], builder.eagerLoads);
+      if (row) {
+        await eagerLoad(db, this, [row], builder.eagerLoads);
+        await loadCounts(db, this, [row], builder.countLoads);
+      }
       return row;
     };
     return builder;
@@ -272,6 +285,11 @@ export class Model {
     return this;
   }
 
+  async loadCount(db, ...names) {
+    await loadCounts(db, this.constructor, [this], names.flat());
+    return this;
+  }
+
   // ---- relations (explicit `db`, like the rest of the kernel) ----
   hasMany(db, Related, foreignKey, localKey) {
     const lk = localKey || this.constructor.primaryKey;
@@ -381,6 +399,76 @@ async function loadRelation(db, ModelClass, rows, name, rel) {
     const list = grouped.get(String(r.get(lk))) || [];
     r.setRelation(name, type === 'hasOne' ? (list[0] || null) : list);
   }
+}
+
+// `comments_count` style counters (Laravel's `withCount()`).
+async function loadCounts(db, ModelClass, rows, names) {
+  if (!rows || !rows.length || !names || !names.length) return;
+  for (const name of names) {
+    const rel = (ModelClass.relations || {})[name];
+    if (!rel) throw new Error('unknown relation "' + name + '" on ' + ModelClass.name);
+    await loadRelation(db, ModelClass, rows, name, rel);
+    for (const r of rows) {
+      const value = r.getRelation(name);
+      const count = Array.isArray(value) ? value.length : (value == null ? 0 : 1);
+      if (r._relations) delete r._relations[name];
+      r.attributes[name + '_count'] = count;
+      r.setRelation(name + '_count', count);
+    }
+  }
+}
+
+const qident = (n) => '"' + String(n).replace(/"/g, '""') + '"';
+
+// Extract the WHERE body of a generated SELECT so it can be inlined into a
+// correlated EXISTS subquery.
+function whereClauseOf(sql) {
+  const i = sql.indexOf(' WHERE ');
+  if (i === -1) return '';
+  let rest = sql.slice(i + 7);
+  for (const kw of [' GROUP BY ', ' ORDER BY ', ' LIMIT ', ' OFFSET ']) {
+    const j = rest.indexOf(kw);
+    if (j !== -1) rest = rest.slice(0, j);
+  }
+  return rest;
+}
+
+// `whereHas` / `whereDoesntHave` / `has` / `doesntHave` -> correlated EXISTS.
+function addHas(builder, db, ModelClass, name, cb, negated) {
+  const rel = (ModelClass.relations || {})[name];
+  if (!rel) throw new Error('unknown relation "' + name + '" on ' + ModelClass.name);
+  const Related = rel.model;
+  const exists = (from, clause, params) =>
+    builder.whereRaw(
+      (negated ? 'NOT ' : '') + 'EXISTS (SELECT 1 FROM ' + qident(from) + ' WHERE ' + clause + ')',
+      params
+    );
+
+  if (rel.type === 'belongsTo') {
+    const ownerKey = rel.ownerKey || Related.primaryKey;
+    const fk = rel.foreignKey || defaultForeignKey(Related);
+    const link = qident(Related.table) + '.' + qident(ownerKey) + ' = ' + qident(ModelClass.table) + '.' + qident(fk);
+    if (typeof cb === 'function') {
+      const child = Related.query(db);
+      cb(child);
+      const sub = child.toSql();
+      const extra = whereClauseOf(sub.sql);
+      return exists(Related.table, link + (extra ? ' AND ' + extra : ''), sub.params);
+    }
+    return exists(Related.table, link, []);
+  }
+
+  const lk = rel.localKey || ModelClass.primaryKey;
+  const fk = rel.foreignKey || defaultForeignKey(ModelClass);
+  const link = qident(Related.table) + '.' + qident(fk) + ' = ' + qident(ModelClass.table) + '.' + qident(lk);
+  if (typeof cb === 'function') {
+    const child = Related.query(db);
+    cb(child);
+    const sub = child.toSql();
+    const extra = whereClauseOf(sub.sql);
+    return exists(Related.table, link + (extra ? ' AND ' + extra : ''), sub.params);
+  }
+  return exists(Related.table, link, []);
 }
 
 export default { Model, applyCast };

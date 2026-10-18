@@ -17,9 +17,11 @@ const run = (command, args, options = {}) => {
 };
 
 if (cmd === 'test') {
-  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/budget.test.mjs']);
+  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/budget.test.mjs']);
 } else if (cmd === 'test:db') {
   run(process.execPath, ['--test', 'kernel/tests/db.test.mjs']);
+} else if (cmd === 'test:sqlite') {
+  run(process.execPath, ['--test', 'kernel/tests/sqlite-integration.test.mjs']);
 } else if (cmd === 'test:hash') {
   run(process.execPath, ['--test', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs']);
 } else if (cmd === 'test:validator') {
@@ -52,6 +54,6 @@ if (cmd === 'test') {
   }
   run(php, ['tools/verify-s0.php']);
 } else {
-  console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | build | verify`);
+  console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | build | verify`);
   process.exit(1);
 }
