@@ -24,7 +24,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 
 Compiles today (byte-parity corpus + kernel tests):
 - **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`.
-- **Kernel**: router + response, D1 query builder (where/or/join/group/having/distinct/aggregate), Model base, bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
+- **Kernel**: router + response, D1 query builder (where/or/join/group/having/distinct/aggregate), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `firstOrCreate`/`updateOrCreate`, `refresh`/`increment`), bcrypt hash, AES encrypter, validator (60+ rules), mail/queue/cache/storage/scheduler adapters.
 
 Fails loud (build error or `LW002`), use a port instead:
 - Blade layouts/components that compile to `$__env->…` (`@extends`/`@section`/`@yield`/`@include`).
@@ -52,7 +52,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 70/70 — router + db + hash + encrypter + validator + services + budget
+npm test                      # 73/73 — router + db/model + hash + encrypter + validator + services + budget
 npm run test:corpus           # 41/41 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -64,7 +64,7 @@ npx laravel-workers build     # inside an edge checkout (requires Laravel vendor
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (70)
+laravel-workers test            # all kernel tests (73)
 laravel-workers test:db          # db/model only
 laravel-workers test:hash       # hash + encrypter only
 laravel-workers test:validator  # validator only

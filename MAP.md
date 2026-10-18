@@ -297,6 +297,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **M6 complete (2026-10-18):** Validation kernel — `kernel/validator.mjs` (22 rules, pipe-safe regex, nullable/sometimes, same/confirmed, validated()), tests 12/12.
 - **M7 complete (2026-10-18):** Services kernel — `kernel/mail.mjs` (log/noop/resend), `kernel/queue.mjs` (memory + CF Queues), `kernel/cache.mjs` (memory+TTL + KV), `kernel/storage.mjs` (memory + R2), `kernel/scheduler.mjs` (UTC cron), tests 18/18.
 - **M8 complete (2026-10-18):** Final gates - tools/docs-check.mjs 105/105 + tools/bench.mjs + kernel/tests/budget.test.mjs (p95 <=5ms hot, <=30ms encrypter), npm test 47/47 + corpus 41/41 + pack 34 files green, CI now runs docs-check + bench.
+- **Model relations (2026-10-18):** `kernel/model.mjs` gains `hasMany`/`hasOne`/`belongsTo` (default foreign key = related model snake_case + `_id`), `firstOrCreate`/`updateOrCreate`, `refresh`, `increment`. `kernel/tests/db.test.mjs` +3 subtests -> npm test **73/73**.
 
 ## B. Current state
 
@@ -306,7 +307,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | View-compile spike (S0 dump) | ✅ first artifact produced |
 | Repo name | `laravel-workers` (decided; GitHub/npm checked) |
 | Repo strategy | standalone; extract from `edge/` at M1–M2 |
-| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (41/41) · router+DB · packaging+CI · hash+encrypter · validator · services · final gates (47/47 + 105/105 + bench p95<=5ms) |
+| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (41/41) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (73/73 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |
 
 ---

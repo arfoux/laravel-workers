@@ -250,3 +250,85 @@ test('exists / value / pluck', async () => {
   assert.equal(await table(db, 't').value('id'), 7);
   assert.deepEqual(await table(db, 't').pluck('id'), [1, 2]);
 });
+
+class RelModel extends Model {
+  static table = 'users';
+  static fillable = ['name', 'role', 'score'];
+}
+class Owner extends Model {
+  static table = 'owners';
+  static fillable = ['name'];
+}
+class Pet extends Model {
+  static table = 'pets';
+  static fillable = ['owner_id', 'name'];
+}
+
+test('Model relations: hasMany / hasOne / belongsTo (default FK)', async () => {
+  const db = mockDb({
+    all: (sql, params) => {
+      if (/FROM "pets"/.test(sql)) {
+        return { results: params[0] === 1 ? [{ id: 10, owner_id: 1, name: 'Rex' }, { id: 11, owner_id: 1, name: 'Mia' }] : [] };
+      }
+      if (/FROM "owners"/.test(sql)) return { results: [{ id: 1, name: 'Ada' }] };
+      return { results: [] };
+    },
+  });
+  const owner = new Owner({ id: 1, name: 'Ada' });
+  const pets = await owner.hasMany(db, Pet, 'owner_id');
+  assert.equal(pets.length, 2);
+  assert.ok(pets[0] instanceof Pet);
+  assert.equal(pets[0].get('name'), 'Rex');
+
+  const one = await owner.hasOne(db, Pet, 'owner_id');
+  assert.ok(one instanceof Pet);
+
+  const pet = new Pet({ id: 10, owner_id: 1 });
+  const back = await pet.belongsTo(db, Owner);
+  assert.ok(back instanceof Owner);
+  assert.equal(back.get('name'), 'Ada');
+});
+
+test('Model firstOrCreate / updateOrCreate', async () => {
+  const state = { rows: [{ id: 1, name: 'Ada', role: 'admin' }] };
+  const db = mockDb({
+    all: (sql, params) => ({ results: state.rows.filter((r) => r.name === params[0]) }),
+    run: (sql, params) => {
+      if (/^INSERT/.test(sql)) {
+        const row = { id: state.rows.length + 1, name: params[0], role: params[1] };
+        state.rows.push(row);
+        return { success: true, meta: { changes: 1, last_row_id: row.id } };
+      }
+      if (/^UPDATE/.test(sql)) {
+        const r = state.rows.find((x) => x.id === params[params.length - 1]);
+        if (r) r.role = params[0];
+        return { success: true, meta: { changes: 1 } };
+      }
+      return { success: true, meta: { changes: 0 } };
+    },
+  });
+
+  const existing = await RelModel.firstOrCreate(db, { name: 'Ada' }, { role: 'admin' });
+  assert.equal(existing.get('id'), 1);
+  assert.equal(existing.get('role'), 'admin');
+
+  const created = await RelModel.firstOrCreate(db, { name: 'Zed' }, { role: 'user' });
+  assert.equal(created.exists, true);
+  assert.equal(created.get('name'), 'Zed');
+
+  const updated = await RelModel.updateOrCreate(db, { name: 'Ada' }, { role: 'root' });
+  assert.equal(updated.get('role'), 'root');
+});
+
+test('Model refresh / increment', async () => {
+  const db = mockDb({
+    all: () => ({ results: [{ id: 1, name: 'Fresh', score: 5 }] }),
+    run: () => ({ success: true, meta: { changes: 1 } }),
+  });
+  const m = new RelModel({ id: 1, name: 'Stale', score: 4 });
+  await m.refresh(db);
+  assert.equal(m.get('name'), 'Fresh');
+  const next = await m.increment(db, 'score', 2);
+  assert.equal(next, 7);
+  assert.equal(m.get('score'), 7);
+});

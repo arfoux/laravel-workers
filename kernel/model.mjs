@@ -117,6 +117,66 @@ export class Model {
     this.exists = false;
     return res;
   }
+
+  // ---- relations (explicit `db`, like the rest of the kernel) ----
+  hasMany(db, Related, foreignKey, localKey) {
+    const lk = localKey || this.constructor.primaryKey;
+    return Related.query(db).where(foreignKey, this.attributes[lk]).get();
+  }
+
+  hasOne(db, Related, foreignKey, localKey) {
+    const lk = localKey || this.constructor.primaryKey;
+    return Related.query(db).where(foreignKey, this.attributes[lk]).first();
+  }
+
+  belongsTo(db, Related, foreignKey, ownerKey) {
+    const ok = ownerKey || Related.primaryKey;
+    const fk = foreignKey || defaultForeignKey(Related);
+    return Related.query(db).where(ok, this.attributes[fk]).first();
+  }
+
+  async refresh(db) {
+    const pk = this.constructor.primaryKey;
+    const fresh = await this.constructor.query(db).where(pk, this.attributes[pk]).first();
+    if (fresh) {
+      this.attributes = { ...fresh.attributes };
+      this.exists = true;
+    }
+    return this;
+  }
+
+  async increment(db, column, amount = 1) {
+    const next = (Number(this.attributes[column]) || 0) + amount;
+    this.attributes[column] = next;
+    await this.save(db);
+    return next;
+  }
+
+  static async firstOrCreate(db, where = {}, extra = {}) {
+    const found = await applyWhere(this.query(db), where).first();
+    if (found) return found;
+    return this.create(db, { ...where, ...extra });
+  }
+
+  static async updateOrCreate(db, where = {}, values = {}) {
+    const found = await applyWhere(this.query(db), where).first();
+    if (found) {
+      found.fill(values);
+      await found.save(db);
+      return found;
+    }
+    return this.create(db, { ...where, ...values });
+  }
+}
+
+function defaultForeignKey(Related) {
+  const short = Related.name.replace(/Model$/, '');
+  return short.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase() + '_id';
+}
+
+function applyWhere(builder, where) {
+  for (const key of Object.keys(where || {})) builder.where(key, where[key]);
+  return builder;
 }
 
 export default { Model, applyCast };
