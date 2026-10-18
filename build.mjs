@@ -56,7 +56,7 @@ const registryCandidates = [
 ];
 let registryPath = null;
 for (const p of registryCandidates) if (existsSync(p)) { registryPath = p; break; }
-if (!registryPath) fail('registry.json not found — searched: ' + registryCandidates.join(', ') + ' — create registry.json or laravel-workers.json in your Laravel root (or edge/registry.json)');
+if (!registryPath) fail('registry.json not found — searched: ' + registryCandidates.join(', ') + ' — create registry.json or laravel-workers.json in your Laravel root (or edge/registry.json) — run `npx laravel-workers init` first');
 const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
 const autoSnapshot = registry.autoSnapshot !== false;
 const staticMap = Object.entries(registry.static || {});

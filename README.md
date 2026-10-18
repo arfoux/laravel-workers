@@ -51,8 +51,7 @@ Fails loud (build error or `LW002`), use a port instead:
 # 1) As an npm package in a real Laravel app (recommended):
 cd my-laravel-app             # artisan + vendor + public/build there
 npm i laravel-workers
-# create one of: registry.json | laravel-workers.json | edge/registry.json
-# e.g. { "autoSnapshot": true, "static": {}, "ports": {}, "ignore": {}, "views": {} }
+npx laravel-workers init             # writes registry.json + wrangler.jsonc, updates .gitignore
 composer install; npm run build
 npx laravel-workers build --strict   # dist/ with --strict (cwd-based, no edge/ required)
 # local preview/deploy: npx wrangler deploy
@@ -84,6 +83,7 @@ laravel-workers test:budget     # budget gate only
 laravel-workers test:corpus     # transpiler corpus (51)
 laravel-workers bench           # micro-bench (bench.mjs)
 laravel-workers check:docs      # docs-check 105/105
+laravel-workers init            # scaffold registry.json + wrangler.jsonc (needs Laravel app root)
 laravel-workers build           # node build.mjs --strict (needs Laravel app)
 laravel-workers verify          # php tools/verify-s0.php (SKIP when no parent vendor/)
 

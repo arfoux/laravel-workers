@@ -38,6 +38,17 @@ if (cmd === 'test') {
   run(process.execPath, ['tools/bench.mjs'], { cwd: pkgDir });
 } else if (cmd === 'check:docs') {
   run(process.execPath, ['tools/docs-check.mjs'], { cwd: pkgDir });
+} else if (cmd === 'init') {
+  const initPath = join(pkgDir, 'tools', 'init.mjs');
+  if (!existsSync(initPath)) {
+    console.error('laravel-workers init: tools/init.mjs not found in package — reinstall laravel-workers.');
+    process.exit(1);
+  }
+  let cwd = appDir;
+  if (!existsSync(join(appDir, 'artisan')) && existsSync(join(dirname(pkgDir), 'artisan'))) {
+    cwd = dirname(pkgDir);
+  }
+  run(process.execPath, [initPath], { cwd });
 } else if (cmd === 'build') {
   const buildPath = join(pkgDir, 'build.mjs');
   if (!existsSync(buildPath)) {
@@ -71,6 +82,6 @@ if (cmd === 'test') {
   }
   run(php, [verifyPath], { cwd: appDir });
 } else {
-  console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | build | verify`);
+  console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | init | build | verify`);
   process.exit(1);
 }
