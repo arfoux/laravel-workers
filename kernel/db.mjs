@@ -133,8 +133,9 @@ export class QueryBuilder {
   }
 
   // Date-part filters. SQLite has no YEAR()/MONTH(); use date()/strftime().
-  // The bound value is cast to TEXT because date()/time()/strftime() return
-  // TEXT: binding a JS number would compare INTEGER vs TEXT and never match.
+  // date()/time()/strftime() return TEXT, so a bound JS number must be bound as
+  // a string: drivers may bind numbers as REAL/INTEGER and `'2024' = 2024.0`
+  // never matches (verified against node:sqlite/D1 semantics).
   whereDate(column, operatorOrValue, value) {
     return this._whereDatePart('and', (c) => `date(${quoteIdent(c)})`, column, operatorOrValue, value);
   }
