@@ -352,6 +352,12 @@ test('cookie driver: fresh session envelope + Symfony header parity', async () =
     ops: [['put', 'flag', true]],
     save: true,
     lifetime: 120,
+    // Freeze Carbon so the envelope expiry and the Set-Cookie attribute expiry
+    // come from one exact second (PHP otherwise reads the clock twice:
+    // CookieSessionHandler::write -> availableAt, CookieJar::make ->
+    // availableAt). Symfony still reads native time() for Max-Age; lwCookieOut
+    // reports that second as q.render_now.
+    freeze_ms: NOW * 1000,
   });
   assert.equal(oracle.queue.length, 1);
   const q = oracle.queue[0];
@@ -378,7 +384,9 @@ test('cookie driver: fresh session envelope + Symfony header parity', async () =
   assert.equal(c.sameSite, q.same_site);
   assert.equal(c.path, q.path);
   assert.equal(c.raw, q.raw);
-  assert.equal(serializeCookie(c, jsNow), q.header, 'Set-Cookie bytes');
+  // Symfony's Max-Age is `expire - time()` (native clock): render the JS
+  // cookie with the same native second the oracle reported for this cookie.
+  assert.equal(serializeCookie(c, q.render_now), q.header, 'Set-Cookie bytes');
   assert.equal(env.data, oracle.all, 'envelope data == phpJsonEncode(all())');
   assert.equal(phpJsonEncode(store.attributes), oracle.all, 'attributes bytes');
 });
@@ -453,6 +461,8 @@ test('cookie driver: invalidate destroys old id and queues deletion cookie', asy
     ops: [['invalidate']],
     save: true,
     lifetime: 120,
+    // Same deterministic-clock rationale as the fresh-envelope test above.
+    freeze_ms: NOW * 1000,
   });
   assert.equal(oracle.queue.length, 2);
   const [qOld, qNew] = oracle.queue;
@@ -477,13 +487,13 @@ test('cookie driver: invalidate destroys old id and queues deletion cookie', asy
   assert.equal(cOld.name, FIXED_ID);
   assert.equal(cOld.value, null);
   assert.equal(cOld.expires, qOld.expires, 'deletion cookie expiry');
-  assert.equal(serializeCookie(cOld, jsNow), qOld.header, 'deletion Set-Cookie bytes');
+  assert.equal(serializeCookie(cOld, qOld.render_now), qOld.header, 'deletion Set-Cookie bytes');
   assert.equal(cNew.name, store.getId());
   assert.match(cNew.name, /^[A-Za-z0-9]{40}$/);
   assert.equal(cNew.value, qNew.value, 'new id envelope bytes');
   // The new id is random on both sides; normalize the name to compare bytes.
   const norm = (header) => header.replace(/^[^=]+=/, 'ID=');
-  assert.equal(norm(serializeCookie(cNew, jsNow)), norm(qNew.header), 'new id Set-Cookie bytes');
+  assert.equal(norm(serializeCookie(cNew, qNew.render_now)), norm(qNew.header), 'new id Set-Cookie bytes');
   assert.equal(phpJsonEncode(store.attributes), oracle.all, 'attributes after invalidate+save');
 });
 

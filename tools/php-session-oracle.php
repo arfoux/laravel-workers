@@ -25,7 +25,9 @@
 //     "ops": [["put", ["k", 1]], ...],
 //     "save": true,
 //     "lifetime": 120,                   // cookie mode (minutes)
-//     "request_cookie": {"name":..,"value":..} | null   // cookie mode: incoming cookie
+//     "request_cookie": {"name":..,"value":..} | null,  // cookie mode: incoming cookie
+//     "freeze_ms": <int> | null          // Carbon::setTestNow(...) before the run so
+//                                        // availableAt()-derived expiries are exact
 //   }
 //
 // Output (stdout JSON):
@@ -59,6 +61,15 @@ use Illuminate\Session\CookieSessionHandler;
 use Illuminate\Session\Store;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\Request;
+
+// Optional deterministic clock for parity tests: freezing Carbon pins every
+// availableAt() read, so cookie-mode envelopes and CookieJar expiries come
+// from one exact second. Symfony's Cookie::__toString() still reads native
+// time() for Max-Age (and the deleted-cookie date), so lwCookieOut() reports
+// that native second as "render_now" next to the rendered header.
+if (isset($input['freeze_ms'])) {
+    \Carbon\Carbon::setTestNow(\Carbon\Carbon::createFromTimestamp(((int) $input['freeze_ms']) / 1000));
+}
 
 class LWRecordingSessionHandler implements SessionHandlerInterface
 {
@@ -113,6 +124,7 @@ function lwCookieOut(Cookie $c): array
         'http_only' => $c->isHttpOnly(),
         'raw' => $c->isRaw(),
         'same_site' => $c->getSameSite(),
+        'render_now' => time(),
         'header' => (string) $c,
     ];
 }
