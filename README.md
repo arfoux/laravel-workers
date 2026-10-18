@@ -171,7 +171,7 @@ Laravel app (dev truth)
 - **M6** Validation kernel — done (M6).
 - **M7** Services kernel — done (M7).
 - **M8** Final gates — done: docs-check 105/105 + bench/budget p95 ≤5ms + CI + pack green.
-- **M9** Zero-touch hardening — done: stubs fail loud, `LW_CONFIG`/`LW_PORTS_DIR`, optional registry, fresh-Laravel e2e job in CI.
+- **M9** Zero-touch hardening — done: stubs fail loud, `LW_CONFIG`/`LW_PORTS_DIR`, optional registry, fresh-Laravel e2e job in CI (strict build → dist asserts → `wrangler dev` runtime smoke).
 
 ## License
 

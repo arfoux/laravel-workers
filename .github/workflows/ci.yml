@@ -58,3 +58,25 @@ jobs:
           test -f e2e-app/dist/src/routes.generated.mjs
           test -f e2e-app/dist/public/index.html
           test -f e2e-app/dist/schema.json
+      - name: Runtime smoke (worker boots; / and /health answer 200)
+        run: |
+          cd e2e-app
+          cat > wrangler.jsonc <<'JSONC'
+          { "name": "e2e-app", "main": "./dist/src/worker.mjs", "compatibility_date": "2026-10-01",
+            "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+            "d1_databases": [ { "binding": "DB", "database_name": "e2e-app", "database_id": "placeholder" } ] }
+          JSONC
+          npx --yes wrangler@4.151.1 dev --port 8791 --ip 127.0.0.1 > dev.log 2>&1 &
+          code=000
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8791/health || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          echo "health=$code"
+          if [ "$code" != "200" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
+          root=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/)
+          echo "root=$root"
+          if [ "$root" != "200" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
+          kill %1 2>/dev/null || true
+          pkill -f workerd 2>/dev/null || true
