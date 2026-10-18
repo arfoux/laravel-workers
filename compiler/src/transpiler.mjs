@@ -216,12 +216,30 @@ function txCall(node) {
       if ((node.arguments || []).length === 0) return 'rt.app()';
       return 'rt.app(' + args + ')';
     }
+    const argNodes = node.arguments || [];
+    const cbRef = (n) => (n && n.kind === 'string' && FUNCS.has(n.value) ? fname(n.value) : null);
+    if (name === 'array_map') {
+      const cb = cbRef(argNodes[0]);
+      if (!cb) throw mkErr('LW001', 'array_map requires a named function callback', node.loc);
+      return 'rt.array_map(' + cb + ', ' + tx(argNodes[1]) + ')';
+    }
+    if (name === 'array_filter') {
+      const cb = cbRef(argNodes[1]);
+      if (argNodes.length > 1 && !cb) throw mkErr('LW001', 'array_filter callback must be a named function', node.loc);
+      return 'rt.array_filter(' + tx(argNodes[0]) + (cb ? ', ' + cb : '') + ')';
+    }
     const whitelisted = new Set(['e', 'str_replace', 'config', 'public_path', 'file_exists', 'url', 'route', 'auth']);
     const builtins = new Set([
       'isset', 'empty', 'unset', 'count', 'in_array', 'implode', 'explode',
       'sprintf', 'strtolower', 'strtoupper', 'trim', 'number_format', 'nl2br',
       'strlen', 'substr', 'str_repeat', 'str_contains', 'str_starts_with', 'str_ends_with',
       'ucfirst', 'lcfirst', 'str_pad', 'array_key_exists', 'array_keys', 'array_values', 'array_merge',
+      'ltrim', 'rtrim', 'ucwords', 'strrev', 'strpos', 'strrpos', 'substr_count', 'strip_tags', 'htmlspecialchars',
+      'is_null', 'is_bool', 'is_boolean', 'is_int', 'is_integer', 'is_long', 'is_float', 'is_double', 'is_real',
+      'is_string', 'is_array', 'is_object', 'is_numeric', 'is_callable', 'is_countable',
+      'abs', 'round', 'floor', 'ceil', 'intval', 'floatval', 'max', 'min',
+      'json_encode', 'json_decode',
+      'array_sum', 'array_slice', 'array_reverse', 'array_unique', 'array_count_values', 'array_flip',
     ]);
     if (whitelisted.has(name) || builtins.has(name)) return 'rt.' + name + '(' + args + ')';
     if (FUNCS.has(name)) return fname(name) + '(' + args + ')';

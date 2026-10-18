@@ -397,6 +397,132 @@ export function buildRt(context, opts = {}) {
     return [];
   };
 
+  // ---- type predicates ----
+  const isNum = (v) => (typeof v === 'number' && !Number.isNaN(v)) || (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v)));
+  rt.is_null = (v) => v === null || v === undefined;
+  rt.is_bool = (v) => typeof v === 'boolean';
+  rt.is_int = (v) => typeof v === 'number' && Number.isInteger(v);
+  rt.is_float = (v) => typeof v === 'number' && !Number.isInteger(v);
+  rt.is_string = (v) => typeof v === 'string';
+  rt.is_array = (v) => Array.isArray(v) || isObj(v);
+  rt.is_object = (v) => isObj(v) && !Array.isArray(v);
+  rt.is_numeric = isNum;
+  rt.is_callable = (v) => typeof v === 'function';
+  rt.is_countable = (v) => Array.isArray(v) || isObj(v);
+  rt.is_boolean = rt.is_bool;
+  rt.is_integer = rt.is_int;
+  rt.is_long = rt.is_int;
+  rt.is_double = rt.is_float;
+  rt.is_real = rt.is_float;
+
+  // ---- numbers ----
+  rt.abs = (v) => Math.abs(Number(v));
+  const phpRound = (x, p) => {
+    const m = Math.pow(10, p);
+    const v = x * m;
+    return (v < 0 ? -Math.round(-v) : Math.round(v)) / m;
+  };
+  rt.round = (v, p) => phpRound(Number(v), p == null ? 0 : Number(p) | 0);
+  rt.floor = (v) => Math.floor(Number(v));
+  rt.ceil = (v) => Math.ceil(Number(v));
+  rt.intval = (v, base) => {
+    if (typeof v === 'number') return Math.trunc(v);
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    const s = String(v == null ? '' : v).trim();
+    const b = base == null ? 10 : Number(base) || 10;
+    const re = b === 16 ? /^[+-]?(0x)?[0-9a-f]+/i : b === 8 ? /^[+-]?[0-7]+/ : /^[+-]?\d+/;
+    const m = s.match(re);
+    return m ? parseInt(m[0], b) : 0;
+  };
+  rt.floatval = (v) => {
+    if (typeof v === 'number') return v;
+    const m = String(v == null ? '' : v).trim().match(/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?/);
+    return m ? parseFloat(m[0]) : 0;
+  };
+  const maxMin = (dir, a) => {
+    const vals = a.length === 1 && Array.isArray(a[0]) ? a[0] : a;
+    let best = vals[0];
+    for (const v of vals) if (dir > 0 ? Number(v) > Number(best) : Number(v) < Number(best)) best = v;
+    return best;
+  };
+  rt.max = (...a) => maxMin(1, a);
+  rt.min = (...a) => maxMin(-1, a);
+
+  // ---- strings (continued) ----
+  const PHP_WS = ' \t\n\r\u0000\u000B';
+  const trimChars = (s, chars, dir) => {
+    const set = new Set(chars.split(''));
+    const a = String(s == null ? '' : s).split('');
+    let i = 0, j = a.length;
+    if (dir !== 'r') while (i < j && set.has(a[i])) i++;
+    if (dir !== 'l') while (j > i && set.has(a[j - 1])) j--;
+    return a.slice(i, j).join('');
+  };
+  rt.ltrim = (s, chars) => trimChars(s, chars == null ? PHP_WS : String(chars), 'l');
+  rt.rtrim = (s, chars) => trimChars(s, chars == null ? PHP_WS : String(chars), 'r');
+  rt.ucwords = (s) => String(s == null ? '' : s).replace(/(^|[ \t\r\n\f\u000B])(\S)/g, (m, p, c) => p + c.toUpperCase());
+  rt.strrev = (s) => String(s == null ? '' : s).split('').reverse().join('');
+  rt.strpos = (h, n, off) => {
+    const i = String(h == null ? '' : h).indexOf(String(n), off == null ? 0 : Number(off) | 0);
+    return i < 0 ? false : i;
+  };
+  rt.strrpos = (h, n, off) => {
+    const s = String(h == null ? '' : h);
+    const from = off == null ? s.length : Number(off) | 0;
+    const i = s.lastIndexOf(String(n), from);
+    return i < 0 ? false : i;
+  };
+  rt.substr_count = (h, n, off, len) => {
+    const s = String(h == null ? '' : h).slice(off == null ? 0 : Number(off) | 0);
+    const needle = String(n);
+    if (needle === '') return 0;
+    let count = 0, i = 0;
+    for (;;) {
+      const at = s.indexOf(needle, i);
+      if (at < 0) break;
+      count++;
+      i = at + needle.length;
+    }
+    return count;
+  };
+  rt.strip_tags = (s) => String(s == null ? '' : s).replace(/<[^>]*>/g, '');
+  rt.htmlspecialchars = (s) => (s == null ? '' : rt.e(s));
+
+  // ---- json ----
+  rt.json_encode = (v) => JSON.stringify(v == null ? null : v).replace(/\//g, '\\/');
+  rt.json_decode = (s, assoc) => JSON.parse(String(s));
+
+  // ---- more array helpers ----
+  rt.array_sum = (arr) => arrValues(arr).reduce((s, x) => s + Number(x), 0);
+  rt.array_slice = (arr, offset, length) => {
+    const a = arrValues(arr);
+    const off = Number(offset) | 0;
+    const o = off < 0 ? Math.max(a.length + off, 0) : off;
+    if (length === undefined || length === null) return a.slice(o);
+    return a.slice(o, o + Math.max(0, Number(length) | 0));
+  };
+  rt.array_reverse = (arr) => arrValues(arr).slice().reverse();
+  rt.array_unique = (arr) => {
+    const out = [];
+    for (const v of arrValues(arr)) if (!out.some((x) => phpToStr(x) === phpToStr(v))) out.push(v);
+    return out;
+  };
+  rt.array_count_values = (arr) => {
+    const o = {};
+    for (const v of arrValues(arr)) {
+      const k = phpToStr(v);
+      o[k] = (o[k] || 0) + 1;
+    }
+    return o;
+  };
+  rt.array_flip = (arr) => {
+    const o = {};
+    if (isObj(arr)) for (const k of Object.keys(arr)) o[phpToStr(arr[k])] = /^\d+$/.test(k) ? Number(k) : k;
+    return o;
+  };
+  rt.array_filter = (arr, cb) => arrValues(arr).filter((v) => (cb ? !!cb(v) : !!v));
+  rt.array_map = (cb, arr) => arrValues(arr).map((v) => cb(v));
+
   rt.str = phpToStr;
   rt.number_format = (n, dec = 0, dp = '.', ts = ',') => {
     const x = Number(n);

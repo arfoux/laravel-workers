@@ -14,6 +14,13 @@
     "php_bytes": 22
   },
   {
+    "id": "array-more",
+    "file": "cases/array-more.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 34
+  },
+  {
     "id": "boot-e-quotes",
     "file": "cases/boot-e-quotes.php",
     "kind": "SUP",
@@ -210,6 +217,13 @@
     "php_bytes": 16
   },
   {
+    "id": "json-helpers",
+    "file": "cases/json-helpers.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 41
+  },
+  {
     "id": "logic-and-or",
     "file": "cases/logic-and-or.php",
     "kind": "SUP",
@@ -226,6 +240,13 @@
   {
     "id": "match-basic",
     "file": "cases/match-basic.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 29
+  },
+  {
+    "id": "math-helpers",
+    "file": "cases/math-helpers.php",
     "kind": "SUP",
     "php_exit": 0,
     "php_bytes": 29
@@ -294,6 +315,13 @@
     "php_bytes": 14
   },
   {
+    "id": "str-trim-case",
+    "file": "cases/str-trim-case.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 54
+  },
+  {
     "id": "switch-basic",
     "file": "cases/switch-basic.php",
     "kind": "SUP",
@@ -313,6 +341,13 @@
     "kind": "SUP",
     "php_exit": 0,
     "php_bytes": 41
+  },
+  {
+    "id": "type-predicates",
+    "file": "cases/type-predicates.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 17
   },
   {
     "id": "while-loop",
