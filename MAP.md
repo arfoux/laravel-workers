@@ -3,6 +3,7 @@
 **Repo:** `laravel-workers` (name decided — GitHub/npm checked; see §10)
 **Status:** v1.1 — living doc. Basis: **measured evidence + verified platform limits**, not theory.
 **Coverage guarantee:** Appendix C maps **all 105 pages** of the official Laravel 13.x docs to a verdict — a page without a verdict is a gap, and gaps are build-blocking. See §5.
+**What this is:** a build-time toolchain — `compiler` (Blade → PHP → JS, byte-parity vs PHP 8.3) + Workers-native `kernel` + `build.mjs` pipeline. Not a Laravel runtime, not PHP-in-Worker. Controllers are not transpiled (use `ports/*.mjs`); anything unverified fails the build.
 **Scope:** how a Laravel app runs natively on Workers — Laravel stays the source of truth for dev; the edge artifact is compiled (static assets + JS handlers + D1). No PHP at request time.
 
 > **This is the "padanan" map.** Every Laravel feature is classified:

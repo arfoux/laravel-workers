@@ -1,10 +1,10 @@
 # laravel-workers
 
-> Run a Laravel app on Cloudflare Workers with **no PHP at request time** — build-time boot → Workers-native artifact. Blade views compile to ESM; anything outside the supported subset **fails the build** and falls back to a hand-written port.
+> A build-time toolchain: Laravel app in, Cloudflare Workers artifact out. Blade views, routes and the D1/read paths it can verify against PHP 8.3 are compiled to dependency-free JS at build time. What it cannot verify **fails the build** — no silently-wrong output ships.
 
 [![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm](https://img.shields.io/badge/npm-laravel--workers-9cf.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**One-liner:** Laravel stays the source of truth for dev; the edge runs compiled JS + D1. No wasm, no PHP boot per request — **Free-plan-safe (10 ms CPU)**.
+**What it is, plainly.** A toolchain with three parts: a `compiler` (Blade → PHP → JS, byte-parity against PHP 8.3), a Workers-native `kernel` (router, D1 query builder, models, validation, services), and `build.mjs` (pipeline → `dist/kernel` + `_routes.json` + schema snapshot). Laravel stays the source of truth in dev; the edge runs compiled JS + D1, **Free-plan-safe (measured 1–6 ms)**. It is **not** a Laravel runtime and **not** PHP-in-Worker: controllers are not transpiled — those go in `ports/*.mjs`.
 
 ## Why
 

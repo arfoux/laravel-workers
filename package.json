@@ -1,7 +1,7 @@
 {
   "name": "laravel-workers",
   "version": "0.3.0",
-  "description": "Run any Laravel app on Cloudflare Workers with no PHP at request time — build-time boot to Workers-native artifact (static + snapshot + compiled handlers + D1)",
+  "description": "Build-time toolchain: compile a Laravel app's Blade views, routes and D1 read paths to a Cloudflare Workers artifact (static + snapshot + compiled handlers); unsupported constructs fail the build",
   "type": "module",
   "license": "MIT",
   "author": "arfoux",
@@ -22,7 +22,8 @@
     "blade",
     "transpiler",
     "workers-native",
-    "build-time"
+    "build-time",
+    "toolchain"
   ],
   "bin": {
     "laravel-workers": "bin/laravel-workers.mjs"
