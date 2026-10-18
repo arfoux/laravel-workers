@@ -41,9 +41,20 @@ Fails loud (build error or `LW002`), use a port instead:
 
 ## Requirements
 
-- Laravel 10/11/12/13 app as source of truth (Vite unchanged, sessions/CSRF off by default in this pipeline).
-- **Node ≥ 22**, **PHP ≥ 8.3**, `php-parser` (npm) for the compiler, `bcryptjs` for `kernel/hash` (pure JS, no native).
-- Cloudflare account for deploy (`wrangler`, D1 binding id `ad5876a0-c5eb-493c-917e-5e8f0e543200` in this repo's test Wrangler).
+Versions actually tested (byte-parity corpus + CI + live deploy):
+
+| Component | Tested with | Requirement |
+| --- | --- | --- |
+| Laravel | `13.37.0` (nearFind, app-breeze), `11.34.2` (blogkit) | 10–13 as source of truth |
+| PHP — build time only | `8.3.30` (ZTS x64, Windows) | **≥ 8.3**; parity oracle is 8.3 (other minors untested) |
+| Composer | `2.9.4` | 2.x, for the app's own `composer install` |
+| Node | `22.18.0` | **≥ 22** (`engines`) |
+| npm | `10.9.3` | ≥ 10 |
+| Cloudflare Workers | `wrangler` `4.151.1` | 4.x; `compatibility_date` `2026-08-01` (live corpus) / `2026-10-01` (`init` template) |
+
+- Laravel app as source of truth (Vite unchanged, sessions/CSRF off by default in this pipeline).
+- `php-parser@3.7.0` (npm) for the compiler, `bcryptjs@2.4.3` for `kernel/hash` (pure JS, no native).
+- Cloudflare account for deploy (D1 binding id `ad5876a0-c5eb-493c-917e-5e8f0e543200` in this repo's test Wrangler). **Free plan safe — measured 1–6 ms CPU.**
 
 ## Quick start
 
