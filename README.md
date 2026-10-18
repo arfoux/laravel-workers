@@ -36,7 +36,7 @@ Fails loud (build error or `LW002`), use a port instead:
 - `compiler/` — **M1 view compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `src/transpiler.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 46, parity, smoke).
 - `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), budget gate (M8).
 - `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
-- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `routes.generated.mjs` route table with names/domains and a `routeNames` map).
+- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `routes.generated.mjs` route table with names/domains and a `routeNames` map + `public/_routes.json` for Cloudflare Static Assets).
 - `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy).
 
 ## Requirements
@@ -52,7 +52,7 @@ git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup                 # root + compiler deps
 
-npm test                      # 84/84 — router + db/model + hash + encrypter + validator + services + budget
+npm test                      # 87/87 — router + db/model + hash + encrypter + validator + services + routes-json + budget
 npm run test:corpus           # 46/46 — M1 transpiler corpus
 npm run test:hash             # 7/7  — hash + encrypter only
 
@@ -64,7 +64,7 @@ npx laravel-workers build     # inside an edge checkout (requires Laravel vendor
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (84)
+laravel-workers test            # all kernel tests (87)
 laravel-workers test:db          # db/model only
 laravel-workers test:hash       # hash + encrypter only
 laravel-workers test:validator  # validator only

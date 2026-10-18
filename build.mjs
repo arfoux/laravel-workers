@@ -14,6 +14,7 @@
 // Usage: node build.mjs [--strict] [--scaffold]
 
 import { execFileSync } from 'node:child_process';
+import { buildRoutesJson } from './tools/routes-json.mjs';
 import {
   cpSync,
   existsSync,
@@ -330,6 +331,12 @@ writeFileSync(
     '',
   ].join('\n')
 );
+// ---------- 5b. Cloudflare Static Assets routing ----------
+mkdirSync(join(dist, 'public'), { recursive: true });
+const routesJson = buildRoutesJson(routeTable, { publicDirs: ['build'], extraInclude: ['/health'] });
+writeFileSync(join(dist, 'public', '_routes.json'), JSON.stringify(routesJson, null, 2) + '\n');
+console.log(`  -> dist/public/_routes.json (${(routesJson.include || []).length} include, ${(routesJson.exclude || []).length} exclude)`);
+
 // ---------- 6. coverage report ----------
 const unknown = [
   ...new Set([
