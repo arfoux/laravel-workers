@@ -550,6 +550,22 @@ export function buildRt(context, opts = {}) {
   rt.array_map = (cb, arr) => arrValues(arr).map((v) => cb(v));
 
   rt.str = phpToStr;
+  rt.optional = (value, cb = null) => {
+    if (typeof cb === 'function') return value == null ? null : cb(value);
+    if (value == null) {
+      const fn = () => null;
+      fn.toString = () => '';
+      fn.valueOf = () => null;
+      return new Proxy(fn, {
+        get(t, prop) {
+          if (prop === 'toString' || prop === 'valueOf' || prop === Symbol.toPrimitive) return t[prop];
+          return fn;
+        },
+      });
+    }
+    return value;
+  };
+
   rt.number_format = (n, dec = 0, dp = '.', ts = ',') => {
     const x = Number(n);
     const s = Math.abs(x).toFixed(dec);

@@ -238,7 +238,7 @@ function txCall(node) {
       'is_null', 'is_bool', 'is_boolean', 'is_int', 'is_integer', 'is_long', 'is_float', 'is_double', 'is_real',
       'is_string', 'is_array', 'is_object', 'is_numeric', 'is_callable', 'is_countable',
       'abs', 'round', 'floor', 'ceil', 'intval', 'floatval', 'max', 'min',
-      'json_encode', 'json_decode',
+      'json_encode', 'json_decode', 'optional',
       'array_sum', 'array_slice', 'array_reverse', 'array_unique', 'array_count_values', 'array_flip',
     ]);
     if (whitelisted.has(name) || builtins.has(name)) return 'rt.' + name + '(' + args + ')';
