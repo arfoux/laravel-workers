@@ -45,7 +45,7 @@ jobs:
           cp .env.example .env
           php artisan key:generate
           php artisan migrate --force
-          npm ci
+          npm install # a fresh Laravel app ships no package-lock.json, so npm ci cannot be used
           npm run build
       - name: Zero-config strict build with laravel-workers
         run: |
