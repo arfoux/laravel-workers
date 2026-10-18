@@ -301,6 +301,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **Router hardening (2026-10-18):** `kernel/router.mjs` now enforces `domain` rules (incl. `{sub}.example.com` param capture, port stripping), supports catch-all `{param*}`, and honours `X-HTTP-Method-Override` / `methodOverride` (POST only) with `ctx.request.method` reflecting the effective verb. `kernel/tests/router.test.mjs` extended (wildcard, domain, override).
 - **Route metadata (2026-10-18):** `build.mjs` no longer hardcodes `name: null, domain: null`; it now carries `name`/`domain` per route (from `php artisan route:list --json`) into `routeTable` and emits a `routeNames` map in `dist/src/routes.generated.mjs`. `src/worker.mjs` passes `host` so domain rules actually match at request time.
 - **Query builder widening (2026-10-18):** `kernel/db.mjs` gains Laravel-style `where(fn)`/`orWhere(fn)` nested grouping, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime` (SQLite `date()`/`strftime()`/`time()`), `sum`/`avg`/`min`/`max`, `upsert` (`ON CONFLICT … DO UPDATE|NOTHING`), `insertGetId`, `truncate`, `increment`/`decrement`, `updateOrInsert`, `chunk`, and `implode` now folds assoc values. `kernel/tests/db.test.mjs` +7 subtests -> npm test **80/80**.
+- **Model widening (2026-10-18):** `kernel/model.mjs` adds casts (`json`/`array`/`object`/`collection`, `decimal:N`, `timestamp`, scalar/temporal), accessors/mutators (`getFooAttribute`/`setFooAttribute`), `hidden`/`visible`/`appends` in `toJSON`, json casts encoded on save, soft deletes (`query` filters, `trashed`, `withTrashed`/`onlyTrashed`, `delete` stamps, `restore`, `forceDelete`), and `findOrFail`/`firstOrFail`. +4 subtests -> npm test **84/84**.
 
 ## B. Current state
 
@@ -310,7 +311,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | View-compile spike (S0 dump) | ✅ first artifact produced |
 | Repo name | `laravel-workers` (decided; GitHub/npm checked) |
 | Repo strategy | standalone; extract from `edge/` at M1–M2 |
-| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (46/46) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (80/80 + 105/105 + bench p95<=5ms) |
+| W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (46/46) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (84/84 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |
 
 ---

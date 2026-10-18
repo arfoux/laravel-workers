@@ -433,3 +433,75 @@ test('chunk paginates until exhausted', async () => {
   await table(db, 't').chunk(2, (batch, page) => { seen.push([page, batch.length]); });
   assert.deepEqual(seen, [[1, 2], [2, 1]]);
 });
+
+class CastModel extends Model {
+  static table = 'items';
+  static fillable = ['name', 'meta', 'price', 'secret', 'first_name'];
+  static casts = { meta: 'json', price: 'decimal:2', secret: 'int' };
+  static hidden = ['secret'];
+  static appends = ['label'];
+  getLabelAttribute() { return (this.attributes.name || '') + '!'; }
+  getFirstNameAttribute(value) { return String(value || '').toUpperCase(); }
+  setFirstNameAttribute(value) { return String(value).trim(); }
+}
+
+class SoftModel extends Model {
+  static table = 'notes';
+  static fillable = ['title'];
+  static softDeletes = true;
+}
+
+test('Model casts, accessors/mutators, hidden/visible/appends', () => {
+  const m = new CastModel({ id: 1, name: 'Ada', meta: '{"a":1}', price: '3.5', secret: 7, first_name: 'ada' });
+  assert.deepEqual(m.get('meta'), { a: 1 });
+  assert.equal(m.get('price'), '3.50');
+  assert.equal(m.get('secret'), 7);
+  assert.equal(m.get('first_name'), 'ADA');
+  m.set('first_name', '  grace ');
+  assert.equal(m.attributes.first_name, 'grace');
+  const json = m.toJSON();
+  assert.equal(Object.prototype.hasOwnProperty.call(json, 'secret'), false);
+  assert.equal(json.label, 'Ada!');
+  assert.deepEqual(json.meta, { a: 1 });
+  assert.equal(json.price, '3.50');
+});
+
+test('Model json cast is stored as a string', async () => {
+  const calls = [];
+  const db = mockDb({ run: (sql, params) => { calls.push({ sql, params }); return { success: true, meta: { changes: 1, last_row_id: 1 } }; } });
+  await CastModel.create(db, { name: 'A', meta: { a: 1 } });
+  assert.equal(calls[0].sql.startsWith('INSERT INTO "items"'), true);
+  assert.notEqual(calls[0].params.indexOf('{"a":1}'), -1);
+});
+
+test('Model softDeletes: query filters, delete stamps, restore clears, forceDelete removes', async () => {
+  const calls = [];
+  const db = mockDb({
+    all: () => ({ results: [] }),
+    run: (sql, params) => { calls.push({ sql, params }); return { success: true, meta: { changes: 1 } }; },
+  });
+  assert.equal(SoftModel.query(db).toSql().sql, 'SELECT * FROM "notes" WHERE "deleted_at" IS NULL');
+  assert.equal(SoftModel.withTrashed(db).toSql().sql, 'SELECT * FROM "notes"');
+  assert.equal(SoftModel.onlyTrashed(db).toSql().sql, 'SELECT * FROM "notes" WHERE "deleted_at" IS NOT NULL');
+
+  const m = new SoftModel({ id: 1, title: 'A' });
+  assert.equal(m.trashed(), false);
+  await m.delete(db);
+  assert.equal(m.trashed(), true);
+  assert.match(calls[0].sql, /^UPDATE "notes" SET "deleted_at" = \? WHERE "id" = \?$/);
+  await m.restore(db);
+  assert.equal(m.trashed(), false);
+  assert.deepEqual(calls[1].params, [null, 1]);
+  await m.forceDelete(db);
+  assert.equal(calls[2].sql, 'DELETE FROM "notes" WHERE "id" = ?');
+  assert.equal(m.exists, false);
+});
+
+test('Model findOrFail / firstOrFail', async () => {
+  const hit = mockDb({ all: () => ({ results: [{ id: 1, name: 'A' }] }) });
+  const miss = mockDb({ all: () => ({ results: [] }) });
+  assert.equal((await RelModel.findOrFail(hit, 1)).get('id'), 1);
+  await assert.rejects(() => RelModel.findOrFail(miss, 9), /not found/);
+  assert.equal((await RelModel.firstOrFail(hit)).get('id'), 1);
+  await assert.rejects(() => RelModel.firstOrFail(miss), /not found/);
+});

@@ -1,26 +1,31 @@
 // kernel/model.mjs — Model base
 import { table as tableBuilder } from './db.mjs';
 
+const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
+
 function applyCast(value, cast) {
   if (value == null) return value;
-  switch (String(cast).toLowerCase()) {
-    case 'int':
-    case 'integer':
-      return Number(value);
-    case 'float':
-    case 'double':
-    case 'real':
-      return Number(value);
-    case 'bool':
-    case 'boolean':
-      return value === true || value === 1 || value === '1' || value === 'true';
-    case 'string':
-      return String(value);
-    case 'json':
-      return typeof value === 'string' ? JSON.parse(value) : value;
-    default:
-      return value;
+  const spec = String(cast).toLowerCase();
+  if (JSON_CASTS.has(spec)) return typeof value === 'string' ? JSON.parse(value) : value;
+  if (spec.startsWith('decimal:')) {
+    const places = Number(spec.slice('decimal:'.length)) || 0;
+    return Number(value).toFixed(places);
   }
+  if (spec === 'int' || spec === 'integer' || spec === 'timestamp') return Number(value);
+  if (spec === 'float' || spec === 'double' || spec === 'real') return Number(value);
+  if (spec === 'bool' || spec === 'boolean') return value === true || value === 1 || value === '1' || value === 'true';
+  if (spec === 'string') return String(value);
+  // date/datetime/immutable_* and unknown casts pass through (strings in D1).
+  return value;
+}
+
+// Accessors/mutators follow Laravel's naming: getFooBarAttribute / setFooBarAttribute.
+function studly(key) {
+  return String(key)
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
 }
 
 export class Model {
@@ -28,7 +33,12 @@ export class Model {
   static primaryKey = 'id';
   static fillable = [];
   static casts = {};
+  static hidden = [];
+  static visible = [];
+  static appends = [];
   static timestamps = true;
+  static softDeletes = false;
+  static deletedAtColumn = 'deleted_at';
 
   constructor(attributes = {}) {
     this.attributes = { ...attributes };
@@ -36,35 +46,75 @@ export class Model {
   }
 
   get(key) {
+    let value = this.attributes[key];
     const cast = this.constructor.casts[key];
-    return cast ? applyCast(this.attributes[key], cast) : this.attributes[key];
+    if (cast != null) value = applyCast(value, cast);
+    const accessor = 'get' + studly(key) + 'Attribute';
+    if (typeof this[accessor] === 'function') value = this[accessor](value);
+    return value;
   }
 
   set(key, value) {
-    this.attributes[key] = value;
+    const mutator = 'set' + studly(key) + 'Attribute';
+    let next = value;
+    if (typeof this[mutator] === 'function') {
+      next = this[mutator](value);
+    } else {
+      const cast = this.constructor.casts[key];
+      if (cast != null && JSON_CASTS.has(String(cast).toLowerCase())) {
+        next = value == null ? null : JSON.stringify(value);
+      }
+    }
+    this.attributes[key] = next;
     return this;
   }
 
   fill(attributes = {}) {
     const fillable = this.constructor.fillable;
     for (const key of Object.keys(attributes || {})) {
-      if (!fillable.length || fillable.includes(key)) this.attributes[key] = attributes[key];
+      if (!fillable.length || fillable.includes(key)) this.set(key, attributes[key]);
     }
     return this;
   }
 
   toJSON() {
-    const out = { ...this.attributes };
-    for (const key of Object.keys(this.constructor.casts)) {
-      if (Object.prototype.hasOwnProperty.call(out, key)) out[key] = this.get(key);
+    const ctor = this.constructor;
+    const hidden = ctor.hidden || [];
+    const visible = ctor.visible || [];
+    const out = {};
+    for (const key of Object.keys(this.attributes)) {
+      if (hidden.includes(key)) continue;
+      if (visible.length && !visible.includes(key)) continue;
+      out[key] = this.get(key);
     }
+    for (const key of ctor.appends || []) out[key] = this.get(key);
     return out;
   }
 
-  static query(db) {
+  // ---- soft deletes ----
+  trashed() {
+    const ctor = this.constructor;
+    return this.attributes[ctor.deletedAtColumn] != null;
+  }
+
+  static _newQuery(db) {
     const builder = tableBuilder(db, this.table);
     builder.model = this;
     return builder;
+  }
+
+  static query(db) {
+    const builder = this._newQuery(db);
+    if (this.softDeletes) builder.whereNull(this.deletedAtColumn);
+    return builder;
+  }
+
+  static withTrashed(db) {
+    return this._newQuery(db);
+  }
+
+  static onlyTrashed(db) {
+    return this._newQuery(db).whereNotNull(this.deletedAtColumn);
   }
 
   static all(db) {
@@ -75,10 +125,31 @@ export class Model {
     return this.query(db).where(this.primaryKey, id).first();
   }
 
+  static async findOrFail(db, id) {
+    const found = await this.find(db, id);
+    if (!found) throw new Error(this.name + ' not found: ' + id);
+    return found;
+  }
+
+  static async firstOrFail(db) {
+    const found = await this.query(db).first();
+    if (!found) throw new Error(this.name + ' not found');
+    return found;
+  }
+
   static async create(db, attributes = {}) {
     const instance = new this(attributes);
     await instance.save(db);
     return instance;
+  }
+
+  _storeValue(key) {
+    const value = this.attributes[key];
+    const cast = this.constructor.casts[key];
+    if (value != null && cast != null && JSON_CASTS.has(String(cast).toLowerCase())) {
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    }
+    return value;
   }
 
   async save(db) {
@@ -87,7 +158,7 @@ export class Model {
     const data = {};
     const fillable = ctor.fillable.length ? ctor.fillable : Object.keys(this.attributes);
     for (const key of fillable) {
-      if (Object.prototype.hasOwnProperty.call(this.attributes, key)) data[key] = this.attributes[key];
+      if (Object.prototype.hasOwnProperty.call(this.attributes, key)) data[key] = this._storeValue(key);
     }
     if (ctor.timestamps) {
       if (!this.exists) data.created_at = data.created_at ?? now;
@@ -99,10 +170,10 @@ export class Model {
     if (this.exists) {
       const pk = ctor.primaryKey;
       const id = this.attributes[pk];
-      const { changes } = await ctor.query(db).where(pk, id).update(data);
+      const { changes } = await ctor.withTrashed(db).where(pk, id).update(data);
       if (changes === 0) throw new Error('model update affected 0 rows');
     } else {
-      const { lastInsertRowid } = await ctor.query(db).insert(data);
+      const { lastInsertRowid } = await ctor.withTrashed(db).insert(data);
       if (lastInsertRowid != null) this.attributes[ctor.primaryKey] = lastInsertRowid;
       this.exists = true;
     }
@@ -113,8 +184,31 @@ export class Model {
     if (!this.exists) return { changes: 0 };
     const ctor = this.constructor;
     const pk = ctor.primaryKey;
-    const res = await ctor.query(db).where(pk, this.attributes[pk]).delete();
+    if (ctor.softDeletes) {
+      const now = new Date().toISOString();
+      const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).update({ [ctor.deletedAtColumn]: now });
+      this.attributes[ctor.deletedAtColumn] = now;
+      return res;
+    }
+    const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).delete();
     this.exists = false;
+    return res;
+  }
+
+  async forceDelete(db) {
+    if (!this.exists) return { changes: 0 };
+    const ctor = this.constructor;
+    const res = await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).delete();
+    this.exists = false;
+    return res;
+  }
+
+  async restore(db) {
+    if (!this.exists) return { changes: 0 };
+    const ctor = this.constructor;
+    if (!ctor.softDeletes) return { changes: 0 };
+    const res = await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).update({ [ctor.deletedAtColumn]: null });
+    this.attributes[ctor.deletedAtColumn] = null;
     return res;
   }
 
@@ -137,7 +231,7 @@ export class Model {
 
   async refresh(db) {
     const pk = this.constructor.primaryKey;
-    const fresh = await this.constructor.query(db).where(pk, this.attributes[pk]).first();
+    const fresh = await this.constructor.withTrashed(db).where(pk, this.attributes[pk]).first();
     if (fresh) {
       this.attributes = { ...fresh.attributes };
       this.exists = true;
