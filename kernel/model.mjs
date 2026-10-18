@@ -112,6 +112,7 @@ export class Model {
     // Eager-loading + local-scope support on the returned builder.
     builder.eagerLoads = [];
     builder.countLoads = [];
+    builder.aggregateLoads = [];
     const baseGet = builder.get.bind(builder);
     const baseFirst = builder.first.bind(builder);
     builder.with = (...names) => {
@@ -122,10 +123,20 @@ export class Model {
       for (const n of names.flat()) builder.countLoads.push(n);
       return builder;
     };
+    builder.withSum = (name, column) => addAggregate(builder, this, name, 'sum', column);
+    builder.withAvg = (name, column) => addAggregate(builder, this, name, 'avg', column);
+    builder.withMin = (name, column) => addAggregate(builder, this, name, 'min', column);
+    builder.withMax = (name, column) => addAggregate(builder, this, name, 'max', column);
     builder.whereHas = (name, cb) => addHas(builder, db, this, name, cb, false);
-    builder.has = (name, cb) => addHas(builder, db, this, name, cb, false);
+    builder.whereHasCount = (name, operator, count, cb) => addHasCount(builder, db, this, name, operator, count, cb, false);
     builder.whereDoesntHave = (name, cb) => addHas(builder, db, this, name, cb, true);
     builder.doesntHave = (name, cb) => addHas(builder, db, this, name, cb, true);
+    // Laravel `has($rel, $operator = '>=', $count = 1, $callback = null)`.
+    builder.has = (name, ...rest) => {
+      const spec = parseHasArgs(rest);
+      if (spec) return addHasCount(builder, db, this, name, spec.operator, spec.count, spec.cb, false);
+      return addHas(builder, db, this, name, typeof rest[0] === 'function' ? rest[0] : undefined, false);
+    };
     builder.scope = (name, ...args) => {
       const fn = this.prototype['scope' + studly(name)];
       if (typeof fn !== 'function') throw new Error('unknown scope "' + name + '" on ' + this.name);
@@ -136,6 +147,7 @@ export class Model {
       const rows = await baseGet(...args);
       await eagerLoad(db, this, rows, builder.eagerLoads);
       await loadCounts(db, this, rows, builder.countLoads);
+      await loadAggregates(db, this, rows, builder.aggregateLoads);
       return rows;
     };
     builder.first = async (...args) => {
@@ -143,6 +155,7 @@ export class Model {
       if (row) {
         await eagerLoad(db, this, [row], builder.eagerLoads);
         await loadCounts(db, this, [row], builder.countLoads);
+        await loadAggregates(db, this, [row], builder.aggregateLoads);
       }
       return row;
     };
@@ -287,6 +300,21 @@ export class Model {
 
   async loadCount(db, ...names) {
     await loadCounts(db, this.constructor, [this], names.flat());
+    return this;
+  }
+
+  // `loadAggregate(db, ['comments', 'sum', 'votes'])` or `loadAggregate(db, {name, fn, column})`.
+  async loadAggregate(db, ...specs) {
+    const args =
+      specs.length === 1 && Array.isArray(specs[0]) && typeof specs[0][0] === 'string' ? [specs[0]] : specs;
+    const list = args.map((s) => {
+      const [name, fn, column] = Array.isArray(s) ? s : [s.name, s.fn, s.column];
+      return { name, fn, column: String(column), alias: name + '_' + fn + '_' + column };
+    });
+    for (const spec of list) {
+      if (!AGG_FN[spec.fn]) throw new Error('unknown aggregate: ' + spec.fn);
+    }
+    await loadAggregates(db, this.constructor, [this], list);
     return this;
   }
 
@@ -469,6 +497,121 @@ function addHas(builder, db, ModelClass, name, cb, negated) {
     return exists(Related.table, link + (extra ? ' AND ' + extra : ''), sub.params);
   }
   return exists(Related.table, link, []);
+}
+
+// Shared relation metadata for correlated subqueries (`has()` counts, aggregates).
+function relationSpec(ModelClass, name) {
+  const rel = (ModelClass.relations || {})[name];
+  if (!rel) throw new Error('unknown relation "' + name + '" on ' + ModelClass.name);
+  const Related = rel.model;
+  if (rel.type === 'belongsTo') {
+    const ownerKey = rel.ownerKey || Related.primaryKey;
+    const fk = rel.foreignKey || defaultForeignKey(Related);
+    return {
+      rel,
+      Related,
+      parentRef: fk,
+      relatedRef: ownerKey,
+      single: true,
+      link: qident(Related.table) + '.' + qident(ownerKey) + ' = ' + qident(ModelClass.table) + '.' + qident(fk),
+    };
+  }
+  if (rel.type !== 'hasMany' && rel.type !== 'hasOne') {
+    throw new Error('unsupported relation type "' + rel.type + '" for ' + name);
+  }
+  const lk = rel.localKey || ModelClass.primaryKey;
+  const fk = rel.foreignKey || defaultForeignKey(ModelClass);
+  return {
+    rel,
+    Related,
+    parentRef: lk,
+    relatedRef: fk,
+    single: rel.type === 'hasOne',
+    link: qident(Related.table) + '.' + qident(fk) + ' = ' + qident(ModelClass.table) + '.' + qident(lk),
+  };
+}
+
+// Constraints from a relation callback, inlined into the correlated subquery.
+function childConstraints(db, Related, cb) {
+  if (typeof cb !== 'function') return { extra: '', params: [] };
+  const child = Related.query(db);
+  cb(child);
+  const sub = child.toSql();
+  return { extra: whereClauseOf(sub.sql), params: sub.params };
+}
+
+const HAS_OPS = new Set(['=', '!=', '<>', '>', '>=', '<', '<=']);
+
+// Laravel `has($rel, $operator, $count, $callback)` argument forms.
+function parseHasArgs(rest) {
+  const args = rest.flat();
+  if (!args.length || typeof args[0] === 'function') return null;
+  const hasOperator = args.length >= 2;
+  const operator = hasOperator ? String(args[0]) : '>=';
+  const count = hasOperator ? args[1] : args[0];
+  if (!HAS_OPS.has(operator)) throw new Error('unsupported has() operator: ' + operator);
+  const cb = args.find((a) => typeof a === 'function');
+  return { operator, count: Number(count), cb };
+}
+
+// `has($rel, '>=', 2)` -> `(SELECT COUNT(*) FROM related WHERE fk = pk) >= 2`.
+function addHasCount(builder, db, ModelClass, name, operator, count, cb, negated) {
+  if (!HAS_OPS.has(String(operator))) throw new Error('unsupported has() operator: ' + operator);
+  const spec = relationSpec(ModelClass, name);
+  const { extra, params } = childConstraints(db, spec.Related, cb);
+  const sql =
+    (negated ? 'NOT ' : '') +
+    '(SELECT COUNT(*) FROM ' + qident(spec.Related.table) + ' WHERE ' + spec.link + (extra ? ' AND ' + extra : '') + ') ' +
+    String(operator) +
+    ' ?';
+  return builder.whereRaw(sql, [...params, Number(count)]);
+}
+
+const AGG_FN = { sum: 'SUM', avg: 'AVG', min: 'MIN', max: 'MAX' };
+
+// `withSum('comments', 'votes')` -> `comments_sum_votes` attribute (Laravel naming).
+function addAggregate(builder, ModelClass, name, fn, column) {
+  if (!AGG_FN[fn]) throw new Error('unknown aggregate: ' + fn);
+  if (column == null) throw new Error('with' + fn[0].toUpperCase() + fn.slice(1) + '() needs a column');
+  relationSpec(ModelClass, name);
+  builder.aggregateLoads.push({
+    name,
+    fn,
+    column: String(column),
+    alias: name + '_' + fn + '_' + column,
+  });
+  return builder;
+}
+
+// Compute aggregate attributes with one query per relation (no N+1 per row).
+async function loadAggregates(db, ModelClass, rows, specs) {
+  if (!rows || !rows.length || !specs || !specs.length) return;
+  for (const spec of specs) {
+    const { Related, parentRef, relatedRef } = relationSpec(ModelClass, spec.name);
+    const keys = [...new Set(rows.map((r) => r.get(parentRef)).filter((v) => v != null).map(String))];
+    const buckets = new Map();
+    if (keys.length) {
+      const related = await Related.query(db).whereIn(relatedRef, keys).get();
+      for (const row of related) {
+        const key = String(row.get(relatedRef));
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(row.get(spec.column));
+      }
+    }
+    for (const r of rows) {
+      const list = buckets.get(String(r.get(parentRef))) || [];
+      const nums = list.map((v) => Number(v)).filter((v) => !Number.isNaN(v));
+      let value = null;
+      if (list.length) {
+        const total = nums.reduce((a, b) => a + b, 0);
+        if (spec.fn === 'sum') value = total;
+        else if (spec.fn === 'avg') value = total / nums.length;
+        else if (spec.fn === 'min') value = Math.min(...nums);
+        else value = Math.max(...nums);
+      }
+      r.attributes[spec.alias] = value;
+    }
+  }
 }
 
 export default { Model, applyCast };

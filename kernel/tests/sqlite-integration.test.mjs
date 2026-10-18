@@ -66,7 +66,7 @@ function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(`
     CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, published INTEGER, created_at TEXT, updated_at TEXT, deleted_at TEXT);
-    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, body TEXT, deleted_at TEXT);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, body TEXT, votes INTEGER, deleted_at TEXT);
     CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
     CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author_id INTEGER);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
@@ -77,7 +77,7 @@ function fixture() {
       (2, 'b', 0, '2024-02-03 04:05:06'),
       (3, 'c', 1, '2024-02-04 05:06:07');
     INSERT INTO posts (id, title, published, created_at, deleted_at) VALUES (4, 'd', 1, '2024-02-05 06:07:08', '2020-01-01 00:00:00');
-    INSERT INTO comments (id, post_id, body) VALUES (10, 1, 'x'), (11, 1, 'y'), (12, 2, 'z');
+    INSERT INTO comments (id, post_id, body, votes) VALUES (10, 1, 'x', 5), (11, 1, 'y', 3), (12, 2, 'z', 1);
     INSERT INTO authors (id, name) VALUES (7, 'Ada'), (8, 'Bob');
     INSERT INTO books (id, title, author_id) VALUES (1, 'b1', 7), (2, 'b2', 8), (3, 'b3', NULL);
   `);
@@ -259,4 +259,41 @@ test('sqlite: pluck/value/exists/first', { skip }, async () => {
   assert.equal(await table(db, 'comments').where('body', 'zzz').exists(), false);
   assert.equal(await table(db, 'comments').where('body', 'z').exists(), true);
   assert.equal((await table(db, 'comments').where('body', 'zzz').first()), null);
+});
+
+test('sqlite: has(relation, operator, count) uses correlated COUNT', { skip }, async () => {
+  const db = fixture();
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').has('comments', '>=', 2).get()), [1]);
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').has('comments', '>=', 1).get()), [1, 2]);
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').has('comments', '=', 0).get()), [3]);
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').has('comments', '>', 0, (q) => q.where('votes', '>=', 3)).get()), [1]);
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').whereHasCount('comments', '<', 2).get()), [2, 3]);
+  assert.throws(() => Post.query(db).has('comments', 'LIKE', 1), /unsupported has\(\) operator/);
+  assert.throws(() => Post.query(db).has('nope'), /unknown relation/);
+});
+
+test('sqlite: withSum/withAvg/withMin/withMax expose aggregate attributes', { skip }, async () => {
+  const db = fixture();
+  const posts = await Post.query(db).orderBy('id').withSum('comments', 'votes').get();
+  assert.deepEqual(posts.map((p) => p.get('comments_sum_votes')), [8, 1, null]);
+  assert.deepEqual(posts.map((p) => p.toJSON().comments_sum_votes), [8, 1, null]);
+  const avgs = await Post.query(db).orderBy('id').withAvg('comments', 'votes').get();
+  assert.deepEqual(avgs.map((p) => p.get('comments_avg_votes')), [4, 1, null]);
+  const mins = await Post.query(db).orderBy('id').withMin('comments', 'votes').get();
+  assert.deepEqual(mins.map((p) => p.get('comments_min_votes')), [3, 1, null]);
+  const maxes = await Post.query(db).orderBy('id').withMax('comments', 'votes').get();
+  assert.deepEqual(maxes.map((p) => p.get('comments_max_votes')), [5, 1, null]);
+  assert.throws(() => Post.query(db).withSum('comments'), /needs a column/);
+  assert.throws(() => Post.query(db).withSum('nope', 'votes'), /unknown relation/);
+});
+
+test('sqlite: withCount on belongsTo, loadAggregate on one model', { skip }, async () => {
+  const db = fixture();
+  const books = await Book.query(db).orderBy('id').withCount('author').get();
+  assert.deepEqual(books.map((b) => b.get('author_count')), [1, 1, 0]);
+  const post = await Post.withTrashed(db).where('id', 1).withSum('comments', 'votes').first();
+  assert.equal(post.get('comments_sum_votes'), 8);
+  const loaded = await post.loadAggregate(db, ['comments', 'avg', 'votes']);
+  assert.equal(loaded.get('comments_avg_votes'), 4);
+  await assert.rejects(() => post.loadAggregate(db, ['comments', 'median', 'votes']), /unknown aggregate/);
 });
