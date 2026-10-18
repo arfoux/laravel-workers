@@ -752,7 +752,25 @@ function middlewareStages(list, ctx) {
     }
     if (name === 'throttle') {
       const mw = new ThrottleRequests(ctx.limiterFactory());
-      stages.push((req, next) => mw.handle(req, next, ...params));
+      stages.push(async (req, next) => {
+        // Laravel's $request->user() is synchronous, but the compiled guard's
+        // user() is async (a D1 read). Resolve it once and hand ThrottleRequests
+        // a synchronous view, so its signature / `throttle:<name>` resolution
+        // sees the real user (or null) instead of a Promise.
+        let resolved = null;
+        try {
+          resolved = (await ctx.auth.guard().user()) ?? null;
+        } catch {
+          resolved = null;
+        }
+        const prevUser = req.user;
+        req.user = () => resolved;
+        try {
+          return await mw.handle(req, next, ...params);
+        } finally {
+          req.user = prevUser;
+        }
+      });
       continue;
     }
     throw new HttpError(
@@ -993,18 +1011,17 @@ export async function handleHttp(raw, options = {}) {
   authRef = auth;
   if (typeof options.onAuth === 'function') options.onAuth(auth, request);
 
-  let limiterFactory = null;
+  let limiterInstance = null;
   const limiterFor = () => {
-    if (limiterFactory) return limiterFactory;
+    if (limiterInstance) return limiterInstance;
     if (!cache) {
       throw new HttpError(
         'throttle middleware needs a cache store (options.cache / D1-backed) — not wired yet.',
         500
       );
     }
-    const limiter = new RateLimiter(cache, { clock: nowS });
-    limiterFactory = () => limiter;
-    return limiterFactory;
+    limiterInstance = new RateLimiter(cache, { clock: nowS });
+    return limiterInstance;
   };
 
   const redirectFactory = (url) =>

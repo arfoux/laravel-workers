@@ -444,25 +444,25 @@ async function applyRateLimiterOp(harness, op) {
       harness.ref.value += Math.round(args[0] * 1000);
       return { hasRet: false, ret: null, events: [] };
     case 'hit':
-      return { hasRet: true, ret: harness.limiter.hit(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.hit(...args), events: [] };
     case 'increment':
-      return { hasRet: true, ret: harness.limiter.increment(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.increment(...args), events: [] };
     case 'decrement':
-      return { hasRet: true, ret: harness.limiter.decrement(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.decrement(...args), events: [] };
     case 'attempts':
-      return { hasRet: true, ret: harness.limiter.attempts(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.attempts(...args), events: [] };
     case 'resetAttempts':
-      return { hasRet: true, ret: harness.limiter.resetAttempts(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.resetAttempts(...args), events: [] };
     case 'remaining':
-      return { hasRet: true, ret: harness.limiter.remaining(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.remaining(...args), events: [] };
     case 'retriesLeft':
-      return { hasRet: true, ret: harness.limiter.retriesLeft(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.retriesLeft(...args), events: [] };
     case 'tooManyAttempts':
-      return { hasRet: true, ret: harness.limiter.tooManyAttempts(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.tooManyAttempts(...args), events: [] };
     case 'availableIn':
-      return { hasRet: true, ret: harness.limiter.availableIn(...args), events: [] };
+      return { hasRet: true, ret: await harness.limiter.availableIn(...args), events: [] };
     case 'clear':
-      harness.limiter.clear(...args);
+      await harness.limiter.clear(...args);
       return { hasRet: false, ret: null, events: [] };
     case 'cleanKey':
       return { hasRet: true, ret: cleanRateLimiterKey(...args), events: [] };

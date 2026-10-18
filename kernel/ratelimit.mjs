@@ -346,18 +346,23 @@ export class RateLimiter {
 
   /** RateLimiter::attempt — null result becomes true; hit after the callback. */
   async attempt(key, maxAttempts, callback, decaySeconds = 60) {
-    if (this.tooManyAttempts(key, maxAttempts)) return false;
+    if (await this.tooManyAttempts(key, maxAttempts)) return false;
     let result = await callback();
     if (result === null || result === undefined) result = true;
-    this.hit(key, decaySeconds);
+    await this.hit(key, decaySeconds);
     return result;
   }
 
-  /** RateLimiter::tooManyAttempts — >= max and timer alive; else reset counter. */
-  tooManyAttempts(key, maxAttempts) {
-    if (this.attempts(key) >= maxAttempts) {
-      if (this.cache.has(cleanRateLimiterKey(key) + ':timer')) return true;
-      this.resetAttempts(key);
+  /**
+   * RateLimiter::tooManyAttempts — >= max and timer alive; else reset counter.
+   *
+   * Async because the cache store may be D1-backed (each op is a round trip);
+   * `await` is a no-op for the synchronous ArrayCacheStore.
+   */
+  async tooManyAttempts(key, maxAttempts) {
+    if ((await this.attempts(key)) >= maxAttempts) {
+      if (await this.cache.has(cleanRateLimiterKey(key) + ':timer')) return true;
+      await this.resetAttempts(key);
     }
     return false;
   }
@@ -368,18 +373,18 @@ export class RateLimiter {
   }
 
   /** RateLimiter::increment — timer add, counter add, increment, race fixup. */
-  increment(key, decaySeconds = 60, amount = 1) {
+  async increment(key, decaySeconds = 60, amount = 1) {
     key = cleanRateLimiterKey(key);
 
-    this.cache.add(key + ':timer', this.availableAt(decaySeconds), decaySeconds);
+    await this.cache.add(key + ':timer', this.availableAt(decaySeconds), decaySeconds);
 
-    const added = this.cache.add(key, 0, decaySeconds);
+    const added = await this.cache.add(key, 0, decaySeconds);
 
-    const hits = phpIntCast(this.cache.increment(key, amount));
+    const hits = phpIntCast(await this.cache.increment(key, amount));
 
     if (!added && hits == amount) {
       // @phpstan-ignore-next-line
-      this.cache.put(key, amount, decaySeconds);
+      await this.cache.put(key, amount, decaySeconds);
     }
 
     return hits;
@@ -401,9 +406,9 @@ export class RateLimiter {
   }
 
   /** RateLimiter::remaining — max(0, maxAttempts - attempts). */
-  remaining(key, maxAttempts) {
+  async remaining(key, maxAttempts) {
     key = cleanRateLimiterKey(key);
-    const attempts = this.attempts(key);
+    const attempts = await this.attempts(key);
     return Math.max(0, maxAttempts - attempts);
   }
 
@@ -413,16 +418,16 @@ export class RateLimiter {
   }
 
   /** RateLimiter::clear — resetAttempts + forget timer. */
-  clear(key) {
+  async clear(key) {
     key = cleanRateLimiterKey(key);
-    this.resetAttempts(key);
-    this.cache.forget(key + ':timer');
+    await this.resetAttempts(key);
+    await this.cache.forget(key + ':timer');
   }
 
   /** RateLimiter::availableIn — max(0, timer - currentTime()) (int). */
-  availableIn(key) {
+  async availableIn(key) {
     key = cleanRateLimiterKey(key);
-    const timer = this.cache.get(key + ':timer');
+    const timer = await this.cache.get(key + ':timer');
     return Math.max(0, (timer === null ? 0 : phpIntCast(timer)) - this.currentTime());
   }
 }
@@ -548,6 +553,27 @@ function isHttpResponse(value) {
       value.headers &&
       typeof value.headers.get === 'function'
   );
+}
+
+// ThrottleRequests writes/reads rate-limit headers on whatever response object
+// flows through the pipeline: a web `Response` (headers is a real Headers) or
+// the compiled `HttpResponse` (headers is a lower-cased plain object).
+function getResponseHeader(response, name) {
+  if (!response || !response.headers) return null;
+  if (typeof response.headers.get === 'function') return response.headers.get(name);
+  const key = String(name).toLowerCase();
+  for (const [k, v] of Object.entries(response.headers)) {
+    if (k.toLowerCase() === key) return v;
+  }
+  return null;
+}
+
+function setResponseHeader(response, name, value) {
+  if (typeof response.headers.set === 'function') {
+    response.headers.set(name, value);
+    return;
+  }
+  response.headers[String(name).toLowerCase()] = value;
 }
 
 function resolveUser(request) {
@@ -676,14 +702,14 @@ export class ThrottleRequests {
 
   async handleRequest(request, next, limits) {
     for (const limit of limits) {
-      if (this.limiter.tooManyAttempts(limit.key, limit.maxAttempts)) {
-        throw this.buildException(request, limit.key, limit.maxAttempts, limit.responseCallback);
+      if (await this.limiter.tooManyAttempts(limit.key, limit.maxAttempts)) {
+        throw await this.buildException(request, limit.key, limit.maxAttempts, limit.responseCallback);
       }
     }
 
     for (const limit of limits) {
       if (!limit.afterCallback) {
-        this.limiter.hit(limit.key, limit.decaySeconds);
+        await this.limiter.hit(limit.key, limit.decaySeconds);
       }
     }
 
@@ -691,13 +717,13 @@ export class ThrottleRequests {
 
     for (const limit of limits) {
       if (limit.afterCallback && (await limit.afterCallback(response))) {
-        this.limiter.hit(limit.key, limit.decaySeconds);
+        await this.limiter.hit(limit.key, limit.decaySeconds);
       }
 
       response = this.addHeaders(
         response,
         limit.maxAttempts,
-        this.calculateRemainingAttempts(limit.key, limit.maxAttempts)
+        await this.calculateRemainingAttempts(limit.key, limit.maxAttempts)
       );
     }
 
@@ -743,12 +769,12 @@ export class ThrottleRequests {
     throw new RateLimitError('Unable to generate the request signature. Route unavailable.');
   }
 
-  buildException(request, key, maxAttempts, responseCallback = null) {
-    const retryAfter = this.getTimeUntilNextRetry(key);
+  async buildException(request, key, maxAttempts, responseCallback = null) {
+    const retryAfter = await this.getTimeUntilNextRetry(key);
 
     const headers = this.getHeaders(
       maxAttempts,
-      this.calculateRemainingAttempts(key, maxAttempts, retryAfter),
+      await this.calculateRemainingAttempts(key, maxAttempts, retryAfter),
       retryAfter
     );
 
@@ -779,7 +805,7 @@ export class ThrottleRequests {
       // Symfony HeaderBag::add() calls set($key, $values) with $replace = true
       // (HeaderBag.php), so an existing value is REPLACED — verified against
       // the PHP oracle: two limits produce the second limit's headers only.
-      response.headers.set(name, String(value));
+      setResponseHeader(response, name, String(value));
     }
 
     return response;
@@ -787,7 +813,7 @@ export class ThrottleRequests {
 
   getHeaders(maxAttempts, remainingAttempts, retryAfter = null, response = null) {
     if (response) {
-      const existing = response.headers.get('X-RateLimit-Remaining');
+      const existing = getResponseHeader(response, 'X-RateLimit-Remaining');
       if (existing !== null && phpIntCast(existing) <= phpIntCast(remainingAttempts)) {
         return {};
       }

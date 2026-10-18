@@ -93,4 +93,17 @@ $put('hashing.bcrypt.rounds', $config->get('hashing.bcrypt.rounds'));
 $put('hashing.bcrypt.verify', $config->get('hashing.bcrypt.verify'));
 $put('hashing.bcrypt.limit', $config->get('hashing.bcrypt.limit'));
 
+// ---------- cache (the `database` driver compiled to D1) ----------
+// The compiled rung supports exactly one cache driver: `database`, backed by the
+// D1 binding. build.mjs refuses to compile `throttle` routes unless this resolves
+// to `database` (see the cache audit there).
+$defaultCache = $config->get('cache.default');
+$cacheStore = is_array($defaultCache) ? $defaultCache : $config->get('cache.stores.' . $defaultCache, []);
+$put('cache.default', is_array($defaultCache) ? 'database' : $defaultCache);
+$put('cache.prefix', $config->get('cache.prefix'));
+$put('cache.driver', $cacheStore['driver'] ?? null);
+$put('cache.table', $cacheStore['table'] ?? 'cache');
+$put('cache.lock_table', $cacheStore['lock_table'] ?? 'cache_locks');
+$put('cache.serializable_classes', $config->get('cache.serializable_classes') ?? null);
+
 echo json_encode($dump, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";

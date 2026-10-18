@@ -136,7 +136,7 @@ The escape hatch stays: **ports**.
 | Signed URLs | HMAC in kernel | ✅ | same key derivation | F |
 | Route model binding | Compiled lookup | 🟡 | id-first subset initially | F |
 | Custom middleware | Compiled like controllers | ✅ | | F |
-| Throttle middleware | Counter in D1/KV | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wired in `handleHttp` but needs the D1-backed cache store — build blocks `throttle` routes until then | F |
+| Throttle middleware | Counter in D1/KV | ✅ | numeric `throttle:n[,m]` wired in `handleHttp` over the D1-backed `database` cache store (M18); named `throttle:name` needs its `AppServiceProvider` definition → build fails loud | F |
 | CSRF | Token in session store | ✅ | kernel PreventRequestForgery wired in `handleHttp` + end-to-end oracle parity (M15) | F |
 | Cookie encryption | Laravel Encrypter parity (AES-CBC + HMAC) via WebCrypto | ✅ | EncryptCookies wired in `handleHttp`; round-trip + prefix parity in `cookies.test.mjs` | F |
 
@@ -183,7 +183,7 @@ The escape hatch stays: **ports**.
 | Sessions | D1-backed store + encrypted cookie | ✅ | kernel Store + cookie/D1 handlers, oracle byte-parity (M11); wired in `handleHttp`, payload bytes compared per step (M15) | F |
 | Auth (guard, login/logout, remember) | Kernel + D1 users | ✅ | kernel SessionGuard, EloquentUserProvider, BcryptHasher, `auth`/`guest` middleware oracle-verified (M14); wired in the compiled pipeline + end-to-end parity (M15) | F |
 | Password hashing | bcrypt via bcryptjs (`$2y$` parity) | ✅ | kernel BcryptHasher make/check/needsRehash/verifyConfiguration (M5); free-plan CPU banked (measured) | F |
-| Rate limiting | D1/KV counters | 🟡 | kernel RateLimiter + ThrottleRequests oracle-verified (M12); wired, blocked on the D1 cache store | F |
+| Rate limiting | D1 counters (`cache` table) | ✅ | kernel RateLimiter + ThrottleRequests oracle-verified (M12); runs on the D1 `database` cache store (M18). `increment` is read-then-write — D1 has no interactive transactions | F |
 
 ### F. Platform services
 
@@ -192,7 +192,7 @@ The escape hatch stays: **ports**.
 | Mail | HTTP providers (Resend etc.) via `fetch` | ✅ | no SMTP — no sockets (hard) → HTTP is the padanan | F |
 | Queues / Jobs | Cloudflare Queues (free: 10k ops/day) or D1 queue | 🟡 | | F |
 | Scheduler | Cron Triggers → one dispatcher reads schedule | ✅ | free: 5 triggers/account → dispatcher pattern covers all | F |
-| Cache | KV cache-aside (+ D1 fallback) | 🟡 | eventual consistency trade | F |
+| Cache | D1 `database` store (Laravel parity) + KV cache-aside | ✅/🟡 | `DatabaseCacheStore` mirrors `Illuminate\Cache\DatabaseStore` 13.37, oracle-verified incl. raw rows (M18); KV stays for build-time/simple caching (eventual consistency trade) | F |
 | Storage / filesystem | Uploads → R2; `file_exists`/`public_path` → build-time snapshot | 🟡 | no local FS (hard) → R2 is the padanan | F |
 | HTTP client | `fetch` | ✅ | no raw sockets (hard); 6 concurrent conns → batch/queue | F |
 | Logging | Console + optional external sink via fetch | ✅ | | F |
@@ -304,7 +304,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **M9 complete (2026-10-18):** Zero-touch hardening — scaffold stubs fixed to the controller contract (default export + `{status, headers, body}`) with a `laravel-workers:stub` marker; `build --strict` now fails on unimplemented stubs and on registered ports whose files are missing; `LW_CONFIG` / `LW_PORTS_DIR` move registry + ports outside the repo (set-but-missing fails loud); `registry.json` is optional (defaults + notice); routes defined outside `routes/` are listed as skipped. `tools/ports.mjs` + `kernel/tests/ports.test.mjs` (5 tests) -> npm test **170/170**. E2E: scaffold stub returns 501 with the worker alive, implemented port returns 200 via local D1; external config+ports build; fresh Laravel 13.37 zero-config build PASS. CI gains an e2e job: fresh Laravel -> zero-config strict build -> dist asserts -> `wrangler dev` runtime smoke (`/health` + `/` = 200).
 - **Model relations (2026-10-18):** `kernel/model.mjs` gains `hasMany`/`hasOne`/`belongsTo` (default foreign key = related model snake_case + `_id`), `firstOrCreate`/`updateOrCreate`, `refresh`, `increment`. `kernel/tests/db.test.mjs` +3 subtests -> npm test **73/73**.
 - **Router hardening (2026-10-18):** `kernel/router.mjs` now enforces `domain` rules (incl. `{sub}.example.com` param capture, port stripping), supports catch-all `{param*}`, and honours `X-HTTP-Method-Override` / `methodOverride` (POST only) with `ctx.request.method` reflecting the effective verb. `kernel/tests/router.test.mjs` extended (wildcard, domain, override).
-- **Route metadata (2026-10-18):** `build.mjs` no longer hardcodes `name: null, domain: null`; it now carries `name`/`domain` per route (from `php artisan route:list --json`) into `routeTable` and emits a `routeNames` map in `dist/src/routes.generated.mjs`. `src/worker.mjs` passes `host` so domain rules actually match at request time.
+- **Route metadata (2026-10-18; middleware added M18):** `build.mjs` no longer hardcodes `name: null, domain: null`; it now carries `name`/`domain`/**`middleware`** per route (from `php artisan route:list --json`) into `routeTable` and emits a `routeNames` map in `dist/src/routes.generated.mjs`. (Pre-M18 the emitted entry dropped `middleware`, so `kernel/http.mjs` treated every compiled route as not-in-the-`web`-group and took the bare, session-less path; the audit that was supposed to catch bad route middleware was dead for the same reason.) `src/worker.mjs` passes `host` so domain rules actually match at request time.
 - **Query builder widening (2026-10-18):** `kernel/db.mjs` gains Laravel-style `where(fn)`/`orWhere(fn)` nested grouping, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime` (SQLite `date()`/`strftime()`/`time()`), `sum`/`avg`/`min`/`max`, `upsert` (`ON CONFLICT … DO UPDATE|NOTHING`), `insertGetId`, `truncate`, `increment`/`decrement`, `updateOrInsert`, `chunk`, and `implode` now folds assoc values. `kernel/tests/db.test.mjs` +7 subtests -> npm test **80/80**.
 - **Static-assets routing (2026-10-18):** new `tools/routes-json.mjs` (`routeToPatterns`, `buildRoutesJson`) emits `dist/public/_routes.json` so only dynamic (view/port) routes invoke the Worker and `/build/*` is excluded; `build.mjs` writes it after the route table. New `kernel/tests/routes-json.test.mjs` (3 subtests) -> npm test **87/87**.
 - **Validator wildcards (2026-10-18):** `kernel/validator.mjs` now resolves nested dot paths (`user.name`) and expands wildcard keys (`items.*.name`) into concrete paths, with missing leaves still validated (`items.2.name`), `validated()` re-nesting dotted fields, and conditional/`same`/`gt`-style rules reading nested "other" fields. +6 subtests -> npm test **93/93**.

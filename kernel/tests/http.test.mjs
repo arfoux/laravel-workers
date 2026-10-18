@@ -38,6 +38,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCookieEncryptor } from '../cookies.mjs';
 import { handleHttp, parsePhpQuery } from '../http.mjs';
+import { createDatabaseCache } from '../cache.mjs';
 import { applyAuthenticatable } from '../auth.mjs';
 import { Model } from '../model.mjs';
 import { normalizeTable } from '../router.mjs';
@@ -727,6 +728,51 @@ test('fail loud: throttle middleware without a cache store', async () => {
     }),
     /cache store/
   );
+});
+
+test('throttle over the D1 cache store: first N allowed, then 429', async (t) => {
+  if (noSqlite) return t.skip(noSqlite);
+  const { sqlite, db } = makeDb();
+  sqlite.exec(`
+    CREATE TABLE cache ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "expiration" INTEGER NOT NULL);
+    CREATE TABLE cache_locks ("key" TEXT PRIMARY KEY, "owner" TEXT NOT NULL, "expiration" INTEGER NOT NULL);
+  `);
+  const cache = createDatabaseCache({
+    db,
+    config: { 'cache.table': 'cache', 'cache.prefix': 'laravel-cache-', 'cache.lock_table': 'cache_locks' },
+  });
+  const table = normalizeTable([
+    { uri: '/__probe/state', methods: ['GET', 'HEAD'], middleware: ['web', 'throttle:2,1'] },
+  ]);
+  const call = () =>
+    handleHttp(
+      {
+        method: 'GET',
+        url: BASE + '/__probe/state',
+        headers: { host: 'localhost', accept: 'application/json' },
+        body: '',
+      },
+      {
+        table,
+        handlers: { 'GET /__probe/state': handlers['GET /__probe/state'] },
+        config: baseConfig(),
+        env: { DB: db },
+        db,
+        cache,
+        models: { LWOracleUser },
+        clock: () => FREEZE_S,
+        randomString: (n) => 'A'.repeat(n),
+        strRandom: (n) => 'A'.repeat(n),
+        clientIp: CLIENT_IP,
+      }
+    );
+
+  const r1 = await call();
+  const r2 = await call();
+  const r3 = await call();
+  assert.equal(r1.status, 200, 'hit #1 within throttle:2,1');
+  assert.equal(r2.status, 200, 'hit #2 within throttle:2,1');
+  assert.equal(r3.status, 429, 'hit #3 exceeds throttle:2,1');
 });
 
 test('fail loud: session.encrypt=true and unknown drivers', async () => {

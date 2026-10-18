@@ -116,17 +116,24 @@ for (const r of appRoutes) {
 }
 const otherMethods = (route) =>
   [...(methodsFor.get(route) || new Set())].filter((m) => m !== 'GET' && m !== 'HEAD');
-// first non-null name/domain across the route's methods (they share a uri in the table)
+// first non-null name/domain/middleware across the route's methods (they share a
+// uri in the table; middleware is preferred from GET like middlewareForRoute).
+// The emitted `middleware` is what kernel/http.mjs uses to decide whether the
+// `web` group (EncryptCookies → StartSession → CSRF) and route middleware
+// (auth/guest/throttle) run — omitting it silently downgraded every compiled
+// route to the bare, session-less path.
 const metaForRoute = (route) => {
   let name = null;
   let domain = null;
+  let middleware = null;
   for (const m of methodsFor.get(route) || []) {
     const meta = metaFor.get(m + ' ' + route);
     if (!meta) continue;
     if (name == null) name = meta.name;
     if (domain == null) domain = meta.domain;
+    if (middleware == null && meta.middleware) middleware = meta.middleware;
   }
-  return { name, domain };
+  return { name, domain, middleware };
 };
 // route:list action for a route (prefer GET — the only method controller
 // transpilation supports today).
@@ -423,26 +430,29 @@ const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
     return others.length === 1 && (others[0] === 'GET' || others[0] === 'POST');
   };
   // Routes on the default web/api groups are transpiled. auth/guest are honoured
-  // by kernel/http.mjs, so they are benign at transpile time too. Any other
-  // middleware (throttle, verified, can:, custom) would be bypassed at the edge,
-  // so those routes stay "needs a port" instead of silently opening up.
-  const benignMiddleware = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'guest']);
+  // by kernel/http.mjs, so they are benign at transpile time too. Numeric
+  // `throttle:n[,m]` is honoured by kernel/http.mjs on top of the D1-backed
+  // `database` cache store (see the cache audit in 5a). Anything else
+  // (throttle:name, verified, can:, custom) would be bypassed at the edge, so
+  // those routes stay "needs a port" instead of silently opening up.
+  const namedMiddleware = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'guest']);
+  const isHonouredMiddleware = (m) => {
+    const str = String(m);
+    const name = str.split(':')[0];
+    if (namedMiddleware.has(name)) return true;
+    if (name !== 'throttle') return false;
+    const spec = str.slice('throttle'.length).replace(/^:/, '');
+    return spec === '' || /^\d+(,\d+)?$/.test(spec); // numeric spec only
+  };
   const targets = [];
   for (const { route } of needsPort) {
     if (!methodsOk(route)) continue;
     const action = actionForRoute(route);
     if (!action || action === 'Closure') continue;
     const mwList = middlewareForRoute(route) || [];
-    const blocking = mwList.filter((m) => !benignMiddleware.has(String(m).split(':')[0]));
+    const blocking = mwList.filter((m) => !isHonouredMiddleware(m));
     if (blocking.length) {
-      const throttled = mwList.some((m) => String(m).split(':')[0] === 'throttle');
-      console.log(
-        `  skip controller ${route}: middleware [${blocking.join(', ')}] not transpiled — ${
-          throttled
-            ? 'throttle needs the D1 rate-limit store (not wired yet) or a port'
-            : 'write a port'
-        }`
-      );
+      console.log(`  skip controller ${route}: middleware [${blocking.join(', ')}] not transpiled — write a port`);
       continue;
     }
     const at = action.lastIndexOf('@');
@@ -794,18 +804,39 @@ const routeTable = routes.map((route) => {
 // kernel/http.mjs honours exactly this set. Anything else on a view / controller /
 // snapshot route would be bypassed at the edge — fail the build instead.
 {
+  const isNumericThrottle = (m) => {
+    const str = String(m);
+    if (str.split(':')[0] !== 'throttle') return false;
+    const spec = str.slice('throttle'.length).replace(/^:/, '');
+    return spec === '' || /^\d+(,\d+)?$/.test(spec);
+  };
   const RUNTIME_MIDDLEWARE = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'guest']);
   const offenders = [];
+  let throttleRoutes = 0;
   for (const entry of routeTable) {
     if (entry.kind !== 'view' && entry.kind !== 'controller' && entry.kind !== 'snapshot') continue;
-    const bad = (entry.middleware || []).filter((m) => !RUNTIME_MIDDLEWARE.has(String(m).split(':')[0]));
+    const bad = (entry.middleware || []).filter(
+      (m) => !RUNTIME_MIDDLEWARE.has(String(m).split(':')[0]) && !isNumericThrottle(m)
+    );
     if (bad.length) offenders.push(`${entry.uri} [${bad.join(', ')}] (${entry.kind})`);
+    if ((entry.middleware || []).some(isNumericThrottle)) throttleRoutes++;
   }
   if (offenders.length) {
     fail(
       'route middleware the compiled rung does not honour:\n  - ' +
         offenders.join('\n  - ') +
-        '\n  add a port for these routes, or drop the middleware'
+        '\n  add a port for these routes, or drop the middleware.\n' +
+        '  (named rate limiters — throttle:name — need their AppServiceProvider\n' +
+        '  definition; the build only honours numeric throttle:n,m)'
+    );
+  }
+  // `throttle` reads/writes the D1-backed `database` cache store. Without it,
+  // kernel/http.mjs throws at request time — so refuse to compile such a route.
+  if (throttleRoutes && runtimeConfig['cache.driver'] !== 'database') {
+    fail(
+      `throttle middleware needs the D1-backed 'database' cache store, but cache.driver is ` +
+        `'${runtimeConfig['cache.driver']}'.\n  Set CACHE_STORE=database (with the cache + cache_locks ` +
+        `tables migrated) in the app, or add a port for the throttled route(s).`
     );
   }
 }

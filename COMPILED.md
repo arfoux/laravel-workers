@@ -100,7 +100,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 | Signed URLs | `signedRoute`, `temporarySignedRoute`, `hasValidSignature` | HMAC kernel done |
 | Cookies | EncryptCookies parity, queued cookies, cookie jar | M5 parity done |
 | **Sessions** | cookie driver (stateless encrypted payload) + D1 driver; flash rotation (`_flash.new/old`), `old()` input, error bag (`$errors`), `regenerate`/`invalidate`/`migrate`, lifetime/expiry | **byte-parity goal for the cookie payload** (encrypter + serialize subset in place) |
-| Rate limiting | `throttle` middleware full; `RateLimiter::for()` compiled | D1 store (core), atomic single-statement updates |
+| Rate limiting | `throttle` middleware full; `RateLimiter::for()` compiled | D1 `database` store (M18); `increment` is read-then-write (D1 has no interactive transactions) — a race under concurrency, flagged not atomic |
 | **Auth** | session guard full API (attempt/login/logout/once/validate/user/id/check/guest), remember-me recaller cookie + rotation, Eloquent + database providers, auth events, `auth`/`guest`/`can`/`password.confirm` middleware, `Auth::viaRemember` | compiles on top of Sessions above |
 | Auth flows (Fortify-shaped) | login/register/logout/forgot/reset/verify as **compiled controllers**: validate → attempt → regenerate → intended; reset tokens in D1; mail delivery flagged *adapter* (flow compiles now) | throttling via Rate limiter |
 | Sanctum | personal access tokens (D1), abilities + middleware; SPA cookie mode last | |
@@ -146,7 +146,9 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   WASM-compile restriction) — measured cost6=22 / cost8=43 / cost10=93–104 / cost12=679 ms CPU;
   cost tuned per route; `$2y$`/`$2b$` parity verified both ways vs PHP 8.3; native PBKDF2 fallback
   pair (WebCrypto caps iterations at 100k; 600k rejected); argon2 → fail loud / port
-- Cache / Queue / Mail / Filesystem / Broadcast / Notifications / Scheduler: **call sites and
+- Cache: the `database` store compiles to D1 (`DatabaseCacheStore`, M18 — oracle-verified incl.
+  the raw `cache` rows) and backs `throttle`; any other driver fails the build for `throttle`
+  routes. Queue / Mail / Filesystem / Broadcast / Notifications / Scheduler: **call sites and
   class code compile** (jobs, mailables, notifications are classes) — stores/delivery are
   adapter-pending, flagged in `report`, never a silent no-op
 - HTTP client (`Http::get`): fetch mapping, retries/timeouts; streaming declares limits
@@ -182,8 +184,11 @@ Everything else in Laravel's web surface: **compilable** — this document is th
    PreventRequestForgery → Throttle → route`, plus `auth` / `guest` / `throttle:n,m` route
    middleware), proven by an 11-step oracle scenario (`tools/php-http-pipeline-oracle.php`)
    that compares status, headers, Set-Cookie attributes, bodies and the raw session payload
-   bytes per step. Still open: `throttle` needs the D1-backed cache store (build blocks those
-   routes), 419/429/500 HTML bodies are status-only stubs, and multi-verb routes still need a port.
+   bytes per step. `throttle:n,m` now runs on the D1-backed `database` cache store (M18
+   `DatabaseCacheStore`, mirrors `Illuminate\Cache\DatabaseStore` 13.37 and is oracle-verified
+   incl. the raw `cache` rows); named `throttle:name` needs its `AppServiceProvider` definition
+   and fails the build loud, as does `cache.driver !== 'database'`. Still open: 419/429/500 HTML
+   bodies are status-only stubs, and multi-verb routes still need a port.
    `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `request()`
    and `Request $request` injection in compiled controllers shipped in M16; single-method `POST`
    actions joined the compiled set in M17 (handler registered under `METHOD uri`)*
