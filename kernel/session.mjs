@@ -323,7 +323,7 @@ export function isValidSessionId(id) {
 // ---------------------------------------------------------------------------
 
 export class PhpSessionStore {
-  constructor({ name = 'laravel_session', handler, id = null, serialization = 'php', clock = null } = {}) {
+  constructor({ name = 'laravel_session', handler, id = null, serialization = 'php', clock = null, randomString = null } = {}) {
     if (!handler) throw new SessionError('PhpSessionStore requires a session handler');
     if (serialization !== 'php' && serialization !== 'json') {
       throw new SessionError(`Unsupported session serialization "${serialization}" (expected "php" or "json")`);
@@ -332,6 +332,7 @@ export class PhpSessionStore {
     this.handler = handler;
     this.serialization = serialization;
     this.clock = clock || (() => Math.floor(Date.now() / 1000));
+    this.randomString = randomString || ((length) => phpRandomString(length));
     this.attributes = {};
     this.started = false;
     this.setId(id);
@@ -569,7 +570,7 @@ export class PhpSessionStore {
   }
 
   generateSessionId() {
-    return phpRandomString(SESSION_ID_LENGTH);
+    return this.randomString(SESSION_ID_LENGTH);
   }
 
   token() {
@@ -577,7 +578,7 @@ export class PhpSessionStore {
   }
 
   regenerateToken() {
-    this.setInternal('_token', phpRandomString(SESSION_ID_LENGTH));
+    this.setInternal('_token', this.randomString(SESSION_ID_LENGTH));
   }
 
   // ---- migration ---------------------------------------------------------
@@ -655,6 +656,9 @@ export class PhpSessionStore {
 // CookieJar (Illuminate\Cookie\CookieJar subset used by the session drivers).
 // ---------------------------------------------------------------------------
 
+// Illuminate\Support\value(): call closures, pass everything else through.
+const valueOf = (value) => (typeof value === 'function' ? value() : value);
+
 export class CookieJar {
   constructor({ path = '/', domain = null, secure = null, sameSite = 'lax', clock = null } = {}) {
     this.defaultPath = path;
@@ -662,7 +666,7 @@ export class CookieJar {
     this.defaultSecure = secure;
     this.defaultSameSite = sameSite;
     this.clock = clock || (() => Math.floor(Date.now() / 1000));
-    this.queued = new Map(); // name -> Map(path -> cookie)
+    this._queued = new Map(); // name -> Map(path -> cookie)
   }
 
   make(name, value, minutes = 0, path = null, domain = null, secure = null, httpOnly = true, raw = false, sameSite = null) {
@@ -683,21 +687,55 @@ export class CookieJar {
       first !== null && typeof first === 'object' && typeof first.name === 'string' && 'expires' in first
         ? first
         : this.make(first, ...rest);
-    if (!this.queued.has(cookie.name)) this.queued.set(cookie.name, new Map());
-    this.queued.get(cookie.name).set(cookie.path ?? '/', cookie);
+    if (!this._queued.has(cookie.name)) this._queued.set(cookie.name, new Map());
+    this._queued.get(cookie.name).set(cookie.path ?? '/', cookie);
     return cookie;
+  }
+
+  // Illuminate\Cookie\CookieJar::hasQueued($key, $path = null).
+  hasQueued(name, path = null) {
+    return this.queued(name, null, path) !== null;
+  }
+
+  // Illuminate\Cookie\CookieJar::queued($key, $default = null, $path = null):
+  // with a path returns that path's cookie, without a path the last queued one.
+  queued(name, defaultValue = null, path = null) {
+    const entry = this._queued.get(name);
+    if (entry === undefined) return valueOf(defaultValue);
+    if (path === null) {
+      const values = [...entry.values()];
+      return values.length ? values[values.length - 1] : valueOf(defaultValue);
+    }
+    return entry.has(path) ? entry.get(path) : valueOf(defaultValue);
+  }
+
+  // Illuminate\Cookie\CookieJar::unqueue($name, $path = null).
+  unqueue(name, path = null) {
+    if (path === null) {
+      this._queued.delete(name);
+      return;
+    }
+    const paths = this._queued.get(name);
+    if (!paths) return;
+    paths.delete(path);
+    if (paths.size === 0) this._queued.delete(name);
+  }
+
+  getQueuedCookies() {
+    return this.list();
   }
 
   list() {
     const out = [];
-    for (const paths of this.queued.values()) {
+    for (const paths of this._queued.values()) {
       for (const cookie of paths.values()) out.push(cookie);
     }
     return out;
   }
 
   flushQueuedCookies() {
-    this.queued = new Map();
+    this._queued = new Map();
+    return this;
   }
 }
 

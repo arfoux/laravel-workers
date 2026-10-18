@@ -46,6 +46,7 @@ export class Model {
   constructor(attributes = {}) {
     this.attributes = { ...attributes };
     this._relations = {};
+    this._dirty = new Set();
     this.exists = this.attributes[this.constructor.primaryKey] != null;
   }
 
@@ -70,6 +71,7 @@ export class Model {
       }
     }
     this.attributes[key] = next;
+    this._dirty.add(key);
     return this;
   }
 
@@ -78,6 +80,12 @@ export class Model {
     for (const key of Object.keys(attributes || {})) {
       if (!fillable.length || fillable.includes(key)) this.set(key, attributes[key]);
     }
+    return this;
+  }
+
+  // Eloquent's forceFill: mass-assign ignoring the fillable guard.
+  forceFill(attributes = {}) {
+    for (const key of Object.keys(attributes || {})) this.set(key, attributes[key]);
     return this;
   }
 
@@ -216,11 +224,21 @@ export class Model {
     const ctor = this.constructor;
     const now = new Date().toISOString();
     const data = {};
-    const fillable = ctor.fillable.length ? ctor.fillable : Object.keys(this.attributes);
-    for (const key of fillable) {
+    // Eloquent persists the model's dirty attribute set. The compiled rung
+    // keeps its fillable-when-declared baseline for unmodified models and
+    // additionally persists every attribute touched through set()/forceFill()
+    // (e.g. remember_token written by the auth guard, which is not fillable).
+    const columns = ctor.fillable.length ? [...ctor.fillable] : Object.keys(this.attributes);
+    for (const key of this._dirty) {
+      if (!columns.includes(key)) columns.push(key);
+    }
+    for (const key of columns) {
       if (Object.prototype.hasOwnProperty.call(this.attributes, key)) data[key] = this._storeValue(key);
     }
-    if (ctor.timestamps) {
+    // Instance-level `timestamps = false` (Eloquent `$user->timestamps = false`)
+    // suppresses updated_at/created_at writes for this save only.
+    const useTimestamps = this.timestamps === false ? false : ctor.timestamps;
+    if (useTimestamps) {
       if (!this.exists) data.created_at = data.created_at ?? now;
       data.updated_at = now;
       this.attributes.created_at = data.created_at ?? this.attributes.created_at;
@@ -237,6 +255,7 @@ export class Model {
       if (lastInsertRowid != null) this.attributes[ctor.primaryKey] = lastInsertRowid;
       this.exists = true;
     }
+    this._dirty.clear();
     return this;
   }
 
