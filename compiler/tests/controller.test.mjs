@@ -266,21 +266,37 @@ test('emit: an aliased service type named Request is not injected', () => {
   assert.match(res.errors[0].message, /unsupported type/);
 });
 
-test('emit: $request->validate() fails loud (validation at the edge is not wired yet)', () => {
+test('emit: $request->validate() compiles to an awaited rt request.validate() call', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
     'use Illuminate\\Http\\Request;\n' +
     'class C {\n' +
     '    public function store(Request $request)\n' +
     '    {\n' +
-    "        $request->validate(['email' => 'required']);\n" +
+    "        $validated = $request->validate(['email' => 'required|email']);\n" +
     "        return redirect('/');\n" +
     '    }\n' +
     '}\n';
   const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
-  assert.equal(res.code, null);
-  assert.equal(res.errors[0].code, 'LW002');
-  assert.match(res.errors[0].message, /\$request->validate/);
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /v_validated = \(await v_request\.validate\(/);
+  assert.match(res.code, /"email"/);
+});
+
+test('emit: $request->validateWithBag() compiles to request.validateWithBag()', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    "        $request->validateWithBag('login', ['email' => 'required']);\n" +
+    "        return redirect('/');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /v_request\.validateWithBag\(/);
 });
 
 test('emit: session()/old()/csrf_token()/csrf_field()/auth() map to the rt HTTP helpers', () => {

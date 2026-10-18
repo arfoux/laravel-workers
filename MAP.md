@@ -111,7 +111,7 @@ Examples: eventual consistency (KV) · async-by-queue instead of synchronous · 
 | S5 | Assets: snapshots + `public/` copy | build | `build.mjs` |
 | S6 | Deploy | Cloudflare | `wrangler deploy` after build |
 
-The **single transpiler** (PHP-subset→JS) serves the compiled Blade views *and* compiled controllers today, plus generated model metadata. Routes outside the compiled subset (POST actions, relations, validation, custom middleware) still ship as hand-written `ports/*.mjs`.
+The **single transpiler** (PHP-subset→JS) serves the compiled Blade views *and* compiled controllers today, plus generated model metadata. Routes outside the compiled subset (relations, pagination, multi-verb actions, custom middleware) still ship as hand-written `ports/*.mjs`.
 
 **Build invocation:** `build.mjs` is **cwd-based** when installed as `laravel-workers` npm package — `registry.json` (or `laravel-workers.json`) in the Laravel app root (npm mode: `appDir !== pkgDir`, `dist/` in app); legacy `edge/registry.json` fallback when developing from checkout.
 
@@ -157,7 +157,7 @@ The escape hatch stays: **ports**.
 | Controllers / closures | PHP-subset → JS | ✅ | single-verb GET/HEAD/POST controllers compiled: scalar params + `Request $request` injection, model chains + views, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`; fail loud elsewhere | F |
 | Service classes / helpers | PHP-subset → JS | ✅ | | F |
 | Form Requests | Compile rules + authorize | 🟡 | | F |
-| Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | | F |
+| Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | `$request->validate()`/`validateWithBag()` compile to an awaited kernel-validator call; a failure renders like Laravel — 302 back (Referer → previous URL → `/`) with flashed `errors` + `_old_input` (minus `dontFlash`), or 422 JSON for `expectsJson`. json session serialization only (the ViewErrorBag php-serialization path fails loud) (M19). FormRequests still a port | F |
 | Events / Listeners | Synchronous compiled | ✅ | queued listeners → queue | F |
 | Exceptions / error pages | Kernel map → static error pages | 🟡 | renderer subset | F |
 
@@ -356,7 +356,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | single-verb GET/HEAD/POST controllers compiled (M10/M17); multi-verb/auth/session-gated routes → ports |
+| controllers | 🟡 | single-verb GET/HEAD/POST controllers compiled (M10/M17); `$request->validate()` + error/old-input flash compiled (M19); multi-verb/paginated routes → ports |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |
@@ -438,7 +438,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | upgrade | ⛔ | meta; upgrade = recompile + parity |
 | urls | ✅ | url/route/asset; signed URLs |
 | valet | ⛔ | local env |
-| validation | 🟡 | 60+ rules; unique/exists via D1 |
+| validation | 🟡 | 60+ rules; `$request->validate()` → redirect-back / 422 JSON (M19); unique/exists via D1; FormRequests still a port |
 | verification | 🟡 | signed URLs + mail |
 | views | ✅ | compiled view handlers (echo/if/concat subset) |
 | vite | ✅ | manifest shims; proven today |

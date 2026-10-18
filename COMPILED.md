@@ -108,13 +108,19 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 
 ## 3. Validation
 
-- `Request::validate`, `Validator::make`, full `FormRequest` lifecycle: authorize, rules,
-  messages, attributes, `prepareForValidation`, `passedValidation`, `after`/`withValidator`
-  closures (compiled via 1.2)
+- ✅ `Request::validate` / `validateWithBag` (M19): compiled to an awaited kernel-validator
+  call (`rt.request().validate(...)`, D1 passed for `unique`/`exists`). Failure → 302 back
+  (Referer → flashed previous URL → `/`) with flashed `errors` + `_old_input` (minus
+  `Handler::$dontFlash`), or 422 JSON for `expectsJson`; json session serialization only
+  (the `ViewErrorBag` `serialize()` path fails loud).
+- `Validator::make` + custom messages are accepted by the runtime entrypoint; the
+  display-name/`attributes` path (`getDisplayableAttribute`, `_`→space) is not wired yet.
+- `FormRequest` lifecycle (authorize, rules, messages, attributes, `prepareForValidation`,
+  `passedValidation`, `after`/`withValidator` closures) — not compiled yet; write a port.
 - Rule-string matrix + implicit rules; Rule objects compiled via 1.2; nested + wildcards
   (kernel partial already)
-- Failure flow parity: redirect back + errors bag + old input (needs 2. Sessions);
-  API path: 422 JSON shape parity
+- Failure flow parity: redirect back + errors bag + old input ✅ (M19); API path: 422 JSON
+  shape parity ✅ (M19)
 
 ## 4. Data
 
@@ -192,7 +198,11 @@ Everything else in Laravel's web surface: **compilable** — this document is th
    `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `request()`
    and `Request $request` injection in compiled controllers shipped in M16; single-method `POST`
    actions joined the compiled set in M17 (handler registered under `METHOD uri`)*
-4. **Validation flow (3)** — rides on sessions
+4. **Validation flow (3)** — rides on sessions *(shipped M19: `$request->validate()` /
+   `validateWithBag()` compile to an awaited kernel-validator call; failure renders the
+   Handler::invalid redirect-back with flashed `errors` + `_old_input` (minus `dontFlash`)
+   or the 422 JSON shape. json session serialization only. FormRequests + wildcard/prepare
+   lifecycle still a port)*
 5. **Eloquent relations + pagination (4)** — kernel is already most of the way
 6. **Runtime completeness (1.4)** — continuous, corpus-driven, never "done"
 7. **Auth flows + Fortify-shaped controllers (2)** — just compiled controllers once 3/4/5 exist

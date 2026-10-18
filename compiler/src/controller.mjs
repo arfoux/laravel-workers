@@ -391,6 +391,7 @@ export function emitController(source, methodName, meta = {}) {
   if (emitted.code) lines.push(emitted.code);
   lines.push('    throw new Error(' + JSON.stringify('controller ' + info.fqcn + '@' + methodName + ' returned no response') + ');');
   lines.push('  } catch (e) {');
+  lines.push('    if (e && e.lwKernel) throw e;');
   lines.push('    if (e && e.status) return rt.errorResponse(e);');
   lines.push('    throw e;');
   lines.push('  }');

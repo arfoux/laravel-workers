@@ -66,6 +66,12 @@ import {
   acceptsAnyContentType,
 } from './auth.mjs';
 import { phpJsonDecode } from './php-json.mjs';
+import {
+  ValidationException,
+  installValidation,
+  sessionErrorBag,
+  DEFAULT_DONT_FLASH,
+} from './validation.mjs';
 
 export class HttpError extends Error {
   constructor(message, status = 500) {
@@ -813,6 +819,46 @@ async function renderException(error, request, ctx) {
       headers: { location: absoluteUrl(request.schemeAndHttpHost(), uri) },
     });
   }
+  if (error instanceof ValidationException) {
+    // Illuminate\Foundation\Exceptions\Handler::invalidJson() for expectsJson,
+    // invalid() (redirect back + flash) otherwise.
+    if (requestExpectsJson(request)) {
+      return new HttpResponse({
+        status: error.status,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: error.message, errors: error.errors() }),
+      });
+    }
+    // json sessions store the bag via Store::prepareErrorBagForSerialization();
+    // the php-serialization path serializes a ViewErrorBag object (not ported).
+    if (String(ctx.config?.['session.serialization'] ?? 'json') !== 'json') {
+      throw new HttpError(
+        'validation redirects need session.serialization=json (the ViewErrorBag php-serialization path is not ported).',
+        500
+      );
+    }
+    // url()->previous(): the Referer (through UrlGenerator::to()) else the
+    // flashed previous URL else the request root.
+    const referer = request.header('referer');
+    const previous = referer
+      ? absoluteUrl(request.schemeAndHttpHost(), referer)
+      : ctx.store.previousUrl();
+    const location =
+      error.redirectTo != null
+        ? absoluteUrl(request.schemeAndHttpHost(), error.redirectTo)
+        : previous ?? absoluteUrl(request.schemeAndHttpHost(), '/');
+
+    // RedirectResponse::withInput() — flash everything except Handler::$dontFlash.
+    const input = request.all();
+    for (const key of DEFAULT_DONT_FLASH) delete input[key];
+    ctx.store.flashInput(input);
+
+    // RedirectResponse::withErrors($errors, $request->input('_error_bag', $bag)).
+    const bag = request.input('_error_bag', error.errorBag);
+    ctx.store.flash('errors', sessionErrorBag(bag, error.errors()));
+
+    return new HttpResponse({ status: 302, headers: { location } });
+  }
   if (error instanceof TokenMismatchError) {
     // Laravel renders 419 through the exception handler: JSON for expectsJson
     // (`{"message":"CSRF token mismatch."}`), the app's errors/419 view otherwise.
@@ -920,6 +966,9 @@ export async function handleHttp(raw, options = {}) {
 
   const routeRegistry = makeRouteRegistry(table);
   const request = buildRequest(raw, { clientIp: options.clientIp });
+  // $request->validate() / validateWithBag() — compiled controllers call these
+  // through rt.request(); the rule engine gets the D1 binding for unique/exists.
+  installValidation(request, { db });
 
   const matchReq = {
     method: request.realMethod(),
@@ -1033,6 +1082,7 @@ export async function handleHttp(raw, options = {}) {
   const ctx = {
     auth,
     store,
+    config,
     routeRegistry,
     redirectFactory,
     limiterFactory: limiterFor,

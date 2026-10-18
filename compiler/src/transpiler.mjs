@@ -268,7 +268,7 @@ const REQUEST_CALL = new Set([
 ]);
 const REQUEST_ASYNC = new Set(['user']);
 const REQUEST_DENY = new Set([
-  'validate', 'validateWithBag', 'file', 'files', 'allFiles', 'hasFile', 'hasValidFile', 'fileIsValid',
+  'file', 'files', 'allFiles', 'hasFile', 'hasValidFile', 'fileIsValid',
 ]);
 
 function txRequestCall(node, args) {
@@ -284,10 +284,17 @@ function txRequestCall(node, args) {
   if (REQUEST_DENY.has(meth)) {
     throw mkErr(
       'LW002',
-      '$request->' + meth + '() is not supported by the compiled rung yet (validation/files need D1 + a port) — ' + PORT_HINT,
+      '$request->' + meth + '() (uploaded files) is not supported by the compiled rung yet — ' + PORT_HINT,
       node.loc,
       PORT_HINT
     );
+  }
+  // $request->validate($rules, $messages?, $attributes?) — runs kernel/validator
+  // over the request input; a failure throws ValidationException, which the HTTP
+  // kernel renders as redirect-back + flashed errors/old input (or 422 JSON).
+  if (meth === 'validate' || meth === 'validateWithBag') {
+    const expr = vname(inner.name) + '.' + meth + '(' + args + ')';
+    return txAwait(expr, node, '$request->' + meth + '()');
   }
   if (!REQUEST_CALL.has(meth)) {
     throw mkErr(
