@@ -351,9 +351,9 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Log::info()` | ✅ compiles | The platform log (the Workers console) is the padanan for the app log file. | M33 |
 | `new RuntimeException()` | ✅ compiles | The **built-in** exceptions only; the class name + the message are kept, so the 500 matches. | M34 |
 | `throw_if()` | ✅ compiles | Throws the given error when the condition says so. | M34 |
-| `redirect()->with()` | ⛔ fails loud (`LW002`) | Flashes into the session for the next request; the proof is the session payload + the Location. | M36 |
-| `redirect()->withInput()` | ⛔ fails loud (`LW002`) | Flashes `_old_input` (everything except the `dontFlash` fields). | M36 |
-| `redirect()->withErrors()` | ⛔ fails loud (`LW002`) | Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow already writes it). | M36 |
+| `redirect()->with()` | ✅ compiles | Flashes into the session for the next request; the proof is the session payload + the Location. | M36 |
+| `redirect()->withInput()` | ✅ compiles | Flashes `_old_input` (everything except the `dontFlash` fields). | M36 |
+| `redirect()->withErrors()` | ✅ compiles | Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow writes the same shape). | M36 |
 | `redirect()->away()` | ⛔ fails loud (`LW002`) | An absolute external URL (the compiled redirect only does local ones). | M37 |
 | `back()` | ⛔ fails loud (`LW001`) | The Referer, or the session's `url.previous`, or `/`. | M37 |
 | `Str::slug()` | ⛔ fails loud (`LW003`) | A family (slug/limit/upper/lower/head/studly/...). Each one needs its PHP-parity rule. | M37 |
@@ -376,13 +376,13 @@ or it **fails the build** - there is no third state (no silent degradation).
 | File upload (`$request->file()`) | — documented (build level) | Uploads need R2 (multipart parsing at the edge). | M39 |
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M39 |
 
-**31 constructs: 7 compile, 18 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**31 constructs: 10 compile, 15 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
 ### The plan (batches, in order)
 
-- **M36 - the flash.** `redirect()->with()`, `->withInput()`, `->withErrors()`. The
+- **M36 - the flash (done).** `redirect()->with()`, `->withInput()`, `->withErrors()`. The
   padanan is the session: the flash lives there for the next request. The proof is the
   session payload + the `Location` header, byte-wise against the real app. Effort:
   small (the kernel already writes the error bag for the validation flow). Risk: low.

@@ -1,5 +1,5 @@
 // compiler/runtime/rt-from-context.mjs — Runtime helpers (context → rt)
-import { validationExceptionWithMessages } from '../../kernel/validation.mjs';
+import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } from '../../kernel/validation.mjs';
 import * as hashMod from '../../kernel/hash.mjs';
 export function buildRt(context, opts = {}) {
   const strict = !!(opts && opts.strict);
@@ -1017,11 +1017,55 @@ export function buildRt(context, opts = {}) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(value == null ? null : value),
   });
-  rt.redirect = (location, status) => ({
-    status: Number(status) || 302,
-    headers: { location: String(location == null ? '' : location) },
-    body: '',
-  });
+  // The redirect, with Laravel's flash modifiers. The flash lives in the
+  // session (it is read by the *next* request), exactly like Laravel's
+  // RedirectResponse::with()/withInput()/withErrors().
+  rt.redirect = (location, status) => {
+    const res = {
+      status: Number(status) || 302,
+      headers: { location: String(location == null ? '' : location) },
+      body: '',
+    };
+    res.with = (key, value) => {
+      const session = liveSession;
+      if (session) {
+        if (key !== null && typeof key === 'object' && !Array.isArray(key)) {
+          for (const [k, v] of Object.entries(key)) session.flash(k, v);
+        } else {
+          session.flash(key, value === undefined ? true : value);
+        }
+      }
+      return res;
+    };
+    res.withInput = (input) => {
+      const session = liveSession;
+      if (session) {
+        const source =
+          input !== undefined && input !== null
+            ? input
+            : liveRequest && typeof liveRequest.all === 'function'
+              ? liveRequest.all()
+              : {};
+        const clean = Object.assign({}, source);
+        for (const key of DEFAULT_DONT_FLASH) delete clean[key];
+        if (typeof session.flashInput === 'function') session.flashInput(clean);
+        else session.flash('_old_input', clean);
+      }
+      return res;
+    };
+    res.withErrors = (errors) => {
+      const session = liveSession;
+      if (session) {
+        const bag =
+          liveRequest && typeof liveRequest.input === 'function'
+            ? liveRequest.input('_error_bag', 'default')
+            : 'default';
+        session.flash('errors', sessionErrorBag(bag, errors || {}));
+      }
+      return res;
+    };
+    return res;
+  };
 
   // rt.param: route parameter → PHP method argument coercion (Laravel matches by position;
   // controllers bind after checking the route segment name).

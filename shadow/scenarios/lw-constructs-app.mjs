@@ -155,6 +155,22 @@ export default {
       expectBody: '2026-01-01',
     },
     {
+      // The flash: the redirect flashes into the session and the *next*
+      // request reads it (the session payload is compared byte-wise).
+      label: 'POST /flash-demo (the flash)',
+      method: 'POST',
+      uri: '/flash-demo',
+      jar: true,
+      form: { _token: '@token', title: 'Flash me' },
+    },
+    {
+      label: 'GET /flash-target (the flash is read back)',
+      method: 'GET',
+      uri: '/flash-target',
+      jar: true,
+      expectBody: 'saved|Flash me',
+    },
+    {
       // A thrown exception: both sides answer 500. The bodies differ -
       // Laravel's error page is a framework asset, the compiled side answers
       // a status-only HTML page (the same documented divergence as the 401).

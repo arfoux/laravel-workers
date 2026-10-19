@@ -671,6 +671,25 @@ test('emit: the helper verbs compile (abort_if, abort_unless, today, Log::)', ()
   assert.match(res.code, /rt\.today\(\)\.toDateString\(\)/);
   assert.match(res.code, /rt\.log\("info", "hello"\)/);
 });
+test('emit: the flash modifiers compile (redirect()->with/withInput/withErrors)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        return redirect('/x')->with('status', 'saved');\n" +
+    "        return redirect('/x')->withInput();\n" +
+    "        return redirect('/x')->withErrors(['a' => 'bad']);\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /rt\.redirect\("\/x"\)\.with\("status", "saved"\)/);
+  assert.match(res.code, /rt\.redirect\("\/x"\)\.withInput\(\)/);
+  assert.match(res.code, /rt\.redirect\("\/x"\)\.withErrors\(\{/);
+});
+
 test('emit: an unsupported Storage method fails loud (LW002)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

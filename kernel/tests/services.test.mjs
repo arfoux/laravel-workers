@@ -102,6 +102,34 @@ test('the runtime: rt.newError keeps the PHP class name and message', async () =
   assert.throws(() => rt.throwUnless(false, e), /boom/);
 });
 
+// The flash: the redirect's with()/withInput()/withErrors() write into the
+// session (Laravel reads the flash on the next request).
+test('the runtime: the redirect flashes into the session', async () => {
+  const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+  const flashed = [];
+  const inputFlashed = [];
+  const session = {
+    flash(key, value) { flashed.push({ key, value }); },
+    flashInput(input) { inputFlashed.push(input); },
+    token() { return 't'; },
+  };
+  const rt = buildRt(null, {
+    runtime: true,
+    http: {
+      session,
+      request: { all: () => ({ title: 'Flash me', password: 'secret' }) },
+    },
+  });
+  const res = rt.redirect('/x').with('status', 'saved');
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, '/x');
+  assert.deepEqual(flashed, [{ key: 'status', value: 'saved' }]);
+  rt.redirect('/x').with({ a: 1, b: 2 });
+  assert.deepEqual(flashed.slice(1), [{ key: 'a', value: 1 }, { key: 'b', value: 2 }]);
+  rt.redirect('/x').withInput();
+  assert.deepEqual(inputFlashed, [{ title: 'Flash me' }]);
+});
+
 // The helper verbs: the request clock (now()/today()) and the log sink.
 test('the runtime: now()/today() follow the request clock and rt.log reaches the sink', async () => {
   const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');

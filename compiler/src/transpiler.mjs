@@ -540,6 +540,23 @@ function txRedirectChain(node) {
     const base = inner.what.name;
     const innerArgs = inner.arguments || [];
     if (base === 'redirect') {
+      // The flash modifiers: redirect('/x')->with('k','v')->withInput()->withErrors(...)
+      // The runtime applies the flash to the session (Laravel's flash lives
+      // there for the next request) and returns the same redirect.
+      if (m === 'with' || m === 'withInput' || m === 'withErrors') {
+        const a = node.arguments || [];
+        if (m === 'with' && a.length === 0) {
+          throw mkErr(
+            'LW002',
+            'redirect()->with() needs a key (or an array of key/value pairs)',
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return (
+          'rt.redirect(' + innerArgs.map(tx).join(', ') + ').' + m + '(' + a.map(tx).join(', ') + ')'
+        );
+      }
       if (innerArgs.length !== 0) throw mkErr('LW002', 'unsupported redirect(...) usage', node.loc, PORT_HINT);
       if (m === 'route') {
         const a = node.arguments || [];
