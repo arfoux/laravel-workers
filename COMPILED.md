@@ -332,6 +332,75 @@ Everything else in Laravel's web surface: **compilable** — this document is th
 6. **Runtime completeness (1.4)** — continuous, corpus-driven, never "done"
 7. **Auth flows + Fortify-shaped controllers (2)** — just compiled controllers once 3/4/5 exist
 
+## 9. The construct audit and the plan (generated)
+
+Every construct an app can meet is listed in `tools/constructs.json` and probed against
+the **real compiler** by `tools/construct-audit.mjs` (`npm run audit:constructs`). The
+table below is generated: `check:docs` fails when it drifts from the code, so it cannot
+rot. The invariant: a construct is either **compiled and proven** by the shadow harness,
+or it **fails the build** - there is no third state (no silent degradation).
+
+<!-- construct-audit:start -->
+
+| Construct | The build | Note | Batch |
+|---|---|---|---|
+| `now()` | ✅ compiles | Carbon; the compiled side follows the **request clock** (M33) - the wall clock diverged. | M33 |
+| `today()` | ✅ compiles | Carbon at midnight (UTC); the request clock again. | M33 |
+| `abort_if()` | ✅ compiles | Answers null unless it aborts; the status + the message are Laravel's. | M33 |
+| `abort_unless()` | ✅ compiles | The mirror of abort_if. | M33 |
+| `Log::info()` | ✅ compiles | The platform log (the Workers console) is the padanan for the app log file. | M33 |
+| `new RuntimeException()` | ✅ compiles | The **built-in** exceptions only; the class name + the message are kept, so the 500 matches. | M34 |
+| `throw_if()` | ✅ compiles | Throws the given error when the condition says so. | M34 |
+| `redirect()->with()` | ⛔ fails loud (`LW002`) | Flashes into the session for the next request; the proof is the session payload + the Location. | M35 |
+| `redirect()->withInput()` | ⛔ fails loud (`LW002`) | Flashes `_old_input` (everything except the `dontFlash` fields). | M35 |
+| `redirect()->withErrors()` | ⛔ fails loud (`LW002`) | Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow already writes it). | M35 |
+| `redirect()->away()` | ⛔ fails loud (`LW002`) | An absolute external URL (the compiled redirect only does local ones). | M36 |
+| `back()` | ⛔ fails loud (`LW001`) | The Referer, or the session's `url.previous`, or `/`. | M36 |
+| `Str::slug()` | ⛔ fails loud (`LW003`) | A family (slug/limit/upper/lower/head/studly/...). Each one needs its PHP-parity rule. | M36 |
+| `env()` | ⛔ fails loud (`LW001`) | The build-time config dump is the padanan (the edge has no .env). | M36 |
+| `data_get()` | ⛔ fails loud (`LW001`) | Dot/array access on an array or an object. | M36 |
+| `tap()` | ⛔ fails loud (`LW001`) | Passes the value through a closure (the closure support exists). | M36 |
+| `report()` | ⛔ fails loud (`LW001`) | Reports an exception to the logger (it does not answer it). | M36 |
+| `cache()` (the helper) | ⛔ fails loud (`LW001`) | The helper form of the `Cache` facade (the facade compiles). | M36 |
+| `session([...])` (the array form) | ⛔ fails loud (`LW002`) | The array form writes many keys; `session()->put([...])` compiles. | M36 |
+| `Event::dispatch()` | ⛔ fails loud (`LW003`) | The listeners are classes - they are not compiled, so the dispatch is a port. | M37 |
+| `Gate::allows()` | ⛔ fails loud (`LW003`) | The policies are classes - they are not compiled, so the check is a port. | M37 |
+| `Mail::to()->send()` | ⛔ fails loud (`LW003`) | The mailable class is not compiled; the mailer adapter exists (M28). | M37 |
+| `Queue::push()` | ⛔ fails loud (`LW003`) | The job class is not compiled; the queue adapter exists (M28). | M37 |
+| `Storage::disk()` | ⛔ fails loud (`LW002`) | The disk class is not compiled; the default disk compiles (M30). | M37 |
+| `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags. | M37 |
+| Blade `@extends` (a layout) | — documented (build level) | A layout compiles to `$__env` - a view-level construct (not the controller compiler). | M38 |
+| `Model::paginate()` | — documented (build level) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M38 |
+| Route-model binding (a typed param) | — documented (build level) | The compiled handler takes the raw segment; the model is fetched explicitly. | M38 |
+| Eloquent relations (`$post->comments()`) | — documented (build level) | The relation methods are not compiled; the eager-loading subset needs the model dump. | M38 |
+| File upload (`$request->file()`) | — documented (build level) | Uploads need R2 (multipart parsing at the edge). | M38 |
+| An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M38 |
+
+**31 constructs: 7 compile, 18 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+
+<!-- construct-audit:end -->
+
+### The plan (batches, in order)
+
+- **M35 - the flash.** `redirect()->with()`, `->withInput()`, `->withErrors()`. The
+  padanan is the session: the flash lives there for the next request. The proof is the
+  session payload + the `Location` header, byte-wise against the real app. Effort:
+  small (the kernel already writes the error bag for the validation flow). Risk: low.
+- **M36 - the helper surface.** `redirect()->away()`, `back()`, `Str::*`, `env()`,
+  `data_get()`, `tap()`, `report()`, the `cache()` helper, `session([...])`. Each one
+  needs its PHP-parity rule (the `Str` family is the big one: slug/limit/upper/lower/
+  head/studly/...). Effort: medium. Risk: medium - the parity rules are exactly where
+  the divergences hide.
+- **M37 - the class-bearing calls.** `Event::dispatch()`, `Gate::allows()`,
+  `Mail::to()->send()`, `Queue::push(SomeJob::class)`, `Storage::disk()`,
+  `Cache::tags()`. These need the **class compiler** (the listeners, policies,
+  mailables, jobs and disks are classes). Until that exists they stay ports and the
+  build keeps failing loud - deliberately. Effort: large (a class compiler is a
+  milestone of its own). Risk: high.
+- **M38 - the build-level constructs.** The Blade layouts (`@extends`), `paginate`,
+  route-model binding, the Eloquent relations, the file uploads and the `OPTIONS`
+  route. Effort: large; the uploads need R2 (multipart parsing at the edge).
+
 ## 8. Definition of done (per item)
 
 - corpus and/or shadow test vs PHP 8.3 exists and is green

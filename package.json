@@ -52,10 +52,11 @@
     "verify": "node bin/laravel-workers.mjs verify",
     "test:services": "node --test kernel/tests/services.test.mjs",
     "test:budget": "node --test kernel/tests/budget.test.mjs",
-    "check:docs": "node tools/docs-check.mjs",
+    "check:docs": "node tools/docs-check.mjs && node tools/construct-audit.mjs --check",
     "bench": "node tools/bench.mjs",
     "test:shadow": "node shadow/run.mjs",
-    "test:pack": "node tools/pack-smoke.mjs"
+    "test:pack": "node tools/pack-smoke.mjs",
+    "audit:constructs": "node tools/construct-audit.mjs"
   },
   "engines": {
     "node": ">=22"

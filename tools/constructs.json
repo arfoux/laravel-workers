@@ -1,0 +1,307 @@
+{
+  "constructs": [
+    {
+      "id": "now",
+      "label": "`now()`",
+      "php": "$t = now()->toDateTimeString();",
+      "expect": "ok",
+      "note": "Carbon; the compiled side follows the **request clock** (M33) - the wall clock diverged.",
+      "batch": "M33",
+      "status": "done"
+    },
+    {
+      "id": "today",
+      "label": "`today()`",
+      "php": "$t = today()->toDateString();",
+      "expect": "ok",
+      "note": "Carbon at midnight (UTC); the request clock again.",
+      "batch": "M33",
+      "status": "done"
+    },
+    {
+      "id": "abort_if",
+      "label": "`abort_if()`",
+      "php": "abort_if(false, 404, 'never');",
+      "expect": "ok",
+      "note": "Answers null unless it aborts; the status + the message are Laravel's.",
+      "batch": "M33",
+      "status": "done"
+    },
+    {
+      "id": "abort_unless",
+      "label": "`abort_unless()`",
+      "php": "abort_unless(true, 500, 'never');",
+      "expect": "ok",
+      "note": "The mirror of abort_if.",
+      "batch": "M33",
+      "status": "done"
+    },
+    {
+      "id": "log",
+      "label": "`Log::info()`",
+      "php": "\\Illuminate\\Support\\Facades\\Log::info('hello');",
+      "expect": "ok",
+      "note": "The platform log (the Workers console) is the padanan for the app log file.",
+      "batch": "M33",
+      "status": "done"
+    },
+    {
+      "id": "new_exception",
+      "label": "`new RuntimeException()`",
+      "php": "throw new \\RuntimeException('boom');",
+      "expect": "ok",
+      "note": "The **built-in** exceptions only; the class name + the message are kept, so the 500 matches.",
+      "batch": "M34",
+      "status": "done"
+    },
+    {
+      "id": "throw_if",
+      "label": "`throw_if()`",
+      "php": "throw_if(false, new \\RuntimeException('x'));",
+      "expect": "ok",
+      "note": "Throws the given error when the condition says so.",
+      "batch": "M34",
+      "status": "done"
+    },
+    {
+      "id": "redirect_with",
+      "label": "`redirect()->with()`",
+      "php": "return redirect('/x')->with('status', 'saved');",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "Flashes into the session for the next request; the proof is the session payload + the Location.",
+      "batch": "M35",
+      "status": "todo"
+    },
+    {
+      "id": "redirect_with_input",
+      "label": "`redirect()->withInput()`",
+      "php": "return redirect('/x')->withInput();",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "Flashes `_old_input` (everything except the `dontFlash` fields).",
+      "batch": "M35",
+      "status": "todo"
+    },
+    {
+      "id": "redirect_with_errors",
+      "label": "`redirect()->withErrors()`",
+      "php": "return redirect('/x')->withErrors(['a' => 'bad']);",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow already writes it).",
+      "batch": "M35",
+      "status": "todo"
+    },
+    {
+      "id": "redirect_away",
+      "label": "`redirect()->away()`",
+      "php": "return redirect()->away('https://example.com');",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "An absolute external URL (the compiled redirect only does local ones).",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "back",
+      "label": "`back()`",
+      "php": "return back();",
+      "expect": "fail",
+      "code": "LW001",
+      "note": "The Referer, or the session's `url.previous`, or `/`.",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "str",
+      "label": "`Str::slug()`",
+      "php": "$s = \\Illuminate\\Support\\Str::slug('A B');",
+      "expect": "fail",
+      "code": "LW003",
+      "note": "A family (slug/limit/upper/lower/head/studly/...). Each one needs its PHP-parity rule.",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "env",
+      "label": "`env()`",
+      "php": "$e = env('APP_ENV');",
+      "expect": "fail",
+      "code": "LW001",
+      "note": "The build-time config dump is the padanan (the edge has no .env).",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "data_get",
+      "label": "`data_get()`",
+      "php": "$v = data_get(['a' => 1], 'a');",
+      "expect": "fail",
+      "code": "LW001",
+      "note": "Dot/array access on an array or an object.",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "tap",
+      "label": "`tap()`",
+      "php": "tap(1, function ($x) { return $x; });",
+      "expect": "fail",
+      "code": "LW001",
+      "note": "Passes the value through a closure (the closure support exists).",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "report",
+      "label": "`report()`",
+      "php": "report(new \\RuntimeException('x'));",
+      "expect": "fail",
+      "code": "LW001",
+      "note": "Reports an exception to the logger (it does not answer it).",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "cache_helper",
+      "label": "`cache()` (the helper)",
+      "php": "cache('k', 'v');",
+      "expect": "fail",
+      "code": "LW001",
+      "note": "The helper form of the `Cache` facade (the facade compiles).",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "session_array",
+      "label": "`session([...])` (the array form)",
+      "php": "session(['k' => 'v']);",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "The array form writes many keys; `session()->put([...])` compiles.",
+      "batch": "M36",
+      "status": "todo"
+    },
+    {
+      "id": "event_dispatch",
+      "label": "`Event::dispatch()`",
+      "php": "\\Illuminate\\Support\\Facades\\Event::dispatch('post.created');",
+      "expect": "fail",
+      "code": "LW003",
+      "note": "The listeners are classes - they are not compiled, so the dispatch is a port.",
+      "batch": "M37",
+      "status": "todo"
+    },
+    {
+      "id": "gate",
+      "label": "`Gate::allows()`",
+      "php": "$ok = \\Illuminate\\Support\\Facades\\Gate::allows('update', $post);",
+      "expect": "fail",
+      "code": "LW003",
+      "note": "The policies are classes - they are not compiled, so the check is a port.",
+      "batch": "M37",
+      "status": "todo"
+    },
+    {
+      "id": "mail_fluent",
+      "label": "`Mail::to()->send()`",
+      "php": "\\Illuminate\\Support\\Facades\\Mail::to('a@b.co')->send(new \\App\\Mail\\OrderMail());",
+      "expect": "fail",
+      "code": "LW003",
+      "note": "The mailable class is not compiled; the mailer adapter exists (M28).",
+      "batch": "M37",
+      "status": "todo"
+    },
+    {
+      "id": "queue_push",
+      "label": "`Queue::push()`",
+      "php": "\\Illuminate\\Support\\Facades\\Queue::push(\\App\\Jobs\\SendMail::class);",
+      "expect": "fail",
+      "code": "LW003",
+      "note": "The job class is not compiled; the queue adapter exists (M28).",
+      "batch": "M37",
+      "status": "todo"
+    },
+    {
+      "id": "storage_disk",
+      "label": "`Storage::disk()`",
+      "php": "\\Illuminate\\Support\\Facades\\Storage::disk('local')->put('a.txt', 'x');",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "The disk class is not compiled; the default disk compiles (M30).",
+      "batch": "M37",
+      "status": "todo"
+    },
+    {
+      "id": "cache_tags",
+      "label": "`Cache::tags()`",
+      "php": "\\Illuminate\\Support\\Facades\\Cache::tags('a')->put('k', 'v');",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "Tags need a KV/Redis-shaped store; the D1 `database` store has no tags.",
+      "batch": "M37",
+      "status": "todo"
+    },
+    {
+      "id": "blade_layout",
+      "label": "Blade `@extends` (a layout)",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "A layout compiles to `$__env` - a view-level construct (not the controller compiler).",
+      "batch": "M38",
+      "status": "todo"
+    },
+    {
+      "id": "paginate",
+      "label": "`Model::paginate()`",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "The query builder has no pagination; D1 has no OFFSET-free paging guarantee.",
+      "batch": "M38",
+      "status": "todo"
+    },
+    {
+      "id": "route_model_binding",
+      "label": "Route-model binding (a typed param)",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "The compiled handler takes the raw segment; the model is fetched explicitly.",
+      "batch": "M38",
+      "status": "todo"
+    },
+    {
+      "id": "relations",
+      "label": "Eloquent relations (`$post->comments()`)",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "The relation methods are not compiled; the eager-loading subset needs the model dump.",
+      "batch": "M38",
+      "status": "todo"
+    },
+    {
+      "id": "file_upload",
+      "label": "File upload (`$request->file()`)",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "Uploads need R2 (multipart parsing at the edge).",
+      "batch": "M38",
+      "status": "todo"
+    },
+    {
+      "id": "options_route",
+      "label": "An `OPTIONS` route",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "The platform answers the CORS preflight, not the app.",
+      "batch": "M38",
+      "status": "todo"
+    }
+  ]
+}
