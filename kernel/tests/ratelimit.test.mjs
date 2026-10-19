@@ -37,22 +37,22 @@ import {
   MissingRateLimiterError,
 } from '../ratelimit.mjs';
 import { sha1Hex, md5Hex } from '../digest.mjs';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-ratelimit-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
-const APP_ROOT =
-  process.env.LW_LARAVEL_APP ||
-  'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+const APP_ROOT = oracleAppRoot();
+// The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
+// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
+// LW_LARAVEL_APP at the app it creates and runs them for real).
+const noApp = APP_ROOT ? false : oracleSkip('ratelimit.test.mjs');
 
 const NOW = 1792336827; // fixture timestamp shared with session tests
 
 function runOracle(payload) {
-  if (!existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
-    throw new Error(
-      `ratelimit.test: no Laravel app at ${APP_ROOT} (vendor/autoload.php missing). ` +
-        'Point LW_LARAVEL_APP at a Laravel 11+/13.x app to run the oracle.'
-    );
+  if (!APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
+    throw new Error(oracleSkip('ratelimit.test.mjs'));
   }
   const res = spawnSync(PHP, [oraclePath], {
     input: JSON.stringify({ app_root: APP_ROOT, ...payload }),
@@ -153,7 +153,7 @@ function limiterFromSpec(spec) {
 // Mode: hash — sha1/md5/cleanRateLimiterKey vectors.
 // ---------------------------------------------------------------------------
 
-test('ratelimit: sha1/md5/cleanRateLimiterKey vectors match PHP 8.3', () => {
+test('ratelimit: sha1/md5/cleanRateLimiterKey vectors match PHP 8.3', { skip: noApp }, () => {
   const strings = [
     'abc',
     '',
@@ -518,7 +518,7 @@ function assertStep(oracleStep, jsStep, label) {
 }
 
 for (const script of RATE_LIMITER_SCRIPTS) {
-  test(`ratelimiter: ${script.name}`, async () => {
+  test(`ratelimiter: ${script.name}`, { skip: noApp }, async () => {
     const oracle = runOracle({ mode: 'ratelimiter', now: script.now, ops: script.ops });
     const harness = makeHarness(Math.round(script.now * 1000));
 
@@ -861,7 +861,7 @@ async function runThrottleCase(caseSpec) {
   };
 }
 
-test('throttle: ThrottleRequests::handle e2e matches the PHP oracle', async () => {
+test('throttle: ThrottleRequests::handle e2e matches the PHP oracle', { skip: noApp }, async () => {
   try {
     const oracle = runOracle({ mode: 'throttle', cases: THROTTLE_CASES });
 

@@ -42,6 +42,7 @@ import { CookieJar, PhpSessionStore } from '../session.mjs';
 import { serializeCookie } from '../cookies.mjs';
 import { hmacSha256Hex, sha1Hex } from '../digest.mjs';
 import { Model } from '../model.mjs';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 let DatabaseSync = null;
 try {
@@ -54,9 +55,11 @@ const noSqlite = DatabaseSync ? false : 'node:sqlite unavailable (needs Node >= 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-auth-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
-const APP_ROOT =
-  process.env.LW_LARAVEL_APP ||
-  'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+const APP_ROOT = oracleAppRoot();
+// The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
+// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
+// LW_LARAVEL_APP at the app it creates and runs them for real).
+const noApp = APP_ROOT ? false : oracleSkip('auth.test.mjs');
 
 // Frozen clock shared by both runs: Carbon::setTestNow in PHP, a fake clock in
 // JS. Cookie expiries therefore land on exact, comparable integers.
@@ -76,11 +79,8 @@ const LOGIN_NAME = 'login_web_' + sha1Hex(GUARD_CLASS);
 const RECALLER_NAME = 'remember_web_' + sha1Hex(GUARD_CLASS);
 
 function runOracle(payload) {
-  if (!existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
-    throw new Error(
-      `auth.test: no Laravel app at ${APP_ROOT} (vendor/autoload.php missing). ` +
-        'Point LW_LARAVEL_APP at a Laravel 11+/13.x app to run the auth parity tests.'
-    );
+  if (!APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
+    throw new Error(oracleSkip('auth.test.mjs'));
   }
   const res = spawnSync(PHP, [oraclePath], {
     input: JSON.stringify({ app_root: APP_ROOT, ...payload }),
@@ -126,7 +126,7 @@ function requestFromInput(input) {
 // Negotiation parity.
 // ---------------------------------------------------------------------------
 
-test('auth: Request negotiation parity (Accept machinery)', () => {
+test('auth: Request negotiation parity (Accept machinery)', { skip: noApp }, () => {
   const vectors = [
     // FPM/worker reality: HeaderBag has no Accept header at all.
     { server: {}, drop_accept: true },
@@ -186,7 +186,7 @@ test('auth: Request negotiation parity (Accept machinery)', () => {
 // Recaller parity (lenient unserialize surface).
 // ---------------------------------------------------------------------------
 
-test('auth: Recaller semantics parity (lenient unserialize)', () => {
+test('auth: Recaller semantics parity (lenient unserialize)', { skip: noApp }, () => {
   const values = [
     `1|abcdef|${'f'.repeat(64)}`,
     '1|abcdefghij|0123456789abcdef',
@@ -250,7 +250,7 @@ test('auth: Recaller semantics parity (lenient unserialize)', () => {
 // BcryptHasher parity.
 // ---------------------------------------------------------------------------
 
-test('auth: BcryptHasher parity (verify=true, rounds=12)', async () => {
+test('auth: BcryptHasher parity (verify=true, rounds=12)', { skip: noApp }, async () => {
   const ops = [
     ['info', [HASH12]],
     ['info', [HASH12_B]],
@@ -829,7 +829,7 @@ function assertRun(label, js, oracle, { rehashIndex = -1 } = {}) {
 // SessionGuard + middleware end-to-end parity.
 // ---------------------------------------------------------------------------
 
-test('auth: SessionGuard + middleware end-to-end parity', { skip: noSqlite }, async () => {
+test('auth: SessionGuard + middleware end-to-end parity', { skip: noSqlite || noApp }, async () => {
   const base = () => ({ mode: 'auth', freeze_ms: FREEZE_MS, str_random: true });
 
   const baselineInput = {

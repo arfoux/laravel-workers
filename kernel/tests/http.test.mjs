@@ -42,6 +42,7 @@ import { createDatabaseCache } from '../cache.mjs';
 import { applyAuthenticatable } from '../auth.mjs';
 import { Model } from '../model.mjs';
 import { normalizeTable } from '../router.mjs';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 let DatabaseSync = null;
 try {
@@ -54,9 +55,11 @@ const noSqlite = DatabaseSync ? false : 'node:sqlite unavailable (needs Node >= 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-http-pipeline-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
-const APP_ROOT =
-  process.env.LW_LARAVEL_APP ||
-  'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+const APP_ROOT = oracleAppRoot();
+// The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
+// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
+// LW_LARAVEL_APP at the app it creates and runs them for real).
+const noApp = APP_ROOT ? false : oracleSkip('http.test.mjs');
 
 const FREEZE_MS = 1792336827000;
 const FREEZE_S = Math.floor(FREEZE_MS / 1000);
@@ -67,11 +70,8 @@ const BASE = 'http://localhost';
 const TOKEN = '\u00abTOKEN\u00bb';
 
 function requireApp() {
-  if (!existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
-    throw new Error(
-      `http.test: no Laravel app at ${APP_ROOT} (vendor/autoload.php missing). ` +
-        'Point LW_LARAVEL_APP at a Laravel 13.x app to run the pipeline parity tests.'
-    );
+  if (!APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
+    throw new Error(oracleSkip('http.test.mjs'));
   }
 }
 
@@ -565,7 +565,7 @@ function normPhpStep(step) {
   };
 }
 
-test('compiled pipeline matches the PHP 8.3 web pipeline, 11 steps', { skip: noSqlite }, async () => {
+test('compiled pipeline matches the PHP 8.3 web pipeline, 11 steps', { skip: noSqlite || noApp }, async () => {
   const oracle = runOracle();
   const config = oracle.config;
   assert.equal(config['session.driver'], 'database', 'oracle must run the database session driver');

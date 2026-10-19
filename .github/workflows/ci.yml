@@ -23,6 +23,45 @@ jobs:
       - name: Pack dry-run
         run: npm pack --dry-run
 
+  # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
+  # Laravel app — the `test` job has none, so those tests skip there. This job
+  # creates one and runs them for real.
+  parity-oracle:
+    name: parity (PHP 8.3 oracle vs the compiled rung)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, sqlite3
+      - name: Create a fresh Laravel app (the oracle's app)
+        run: composer create-project laravel/laravel parity-app --no-interaction --prefer-dist
+      - name: Prepare the app
+        run: |
+          cd parity-app
+          touch database/database.sqlite
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force
+      - run: npm install
+      - name: PHP oracle parity (auth, cache, csrf, session, rate limiter)
+        env:
+          LW_LARAVEL_APP: ${{ github.workspace }}/parity-app
+        run: |
+          node --test kernel/tests/auth.test.mjs kernel/tests/cache.test.mjs kernel/tests/csrf.test.mjs kernel/tests/session.test.mjs kernel/tests/ratelimit.test.mjs
+      - name: The oracle parity must not be skipped
+        env:
+          LW_LARAVEL_APP: ${{ github.workspace }}/parity-app
+        run: |
+          out=$(node --test kernel/tests/auth.test.mjs 2>&1)
+          echo "$out" | tail -n 12
+          if echo "$out" | grep -q "# skipped 0"; then :; else echo "the oracle parity was skipped — LW_LARAVEL_APP does not point at a Laravel app"; exit 1; fi
+
   e2e-fresh-laravel:
     name: e2e (fresh Laravel, zero config)
     runs-on: ubuntu-latest

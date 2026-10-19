@@ -16,13 +16,16 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { DatabaseCacheStore } from '../cache.mjs';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-cache-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
-const APP_ROOT =
-  process.env.LW_LARAVEL_APP ||
-  'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+const APP_ROOT = oracleAppRoot();
+// The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
+// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
+// LW_LARAVEL_APP at the app it creates and runs them for real).
+const noApp = APP_ROOT ? false : oracleSkip('cache.test.mjs');
 
 const PREFIX = 'laravel-cache-';
 const NOW = 1792336827; // Sun, 18 Oct 2026 15:20:27 GMT
@@ -214,11 +217,8 @@ async function runJs() {
 }
 
 function runOracle() {
-  if (!existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
-    throw new Error(
-      `cache.test: no Laravel app at ${APP_ROOT} (vendor/autoload.php missing). ` +
-        'Point LW_LARAVEL_APP at a Laravel 11+/13.x app to run PHP parity tests.'
-    );
+  if (!APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
+    throw new Error(oracleSkip('cache.test.mjs'));
   }
   const res = spawnSync(PHP, [oraclePath], {
     input: JSON.stringify({ app_root: APP_ROOT, prefix: PREFIX, now: NOW, ops: OPS }),
@@ -234,7 +234,7 @@ function runOracle() {
   return JSON.parse(res.stdout);
 }
 
-test('DatabaseCacheStore: op results + raw cache rows match PHP 8.3 1:1', async () => {
+test('DatabaseCacheStore: op results + raw cache rows match PHP 8.3 1:1', { skip: noApp }, async () => {
   const js = await runJs();
   const php = runOracle();
   assert.equal(js.results.length, php.results.length, 'op count');

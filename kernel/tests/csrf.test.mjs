@@ -43,13 +43,16 @@ import {
 } from '../csrf.mjs';
 import { PhpSessionStore } from '../session.mjs';
 import { ResponseCookies } from '../cookies.mjs';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-csrf-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
-const APP_ROOT =
-  process.env.LW_LARAVEL_APP ||
-  'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+const APP_ROOT = oracleAppRoot();
+// The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
+// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
+// LW_LARAVEL_APP at the app it creates and runs them for real).
+const noApp = APP_ROOT ? false : oracleSkip('csrf.test.mjs');
 
 const TOKEN_A = 'A'.repeat(40);
 const TOKEN_B = 'B'.repeat(40);
@@ -482,7 +485,7 @@ async function runJsCase(csrfCase, phpCase, out) {
 // Tests.
 // ---------------------------------------------------------------------------
 
-test('Str::is vectors match the PHP 8.3 oracle', () => {
+test('Str::is vectors match the PHP 8.3 oracle', { skip: noApp }, () => {
   const out = oracle();
   assert.equal(out.stris.length, STRIS_VECTORS.length);
   const js = STRIS_VECTORS.map((vector) =>
@@ -517,7 +520,7 @@ test('preg_quote matches the probed PHP 8.3 escape set', () => {
   assert.equal(pregQuote('\\'), '\\\\');
 });
 
-test('normalizeQueryString matches the PHP 8.3 oracle', () => {
+test('normalizeQueryString matches the PHP 8.3 oracle', { skip: noApp }, () => {
   const out = oracle();
   assert.equal(out.qs.length, QS_VECTORS.length);
   const js = QS_VECTORS.map((qs) => normalizeQueryString(qs));
@@ -539,7 +542,7 @@ test('normalizeQueryString fails loud on unsupported shapes', () => {
   assert.throws(() => normalizeQueryString('a[9007199254740992]=x'), CsrfError);
 });
 
-test('PreventRequestForgery middleware parity against PHP 8.3 oracle', async () => {
+test('PreventRequestForgery middleware parity against PHP 8.3 oracle', { skip: noApp }, async () => {
   const out = oracle();
   assert.equal(out.middleware.length, MW_CASES.length);
 

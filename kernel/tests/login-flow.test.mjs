@@ -27,6 +27,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 let DatabaseSync = null;
 try {
@@ -41,9 +42,11 @@ const repoRoot = path.resolve(testsDir, '..', '..');
 const BUILD = path.join(repoRoot, 'build.mjs');
 const ORACLE = path.join(repoRoot, 'tools', 'php-login-flow-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
-const APP_ROOT =
-  process.env.LW_LARAVEL_APP ||
-  'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+const APP_ROOT = oracleAppRoot();
+// The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
+// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
+// LW_LARAVEL_APP at the app it creates and runs them for real).
+const noApp = APP_ROOT ? false : oracleSkip('login-flow.test.mjs');
 
 const FREEZE_MS = 1792336827000;
 const FREEZE_S = Math.floor(FREEZE_MS / 1000);
@@ -55,11 +58,8 @@ const LOGIN_EMAIL = 'u@example.com';
 const LOGIN_PASSWORD = 'secret';
 
 function requireApp() {
-  if (!existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
-    throw new Error(
-      `login-flow.test: no Laravel app at ${APP_ROOT} (vendor/autoload.php missing). ` +
-        'Point LW_LARAVEL_APP at a Laravel 13.x app to run the login-flow parity test.'
-    );
+  if (!APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
+    throw new Error(oracleSkip('login-flow.test.mjs'));
   }
 }
 
@@ -438,7 +438,7 @@ function normPhpStep(step) {
 // 5. The parity test.
 // ---------------------------------------------------------------------------
 
-test('Breeze login flow matches the PHP 8.3 oracle (compiled rung, E2E)', { skip: noSqlite }, async () => {
+test('Breeze login flow matches the PHP 8.3 oracle (compiled rung, E2E)', { skip: noSqlite || noApp }, async () => {
   requireApp();
   buildFixture();
   const loaded = await loadDist();

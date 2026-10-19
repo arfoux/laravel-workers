@@ -114,6 +114,12 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   default `Cache-Control: no-cache, private`, and the compiled model timestamps used the
   wall clock instead of the request clock (so a frozen-clock write carried a different
   `created_at` than the PHP side).
+- **CI:** the oracle parity needs a real Laravel app, so the `test` job (no app) *skips*
+  those tests — the report says "skipped" with the reason, never "green by omission".
+  The `parity` job creates a fresh Laravel app, points `LW_LARAVEL_APP` at it and runs
+  the oracle parity for real (auth, cache, csrf, session, rate limiter); the two
+  route-level parity tests (the 11-step web pipeline and the Breeze login flow) need the
+  fixture app's routes and run against it locally.
 
 ### 1.4 Runtime completeness (corpus-driven, continuous)
 - Arrays (ordered maps) — done; references → cells; int64 → BigInt discipline + overflow fail-loud

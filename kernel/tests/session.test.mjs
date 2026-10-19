@@ -26,23 +26,23 @@ import {
 } from '../session.mjs';
 import { phpJsonEncode } from '../php-json.mjs';
 import { serializeCookie } from '../cookies.mjs';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-session-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
-const APP_ROOT =
-  process.env.LW_LARAVEL_APP ||
-  'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+const APP_ROOT = oracleAppRoot();
+// The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
+// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
+// LW_LARAVEL_APP at the app it creates and runs them for real).
+const noApp = APP_ROOT ? false : oracleSkip('session.test.mjs');
 
 const FIXED_ID = 'a1'.repeat(20); // 40 chars, alnum
 const NOW = Math.floor(Date.now() / 1000);
 
 function runOracle(payload, { requireApp = true } = {}) {
-  if (requireApp && !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
-    throw new Error(
-      `session.test: no Laravel app at ${APP_ROOT} (vendor/autoload.php missing). ` +
-        'Point LW_LARAVEL_APP at a Laravel 11+/13.x app to run PHP parity tests.'
-    );
+  if (requireApp && !APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
+    throw new Error(oracleSkip('session.test.mjs'));
   }
   const res = spawnSync(PHP, [oraclePath], {
     input: JSON.stringify({ app_root: APP_ROOT, ...payload }),
@@ -269,7 +269,7 @@ const STORE_OPS = [
 ];
 
 for (const serialization of ['json', 'php']) {
-  test(`Store ops parity vs PHP 8.3 oracle (serialization=${serialization})`, async () => {
+  test(`Store ops parity vs PHP 8.3 oracle (serialization=${serialization})`, { skip: noApp }, async () => {
     const oracle = runOracle({
       mode: 'store',
       serialization,
@@ -343,7 +343,7 @@ test('flash lifecycle unit: gapped PHP array shapes', async () => {
   );
 });
 
-test('cookie driver: fresh session envelope + Symfony header parity', async () => {
+test('cookie driver: fresh session envelope + Symfony header parity', { skip: noApp }, async () => {
   const oracle = runOracle({
     mode: 'cookie',
     serialization: 'json',
@@ -391,7 +391,7 @@ test('cookie driver: fresh session envelope + Symfony header parity', async () =
   assert.equal(phpJsonEncode(store.attributes), oracle.all, 'attributes bytes');
 });
 
-test('cookie driver: reads valid envelope and preserves token', async () => {
+test('cookie driver: reads valid envelope and preserves token', { skip: noApp }, async () => {
   const envelope = phpJsonEncode({
     data: phpJsonEncode({ _token: 'T'.repeat(40), x: 1 }),
     expires: NOW + 100,
@@ -423,7 +423,7 @@ test('cookie driver: reads valid envelope and preserves token', async () => {
   assert.equal(jar.list()[0].value, oracle.queue[0].value, 're-written envelope bytes');
 });
 
-test('cookie driver: expired envelope starts a fresh session', async () => {
+test('cookie driver: expired envelope starts a fresh session', { skip: noApp }, async () => {
   const envelope = phpJsonEncode({
     data: phpJsonEncode({ _token: 'T'.repeat(40), x: 1 }),
     expires: NOW - 10,
@@ -452,7 +452,7 @@ test('cookie driver: expired envelope starts a fresh session', async () => {
   assert.notEqual(store.token(), 'T'.repeat(40));
 });
 
-test('cookie driver: invalidate destroys old id and queues deletion cookie', async () => {
+test('cookie driver: invalidate destroys old id and queues deletion cookie', { skip: noApp }, async () => {
   const oracle = runOracle({
     mode: 'cookie',
     serialization: 'json',
@@ -497,7 +497,7 @@ test('cookie driver: invalidate destroys old id and queues deletion cookie', asy
   assert.equal(phpJsonEncode(store.attributes), oracle.all, 'attributes after invalidate+save');
 });
 
-test('setId validation parity (40 alnum kept, everything else regenerated)', async () => {
+test('setId validation parity (40 alnum kept, everything else regenerated)', { skip: noApp }, async () => {
   const cases = [
     'b'.repeat(40), // valid
     'a'.repeat(39), // too short
