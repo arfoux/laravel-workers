@@ -397,7 +397,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | lifecycle | ✅ | §3 execution model |
 | localization | 🟡 | frozen JSON; pluralization subset |
 | logging | 🟡 | no Log module; `Log::` facade not mapped → port; console + fetch sinks only |
-| mail | 🟡 | kernel/mail.mjs exists (log/noop/resend) but NOT wired to pipeline/transpiler; padanan = HTTP provider (SMTP impossible, hard) |
+| mail | 🟡 | **wired** (M28): the worker builds the mailer from the app config (`mail.default` -> log/noop/resend) and hands it to the handler; the fluent `Mail::to()->send()` facade still needs a port (the mailable class is not compiled); padanan = HTTP provider (SMTP impossible, hard) |
 | mcp | 🟡 ph3 | HTTP/SSE servers compile; stdio (N/A at edge) (padanan) |
 | middleware | 🟡 | compiled pipeline wired (throttle + guest/auth stages); aliases auth.session/precognitive/can* fail loud |
 | migrations | ✅ | ops-time; remote via wrangler/SQL |
@@ -418,7 +418,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | providers | 🟡 | compile-time registration subset |
 | pulse | 🟡 ph3 | D1-backed; or CF analytics padanan |
 | queries | 🟡 | builder: where/or/join/group/having/distinct |
-| queues | 🟡 | kernel/queue.mjs exists but NOT wired; CF Queues (free: 10k ops/day) / D1 queue padanan |
+| queues | 🟡 | **wired** (M28): the worker hands the queue adapter to the handler (a port can push); the `Queue::push(SomeJob::class)` facade still needs a port (the job class is not compiled); CF Queues (free: 10k ops/day) / D1 queue padanan |
 | rate-limiting | 🟡 | D1 counters (KV driver pending); throttle build-gated |
 | readme | ⛔ | meta |
 | redis | 🔴 | KV/D1 drivers; Upstash REST optional |
@@ -429,7 +429,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | routing | ✅ | compiled router |
 | sail | ⛔ | local Docker |
 | sanctum | 🟡 ph2 | tokens; SPA via sessions (padanan) |
-| scheduling | 🟡 | kernel/scheduler.mjs exists but NOT wired; cron dispatcher (single-trigger pattern) padanan |
+| scheduling | 🟡 | **wired** (M29): the build dumps the app schedule into `dist/src/schedule.generated.mjs` + `dist/cron.json` (the Cloudflare trigger list); the worker's `scheduled` handler queues the due events for the app runtime (the edge triggers, it does not run artisan) |
 | scout | 🟡 | engines via HTTP; D1 FTS fallback (padanan) |
 | search | 🟡 | FTS5; vector → CF Vectorize padanan |
 | seeding | 🟡 | local dev tooling; no runtime code (unverified) |
