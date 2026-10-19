@@ -7,7 +7,7 @@
   "author": "arfoux",
   "repository": {
     "type": "git",
-    "url": "https://github.com/arfoux/laravel-workers.git"
+    "url": "git+https://github.com/arfoux/laravel-workers.git"
   },
   "homepage": "https://github.com/arfoux/laravel-workers#readme",
   "bugs": {
