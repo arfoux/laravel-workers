@@ -32,6 +32,12 @@ if (!existsSync(wranglerPath)) {
   "compatibility_date": "2026-10-01",
   "assets": { "directory": "./dist/public", "binding": "ASSETS" },
   "d1_databases": [ { "binding": "DB", "database_name": "${slug}", "database_id": "REPLACE_WITH_D1_ID" } ],
+    // The Storage facade (Storage::put/get/exists/delete) writes to R2 — the edge
+    // has no local filesystem. Uncomment and fill in a bucket:
+    // "r2_buckets": [ { "binding": "R2", "bucket_name": "REPLACE_WITH_R2_BUCKET" } ],
+    // The build writes dist/cron.json (the app schedule -> Cloudflare Cron Triggers).
+    // Copy its "crons" here to arm the schedule:
+    // "triggers": { "crons": [ "*/5 * * * *" ] },
   "observability": { "enabled": true }
 }
 `);

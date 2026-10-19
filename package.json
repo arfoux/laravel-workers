@@ -36,7 +36,8 @@
     "compiler/runtime",
     "kernel",
     "src",
-    "tools"
+    "tools",
+    "shadow"
   ],
   "scripts": {
     "setup": "npm install && npm --prefix compiler install",

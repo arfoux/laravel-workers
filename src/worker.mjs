@@ -30,12 +30,16 @@ function makeCache(env) {
   return createDatabaseCache({ db: env.DB, config });
 }
 
-// The Storage padanan: the app's local disk is R2 at the edge (there is no local
-// filesystem). Without the R2 binding there is no store — `Storage::` then fails
-// loud inside the handler instead of writing into a per-isolate memory map.
+// The Storage padanan: the app's local disk is object storage at the edge (there
+// is no local filesystem). R2 when the app binds it, else the D1 blob store (one
+// row per object in `lw_blobs` - no extra Cloudflare product, no card). With
+// neither, `Storage::` fails loud inside the handler instead of writing into a
+// per-isolate memory map.
 function makeStorage(env) {
-  if (!env || !env.R2) return null;
-  return createStorage({ r2: env.R2, secret: config['app.key'] });
+  if (!env) return null;
+  if (env.R2) return createStorage({ r2: env.R2, secret: config['app.key'] });
+  if (env.DB) return createStorage({ d1: env.DB, secret: config['app.key'] });
+  return null;
 }
 
 // The mailer: `log` (default, no network), `noop` or `resend`.

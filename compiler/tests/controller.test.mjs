@@ -634,6 +634,41 @@ test('emit: an unsupported Storage method fails loud (LW002)', () => {
   assert.match(res.errors[0].message, /Storage::disk/);
 });
 
+test('emit: a fully-qualified static call resolves to the global class', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        \\Illuminate\\Support\\Facades\\Storage::put('a/b.txt', 'hello');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /\(await rt\.storage\(\)\.put\("a\/b\.txt", "hello"\)\)/);
+});
+
+test('emit: a fully-qualified model call compiles (\\App\\Models\\Post::create())', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        \\App\\Models\\Post::create(['title' => 'x']);\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/posts',
+    routeParams: [],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+  });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /rt\.model\("App\\\\Models\\\\Post"\)\.create\(/);
+});
+
 test('emit: the extract lists the class constants the method reads', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

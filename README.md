@@ -39,6 +39,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M24** The shadow harness (2026-10-19) — `shadow/run.mjs` + `tools/php-shadow-oracle.php` boot the real app (PHP 8.3 + sqlite) and the compiled worker and diff status/headers/body byte-wise over a scenario (four verdicts: byte-identical, shape-verified, documented divergence, unexplained). It found six real divergences (the `response()` content-type, the default `Cache-Control`, the model timestamps using the wall clock, the `auth.basic` challenge, the error body, and a missing-credentials request passing) — all fixed. Construct app: 19/21 byte-identical + 1 shape + 1 documented, 0 unexplained; fresh app: 10/10 byte-identical.
 - **M25** CI green (2026-10-19) — the PHP oracle parity tests skip (with a reason) when no Laravel app is available, and a new CI job creates a fresh Laravel app and runs the parity for real (auth, cache, csrf, session, rate limiter).
 - **M28** The service adapters are wired (2026-10-20) — the worker builds the storage (R2), mail (log/noop/resend) and queue (CF Queues) adapters from the app config and hands them to the handler; the `Storage::` facade compiles to the R2 store (`put`/`get`/`exists`/`delete`) and fails loud without the binding. The fluent `Mail::to()->send()` and `Queue::push(SomeJob::class)` facades still need a port (job/mailable classes are not compiled).
+- **M30** The object store is pluggable + the FQCN fix (2026-10-20) — `Storage::` now has two backends: **R2** when the app binds it, else the **D1 blob store** (one row per object in `lw_blobs` — no extra Cloudflare product, no credit card; the build prints which store it picked and fails loud when the app binds neither). The build also emits `dist/schema.sql` (the app's tables + `lw_blobs`) so the D1 schema can be created with `wrangler d1 execute DB --file=dist/schema.sql`. A fully-qualified static call (`\Illuminate\Support\Facades\Storage::put()`, `\App\Models\Post::create()`) now resolves to the global class instead of the controller's namespace, and the `laravel-workers shadow` CLI command runs the shadow harness. npm test **369/369**.
 - **M29** The scheduler is wired (2026-10-20) — the build dumps the app’s schedule (`tools/schedule-dump.php`) into `dist/src/schedule.generated.mjs` plus `dist/cron.json` (the Cloudflare Cron Trigger list — Free allows 5 triggers/account); the worker exposes a `scheduled` handler (and `POST /__lw/cron`) that evaluates the due events and queues them for the app runtime — the edge triggers, it does not run artisan. Events whose cron expression Cloudflare cannot express are reported in the build log.
 
 ## Supported vs unsupported
@@ -57,8 +58,8 @@ Fails loud (build error or `LW002`), use a port instead:
 - `compiler/` — **M1 view compiler** + **M10 controller compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `bin/controller.mjs`, `src/transpiler.mjs`, `src/controller.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 51, parity, smoke, controller).
 - `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), `session.mjs` + `csrf.mjs` + `ratelimit.mjs` + `auth.mjs` (M11–M14 compiled-rung layers, PHP-8.3-oracle-verified), `cache.mjs` `DatabaseCacheStore` (M18, D1-backed `database` cache for `throttle`), `validation.mjs` `ValidationException` + session error-bag shape (M19, drives `handleHttp`'s redirect-back/422), `http.mjs` (M15 compiled HTTP pipeline), budget gate (M8).
 - `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `model-dump.php` (M10 Eloquent metadata), `constants-dump.php` + `formrequest-dump.php` (M23 class constants + FormRequest rules), `php-shadow-oracle.php` (the M24 shadow harness oracle), `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
-- `shadow/` — the proof machine (M24): `run.mjs` replays a scenario against the real app (PHP oracle) and the compiled worker and diffs status/headers/body byte-wise; `scenarios/<app>.mjs` is the per-app corpus. `npm run test:shadow -- --app <app-root>`.
-- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `routes.generated.mjs` route table with names/domains and a `routeNames` map + `public/_routes.json` for Cloudflare Static Assets).
+- `shadow/` — the proof machine (M24): `run.mjs` replays a scenario against the real app (PHP oracle) and the compiled worker and diffs status/headers/body byte-wise; `scenarios/<app>.mjs` is the per-app corpus. `npm run test:shadow -- --app <app-root>` or `laravel-workers shadow --app <app-root>`.
+- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `dist/schema.sql` (the same schema as SQL, for `wrangler d1 execute`) + `routes.generated.mjs` route table with names/domains and a `routeNames` map + `public/_routes.json` for Cloudflare Static Assets).
 - `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy).
 
 ## Requirements
@@ -106,7 +107,7 @@ npx laravel-workers build     # --strict build; reads registry.json / edge/regis
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (170)
+laravel-workers test            # all kernel tests (369)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only
@@ -119,6 +120,7 @@ laravel-workers check:docs      # docs-check 105/105
 laravel-workers init            # scaffold registry.json + wrangler.jsonc (needs Laravel app root)
 laravel-workers build           # --strict (needs Laravel app); --scaffold generates + registers port stubs
 laravel-workers verify          # php tools/verify-s0.php (SKIP when no parent vendor/)
+laravel-workers shadow          # the shadow harness: the real app (PHP oracle) vs the compiled worker
 
 # npm aliases do the same:
 npm test                      # kernel

@@ -193,7 +193,7 @@ The escape hatch stays: **ports**.
 | Queues / Jobs | Cloudflare Queues (free: 10k ops/day) or D1 queue | 🟡 | **wired** (M28) — the worker hands the queue adapter to the handler (a port can push); the `Queue::push(SomeJob::class)` facade still needs a port (job classes are not compiled) | F |
 | Scheduler | Cron Triggers → one dispatcher reads schedule | 🟡 | **wired** (M29): the build dumps the app schedule (cron expression + command) into `dist/src/schedule.generated.mjs` + `dist/cron.json` (the Cloudflare trigger list); the worker's `scheduled` handler queues the due events for the app runtime (the edge triggers, it does not run artisan) | F |
 | Cache | D1 `database` store (Laravel parity) + KV cache-aside | ✅/🟡 | `DatabaseCacheStore` mirrors `Illuminate\Cache\DatabaseStore` 13.37, oracle-verified incl. raw rows (M18); KV stays for build-time/simple caching (eventual consistency trade); the `Cache` facade compiles to it (`get`/`has`/`put`/`add`/`forever`/`forget`/`remember`/`pull`/`increment`/`decrement`/`touch`/`flush`) | F |
-| Storage / filesystem | Uploads → R2; `file_exists`/`public_path` → build-time snapshot | 🟡 | no local FS (hard) → R2 is the padanan; **wired** (M28): the `Storage::` facade compiles to the R2 store (`put`/`get`/`exists`/`delete`), the worker hands the adapter to the handler, and a missing R2 binding fails loud (no silent in-memory writes) | F |
+| Storage / filesystem | Uploads → R2 *or* the D1 blob store; `file_exists`/`public_path` → build-time snapshot | 🟡 | no local FS (hard) → object storage is the padanan; **wired** (M28): the `Storage::` facade compiles to the store (`put`/`get`/`exists`/`delete`) and the worker hands the adapter to the handler; **M30**: R2 when the app binds it, else the **D1 blob store** (one row per object in `lw_blobs` — no extra Cloudflare product, no card); with neither binding the build fails loud and names the missing one (no silent in-memory writes) | F |
 | HTTP client | `fetch` | ✅ | no raw sockets (hard); 6 concurrent conns → batch/queue | F |
 | Logging | Console + optional external sink via fetch | 🟡 | no Log module; `Log::` facade not mapped → port; console + fetch sinks only | F |
 | Realtime / WebSockets | Polling / SSE; Durable Objects beyond | 🔴 | wall: no long-lived conn → padanan: polling/SSE first | F* / $ |
@@ -270,7 +270,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 |---|---|---|
 | D1 max queries / invocation | budget design assumes ≤ handful anyway | W4 |
 | Durable Objects on Free | affects realtime padanan choice | W7 |
-| R2 free tier numbers | uploads sizing | W7 |
+| R2 free tier numbers / the D1 blob-store limits | uploads sizing | W7 |
 | Asset-request billing | assumed not billed (0-invocation behavior verified) | ops |
 | PHP parser choice (npm `php-parser` vs own tokenizer) | transpiler core quality | W1 spike |
 
@@ -379,8 +379,8 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | envoy | ⛔ | local (SSH deploys) |
 | errors | 🟡 | build-time compiled error views when present; status-only stubs otherwise |
 | events | 🟡 | AuthEvents objects exist; `Event::dispatch` not mapped → port; queued → queue (dead) |
-| facades | 🟡 | kernel shims; 8 facades unmapped (mail/queue/storage/cache/gate/hash/notification/password) |
-| filesystem | 🟡 | kernel/storage.mjs exists (memory/R2) but NOT wired; R2 padanan; local = build-only |
+| facades | 🟡 | kernel shims; the `Cache`/`Hash`/`Storage` facades compile (M23/M28/M30); mail/queue/gate/notification/password still unmapped → port |
+| filesystem | 🟡 | wired (M28/M30): `Storage::` → R2 when bound, else the D1 blob store (`lw_blobs`); `file_exists`/`public_path` stay build-only (no local FS) |
 | folio | ⛔ | NOT ported (0 code); Laravel Folio page routing unsupported |
 | fortify | 🟡 ph2 | compile routes/actions, or manual auth (padanan) |
 | frontend | ✅ | Vite unchanged; proven |

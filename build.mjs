@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { buildRoutesJson } from './tools/routes-json.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
+import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import {
   cpSync,
   existsSync,
@@ -433,6 +434,37 @@ const authProviderFqcns = Object.entries(runtimeConfig)
 const slugifyRoute = (route) =>
   route.replace(new RegExp('^/'), '').replace(/[{}]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'home';
 
+// Does the app bind a Cloudflare product under a given name? `product` is the
+// wrangler key ('r2_buckets' | 'd1_databases'). `wrangler.jsonc` is JSON with
+// comments, so the comments are stripped before parsing.
+function hasBinding(appRoot, product, name) {
+  const jsonc = join(appRoot, 'wrangler.jsonc');
+  if (existsSync(jsonc)) {
+    try {
+      const text = readFileSync(jsonc, 'utf8').replace(/^\s*\/\/.*$/gm, '');
+      const cfg = JSON.parse(text);
+      const list = cfg[product];
+      if (Array.isArray(list) && list.some((b) => b && b.binding === name)) return true;
+    } catch {
+      /* a wrangler.jsonc we cannot parse is not a binding we can rely on */
+    }
+  }
+  const toml = join(appRoot, 'wrangler.toml');
+  if (existsSync(toml)) {
+    try {
+      const text = readFileSync(toml, 'utf8');
+      // Every [[product]] block (up to the next table): does one bind the name?
+      return text
+        .split(new RegExp('\\[\\[' + product + '\\]\\]'))
+        .slice(1)
+        .some((b) => new RegExp('binding\\s*=\\s*"' + name + '"').test(b.split(/\n\s*\[/)[0]));
+    } catch {
+      /* ignore */
+    }
+  }
+  return false;
+}
+
 mkdirSync(join(dist, 'src', 'controllers'), { recursive: true });
 mkdirSync(join(dist, 'src', 'views'), { recursive: true });
 mkdirSync(join(dist, 'src', 'contexts'), { recursive: true });
@@ -584,6 +616,8 @@ for (const [route, name] of portEntries) {
 // relations, unknown calls, non-scalar params, ...) stays blocked under --strict
 // or keeps needing a port — the build never silently degrades.
 const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
+// Does any compiled controller use the Storage facade? (decides the object store)
+let usesStorage = false;
 const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, method }
 // The HTTP verbs the compiled rung can serve. OPTIONS is not one of them (the
 // platform answers the CORS preflight, not the app).
@@ -1016,6 +1050,35 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           if (controllerRoutes.has(needsPort[i].route)) needsPort.splice(i, 1);
         }
       }
+
+      // The Storage facade needs an object store: the app's local disk is
+      // object storage at the edge (there is no local filesystem). R2 when the
+      // app binds it, else the D1 blob store (one row per object - no extra
+      // Cloudflare product, no card). With neither, the compiled handler would
+      // only fail at request time - catch it here, where the build can still
+      // tell the operator what to add.
+      if (emittedCount) {
+        const controllerDir = join(dist, 'src', 'controllers');
+        usesStorage = readdirSync(controllerDir)
+          .filter((f) => f.endsWith('.mjs'))
+          .some((f) => readFileSync(join(controllerDir, f), 'utf8').includes('rt.storage()'));
+        if (usesStorage) {
+          if (hasBinding(appDir, 'r2_buckets', 'R2')) {
+            console.log('• Storage:: -> R2 (the R2 binding)');
+          } else if (hasBinding(appDir, 'd1_databases', 'DB')) {
+            console.log('• Storage:: -> the D1 blob store (no R2 binding): one row per object in lw_blobs.');
+            console.log('  Free-plan limits apply: 100k row writes/day, 5M row reads/day, 500 MB per database, 1.5 MB per object.');
+            console.log('  Bind an R2 bucket ("r2_buckets": [{"binding":"R2",...}]) for real object storage.');
+          } else {
+            fail(
+              'a compiled controller uses the Storage facade, but the app binds neither R2 nor D1.\n' +
+                '  The edge has no local filesystem: Storage::put/get/exists/delete need an object store.\n' +
+                '  Add the D1 binding ({"d1_databases":[{"binding":"DB",...}]}) - the blob store needs no\n' +
+                '  extra Cloudflare product - or an R2 bucket ({"r2_buckets":[{"binding":"R2",...}]}).'
+            );
+          }
+        }
+      }
     }
   }
 }
@@ -1052,6 +1115,34 @@ execFileSync(PHP, [join(pkgDir, 'tools', 'schema-dump.php'), schemaPath], {
 });
 cpSync(schemaPath, join(dist, 'schema.json'));
 console.log('  -> dist/schema.json');
+
+// The same schema as plain SQL, so the D1 tables can be created with one
+// command: `wrangler d1 execute DB --file=dist/schema.sql`. The blob store
+// table (the Storage facade on D1) is included when the app uses Storage::.
+{
+  let tables = [];
+  try {
+    const snapshot = JSON.parse(readFileSync(schemaPath, 'utf8'));
+    tables = (snapshot.tables || [])
+      .map((t) => String(t.sql || '').trim().replace(/;+$/, ''))
+      .filter(Boolean);
+  } catch {
+    /* the snapshot is unreadable - dist/schema.json is still written */
+  }
+  const head =
+    '-- laravel-workers: the D1 schema for this app\n' +
+    '-- wrangler d1 execute DB --file=dist/schema.sql\n';
+  const blob = usesStorage
+    ? '\n-- the Storage facade on D1 (one row per object)\n' + BLOB_DDL + ';\n'
+    : '';
+  writeFileSync(
+    join(dist, 'schema.sql'),
+    head + (tables.length ? tables.join(';\n') + ';\n' : '') + blob
+  );
+  console.log(
+    `  -> dist/schema.sql (${tables.length} table(s)` + (usesStorage ? ` + ${BLOB_TABLE}` : '') + ')'
+  );
+}
 
 // ---------- 4. copy static assets ----------
 for (const f of ['build', 'favicon.ico', 'robots.txt']) {

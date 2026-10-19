@@ -205,12 +205,13 @@ export function buildRt(context, opts = {}) {
     if (opts && opts.http) throw new Error('cache(): no cache store configured (cache.driver !== "database" or no D1 binding)');
     return noHttp('cache');
   };
-  // Storage:: — the R2-backed store (the padanan for the app's local disk).
-  // Without the R2 binding this fails loud: a silent in-memory store would lose
-  // the writes at the end of the isolate.
+  // Storage:: — the object store (the padanan for the app's local disk): R2
+  // when the app binds it, else the D1 blob store. Without either this fails
+  // loud: a silent in-memory store would lose the writes at the end of the
+  // isolate.
   rt.storage = () => {
     if (liveStorage) return liveStorage;
-    if (opts && opts.http) throw new Error('storage(): no R2 binding (env.R2) — Storage:: needs object storage at the edge');
+    if (opts && opts.http) throw new Error('storage(): no object store — bind R2 (env.R2) or D1 (env.DB); Storage:: needs object storage at the edge');
     return noHttp('storage');
   };
   // Mail:: — the mailer (log/noop/resend).

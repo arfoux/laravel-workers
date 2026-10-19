@@ -67,6 +67,19 @@ if (cmd === 'test') {
     console.error('laravel-workers build: artisan not found — run from your Laravel app root via npx laravel-workers build (cwd must contain artisan).');
   }
   run(process.execPath, [buildPath, '--strict', ...process.argv.slice(3)], { cwd });
+} else if (cmd === 'shadow') {
+  // The shadow harness: the real app (PHP oracle) vs the compiled worker.
+  const shadowPath = join(pkgDir, 'shadow', 'run.mjs');
+  if (!existsSync(shadowPath)) {
+    console.error('laravel-workers shadow: shadow/run.mjs not found in package - reinstall laravel-workers.');
+    process.exit(1);
+  }
+  const args = process.argv.slice(3);
+  if (!args.includes('--app') && !process.env.LW_SHADOW_APP) {
+    console.error('laravel-workers shadow: --app <laravel-app-root> is required (or set LW_SHADOW_APP).');
+    process.exit(2);
+  }
+  run(process.execPath, [shadowPath, ...args], { cwd: appDir });
 } else if (cmd === 'verify') {
   const php = process.env.PHP_BIN ?? 'php';
   const verifyPath = join(pkgDir, 'tools', 'verify-s0.php');

@@ -105,6 +105,86 @@ test('storage r2 binding', async () => {
   assert.equal((await s.get('x')).body, 'v');
 });
 
+// storage — the D1 blob store (one row per object; no R2, no card)
+function mockD1() {
+  const rows = new Map();
+  const state = { tables: new Set(), created: 0, statements: [] };
+  return {
+    state,
+    prepare(sql) {
+      state.statements.push(sql);
+      const stmt = {
+        params: [],
+        bind(...p) { this.params = p; return this; },
+        async first() {
+          if (sql.includes('lw_blobs') && !state.tables.has('lw_blobs')) {
+            throw new Error('D1_ERROR: no such table: lw_blobs');
+          }
+          if (/SELECT 1/.test(sql)) return { '1': 1 };
+          const row = rows.get(this.params[0]);
+          return row === undefined ? null : { body: row.body, size: row.size };
+        },
+        async run() {
+          if (/^CREATE TABLE/.test(sql)) {
+            state.tables.add('lw_blobs');
+            state.created++;
+            return { success: true };
+          }
+          if (/^INSERT OR REPLACE/.test(sql)) {
+            const [key, body, size] = this.params;
+            rows.set(key, { body, size });
+            return { success: true, meta: { changes: 1 } };
+          }
+          if (/^DELETE/.test(sql)) {
+            rows.delete(this.params[0]);
+            return { success: true, meta: { changes: 1 } };
+          }
+          return { success: true };
+        },
+        async all() { return { results: [] }; },
+      };
+      return stmt;
+    },
+  };
+}
+
+test('storage d1 blob store: put/get/exists/delete (one row per object)', async () => {
+  const d1 = mockD1();
+  const s = createStorage({ d1 });
+  assert.equal(s.kind, 'd1');
+  await s.put('a/b.txt', 'hello');
+  assert.equal(await s.getText('a/b.txt'), 'hello');
+  assert.equal(await s.exists('a/b.txt'), true);
+  assert.equal(s.url('a/b.txt'), '/storage/a/b.txt');
+  await s.delete('a/b.txt');
+  assert.equal(await s.exists('a/b.txt'), false);
+  assert.equal(await s.getText('a/b.txt'), null);
+});
+
+test('storage d1 blob store: the table is created once per binding, not per request', async () => {
+  const d1 = mockD1();
+  const s = createStorage({ d1 });
+  await s.put('k', 'v');
+  await s.get('k');
+  await s.exists('k');
+  assert.equal(d1.state.created, 1, 'the CREATE TABLE ran more than once');
+  assert.ok(d1.state.tables.has('lw_blobs'));
+});
+
+test('storage d1 blob store: an object over the D1 row limit fails loud', async () => {
+  const d1 = mockD1();
+  const s = createStorage({ d1 });
+  await assert.rejects(() => s.put('big', 'x'.repeat(1500001)), /at most 1500000 bytes/);
+});
+
+test('storage: r2 wins over d1 when the app binds both', async () => {
+  const m = new Map();
+  const r2 = { async put(k,v){ m.set(k,v); }, async get(k){ const v=m.get(k); return v===undefined?null:{ body: v }; }, async delete(k){ m.delete(k); } };
+  const s = createStorage({ r2, d1: mockD1() });
+  assert.equal(s.kind, 'r2');
+  assert.equal(s.url('x'), '/r2/x');
+});
+
 // scheduler — cron
 test('the dumped schedule: dueEvents picks the events that fire now', async () => {
   const { dueEvents, cronMatches } = await import('../scheduler.mjs');

@@ -202,4 +202,47 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(avg <= 2, `schedule cron evaluation avg ${avg}`);
     assert.ok(p95 <= 5, `schedule cron evaluation p95 ${p95}`);
   }
+
+  // The D1 blob store (the Storage facade on D1 - no R2, no card): the local
+  // part of one put + one get (the SQL text, the size check, the row shape).
+  // The D1 round trip itself is not measurable here; on the free plan a blob
+  // write counts as one D1 row write and a blob read as one row read
+  // (100k writes/day, 5M reads/day).
+  {
+    const rows = new Map();
+    const fakeD1 = {
+      prepare(sql) {
+        const stmt = {
+          params: [],
+          bind(...p) { this.params = p; return this; },
+          async first() {
+            if (/SELECT 1/.test(sql)) return { '1': 1 };
+            const row = rows.get(this.params[0]);
+            return row === undefined ? null : { body: row.body };
+          },
+          async run() {
+            if (/^INSERT OR REPLACE/.test(sql)) {
+              rows.set(this.params[0], { body: this.params[1] });
+              return { success: true, meta: { changes: 1 } };
+            }
+            return { success: true };
+          },
+        };
+        return stmt;
+      },
+    };
+    const { createStorage: createStore } = await import('../storage.mjs');
+    const blob = createStore({ d1: fakeD1 });
+    await blob.put('k', 'v');
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      await blob.put('k', 'v');
+      await blob.get('k');
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `storage d1 blob store avg ${avg}`);
+    assert.ok(p95 <= 5, `storage d1 blob store p95 ${p95}`);
+  }
 });

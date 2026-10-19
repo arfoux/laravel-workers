@@ -267,8 +267,14 @@ export function extractController(source, methodName) {
   scanBody(method.body, classSet, viewSet, constantSet);
 
   const classes = [...classSet]
-    .filter((alias) => !NON_MODEL_STATICS.has(alias))
-    .map((alias) => ({ alias, fqcn: uses[alias] || (nsName ? nsName + '\\' + alias : alias) }));
+    .filter((alias) => !NON_MODEL_STATICS.has(alias.replace(/^\\/, '')))
+    .map((rawAlias) => {
+      // A fully-qualified static call (`\App\Models\Post::find()`) is already
+      // resolved by PHP — the controller's namespace must not be prefixed.
+      const alias = String(rawAlias).replace(/^\\/, '');
+      const fqcn = uses[alias] || (alias.includes('\\') ? alias : nsName ? nsName + '\\' + alias : alias);
+      return { alias, fqcn };
+    });
   classes.sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
 
   // Classes read for a *constant* (e.g. RouteServiceProvider::HOME).
@@ -361,7 +367,13 @@ export function emitController(source, methodName, meta = {}) {
     segIndex++;
   }
 
-  const modelAliases = new Set((meta.models || []).map((m) => m.alias));
+  // A model may be called by its alias (`Post::find()`) or fully qualified
+  // (`\App\Models\Post::find()`); the runtime map knows both keys.
+  const modelAliases = new Set();
+  for (const m of meta.models || []) {
+    modelAliases.add(m.alias);
+    if (m.fqcn) modelAliases.add(m.fqcn);
+  }
   for (const c of info.classes) {
     if (!modelAliases.has(c.alias)) {
       errors.push(

@@ -403,7 +403,9 @@ function modelChain(node) {
       segs.unshift({ name, node: cur });
       cur = what.what;
     } else if (what.kind === 'staticlookup') {
-      const cls = what.what && what.what.name;
+      // The leading backslash of a fully-qualified name is stripped (PHP has
+      // already resolved it — the namespace must not be prefixed again).
+      const cls = what.what && what.what.name ? String(what.what.name).replace(/^\\/, '') : null;
       const name = what.offset && what.offset.name;
       if (typeof cls !== 'string' || typeof name !== 'string') return null;
       if (!CTX.models.has(cls)) return null;
@@ -611,7 +613,9 @@ function txCall(node) {
     throw mkErr('LW001', 'unknown function ' + name, node.loc);
   }
   if (what.kind === 'staticlookup') {
-    const cls = what.what && what.what.name;
+    // A fully-qualified static call keeps its leading backslash in the AST
+    // (`\Illuminate\Support\Facades\Cache::get()`) — strip it before matching.
+    const cls = what.what && what.what.name ? String(what.what.name).replace(/^\\/, '') : undefined;
     const meth = what.offset && what.offset.name;
     if (cls === 'Route' && meth === 'has') return 'rt.Route.has(' + args + ')';
     if (cls === 'ValidationException' || cls === 'Illuminate\\Validation\\ValidationException') {

@@ -43,6 +43,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 | D1 rows written | 100k/day (hard-enforced since 2026-09-01) | cookie session driver = **zero** session writes; throttle only sensitive routes (Fortify-style), never blanket |
 | D1 rows read | 5M/day (hard-enforced) | indexed lookups only; no full scans on hot paths |
 | D1 storage | 5 GB/account, 500 MB/db | fine for small/medium apps |
+| Object storage | R2 free: 10 GB-month, 1M Class A, 10M Class B, free egress — but R2 asks for a payment method | the `Storage::` facade uses **R2 when the app binds it**, else the **D1 blob store** (one row per object in `lw_blobs`; 500 MB/db, 2 MB/row → 1.5 MB per object with headroom). A blob write = 1 D1 row write, a blob read = 1 row read (100k writes/day, 5M reads/day). The build names the store it picked and fails loud when the app binds neither R2 nor D1 |
 | Durable Objects (SQLite) | free: 100k req + 100k row writes/day | locks / atomic counters can stay free-tier |
 | Queues, Containers | **Paid only** | adapters + PHP rung are Paid-later tiers by definition; the compiled rung never depends on them |
 | Requests | 100k/day (error 1027) | static assets don't count |
@@ -241,6 +242,11 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   Mail / Filesystem / Broadcast / Notifications / Scheduler: **call sites and class code
   compile** (jobs, mailables, notifications are classes) — stores/delivery are
   adapter-pending, flagged in `report`, never a silent no-op
+- Filesystem: `Storage::` (`put`/`get`/`exists`/`delete`) compiles to the object store — **R2**
+  when the app binds it, else the **D1 blob store** (one row per object in `lw_blobs`, created
+  lazily, 1.5 MB per object). The build prints the store it picked and fails loud when the app
+  binds neither R2 nor D1 (no silent in-memory writes); `Storage::disk()` and the fluent
+  facades still need a port (the disk/mailable/job classes are not compiled)
 - HTTP client (`Http::get`): fetch mapping, retries/timeouts; streaming declares limits
 
 ## 6. The full mentok — compiled-rung boundary (permanent)
