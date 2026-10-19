@@ -70,7 +70,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "Flashes into the session for the next request; the proof is the session payload + the Location.",
-      "batch": "M35",
+      "batch": "M36",
       "status": "todo"
     },
     {
@@ -80,7 +80,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "Flashes `_old_input` (everything except the `dontFlash` fields).",
-      "batch": "M35",
+      "batch": "M36",
       "status": "todo"
     },
     {
@@ -90,7 +90,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow already writes it).",
-      "batch": "M35",
+      "batch": "M36",
       "status": "todo"
     },
     {
@@ -100,7 +100,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "An absolute external URL (the compiled redirect only does local ones).",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -110,7 +110,7 @@
       "expect": "fail",
       "code": "LW001",
       "note": "The Referer, or the session's `url.previous`, or `/`.",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -120,7 +120,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "A family (slug/limit/upper/lower/head/studly/...). Each one needs its PHP-parity rule.",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -130,7 +130,7 @@
       "expect": "fail",
       "code": "LW001",
       "note": "The build-time config dump is the padanan (the edge has no .env).",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -140,7 +140,7 @@
       "expect": "fail",
       "code": "LW001",
       "note": "Dot/array access on an array or an object.",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -150,7 +150,7 @@
       "expect": "fail",
       "code": "LW001",
       "note": "Passes the value through a closure (the closure support exists).",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -160,7 +160,7 @@
       "expect": "fail",
       "code": "LW001",
       "note": "Reports an exception to the logger (it does not answer it).",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -170,7 +170,7 @@
       "expect": "fail",
       "code": "LW001",
       "note": "The helper form of the `Cache` facade (the facade compiles).",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -180,7 +180,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "The array form writes many keys; `session()->put([...])` compiles.",
-      "batch": "M36",
+      "batch": "M37",
       "status": "todo"
     },
     {
@@ -190,7 +190,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The listeners are classes - they are not compiled, so the dispatch is a port.",
-      "batch": "M37",
+      "batch": "M38",
       "status": "todo"
     },
     {
@@ -200,7 +200,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The policies are classes - they are not compiled, so the check is a port.",
-      "batch": "M37",
+      "batch": "M38",
       "status": "todo"
     },
     {
@@ -210,7 +210,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The mailable class is not compiled; the mailer adapter exists (M28).",
-      "batch": "M37",
+      "batch": "M38",
       "status": "todo"
     },
     {
@@ -220,7 +220,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The job class is not compiled; the queue adapter exists (M28).",
-      "batch": "M37",
+      "batch": "M38",
       "status": "todo"
     },
     {
@@ -230,7 +230,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "The disk class is not compiled; the default disk compiles (M30).",
-      "batch": "M37",
+      "batch": "M38",
       "status": "todo"
     },
     {
@@ -240,7 +240,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "Tags need a KV/Redis-shaped store; the D1 `database` store has no tags.",
-      "batch": "M37",
+      "batch": "M38",
       "status": "todo"
     },
     {
@@ -250,7 +250,7 @@
       "check": "build",
       "expect": "fail",
       "note": "A layout compiles to `$__env` - a view-level construct (not the controller compiler).",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -260,7 +260,7 @@
       "check": "build",
       "expect": "fail",
       "note": "The query builder has no pagination; D1 has no OFFSET-free paging guarantee.",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -270,7 +270,7 @@
       "check": "build",
       "expect": "fail",
       "note": "The compiled handler takes the raw segment; the model is fetched explicitly.",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -280,7 +280,7 @@
       "check": "build",
       "expect": "fail",
       "note": "The relation methods are not compiled; the eager-loading subset needs the model dump.",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -290,7 +290,7 @@
       "check": "build",
       "expect": "fail",
       "note": "Uploads need R2 (multipart parsing at the edge).",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -300,7 +300,7 @@
       "check": "build",
       "expect": "fail",
       "note": "The platform answers the CORS preflight, not the app.",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     }
   ]
