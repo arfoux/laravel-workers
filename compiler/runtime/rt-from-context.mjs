@@ -1,4 +1,5 @@
 // compiler/runtime/rt-from-context.mjs — Runtime helpers (context → rt)
+import { validationExceptionWithMessages } from '../../kernel/validation.mjs';
 export function buildRt(context, opts = {}) {
   const strict = !!(opts && opts.strict);
   const ctx = context || {};
@@ -197,6 +198,11 @@ export function buildRt(context, opts = {}) {
   // Str::random(40), alphanumeric) — kept byte-exact.
   rt.csrf_field = () =>
     '<input type="hidden" name="_token" value="' + String(rt.session().token()) + '" autocomplete="off">';
+
+  // Illuminate\Validation\ValidationException::withMessages([...]) — the compiled
+  // kernel catches the same class instance (kernel/validation.mjs) and renders the
+  // 302-back / 422 response, so `throw` works exactly like the PHP throw.
+  rt.validationExceptionWithMessages = (messages, o) => validationExceptionWithMessages(messages, o);
 
   rt.auth = (name) => {
     if (liveAuth) {

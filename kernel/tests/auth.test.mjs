@@ -669,7 +669,17 @@ async function runJs(input, { hashKey }) {
         }
       }
       case 'middlewareGuest': {
-        const middleware = new RedirectIfAuthenticated(manager);
+        // Mirror the oracle app's named routes: the vendor middleware probes
+        // Route::has('dashboard'|'home') to pick the guest redirect target, and
+        // the compiled rung reads that from the generated route registry.
+        const routeMap = input.app_routes ?? {};
+        const routeRegistry = {
+          has: (name) => Object.prototype.hasOwnProperty.call(routeMap, String(name)),
+          route: (name) =>
+            Object.prototype.hasOwnProperty.call(routeMap, String(name)) ? routeMap[name] : null,
+          get: () => ({}),
+        };
+        const middleware = new RedirectIfAuthenticated(manager, { routeRegistry });
         let nextCalled = false;
         const next = () => {
           nextCalled = true;
@@ -1024,7 +1034,10 @@ test('auth: SessionGuard + middleware end-to-end parity', { skip: noSqlite }, as
 
   for (const run of runs) {
     const oracle = run.oracle ?? runOracle(run.input);
-    const js = await runJs(run.input, { hashKey });
+    // The app's named routes come back from the oracle (top level); the compiled
+    // side needs them inside the payload because RedirectIfAuthenticated's guest
+    // redirect target is route-name driven (Route::has('dashboard') …).
+    const js = await runJs({ ...run.input, app_routes: oracle.app_routes ?? {} }, { hashKey });
     assertRun(run.label, js, oracle, { rehashIndex: run.rehashIndex ?? -1 });
 
     if (run.label === 'remember-login') {

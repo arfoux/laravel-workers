@@ -532,6 +532,17 @@ function txCall(node) {
     const cls = what.what && what.what.name;
     const meth = what.offset && what.offset.name;
     if (cls === 'Route' && meth === 'has') return 'rt.Route.has(' + args + ')';
+    if (cls === 'ValidationException' || cls === 'Illuminate\\Validation\\ValidationException') {
+      if (meth !== 'withMessages') {
+        throw mkErr(
+          'LW002',
+          'ValidationException::' + meth + '() is not supported — only withMessages(); ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.validationExceptionWithMessages(' + args + ')';
+    }
     if ((cls === 'Auth' || cls === 'Illuminate\\Support\\Facades\\Auth') && CTX && CTX.controller) {
       if (!AUTH_ASYNC.has(meth)) {
         throw mkErr(
@@ -828,6 +839,9 @@ function walkStatement(node, lines, indent, ctx) {
       break;
     case 'return':
       lines.push(indent + 'return ' + (node.expr ? tx(node.expr) : '') + ';');
+      break;
+    case 'throw':
+      lines.push(indent + 'throw ' + tx(node.what || node.expr) + ';');
       break;
     case 'function': {
       const nm = fname(node.name && node.name.name ? node.name.name : node.name);

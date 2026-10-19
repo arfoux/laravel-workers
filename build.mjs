@@ -156,6 +156,29 @@ const middlewareForRoute = (route) => {
   }
   return null;
 };
+// The verb a uri's "main" handler answers: GET when present, else the first
+// non-HEAD verb (POST for form-only routes). Extra verbs (e.g. Breeze's
+// GET+POST /login) are compiled as separate per-verb handlers below.
+const mainVerbFor = (route) => {
+  const set = methodsFor.get(route) || new Set();
+  if (set.has('GET')) return 'GET';
+  const others = [...set].filter((m) => m !== 'HEAD');
+  return others.length ? others[0] : null;
+};
+const extraVerbsFor = (route) =>
+  [...(methodsFor.get(route) || new Set())].filter((m) => m !== 'HEAD' && m !== mainVerbFor(route));
+const metaForVerb = (route, verb) => metaFor.get(String(verb).toUpperCase() + ' ' + route) || null;
+// Middleware kernel/http.mjs actually honours. auth/guest run on top of the web
+// group; numeric `throttle:n[,m]` runs against the D1-backed `database` cache.
+const HONOURED_MIDDLEWARE = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'guest']);
+const isHonouredMiddleware = (m) => {
+  const str = String(m);
+  const name = str.split(':')[0];
+  if (HONOURED_MIDDLEWARE.has(name)) return true;
+  if (name !== 'throttle') return false;
+  const spec = str.slice('throttle'.length).replace(/^:/, '');
+  return spec === '' || /^\d+(,\d+)?$/.test(spec); // numeric spec only
+};
 console.log(`  app routes (${routes.length}): ${routes.join('  ')}`);
 const skippedRoutes = [
   ...new Set(listed.filter((r) => !isAppRoute(r)).map((r) => normalize(r.uri))),
@@ -418,31 +441,17 @@ for (const [route, name] of portEntries) {
 
 // ---------- 3c2. transpile controllers (single-method routes that still need a port) ----------
 // A route only leaves the "needs a port" list when its controller method was fully
-// transpiled at build time. Only routes with exactly one non-HEAD verb (GET or POST) are
-// attempted; a route that answers several verbs on the same uri still needs a port,
-// because one handler key can only be registered for one verb. Anything outside the
-// supported subset (auth flows, relations, unknown calls, non-scalar params, ...) stays
-// blocked under --strict or keeps needing a port — the build never silently degrades.
+// transpiled at build time. The uri's main verb (GET, else POST) plus any extra
+// verb (Breeze's GET+POST /login) are each compiled to their own "METHOD uri"
+// handler / table entry. Anything outside the supported subset (auth flows,
+// relations, unknown calls, non-scalar params, ...) stays blocked under --strict
+// or keeps needing a port — the build never silently degrades.
 const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
+const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, method }
 {
   const methodsOk = (route) => {
-    const others = [...(methodsFor.get(route) || new Set())].filter((m) => m !== 'HEAD');
-    return others.length === 1 && (others[0] === 'GET' || others[0] === 'POST');
-  };
-  // Routes on the default web/api groups are transpiled. auth/guest are honoured
-  // by kernel/http.mjs, so they are benign at transpile time too. Numeric
-  // `throttle:n[,m]` is honoured by kernel/http.mjs on top of the D1-backed
-  // `database` cache store (see the cache audit in 5a). Anything else
-  // (throttle:name, verified, can:, custom) would be bypassed at the edge, so
-  // those routes stay "needs a port" instead of silently opening up.
-  const namedMiddleware = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'guest']);
-  const isHonouredMiddleware = (m) => {
-    const str = String(m);
-    const name = str.split(':')[0];
-    if (namedMiddleware.has(name)) return true;
-    if (name !== 'throttle') return false;
-    const spec = str.slice('throttle'.length).replace(/^:/, '');
-    return spec === '' || /^\d+(,\d+)?$/.test(spec); // numeric spec only
+    const main = mainVerbFor(route);
+    return main === 'GET' || main === 'POST';
   };
   const targets = [];
   for (const { route } of needsPort) {
@@ -459,7 +468,38 @@ const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
     const fqcn = at >= 0 ? action.slice(0, at) : action;
     const method = at >= 0 ? action.slice(at + 1) : '__invoke';
     if (!/^[A-Za-z_][A-Za-z0-9_\\]*$/.test(fqcn) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(method)) continue;
-    targets.push({ route, fqcn, method });
+    targets.push({ route, verb: mainVerbFor(route), fqcn, method });
+  }
+
+  // Extra verbs on a uri whose main verb is already handled by a snapshot / view /
+  // static page (Breeze's GET+POST /login is the canonical case). Each compiles to
+  // its own handler keyed "METHOD uri"; a verb that cannot compile stays a partial
+  // and still blocks the strict build.
+  const extraTargets = [];
+  for (const route of routes) {
+    for (const verb of extraVerbsFor(route)) {
+      const meta = metaForVerb(route, verb);
+      const action = meta && meta.action;
+      if (verb !== 'POST') {
+        console.log(`  skip ${verb} ${route}: only GET/POST handlers are compiled — write a port`);
+        continue;
+      }
+      if (!action || action === 'Closure') continue;
+      const mwList = (meta && meta.middleware) || [];
+      const blocking = mwList.filter((m) => !isHonouredMiddleware(m));
+      if (blocking.length) {
+        console.log(`  skip ${verb} ${route}: middleware [${blocking.join(', ')}] not transpiled — write a port`);
+        continue;
+      }
+      const at = action.lastIndexOf('@');
+      const fqcn = at >= 0 ? action.slice(0, at) : action;
+      const method = at >= 0 ? action.slice(at + 1) : '__invoke';
+      if (!/^[A-Za-z_][A-Za-z0-9_\\]*$/.test(fqcn) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(method)) continue;
+      extraTargets.push({ route, verb, fqcn, method });
+    }
+  }
+  for (const t of extraTargets) {
+    if (!targets.some((x) => x.route === t.route && x.verb === t.verb)) targets.push(t);
   }
 
   if (targets.length) {
@@ -664,7 +704,10 @@ const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
           console.log(`  controller ${p.route}: skipped — view "${missingView}" did not compile`);
           continue;
         }
-        const slug = slugifyRoute(p.route);
+        const isExtraVerb = extraVerbsFor(p.route).includes(p.verb);
+        const slug = isExtraVerb
+          ? `${slugifyRoute(p.route)}-${String(p.verb).toLowerCase()}`
+          : slugifyRoute(p.route);
         const meta = {
           routeUri: p.route,
           routeParams: (p.route.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1).replace(/[?*]$/, '')),
@@ -687,9 +730,14 @@ const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
             ],
             { cwd: appDir }
           );
-          controllerRoutes.set(p.route, { slug, fqcn: p.fqcn, method: p.method });
+          if (isExtraVerb) {
+            verbControllers.push({ route: p.route, verb: p.verb, slug, fqcn: p.fqcn, method: p.method });
+            console.log(`  controller ${p.verb} ${p.route} -> dist/src/controllers/${slug}.mjs (${p.fqcn}@${p.method})`);
+          } else {
+            controllerRoutes.set(p.route, { slug, fqcn: p.fqcn, method: p.method });
+            console.log(`  controller ${p.route} -> dist/src/controllers/${slug}.mjs (${p.fqcn}@${p.method})`);
+          }
           emittedCount++;
-          console.log(`  controller ${p.route} -> dist/src/controllers/${slug}.mjs (${p.fqcn}@${p.method})`);
         } catch (e) {
           console.log(`  controller ${p.route}: skipped — ${formatControllerError(e)}`);
         }
@@ -702,6 +750,19 @@ const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
       }
     }
   }
+}
+
+// Extra verbs that compiled to their own handler no longer need a port; the rest
+// stay as partials so `--strict` still fails on them.
+{
+  const resolved = new Set(verbControllers.map((v) => v.route + ' ' + v.verb));
+  const remaining = [];
+  for (const p of partials) {
+    const left = p.methods.filter((m) => !resolved.has(p.route + ' ' + m));
+    if (left.length) remaining.push({ route: p.route, methods: left });
+  }
+  partials.length = 0;
+  partials.push(...remaining);
 }
 
 // Always emit models.generated.mjs (even with no compiled controllers) so the
@@ -771,34 +832,56 @@ cpSync(join(pkgDir, 'kernel'), join(dist, 'kernel'), { recursive: true });
 cpSync(join(pkgDir, 'compiler', 'runtime'), join(dist, 'src', 'runtime'), { recursive: true });
 
 const builtAt = new Date().toISOString();
+// A uri's base entry answers only its main verb; extra verbs (POST on a
+// snapshotted GET uri, etc.) get their own table entry below so router.routeKey()
+// — which keys a handler by the entry's first method — resolves each verb.
+const baseMethodsFor = (route) => {
+  const all = [...(methodsFor.get(route) || new Set())];
+  const extras = extraVerbsFor(route);
+  if (!extras.length) return all;
+  const kept = all.filter((m) => !extras.includes(m));
+  return kept.length ? kept : all;
+};
 const routeTable = routes.map((route) => {
   if (ignoreMap.some(([r]) => r === route)) {
     const entry = ignoreMap.find(([r]) => r === route);
-    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'ignore', reason: entry[1] };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'ignore', reason: entry[1] };
   }
   if (portEntries.some(([r]) => r === route)) {
     const slug = portEntries.find(([r]) => r === route)[1];
-    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'port', controller: slug };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'port', controller: slug };
   }
   if (viewMap.some(([r]) => r === route)) {
     const slug = controllerByRoute.get(route);
     const view = viewMap.find(([r]) => r === route)[1];
-    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'view', view, controller: slug };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'view', view, controller: slug };
   }
   if (controllerRoutes.has(route)) {
     const info = controllerRoutes.get(route);
-    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'controller', controller: info.slug };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'controller', controller: info.slug };
   }
   if (staticMap.some(([r]) => r === route)) {
     const file = staticMap.find(([r]) => r === route)[1];
-    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'snapshot', snapshot: file };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'snapshot', snapshot: file };
   }
   if (snapshots.includes(route)) {
     const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
-    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'snapshot', snapshot: file };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'snapshot', snapshot: file };
   }
-  return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'unhandled' };
+  return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'unhandled' };
 });
+for (const v of verbControllers) {
+  const meta = metaForVerb(v.route, v.verb) || {};
+  routeTable.push({
+    uri: v.route,
+    name: meta.name ?? null,
+    domain: meta.domain ?? null,
+    middleware: meta.middleware ?? null,
+    methods: [v.verb],
+    kind: 'controller',
+    controller: v.slug,
+  });
+}
 
 // ---------- 5a. middleware audit ----------
 // kernel/http.mjs honours exactly this set. Anything else on a view / controller /
@@ -844,12 +927,11 @@ const routeTable = routes.map((route) => {
 const controllerImports = [];
 const controllerMap = [];
 let controllerIndex = 0;
-for (const route of routes) {
-  const entry = routeTable.find((r) => r.uri === route);
-  if (entry && (entry.kind === 'view' || entry.kind === 'port' || entry.kind === 'controller')) {
+for (const entry of routeTable) {
+  if (entry.kind === 'view' || entry.kind === 'port' || entry.kind === 'controller') {
     const idx = controllerIndex++;
     controllerImports.push(`import handler${idx} from './controllers/${entry.controller}.mjs';`);
-    controllerMap.push({ route, idx });
+    controllerMap.push({ uri: entry.uri, methods: entry.methods, idx });
   }
 }
 
@@ -858,10 +940,9 @@ for (const [key, meta] of metaFor) {
   if (meta.name) routeNames[meta.name] = key.slice(key.indexOf(' ') + 1);
 }
 
-const handlersLines = controllerMap.map(({ route, idx }) => {
-  const entry = routeTable.find((r) => r.uri === route);
-  const methods = entry.methods && entry.methods.length ? entry.methods : ['GET'];
-  return `  ${JSON.stringify(methods[0] + ' ' + route)}: handler${idx},`;
+const handlersLines = controllerMap.map(({ uri, methods, idx }) => {
+  const m = methods && methods.length ? methods : ['GET'];
+  return `  ${JSON.stringify(m[0] + ' ' + uri)}: handler${idx},`;
 });
 
 writeFileSync(
@@ -911,7 +992,7 @@ if (stubPorts.length)
   );
 if (!blocked)
   console.log(
-    `• coverage: all ${routes.length} route(s) handled — static ${staticMap.length}, snapshots ${snapshots.length}, ports ${portEntries.length}, controllers ${controllerRoutes.size}, ignored ${ignoreMap.length}`
+    `• coverage: all ${routes.length} route(s) handled — static ${staticMap.length}, snapshots ${snapshots.length}, ports ${portEntries.length}, controllers ${controllerRoutes.size}, extra-verb controllers ${verbControllers.length}, ignored ${ignoreMap.length}`
   );
 
 // ---------- 7. scaffold stubs for routes that need a port ----------

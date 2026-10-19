@@ -28,7 +28,7 @@ const TYPE_MAP = {
 };
 
 // Static classes that are allowed even though they are not Eloquent models.
-const NON_MODEL_STATICS = new Set(['Route', 'self', 'static', 'parent', 'Auth', 'Illuminate\\Support\\Facades\\Auth']);
+const NON_MODEL_STATICS = new Set(['Route', 'self', 'static', 'parent', 'Auth', 'Illuminate\\Support\\Facades\\Auth', 'ValidationException', 'Illuminate\\Validation\\ValidationException']);
 
 function lwErr(code, message, loc, hint) {
   return {

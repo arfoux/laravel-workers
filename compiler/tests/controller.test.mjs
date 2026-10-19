@@ -373,6 +373,39 @@ test('emit: session()->regenerate()/invalidate() await, regenerateToken() stays 
   assert.match(b.code, /\(await rt\.session\(\)\.invalidate\(\)\);/);
 });
 
+test('emit: `throw ValidationException::withMessages([...])` maps to rt.validationExceptionWithMessages', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Validation\\ValidationException;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        throw ValidationException::withMessages(['email' => 'These credentials do not match our records.']);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/login', routeParams: [], models: [], views: [] });
+  assert.deepEqual(res.errors, []);
+  assert.match(
+    res.code,
+    /throw rt\.validationExceptionWithMessages\(\{"email": "These credentials do not match our records\."\}\);/
+  );
+});
+
+test('emit: an unsupported ValidationException static fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Validation\\ValidationException;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    '        throw ValidationException::withValidator(1);\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/login', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 1);
+  assert.equal(res.errors[0].code, 'LW002');
+});
+
 // ---------------------------------------------------------------------------
 // runtime — a mini dist tree + mock D1
 // ---------------------------------------------------------------------------
@@ -397,6 +430,8 @@ function writeTree(root, files) {
 writeTree(tmpRoot, {
   'kernel/model.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'model.mjs'), 'utf8'),
   'kernel/db.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'db.mjs'), 'utf8'),
+  'kernel/validation.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation.mjs'), 'utf8'),
+  'kernel/validator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validator.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(
     path.join(pkgDir, 'compiler', 'runtime', 'rt-from-context.mjs'),
     'utf8'

@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ValidationException,
+  validationExceptionWithMessages,
   installValidation,
   summarizeValidation,
   sessionErrorBag,
@@ -80,6 +81,22 @@ test('sessionErrorBag matches Store::prepareErrorBagForSerialization (json)', ()
     default: { format: ':message', messages: { email: ['nope'] } },
   });
   assert.deepEqual(DEFAULT_DONT_FLASH, ['current_password', 'password', 'password_confirmation']);
+});
+
+test('validationExceptionWithMessages mirrors ValidationException::withMessages (Arr::wrap + dedupe)', () => {
+  // `Arr::wrap()` a scalar, dedupe an array through MessageBag::add (keep-first).
+  const e = validationExceptionWithMessages({
+    email: 'These credentials do not match our records.',
+    password: ['too short', 'too short', 'weak'],
+  });
+  assert.ok(e instanceof ValidationException);
+  assert.deepEqual(e.errors(), {
+    email: ['These credentials do not match our records.'],
+    password: ['too short', 'weak'],
+  });
+  assert.equal(e.status, 422);
+  assert.equal(e.lwKernel, true);
+  assert.equal(e.message, 'These credentials do not match our records. (and 2 more errors)');
 });
 
 // ---------------------------------------------------------------------------

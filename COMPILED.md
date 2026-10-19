@@ -67,6 +67,9 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   the compiled universe, traits/inheritance/interfaces/enums, union/nullable types, defaults,
   spread/variadics, closures, generators
 - Output: one module per class + `classes.generated.mjs` registry (`new $x` / `make($x)`)
+- Multi-verb URIs: a URI compiles its primary GET/POST handler *and* any extra POST verbs
+  (separate module, e.g. `login-post.mjs`) — a `GET /login` view snapshot plus a
+  `POST /login` controller coexist; other extra verbs (PUT/PATCH/DELETE) need a port
 - Out-of-subset class body → per-class build error (never a wrong compile)
 
 ### 1.3 Shadow harness (the proof machine)
@@ -74,6 +77,12 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   status/headers/body byte-wise over a request matrix (routes × fixtures)
 - Runs in CI. New features must shrink the uncovered list, not just add green unit tests
 - This makes "compiled 1:1" measurable instead of vibes
+- First oracle-backed E2E: `kernel/tests/login-flow.test.mjs` drives the **Breeze login
+  flow** (guest redirect → CSRF bootstrap → failed validation → `attempt` → session
+  regenerate → `intended` → logout → 422 JSON) through the compiled kernel and diffs it
+  against `tools/php-login-flow-oracle.php` (real PHP 8.3 + the fixture app): status,
+  header set, `Set-Cookie` names/attrs, session rows and payload, JSON bodies, Symfony
+  redirect HTML bytes — all 1:1.
 
 ### 1.4 Runtime completeness (corpus-driven, continuous)
 - Arrays (ordered maps) — done; references → cells; int64 → BigInt discipline + overflow fail-loud
@@ -92,16 +101,16 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 
 | Area | Full target | Notes |
 |---|---|---|
-| Request | input/query/post/json/headers/cookies/files (multipart subset)/ip/fullUrl/is/route/validate | dot paths; `old()`/`user()`/`session()` hang off session/auth |
+| Request | input/query/post/json/headers/cookies/files (multipart subset)/ip/fullUrl/is/route/validate | dot paths; request cookies are parsed off `Cookie:` and decrypted before StartSession; the `InteractsWithData` accessors (`boolean`/`integer`/`float`/`string`/`filled`/`isNotFilled`/`missing`/`hasAny`/`only`/`except`) are implemented — `string()` models `Stringable` as a plain string (method chains are not transpiled yet); `old()`/`user()`/`session()` hang off session/auth |
 | Response | json/make/view/download(stream)/file; redirect→route/away/back/intended; `with/withErrors/withInput`; cookie queue; headers | `back()` needs session; `intended()` compiled (M20) |
 | Middleware | groups (`web`/`api`), route params (`throttle:60,1`, `can:`), sorting, terminable | compiled pipeline |
 | Route-model binding | implicit/explicit/scoped/nullable | |
 | CSRF | token in session, `X-CSRF-TOKEN`/`X-XSRF-TOKEN`, except list, SameSite | full VerifyCsrfToken semantics |
 | Signed URLs | `signedRoute`, `temporarySignedRoute`, `hasValidSignature` | HMAC kernel done |
 | Cookies | EncryptCookies parity, queued cookies, cookie jar | M5 parity done |
-| **Sessions** | cookie driver (stateless encrypted payload) + D1 driver; flash rotation (`_flash.new/old`), `old()` input, error bag (`$errors`), `regenerate`/`invalidate`/`migrate`, lifetime/expiry | **byte-parity goal for the cookie payload** (encrypter + serialize subset in place); `regenerate`/`invalidate`/`regenerateToken` callable from compiled controllers (M20) |
+| **Sessions** | cookie driver (stateless encrypted payload) + D1 driver; flash rotation (`_flash.new/old`), `old()` input, error bag (`$errors`), `regenerate`/`invalidate`/`migrate`, lifetime/expiry | **byte-parity goal for the cookie payload** (encrypter + serialize subset in place); `regenerate`/`invalidate`/`regenerateToken` callable from compiled controllers (M20); **documented gap**: view-only GET routes are auto-snapshotted to a static asset the Worker serves *before* the kernel, so they run no session middleware (e.g. a plain `GET /login`) |
 | Rate limiting | `throttle` middleware full; `RateLimiter::for()` compiled | D1 `database` store (M18); `increment` is read-then-write (D1 has no interactive transactions) — a race under concurrency, flagged not atomic |
-| **Auth** | session guard full API (attempt/login/logout/once/validate/user/id/check/guest), remember-me recaller cookie + rotation, Eloquent + database providers, auth events, `auth`/`guest`/`can`/`password.confirm` middleware, `Auth::viaRemember` | compiles on top of Sessions above |
+| **Auth** | session guard full API (attempt/login/logout/once/validate/user/id/check/guest), remember-me recaller cookie + rotation, Eloquent + database providers, auth events, `auth`/`guest`/`can`/`password.confirm` middleware, `Auth::viaRemember` | compiles on top of Sessions above; the provider's generated model gets the `Authenticatable` trait applied at kernel boot (`resolveAuthConfig`) |
 | Auth flows (Fortify-shaped) | login/register/logout/forgot/reset/verify as **compiled controllers**: validate → attempt → regenerate → intended; reset tokens in D1; mail delivery flagged *adapter* (flow compiles now) | throttling via Rate limiter; validate → attempt → regenerate → intended all compile (M19/M20) |
 | Sanctum | personal access tokens (D1), abilities + middleware; SPA cookie mode last | |
 | Localization | `__()`, `trans_choice`, `@lang`, locale switch mid-request | rides on 1.1 dumps |
@@ -112,7 +121,11 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   call (`rt.request().validate(...)`, D1 passed for `unique`/`exists`). Failure → 302 back
   (Referer → flashed previous URL → `/`) with flashed `errors` + `_old_input` (minus
   `Handler::$dontFlash`), or 422 JSON for `expectsJson`; json session serialization only
-  (the `ViewErrorBag` `serialize()` path fails loud).
+  (the `ViewErrorBag` `serialize()` path fails loud — the render failure rejects the
+  promise, it is never downgraded to a 500 body).
+- ✅ `ValidationException::withMessages([...])` (M21): a compiled controller throwing it
+  becomes `rt.validationExceptionWithMessages(...)` and rides the same 302/422 path; the
+  kernel's `ValidationException` is the same module instance, so `instanceof` holds.
 - `Validator::make` + custom messages are accepted by the runtime entrypoint; the
   display-name/`attributes` path (`getDisplayableAttribute`, `_`→space) is not wired yet.
 - `FormRequest` lifecycle (authorize, rules, messages, attributes, `prepareForValidation`,

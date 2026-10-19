@@ -52,6 +52,7 @@ import {
   ThrottleRequests,
   ThrottleRequestsError,
   HttpResponseError,
+  phpIntCast,
 } from './ratelimit.mjs';
 import {
   Authenticate,
@@ -64,6 +65,7 @@ import {
   requestPjax,
   requestWantsJson,
   acceptsAnyContentType,
+  applyAuthenticatable,
 } from './auth.mjs';
 import { phpJsonDecode } from './php-json.mjs';
 import {
@@ -91,6 +93,58 @@ function isPlainObject(v) {
 
 function resolveDefault(def) {
   return typeof def === 'function' ? def() : def;
+}
+
+// ---------------------------------------------------------------------------
+// Illuminate\Support\Traits\InteractsWithData — `$request->filled()`,
+// `->boolean()`, `->only()`, ... The accessors are allow-listed by the
+// transpiler (REQUEST_CALL), so the kernel has to implement the same set or
+// compiled controllers would blow up at the edge.
+// ---------------------------------------------------------------------------
+
+/** Arr::has / data_get miss sentinel (distinct from a stored `null`). */
+const ARR_MISSING = Symbol('arr-missing');
+
+/** `is_array($keys) ? $keys : func_get_args()` for a rest-arg list. */
+function phpKeyList(args) {
+  return args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+}
+
+/** filter_var($v, FILTER_VALIDATE_BOOLEAN) — true for 1/true/on/yes. */
+function phpFilterVarBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'object') return false; // arrays/objects never coerce
+  const s = String(value).toLowerCase();
+  return s === '1' || s === 'true' || s === 'on' || s === 'yes';
+}
+
+const PHP_FLOAT_PREFIX_RE = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+
+/** (float) cast — numeric string prefix, 0.0 otherwise. */
+function phpFloatCast(value) {
+  if (value === null || value === undefined || value === false) return 0;
+  if (value === true) return 1;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const m = PHP_FLOAT_PREFIX_RE.exec(String(value));
+  if (!m) return 0;
+  const n = parseFloat(m[0]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Arr::set($target, $key, $value) subset (dot notation); `forget` deletes. */
+function arrSetRef(target, key, value, forget) {
+  const segments = String(key).split('.');
+  let current = target;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const seg = segments[i];
+    if (!isPlainObject(current[seg])) current[seg] = {};
+    current = current[seg];
+  }
+  const last = segments[segments.length - 1];
+  if (forget) delete current[last];
+  else current[last] = value;
+  return target;
 }
 
 /** urldecode() with `+` → space and %XX bytes decoded as UTF-8. */
@@ -343,7 +397,10 @@ export function buildRequest(raw, options = {}) {
   }
   const method = methodOverride || rawMethod;
 
-  let cookies = {};
+  // Request cookies as parsed off the wire. EncryptCookies replaces this with the
+  // decrypted map before StartSession reads the session id, so this must start as
+  // the *raw* set (Symfony fills $request->cookies from the Cookie header too).
+  let cookies = cookiesRaw;
   let session = null;
   let route = null;
   let routeParams = {};
@@ -357,6 +414,15 @@ export function buildRequest(raw, options = {}) {
     if (isJson && json !== null) return json;
     if (rawMethod === 'GET' || rawMethod === 'HEAD') return query;
     return post;
+  };
+
+  // InteractsWithData support (see phpKeyList/phpFilterVarBoolean above).
+  const inputSourceSafe = () => inputSource();
+  const inputHas = (key) => dataGet(inputSourceSafe(), key, ARR_MISSING) !== ARR_MISSING;
+  const inputMissing = (key) => dataGet(inputSourceSafe(), key, ARR_MISSING) === ARR_MISSING;
+  const isEmptyString = (key) => {
+    const v = dataGet(inputSourceSafe(), key, null);
+    return typeof v !== 'boolean' && !Array.isArray(v) && String(v == null ? '' : v).trim() === '';
   };
 
   const request = {
@@ -516,6 +582,55 @@ export function buildRequest(raw, options = {}) {
     all() {
       return Object.assign({}, inputSource());
     },
+    // --- InteractsWithData (Illuminate\Support\Traits\InteractsWithData) ----
+    // `has`/`all` above predate this block; the accessors below mirror the trait
+    // exactly (rest args collapse to `$keys` via phpKeyList, which reproduces
+    // `is_array($keys) ? $keys : func_get_args()`).
+    hasAny(...args) {
+      return phpKeyList(args).some((k) => inputHas(k));
+    },
+    filled(...args) {
+      return phpKeyList(args).every((k) => !isEmptyString(k));
+    },
+    isNotFilled(...args) {
+      return phpKeyList(args).every((k) => isEmptyString(k));
+    },
+    missing(...args) {
+      return !phpKeyList(args).every((k) => !inputMissing(k));
+    },
+    only(...args) {
+      const out = {};
+      const data = request.all();
+      for (const k of phpKeyList(args)) {
+        const v = dataGet(data, k, ARR_MISSING);
+        if (v !== ARR_MISSING) arrSetRef(out, k, v, false);
+      }
+      return out;
+    },
+    except(...args) {
+      const out = request.all();
+      for (const k of phpKeyList(args)) arrSetRef(out, k, undefined, true);
+      return out;
+    },
+    // NOTE: Laravel's `string()` returns a Stringable. The compiled rung models
+    // it as a plain string (Stringable method chains are not transpiled yet);
+    // scalar use (comparison/concatenation/assignment) is byte-identical.
+    string(key, def = null) {
+      const v = request.input(key, def);
+      return v === null || v === undefined || v === false ? '' : String(v);
+    },
+    str(key, def = null) {
+      return request.string(key, def);
+    },
+    integer(key, def = 0) {
+      return phpIntCast(request.input(key, def));
+    },
+    float(key, def = 0.0) {
+      return phpFloatCast(request.input(key, def));
+    },
+    boolean(key = null, def = false) {
+      return phpFilterVarBoolean(request.input(key, def));
+    },
   };
   return request;
 }
@@ -612,6 +727,11 @@ function resolveAuthConfig(config, models) {
         500
       );
     }
+    // Authenticatable is a trait the app's model inherits via
+    // `Illuminate\Foundation\Auth\User`; a data-only generated class cannot
+    // express it, so apply the trait contract here (idempotent, never
+    // overwrites methods the compiler emitted).
+    applyAuthenticatable(picked);
     resolved[key] = { ...provider, model: picked };
   }
   return resolved;
@@ -787,8 +907,47 @@ function middlewareStages(list, ctx) {
   return stages;
 }
 
-function buildChain(stages, core) {
-  return stages.reduceRight((next, stage) => (req) => stage(req, next), core);
+// Illuminate\Routing\Pipeline::carry() catches a Throwable at *every* level and
+// renders it there, so the innermost wrapper is what turns a controller
+// exception into a response. Middleware outside the thrower then still run their
+// response phase — ThrottleRequests::addHeaders on a thrown ValidationException
+// is the observable difference (the rate-limit headers are absent otherwise).
+function buildChain(stages, core, render) {
+  // `render` is the exception renderer. Rendering itself can fail loud (e.g. the
+  // unported ViewErrorBag php-serialization path throws an HttpError); tag that
+  // so the outer catch in handleHttp rethrows instead of rendering it *again*
+  // into a 500 body — a rejected promise is the fail-loud contract.
+  const renderOnce = async (req, e) => {
+    if (e && e.lwRenderFailed) throw e;
+    try {
+      return await render(req, e);
+    } catch (renderError) {
+      if (renderError && typeof renderError === 'object') renderError.lwRenderFailed = true;
+      throw renderError;
+    }
+  };
+  // Illuminate\Routing\Pipeline::prepareDestination() wraps the destination in
+  // the same try/catch, so the innermost middleware sees a *rendered* response
+  // from `$next()` and can still run its response phase on it.
+  let inner = async (req) => {
+    try {
+      return await core(req);
+    } catch (e) {
+      return renderOnce(req, e);
+    }
+  };
+  for (let i = (stages || []).length - 1; i >= 0; i -= 1) {
+    const stage = stages[i];
+    const next = inner;
+    inner = async (req) => {
+      try {
+        return await stage(req, next);
+      } catch (e) {
+        return renderOnce(req, e);
+      }
+    };
+  }
+  return inner;
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,7 +1280,7 @@ export async function handleHttp(raw, options = {}) {
     );
     return toHttpResponse(res);
   };
-  const chain = buildChain(stages, core);
+  const chain = buildChain(stages, core, (req, e) => renderException(e, req, ctx));
 
   // --- PreventRequestForgery (request phase) -----------------------------
   const csrf = new PreventRequestForgery({
@@ -1153,6 +1312,9 @@ export async function handleHttp(raw, options = {}) {
       throw new TokenMismatchError('CSRF token mismatch.');
     }
   } catch (e) {
+    // A render that already failed inside the chain must keep failing loud —
+    // re-rendering the HttpError here would downgrade it to a 500 body.
+    if (e && e.lwRenderFailed) throw e;
     response = await renderException(e, request, ctx);
   }
 
@@ -1180,6 +1342,11 @@ export async function handleHttp(raw, options = {}) {
     response.headers.location !== undefined &&
     REDIRECT_STATUSES.has(response.status)
   ) {
+    // Laravel's Redirector resolves every target through UrlGenerator::to(), so a
+    // controller `redirect('/x')` / `redirect()->intended()` still yields an
+    // absolute Location (and the Symfony HTML body mirrors it). Idempotent for
+    // targets that are already absolute (renderException already resolves those).
+    response.headers.location = absoluteUrl(request.schemeAndHttpHost(), response.headers.location);
     response.body = symfonyRedirectBody(response.headers.location);
     response.headers['content-type'] = 'text/html; charset=utf-8';
   }

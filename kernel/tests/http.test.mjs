@@ -330,6 +330,10 @@ const ROUTES = [
   { uri: '/__probe/login', methods: ['POST'], middleware: ['web'] },
   { uri: '/__probe/logout', methods: ['POST'], middleware: ['web'] },
   { uri: '/login', name: 'login', methods: ['GET', 'HEAD'], middleware: [] },
+  // The oracle app defines a named `dashboard` route, and
+  // RedirectIfAuthenticated::defaultRedirectUri() probes for it first — so the
+  // synthetic table has to mirror that name or `guest` redirects to `/`.
+  { uri: '/dashboard', name: 'dashboard', methods: ['GET', 'HEAD'], middleware: [] },
 ];
 
 function json(data, status = 200) {

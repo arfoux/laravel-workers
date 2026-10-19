@@ -57,6 +57,25 @@ export class ValidationException extends Error {
 }
 
 /**
+ * Illuminate\Validation\ValidationException::withMessages() — build an exception
+ * straight from a `{ field: message | [messages] }` map. Mirrors the vendor
+ * implementation: `Arr::wrap()` each value and append through MessageBag::add()
+ * (which skips duplicates), so `summarize()`/the flashed bag match byte-for-byte.
+ */
+export function validationExceptionWithMessages(messages, opts = {}) {
+  const errors = {};
+  for (const key of Object.keys(messages || {})) {
+    const value = messages[key];
+    const list = Array.isArray(value) ? value : [value];
+    for (const message of list) {
+      const bucket = errors[key] || (errors[key] = []);
+      if (!bucket.includes(message)) bucket.push(message);
+    }
+  }
+  return new ValidationException(errors, opts);
+}
+
+/**
  * Attach `validate()` / `validateWithBag()` to a compiled request object
  * (Illuminate\Http\Request::validate / validateWithBag, via ValidatesRequests).
  *
@@ -90,6 +109,7 @@ export function sessionErrorBag(bag, messages) {
 
 export default {
   ValidationException,
+  validationExceptionWithMessages,
   installValidation,
   summarizeValidation,
   sessionErrorBag,

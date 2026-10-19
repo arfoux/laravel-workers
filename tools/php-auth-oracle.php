@@ -667,6 +667,17 @@ foreach ($input['ops'] ?? [] as $step) {
     ];
 }
 
+// Named routes of the oracle app. `RedirectIfAuthenticated::defaultRedirectUri()`
+// probes Route::has('dashboard'|'home'), so the compiled side needs the same
+// registry to reproduce the guest redirect target.
+$appRoutes = [];
+foreach (app('router')->getRoutes() as $route) {
+    $name = $route->getName();
+    if ($name !== null && $name !== '') {
+        $appRoutes[$name] = '/' . ltrim($route->uri(), '/');
+    }
+}
+
 echo json_encode([
     'meta' => [
         'login_name' => $guard->getName(),
@@ -680,6 +691,7 @@ echo json_encode([
         'expects_json' => $request->expectsJson(),
         'attempting_calls' => $attemptingCalls,
     ],
+    'app_routes' => $appRoutes,
     'snapshots' => $snapshots,
     'final' => [
         'session' => json_encode($session->all()),
