@@ -232,10 +232,11 @@ async function loadDist(appRoot) {
   const { createDatabaseCache } = await import(u('kernel/cache.mjs'));
   const { createCookieEncryptor } = await import(u('kernel/cookies.mjs'));
   const { normalizeTable } = await import(u('kernel/router.mjs'));
+  const { createStorage } = await import(u('kernel/storage.mjs'));
   const { routeTable, handlers } = await import(u('src/routes.generated.mjs'));
   const { default: config } = await import(u('src/config.generated.mjs'));
   const { models } = await import(u('src/models.generated.mjs'));
-  return { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models };
+  return { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage };
 }
 
 function decodePayload(b64) {
@@ -270,7 +271,7 @@ function rowToken(row) {
 }
 
 async function runCompiled(loaded, appRoot, scenario, dbPath) {
-  const { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models } =
+  const { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage } =
     loaded;
   const { DatabaseSync } = await import('node:sqlite');
   const sqlite = new DatabaseSync(dbPath);
@@ -290,6 +291,9 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
     keyBase64: String(config['app.key'] ?? '').replace(/^base64:/, ''),
     except: config['cookies.except'] ?? [],
   });
+  // The object store (the padanan for the app's local disk): no R2 binding here,
+  // so the worker would use the D1 blob store - one row per object.
+  const storage = createStorage({ d1: db, secret: config['app.key'] });
 
   const jar = new Map();
   let lastToken = null;
@@ -329,6 +333,7 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         env: { DB: db },
         db,
         cache,
+        storage,
         models,
         clock: () => FREEZE_S,
         randomString: rand,
@@ -478,13 +483,21 @@ async function main() {
         shapeOk = re.test(String(phpBody ?? '')) && re.test(String(j.body ?? ''));
       }
       const statusOk = p.status === j.status;
-      const ok = statusOk && headerDiff.length === 0 && body.equal;
+      // A step may declare the body it expects (`expectBody`: a string the body
+      // must contain). It catches the vacuous match: if both sides are broken in
+      // the same way (a route that does not exist answers 404 on both), the
+      // bodies agree and the step would pass without proving anything.
+      const expectBodyOk =
+        step.expectBody === undefined ||
+        (String(phpBody ?? '').includes(String(step.expectBody)) &&
+          String(j.body ?? '').includes(String(step.expectBody)));
+      const ok = statusOk && headerDiff.length === 0 && body.equal && expectBodyOk;
       const expected = step.expect || 'match';
       let verdict;
       if (ok) {
         verdict = expected === 'diverges' ? 'MATCHED (expected a divergence)' : 'match';
         matched++;
-      } else if (shapeOk && statusOk && headerDiff.length === 0) {
+      } else if (shapeOk && statusOk && headerDiff.length === 0 && expectBodyOk) {
         // The body is random by construction (a bcrypt digest): both sides match
         // the declared shape, so the step is verified — but not byte-identical.
         verdict = 'shape';
@@ -504,6 +517,8 @@ async function main() {
         phpStatus: p.status,
         jsStatus: j.status,
         statusOk,
+        expectBodyOk,
+        expectBody: step.expectBody ?? null,
         headerDiff: headerDiff.map((k) => ({ name: k, php: ph[k], js: jh[k] })),
         bodyOk: body.equal,
         bodyPhp: body.equal ? undefined : preview(p.body),
@@ -543,6 +558,9 @@ async function main() {
         );
         if (r.verdict === 'MISMATCH') {
           for (const h of r.headerDiff) console.log(`    header ${h.name}: php=${h.php} js=${h.js}`);
+          if (r.expectBody !== null && !r.expectBodyOk) {
+            console.log(`    expected the body to contain: ${r.expectBody}`);
+          }
           if (!r.bodyOk) {
             const d = firstDiffLine(r.bodyPhpRaw, r.bodyJsRaw);
             if (d) {

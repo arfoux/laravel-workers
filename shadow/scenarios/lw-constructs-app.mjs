@@ -1,6 +1,6 @@
 // shadow/scenarios/lw-constructs-app.mjs — the construct-coverage app.
 //
-// Every route of the constructs fixture (10 app routes) is replayed against the
+// Every route of the constructs fixture (11 app routes) is replayed against the
 // real PHP app and the compiled worker. The steps that need an authenticated
 // user walk the Breeze-shaped login flow first (the guest request to
 // /dashboard bootstraps the session and the CSRF token, exactly like a browser).
@@ -128,6 +128,21 @@ export default {
     },
     { label: 'GET /login (view snapshot)', method: 'GET', uri: '/login' },
     { label: 'GET /cache-demo (cache snapshot)', method: 'GET', uri: '/cache-demo' },
+    {
+      // The object store (the padanan for the app's local disk): the compiled
+      // side writes to the D1 blob store (one row per object), the real app to
+      // the local disk. Both sides read the object back, so the step proves the
+      // put/get/exists round trip, not just the status.
+      label: 'POST /storage-demo (the object store)',
+      method: 'POST',
+      uri: '/storage-demo',
+      jar: true,
+      form: { _token: '@token' },
+      // The body must carry the round trip: the value that was written and read
+      // back, plus the `exists` answer. It also keeps the step from passing
+      // vacuously (a route that does not exist would answer 404 on both sides).
+      expectBody: 'hello-shadow|yes',
+    },
     {
       // A bcrypt digest has a random salt, so the two bodies can never be equal.
       // The step declares the *shape* both sides must have.
