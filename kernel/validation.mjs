@@ -89,12 +89,14 @@ export function installValidation(request, opts = {}) {
       attributes,
     });
     if (!ok) throw new ValidationException(errors, { errorBag });
+    request._validatedData = validated;
     return validated;
   };
 
   request.validate = (rules, messages, attributes) => run(rules, messages, attributes);
   request.validateWithBag = (bag, rules, messages, attributes) =>
     run(rules, messages, attributes, bag);
+  request.validated = () => (request._validatedData ? request._validatedData : {});
   return request;
 }
 

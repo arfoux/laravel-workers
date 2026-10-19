@@ -1,5 +1,6 @@
 // compiler/runtime/rt-from-context.mjs — Runtime helpers (context → rt)
 import { validationExceptionWithMessages } from '../../kernel/validation.mjs';
+import * as hashMod from '../../kernel/hash.mjs';
 export function buildRt(context, opts = {}) {
   const strict = !!(opts && opts.strict);
   const ctx = context || {};
@@ -907,6 +908,24 @@ export function buildRt(context, opts = {}) {
     return null;
   };
 
+  // rt.propSet: PHP `$model->attribute = $value` (Eloquent::setAttribute). The
+  // Model#set() path applies the casts (and the `hashed` cast hashes at
+  // set-time, like Eloquent); plain objects/arrays get a plain assignment.
+  rt.propSet = (obj, key, value) => {
+    if (obj === null || obj === undefined) {
+      throw new Error('cannot set ->' + key + ' on null');
+    }
+    if (typeof obj.set === 'function' && obj.attributes && typeof obj.attributes === 'object') {
+      obj.set(key, value);
+      return value;
+    }
+    if (typeof obj === 'object') {
+      obj[key] = value;
+      return value;
+    }
+    throw new Error('cannot set ->' + key + ' on ' + typeof obj);
+  };
+
   const statusErr = (status, message) => {
     const e = new Error(message == null ? '' : String(message));
     e.status = Number(status) || 500;
@@ -942,6 +961,24 @@ export function buildRt(context, opts = {}) {
     return String(v);
   };
 
+  // rt.db: the D1 binding the compiled controller writes through
+  // (Eloquent's model writes need the connection).
+  rt.db = () => {
+    const binding = (opts && opts.db) || null;
+    if (!binding) throw new Error('rt.db: no database binding (env.DB) available');
+    return binding;
+  };
+
+  // rt.hash: the Hash facade (bcrypt). The rounds come from the app config
+  // (hashing.bcrypt.rounds), baked in at build time.
+  const hashRounds = Number((opts && opts.hashRounds) || 12);
+  rt.hash = {
+    make: (value) => hashMod.make(String(value), { rounds: hashRounds }),
+    check: (value, hashed) => hashMod.check(String(value), hashed),
+    needsRehash: (hashed) => hashMod.needsRehash(hashed, { rounds: hashRounds }),
+    isHashed: (value) => hashMod.isHashed(value),
+  };
+
   // ---- model facades (rt.model) ----
   const modelsMap = (opts && opts.models && typeof opts.models === 'object') ? opts.models : {};
   const viewsMap = (opts && opts.views && typeof opts.views === 'object') ? opts.views : {};
@@ -972,6 +1009,13 @@ export function buildRt(context, opts = {}) {
       all: () => M.all(db),
       where: (...a) => wrapBuilder(M.query(db).where(...a)),
       whereIn: (...a) => wrapBuilder(M.query(db).whereIn(...a)),
+      // Eloquent::create() — a new model, filled (fillable-guarded) and saved.
+      create: async (attributes) => {
+        const m = new M();
+        if (attributes && typeof attributes === 'object') m.fill(attributes);
+        await m.save(db);
+        return m;
+      },
     };
     facadeCache.set(M, facade);
     return facade;

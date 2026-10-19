@@ -326,6 +326,7 @@ const ROUTES = [
   { uri: '/__probe/state', methods: ['GET', 'HEAD'], middleware: ['web'] },
   { uri: '/__probe/state', methods: ['POST'], middleware: ['web'] },
   { uri: '/__probe/auth', methods: ['GET', 'HEAD'], middleware: ['web', 'auth'] },
+  { uri: '/__probe/basic', methods: ['GET', 'HEAD'], middleware: ['web', 'auth.basic'] },
   { uri: '/__probe/guest', methods: ['GET', 'HEAD'], middleware: ['web', 'guest'] },
   { uri: '/__probe/login', methods: ['POST'], middleware: ['web'] },
   { uri: '/__probe/logout', methods: ['POST'], middleware: ['web'] },
@@ -369,6 +370,8 @@ const handlers = {
   'GET /__probe/state': stateHandler,
   'POST /__probe/state': stateHandler,
   'GET /__probe/auth': async (ctx) =>
+    json({ user: await guardId(ctx), token: ctx.session.token() }),
+  'GET /__probe/basic': async (ctx) =>
     json({ user: await guardId(ctx), token: ctx.session.token() }),
   'GET /__probe/guest': async (ctx) =>
     json({ guest: true, token: ctx.session.token() }),
@@ -779,6 +782,63 @@ test('throttle over the D1 cache store: first N allowed, then 429', async (t) =>
   assert.equal(r3.status, 429, 'hit #3 exceeds throttle:2,1');
 });
 
+// The `auth.basic` middleware (Illuminate\Auth\Middleware\AuthenticateWithBasicAuth):
+// the Basic credentials are verified and the user is logged in; a failure is a 401
+// with Symfony's `WWW-Authenticate: Basic realm="Basic"` challenge.
+function basicHeader(user, password) {
+  return 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+}
+
+test('auth.basic: a missing Basic header is a 401 with the challenge', async () => {
+  const { db } = makeDb();
+  const res = await handleHttp(
+    { method: 'GET', url: BASE + '/__probe/basic', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    {
+      table: normalizeTable(ROUTES),
+      handlers,
+      config: baseConfig(),
+      env: { DB: db },
+      db,
+      models: { LWOracleUser },
+      clock: () => FREEZE_S,
+      clientIp: CLIENT_IP,
+    }
+  );
+  assert.equal(res.status, 401);
+  assert.equal(res.headers['www-authenticate'], 'Basic realm="Basic"');
+});
+
+test('auth.basic: wrong credentials are a 401, valid credentials log the user in', async () => {
+  const { db } = makeDb();
+  const call = (authorization) =>
+    handleHttp(
+      {
+        method: 'GET',
+        url: BASE + '/__probe/basic',
+        headers: { host: 'localhost', accept: 'application/json', authorization },
+        body: '',
+      },
+      {
+        table: normalizeTable(ROUTES),
+        handlers,
+        config: baseConfig(),
+        env: { DB: db },
+        db,
+        models: { LWOracleUser },
+        clock: () => FREEZE_S,
+        clientIp: CLIENT_IP,
+      }
+    );
+
+  const bad = await call(basicHeader('u@example.com', 'wrong'));
+  assert.equal(bad.status, 401);
+  assert.equal(bad.headers['www-authenticate'], 'Basic realm="Basic"');
+
+  const ok = await call(basicHeader('u@example.com', 'secret'));
+  assert.equal(ok.status, 200);
+  assert.equal(JSON.parse(ok.body).user, 1);
+});
+
 test('fail loud: session.encrypt=true and unknown drivers', async () => {
   await assert.rejects(
     callPipeline((o) => {
@@ -801,6 +861,69 @@ test('routes with no compiled handler return null (assets served by the worker)'
     o.handlers = {};
   });
   assert.equal(res, null);
+});
+
+// status-only smoke tests for the three interim error codes (419/429/500).
+test('status-only: missing CSRF token returns 419', async () => {
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable(ROUTES);
+  const res = await handleHttp(
+    { method: 'POST', url: BASE + '/__probe/state', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP }
+  );
+  assert.equal(res.status, 419);
+});
+
+test('status-only: handler throwing HttpError(500) renders 500', async () => {
+  const { HttpError } = await import('../http.mjs');
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable([{ uri: '/__probe/boom', methods: ['GET', 'HEAD'], middleware: ['web'] }]);
+  const boomHandlers = { 'GET /__probe/boom': async () => { throw new HttpError('boom', 500); } };
+  const res = await handleHttp(
+    { method: 'GET', url: BASE + '/__probe/boom', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers: boomHandlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP }
+  );
+  assert.equal(res.status, 500);
+});
+
+test('status-only: renderErrorView hook overrides 419 body', async () => {
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable(ROUTES);
+  const res = await handleHttp(
+    { method: 'POST', url: BASE + '/__probe/state', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP,
+      renderErrorView: (status) => (status === 419 ? '<html><body>custom-419</body></html>' : null) }
+  );
+  assert.equal(res.status, 419);
+  assert.match(res.body, /custom-419/);
+});
+
+// status-only smoke tests for the three interim error codes (419/429/500).
+test('status-only: missing CSRF token returns 419', async () => {
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable(ROUTES);
+  const res = await handleHttp(
+    { method: 'POST', url: BASE + '/__probe/state', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP }
+  );
+  assert.equal(res.status, 419);
+});
+
+test('status-only: handler throwing HttpError(500) renders 500', async () => {
+  const { HttpError } = await import('../http.mjs');
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable([{ uri: '/__probe/boom', methods: ['GET', 'HEAD'], middleware: ['web'] }]);
+  const boomHandlers = { 'GET /__probe/boom': async () => { throw new HttpError('boom', 500); } };
+  const res = await handleHttp(
+    { method: 'GET', url: BASE + '/__probe/boom', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers: boomHandlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP }
+  );
+  assert.equal(res.status, 500);
 });
 
 // status-only smoke tests for the three interim error codes (419/429/500).

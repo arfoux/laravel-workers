@@ -76,10 +76,13 @@ import {
 } from './validation.mjs';
 
 export class HttpError extends Error {
-  constructor(message, status = 500) {
+  constructor(message, status = 500, headers = null) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
+    // Optional response headers (e.g. the 401 `WWW-Authenticate` challenge of
+    // Symfony's UnauthorizedHttpException).
+    if (headers && typeof headers === 'object') this.headers = headers;
   }
 }
 
@@ -868,6 +871,34 @@ function splitList(params) {
   return out;
 }
 
+// Symfony's Request::getUser()/getPassword() read the `Authorization: Basic`
+// header: base64("user:password"). A missing header, a non-Basic scheme or a
+// payload without a colon yields null credentials (Laravel then answers 401).
+function basicCredentials(req) {
+  const header = typeof req.header === 'function' ? req.header('authorization') : null;
+  if (!header) return null;
+  const m = /^\s*Basic\s+(.+)$/i.exec(String(header));
+  if (!m) return null;
+  let decoded;
+  try {
+    decoded = atob(m[1].trim());
+  } catch {
+    return null;
+  }
+  const sep = decoded.indexOf(':');
+  if (sep === -1) return null;
+  const user = decoded.slice(0, sep);
+  const password = decoded.slice(sep + 1);
+  if (user === '') return null;
+  return { user, password };
+}
+
+// Symfony\Component\HttpKernel\Exception\UnauthorizedHttpException('Basic'):
+// 401 with `WWW-Authenticate: Basic realm="Basic"`.
+function unauthorizedBasic() {
+  return new HttpError('Invalid credentials.', 401, { 'www-authenticate': 'Basic realm="Basic"' });
+}
+
 function middlewareStages(list, ctx) {
   const stages = [];
   for (const raw of list || []) {
@@ -881,6 +912,24 @@ function middlewareStages(list, ctx) {
     if (name === 'auth') {
       const mw = new Authenticate(ctx.auth);
       stages.push((req, next) => mw.handle(req, next, ...params));
+      continue;
+    }
+    if (name === 'auth.basic') {
+      // Illuminate\Auth\Middleware\AuthenticateWithBasicAuth -> guard->basic($field).
+      // An already-authenticated request passes through untouched; otherwise the
+      // Basic credentials are verified and the user is logged in (Laravel's
+      // SessionGuard::basic() calls attempt(), not onceBasic()). A failure throws
+      // Symfony's UnauthorizedHttpException('Basic') -> 401 + WWW-Authenticate.
+      stages.push(async (req, next) => {
+        const guard = ctx.auth.guard(params[0] ?? null);
+        if (await guard.check()) return next(req);
+        const credentials = basicCredentials(req);
+        if (!credentials) throw unauthorizedBasic();
+        const field = params[1] || 'email';
+        const ok = await guard.attempt({ [field]: credentials.user, password: credentials.password });
+        if (!ok) throw unauthorizedBasic();
+        return next(req);
+      });
       continue;
     }
     if (name === 'guest') {
@@ -1071,13 +1120,13 @@ async function renderException(error, request, ctx) {
     if (rendered != null) {
       return new HttpResponse({
         status: error.status,
-        headers: { 'content-type': 'text/html; charset=utf-8' },
+        headers: { 'content-type': 'text/html; charset=utf-8', ...(error.headers || {}) },
         body: String(rendered),
       });
     }
     return new HttpResponse({
       status: error.status,
-      headers: { 'content-type': 'text/plain; charset=UTF-8' },
+      headers: { 'content-type': 'text/plain; charset=UTF-8', ...(error.headers || {}) },
       body: error.message,
     });
   }

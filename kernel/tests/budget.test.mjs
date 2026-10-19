@@ -113,4 +113,47 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(avg <= 25, `hashed-cast bcrypt cost4 avg ${avg}`);
     assert.ok(p95 <= 40, `hashed-cast bcrypt cost4 p95 ${p95}`);
   }
+
+  // The `Hash` facade surface (rt.hash) — the facade call itself is cheap; the
+  // bcrypt work it triggers is the hashed-cast row above.
+  {
+    const a = [];
+    for (let i = 0; i < N; i++) { const t0 = performance.now(); rt.hash.isHashed('x'); a.push(performance.now() - t0); }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `rt.hash avg ${avg}`);
+    assert.ok(p95 <= 5, `rt.hash p95 ${p95}`);
+  }
+
+  // The model write path: rt.db() (the D1 binding) + rt.propSet() (the
+  // `$model->attr = $value` assignment) + Model#set() with the cast applied.
+  {
+    const fakeDb = { prepare: () => ({ bind() { return this; }, async run() { return { changes: 1, lastInsertRowid: 1 }; }, async all() { return { results: [] }; } }) };
+    const rt2 = buildRt({}, { db: fakeDb, hashRounds: 4 });
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      rt2.db();
+      rt2.propSet(new BudgetHashed(), 'title', 'x');
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `rt.db+rt.propSet avg ${avg}`);
+    assert.ok(p95 <= 5, `rt.db+rt.propSet p95 ${p95}`);
+  }
+
+  // The `auth.basic` middleware stage: Basic header parse + guard lookup.
+  {
+    const header = 'Basic ' + Buffer.from('a@b.co:secret').toString('base64');
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      const m = /^\s*Basic\s+(.+)$/i.exec(header);
+      const decoded = atob(m[1].trim());
+      decoded.indexOf(':');
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `auth.basic header parse avg ${avg}`);
+    assert.ok(p95 <= 5, `auth.basic header parse p95 ${p95}`);
+  }
 });

@@ -170,7 +170,7 @@ const extraVerbsFor = (route) =>
 const metaForVerb = (route, verb) => metaFor.get(String(verb).toUpperCase() + ' ' + route) || null;
 // Middleware kernel/http.mjs actually honours. auth/guest run on top of the web
 // group; numeric `throttle:n[,m]` runs against the D1-backed `database` cache.
-const HONOURED_MIDDLEWARE = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'guest']);
+const HONOURED_MIDDLEWARE = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'auth.basic', 'guest']);
 const isHonouredMiddleware = (m) => {
   const str = String(m);
   const name = str.split(':')[0];
@@ -533,10 +533,15 @@ for (const [route, name] of portEntries) {
 // or keeps needing a port — the build never silently degrades.
 const controllerRoutes = new Map(); // route -> { slug, fqcn, method }
 const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, method }
+// The HTTP verbs the compiled rung can serve. OPTIONS is not one of them (the
+// platform answers the CORS preflight, not the app).
+const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 {
   const methodsOk = (route) => {
     const main = mainVerbFor(route);
-    return main === 'GET' || main === 'POST';
+    // The compiled rung serves GET/POST/PUT/PATCH/DELETE; OPTIONS is not one
+    // of them (the platform answers the CORS preflight).
+    return COMPILABLE_METHODS.has(main);
   };
   const targets = [];
   for (const { route } of needsPort) {
@@ -561,18 +566,20 @@ const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, m
   // its own handler keyed "METHOD uri"; a verb that cannot compile stays a partial
   // and still blocks the strict build.
   const extraTargets = [];
+  // Verbs the compiled rung can serve as a controller. OPTIONS is not one of them
+  // (the browser/CORS preflight is answered by the platform, not the app).
   for (const route of routes) {
     for (const verb of extraVerbsFor(route)) {
       const meta = metaForVerb(route, verb);
       const action = meta && meta.action;
-      if (verb !== 'POST') {
+      if (!COMPILABLE_METHODS.has(String(verb).toUpperCase())) {
         const alreadyTracked = partials.some((p) => p.route === route && p.methods.includes(verb));
         const ported = portEntries.some(([r]) => r === route);
         const ignored = ignoreMap.some(([r]) => r === route);
         if (!alreadyTracked && !ported && !ignored) {
           uncompiledExtraNonPost.push({ route, verb });
         }
-        console.log(`  skip ${verb} ${route}: only GET/POST handlers are compiled — write a port`);
+        console.log(`  skip ${verb} ${route}: only GET/POST/PUT/PATCH/DELETE handlers are compiled — write a port`);
         continue;
       }
       if (!action || action === 'Closure') continue;
@@ -674,7 +681,25 @@ const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, m
           aliasToFqcns.set(c.alias, set);
         }
       }
-      const allFqcns = [...new Set([...aliasToFqcns.values()].flatMap((s) => [...s]))];
+      // FormRequest candidates (a class-typed parameter that is not a plain
+      // Request). The PHP dump decides whether it really is a FormRequest.
+      const formRequestFqcns = new Set();
+      for (const p of prepared) {
+        for (const param of p.meta.params || []) {
+          if (param.inject === 'request') continue;
+          if (!param.typeFqcn) continue;
+          formRequestFqcns.add(param.typeFqcn);
+        }
+      }
+      // Class constants (e.g. RouteServiceProvider::HOME) are dumped too — the
+      // value is baked into the handler.
+      const constantFqcns = new Set();
+      for (const p of prepared) {
+        for (const c of p.meta.constants || []) constantFqcns.add(c.fqcn);
+      }
+      const allFqcns = [...new Set([...aliasToFqcns.values()].flatMap((s) => [...s]))].filter(
+        (fqcn) => !formRequestFqcns.has(fqcn)
+      );
       // Eloquent auth provider models (config('auth.providers.*.model')) must be in the
       // generated registry even when no compiled controller references them.
       for (const fqcn of authProviderFqcns) {
@@ -695,6 +720,46 @@ const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, m
         } catch (e) {
           console.log(
             `  model dump failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
+              .trim()
+              .slice(0, 200)}`
+          );
+        }
+      }
+
+      // FormRequest rules (rules/messages/attributes) — dumped at build time.
+      const formRequestDump = new Map();
+      if (formRequestFqcns.size) {
+        const list = [...formRequestFqcns];
+        console.log(`• dumping FormRequest rules (${list.length}): ${list.join(', ')}`);
+        try {
+          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'formrequest-dump.php'), ...list], {
+            cwd: appDir,
+            env: { ...process.env, LW_APP_ROOT: appDir },
+          }).toString('utf8');
+          for (const d of JSON.parse(raw)) formRequestDump.set(d.fqcn, d);
+        } catch (e) {
+          console.log(
+            `  form request dump failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
+              .trim()
+              .slice(0, 200)}`
+          );
+        }
+      }
+
+      // Class constants — dumped at build time and baked into the handler.
+      const constantDump = new Map();
+      if (constantFqcns.size) {
+        const list = [...constantFqcns];
+        console.log(`• dumping class constants (${list.length}): ${list.join(', ')}`);
+        try {
+          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'constants-dump.php'), ...list], {
+            cwd: appDir,
+            env: { ...process.env, LW_APP_ROOT: appDir },
+          }).toString('utf8');
+          for (const d of JSON.parse(raw)) constantDump.set(d.fqcn, d);
+        } catch (e) {
+          console.log(
+            `  constants dump failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
               .trim()
               .slice(0, 200)}`
           );
@@ -787,6 +852,7 @@ const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, m
           continue;
         }
         const badModel = (p.meta.classes || []).find((c) => {
+          if (formRequestFqcns.has(c.fqcn)) return false; // FormRequest, not a model
           const d = modelDump.get(c.fqcn);
           return !d || !d.model;
         });
@@ -799,20 +865,70 @@ const verbControllers = []; // extra-verb handlers: { route, verb, slug, fqcn, m
           );
           continue;
         }
+        // FormRequest rules for this route (by FQCN). A class-typed parameter
+        // that is not a FormRequest is a service — the route needs a port.
+        const formRequests = {};
+        let formRequestError = null;
+        for (const param of p.meta.params || []) {
+          if (param.inject === 'request') continue;
+          if (!param.typeFqcn) continue;
+          const dumped = formRequestDump.get(param.typeFqcn);
+          if (!dumped || dumped.error) {
+            formRequestError = `$${param.name} has unsupported type "${param.typeHint}" — only scalar parameters, Illuminate\\Http\\Request and FormRequest are supported here`;
+            break;
+          }
+          formRequests[param.typeFqcn] = {
+            rules: dumped.rules || {},
+            messages: dumped.messages || {},
+            attributes: dumped.attributes || {},
+          };
+        }
+        if (formRequestError) {
+          console.log(`  controller ${p.route}: skipped — ${formRequestError}`);
+          continue;
+        }
+        // Class constants for this route (by alias — the transpiler resolves the
+        // alias as written in the source).
+        const constants = {};
+        let constantError = null;
+        for (const c of p.meta.constants || []) {
+          const dumped = constantDump.get(c.fqcn);
+          if (!dumped || dumped.error) {
+            constantError = `${c.fqcn} (${dumped ? dumped.error : 'not dumped'})`;
+            break;
+          }
+          if (constants[c.alias]) {
+            constantError = `${c.alias} is ambiguous between classes`;
+            break;
+          }
+          constants[c.alias] = dumped.constants || {};
+        }
+        if (constantError) {
+          console.log(`  controller ${p.route}: skipped — class constant ${constantError}`);
+          continue;
+        }
         const missingView = (p.meta.views || []).find((v) => !compiledViews.has(v));
         if (missingView) {
           console.log(`  controller ${p.route}: skipped — view "${missingView}" did not compile`);
           continue;
         }
         const isExtraVerb = extraVerbsFor(p.route).includes(p.verb);
+        // `--` keeps the extra-verb slug apart from a base route slug
+        // (POST /posts -> "posts--post" vs GET /posts/{post} -> "posts-post").
         const slug = isExtraVerb
-          ? `${slugifyRoute(p.route)}-${String(p.verb).toLowerCase()}`
+          ? `${slugifyRoute(p.route)}--${String(p.verb).toLowerCase()}`
           : slugifyRoute(p.route);
         const meta = {
           routeUri: p.route,
           routeParams: (p.route.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1).replace(/[?*]$/, '')),
-          models: (p.meta.classes || []).map((c) => ({ alias: c.alias, fqcn: c.fqcn })),
+          models: (p.meta.classes || [])
+            .filter((c) => !formRequestFqcns.has(c.fqcn))
+            .map((c) => ({ alias: c.alias, fqcn: c.fqcn })),
           views: p.meta.views || [],
+          constants,
+          formRequests,
+          // Hash::make() must use the app's configured bcrypt rounds.
+          hashRounds: Number(runtimeConfig['hashing.bcrypt.rounds'] ?? 12) || 12,
         };
         const metaPath = join(metaDir, slug + '.meta.json');
         writeFileSync(metaPath, JSON.stringify(meta, null, 2));
@@ -993,7 +1109,7 @@ for (const v of verbControllers) {
     const spec = str.slice('throttle'.length).replace(/^:/, '');
     return spec === '' || /^\d+(,\d+)?$/.test(spec);
   };
-  const RUNTIME_MIDDLEWARE = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'guest']);
+  const RUNTIME_MIDDLEWARE = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'auth.basic', 'guest']);
   const offenders = [];
   let throttleRoutes = 0;
   for (const entry of routeTable) {

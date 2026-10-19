@@ -102,6 +102,27 @@ function tx(node) {
     case 'offsetlookup': {
       return tx(node.what) + '[' + txOffsetKey(node.offset) + ']';
     }
+    case 'staticlookup': {
+      // `SomeClass::CONSTANT` — a class constant read (e.g. RouteServiceProvider::HOME).
+      // The value is dumped at build time (tools/constants-dump.php) and baked into
+      // the handler, so the edge never has to know the class.
+      const cls = node.what && node.what.name;
+      const name = node.offset && node.offset.name;
+      if (typeof cls !== 'string' || typeof name !== 'string') {
+        throw mkErr('LW002', 'unsupported class constant access', node.loc);
+      }
+      const constants = CTX && CTX.constants ? CTX.constants : null;
+      const value = constants ? constants[cls] : null;
+      if (value && Object.prototype.hasOwnProperty.call(value, name)) {
+        return JSON.stringify(value[name]);
+      }
+      throw mkErr(
+        'LW002',
+        'class constant ' + cls + '::' + name + ' is not available at the edge — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
     case 'propertylookup': {
       const name = node.offset && node.offset.name;
       if (typeof name !== 'string') {
@@ -239,7 +260,8 @@ let CLOSURE_DEPTH = 0;
 // Static model calls that START a chain (return a query builder, no await).
 const MODEL_STATIC_START = new Set(['where', 'whereIn']);
 // Static model calls that are terminal (return a Promise, must be awaited).
-const MODEL_STATIC_TERMINAL = new Set(['find', 'findOrFail', 'all']);
+// `create` writes a row (Eloquent::create) — it needs the D1 binding.
+const MODEL_STATIC_TERMINAL = new Set(['find', 'findOrFail', 'all', 'create']);
 // Chainable builder methods (kernel db.mjs API). Keep in sync with kernel/db.mjs.
 const MODEL_CHAIN_BUILDER = new Set([
   'where', 'orWhere', 'whereIn', 'whereNotIn', 'whereNull', 'whereNotNull',
@@ -261,6 +283,15 @@ const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'req
 // Recaller/guard methods that return a promise at the edge.
 const AUTH_ASYNC = new Set(['check', 'guest', 'user', 'id', 'attempt', 'once', 'login', 'logout']);
 const AUTH_FACADE_RE = /^rt\.auth\((?:[^()]*)\)(?:\.guard\((?:[^()]*)\))?$/;
+// Cache facade methods that hit the D1-backed store (async at the edge).
+const CACHE_ASYNC = new Set([
+  'get', 'has', 'put', 'add', 'forever', 'forget', 'remember', 'pull',
+  'increment', 'decrement', 'touch', 'flush', 'many', 'putMany',
+]);
+// Hash facade methods (bcrypt).
+const HASH_FACADE = new Set(['make', 'check', 'needsRehash', 'isHashed']);
+// Eloquent instance writes — they need the D1 binding and are async.
+const INSTANCE_DB_METHODS = new Set(['save', 'delete', 'forceDelete', 'restore', 'push', 'refresh']);
 // Session store mutation methods that touch the handler and are therefore async
 // on the compiled Store (kernel/session.mjs). regenerateToken() stays sync.
 const SESSION_STORE_RE = /(?:^|\.)session\(\)$/;
@@ -318,6 +349,24 @@ function txRequestCall(node, args) {
   if (meth === 'validate' || meth === 'validateWithBag') {
     const expr = vname(inner.name) + '.' + meth + '(' + args + ')';
     return txAwait(expr, node, '$request->' + meth + '()');
+  }
+  // FormRequest::validated() — the input restricted to the ruled attributes.
+  // The kernel request keeps the validator's validated data (the same value
+  // FormRequest::validated() returns); the rules are dumped at build time.
+  if (meth === 'validated' || meth === 'safe') {
+    const fr = CTX && CTX.formRequests ? CTX.formRequests.get(vname(inner.name)) : null;
+    if (!fr) {
+      throw mkErr(
+        'LW002',
+        '$request->' + meth + '() is only available on a FormRequest parameter — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    if (meth === 'safe') {
+      throw mkErr('LW002', 'FormRequest::safe() is not supported — ' + PORT_HINT, node.loc, PORT_HINT);
+    }
+    return vname(inner.name) + '.validated()';
   }
   if (!REQUEST_CALL.has(meth)) {
     throw mkErr(
@@ -383,7 +432,7 @@ function txModelChain(chain, node) {
     }
     expr = txAwait('rt.model(' + clsLit + ').' + first.name + '(' + firstArgs + ')', first.node);
   } else {
-    throw mkErr('LW003', 'unsupported static call ' + root + '::' + first.name + '() — only find, findOrFail, all, where, whereIn transpile at the edge', node.loc, PORT_HINT);
+    throw mkErr('LW003', 'unsupported static call ' + root + '::' + first.name + '() — only find, findOrFail, all, where, whereIn, create transpile at the edge', node.loc, PORT_HINT);
   }
   for (let i = 1; i < segments.length; i++) {
     const seg = segments[i];
@@ -468,6 +517,13 @@ function txCall(node) {
   }
   if (what.kind === 'name') {
     const name = what.name;
+    if (name === 'response') {
+      const a = node.arguments || [];
+      if (a.length === 0) return '{ status: 200, headers: {}, body: "" }';
+      if (a.length === 1) return '{ status: 200, headers: {}, body: ' + tx(a[0]) + ' }';
+      if (a.length === 2) return '{ status: ' + tx(a[1]) + ', headers: {}, body: ' + tx(a[0]) + ' }';
+      return '{ status: ' + tx(a[1]) + ', headers: ' + tx(a[2]) + ', body: ' + tx(a[0]) + ' }';
+    }
     if (name === 'app') {
       if ((node.arguments || []).length === 0) return 'rt.app()';
       return 'rt.app(' + args + ')';
@@ -562,6 +618,31 @@ function txCall(node) {
       }
       return 'rt.validationExceptionWithMessages(' + args + ')';
     }
+    // Illuminate\Support\Facades\Cache — the D1-backed `database` cache store.
+    if ((cls === 'Cache' || cls === 'Illuminate\\Support\\Facades\\Cache') && CTX && CTX.controller) {
+      if (!CACHE_ASYNC.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Cache::' + meth + '() is not supported — allowed: ' + [...CACHE_ASYNC].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return txAwait('rt.cache().' + meth + '(' + args + ')', node, 'Cache::' + meth + '()');
+    }
+    // Illuminate\Support\Facades\Hash — bcrypt, with the app's configured rounds.
+    if ((cls === 'Hash' || cls === 'Illuminate\\Support\\Facades\\Hash') && CTX && CTX.controller) {
+      if (!HASH_FACADE.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Hash::' + meth + '() is not supported — allowed: ' + [...HASH_FACADE].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      if (meth === 'isHashed') return 'rt.hash.isHashed(' + args + ')';
+      return txAwait('rt.hash.' + meth + '(' + args + ')', node, 'Hash::' + meth + '()');
+    }
     if ((cls === 'Auth' || cls === 'Illuminate\\Support\\Facades\\Auth') && CTX && CTX.controller) {
       if (!AUTH_ASYNC.has(meth)) {
         throw mkErr(
@@ -585,6 +666,11 @@ function txCall(node) {
     }
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
+    // Eloquent instance writes ($model->save(), ->delete(), ...) need the D1
+    // binding and are async at the edge.
+    if (CTX && CTX.controller && INSTANCE_DB_METHODS.has(meth)) {
+      return txAwait(obj + '.' + meth + '(rt.db()' + (args ? ', ' + args : '') + ')', node, 'model->' + meth + '()');
+    }
     const expr = obj + '.' + meth + '(' + args + ')';
     // auth()->user() / auth()->guard()->attempt() resolve the user async (Timebox).
     if (CTX && CTX.controller && AUTH_FACADE_RE.test(obj) && AUTH_ASYNC.has(meth)) {
@@ -717,6 +803,13 @@ function txAssignExpr(node) {
     if (op === '??=') return 'rt.coalesceAssign(() => (' + target + '), (x) => { ' + target + ' = x; }, ' + right + ')';
     throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
   }
+  if (left.kind === 'propertylookup') {
+    // PHP `$model->attribute = $value` — Eloquent::setAttribute (casts included).
+    const name = left.offset && left.offset.name;
+    if (typeof name !== 'string') throw mkErr('LW002', 'unsupported property assignment', node.loc);
+    if (op !== '=') throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
+    return '(rt.propSet(' + tx(left.what) + ', ' + JSON.stringify(name) + ', ' + right + '))';
+  }
   throw mkErr('LW002', 'unsupported assignment target', node.loc);
 }
 
@@ -738,6 +831,13 @@ function txAssignStatement(node) {
     if (op === '=') return target + ' = ' + right + ';';
     if (op === '??=') return 'if (' + target + ' === null || ' + target + ' === undefined) { ' + target + ' = ' + right + '; }';
     throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
+  }
+  if (left.kind === 'propertylookup') {
+    // PHP `$model->attribute = $value` — Eloquent::setAttribute (casts included).
+    const name = left.offset && left.offset.name;
+    if (typeof name !== 'string') throw mkErr('LW002', 'unsupported property assignment', node.loc);
+    if (op !== '=') throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
+    return 'rt.propSet(' + tx(left.what) + ', ' + JSON.stringify(name) + ', ' + right + ');';
   }
   throw mkErr('LW002', 'unsupported assignment target', node.loc);
 }
@@ -978,6 +1078,10 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     views: opts.views || new Set(),
     controller: true,
     requestVars: opts.requestVars || new Set(),
+    // class constants dumped at build time: { FQCN: { NAME: value } }
+    constants: opts.constants || {},
+    // FormRequest rules per request variable: Map<varName, { rules, messages, attributes }>
+    formRequests: opts.formRequests || new Map(),
   };
   CLOSURE_DEPTH = 0;
   const indent = opts.indent || '';

@@ -154,10 +154,10 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Controllers / closures | PHP-subset → JS | ✅ | single-verb GET/HEAD/POST controllers compiled: scalar params + `Request $request` injection, model chains + views, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`; fail loud elsewhere | F |
+| Controllers / closures | PHP-subset → JS | ✅ | multi-verb controllers compiled (GET/POST/PUT/PATCH/DELETE, one handler per verb): scalar params + `Request $request` injection, model chains + views, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`, `response()`/`response()->json()`, `Cache::*`/`Hash::*` facades, class constants (`RouteServiceProvider::HOME`, dumped at build time), Eloquent writes (`create`/`fill`/`save`/`delete`, `$model->attr = …`); fail loud elsewhere | F |
 | Service classes / helpers | PHP-subset → JS | ✅ | | F |
-| Form Requests | Compile rules + authorize | 🟡 | | F |
-| Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | `$request->validate()`/`validateWithBag()` compile to an awaited kernel-validator call; a failure renders like Laravel — 302 back (Referer → previous URL → `/`) with flashed `errors` + `_old_input` (minus `dontFlash`), or 422 JSON for `expectsJson`. `$attributes` display names (exact/wildcard/PHP-truthiness/raw-implicit/`Str::snake` fallback) and `:attribute` custom-message replacement are wired; json session serialization only (the ViewErrorBag php-serialization path fails loud) (M19/T10). FormRequests still a port | F |
+| Form Requests | Compile rules + authorize | ✅ | `rules()`/`messages()`/`attributes()` are dumped at build time (`tools/formrequest-dump.php`) and compiled into the handler: the request is validated before the method body (like the container resolving the FormRequest), and `validated()` returns the ruled attributes. `authorize()` must return true, `prepareForValidation()` is not supported → build fails loud. A class-typed parameter that is not a FormRequest is a service → build fails loud | F |
+| Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | `$request->validate()`/`validateWithBag()` compile to an awaited kernel-validator call; a failure renders like Laravel — 302 back (Referer → previous URL → `/`) with flashed `errors` + `_old_input` (minus `dontFlash`), or 422 JSON for `expectsJson`. `$attributes` display names (exact/wildcard/PHP-truthiness/raw-implicit/`Str::snake` fallback) and `:attribute` custom-message replacement are wired; json session serialization only (the ViewErrorBag php-serialization path fails loud) (M19/T10) | F |
 | Events / Listeners | Synchronous compiled | ✅ | queued listeners → queue | F |
 | Exceptions / error pages | Kernel map → static error pages | 🟡 | `resources/views/errors/{code}.blade.php` compile at build time and render for `abort()`/HTTP errors when present; otherwise status-only stubs | F |
 
@@ -167,7 +167,7 @@ The escape hatch stays: **ports**.
 |---|---|---|---|---|
 | Migrations | PHP-side, applied to remote D1 (SQL export / wrangler) | ✅ | ops-time, not request-time | F |
 | Seeders / factories | Local + SQL import | ✅ | | F |
-| Eloquent CRUD | Generated model metadata + D1 | 🟡 | subset: find/where/order/limit/paginate/save/delete | F |
+| Eloquent CRUD | Generated model metadata + D1 | 🟡 | subset: find/findOrFail/all/where/whereIn/orderBy/limit + writes (`create`, `fill`, `save`, `delete`, `forceDelete`, `restore`, `$model->attr = …`); the write path needs the D1 binding (`rt.db()`) | F |
 | Relationships | includes / eager subset | 🟡 | belongsTo, hasMany first | F |
 | Casts / accessors | Compiled | 🟡 | | F |
 | Query builder subset | Kernel builder → SQL | 🟡 | | F |
@@ -181,8 +181,8 @@ The escape hatch stays: **ports**.
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
 | Sessions | D1-backed store + encrypted cookie | ✅ | kernel Store + cookie/D1 handlers, oracle byte-parity (M11); wired in `handleHttp`, payload bytes compared per step (M15); `regenerate()`/`invalidate()`/`regenerateToken()` wired from compiled controllers (M20) | F |
-| Auth (guard, login/logout, remember) | Kernel + D1 users | ✅ | kernel SessionGuard, EloquentUserProvider, BcryptHasher, `auth`/`guest` middleware oracle-verified (M14); wired in the compiled pipeline + end-to-end parity (M15) | F |
-| Password hashing | bcrypt via bcryptjs (`$2y$` parity) | ✅ | kernel BcryptHasher make/check/needsRehash/verifyConfiguration (M5); free-plan CPU banked (measured) | F |
+| Auth (guard, login/logout, remember) | Kernel + D1 users | ✅ | kernel SessionGuard, EloquentUserProvider, BcryptHasher, `auth`/`guest` middleware oracle-verified (M14); wired in the compiled pipeline + end-to-end parity (M15); the `auth.basic` middleware is honoured (Basic header → `guard->attempt()`, 401 + `WWW-Authenticate: Basic realm="Basic"` on failure) | F |
+| Password hashing | bcrypt via bcryptjs (`$2y$` parity) | ✅ | kernel BcryptHasher make/check/needsRehash/verifyConfiguration (M5); free-plan CPU banked (measured); the `Hash` facade compiles to it (`Hash::make`/`check`/`needsRehash`/`isHashed`) with the app's `hashing.bcrypt.rounds` | F |
 | Rate limiting | D1 counters (`cache` table) | ✅ | kernel RateLimiter + ThrottleRequests oracle-verified (M12); runs on the D1 `database` cache store (M18). `increment` is read-then-write — D1 has no interactive transactions | F |
 
 ### F. Platform services
@@ -192,7 +192,7 @@ The escape hatch stays: **ports**.
 | Mail | HTTP providers (Resend etc.) via `fetch` | 🟡 | kernel/mail.mjs exists (log/noop/resend) but NOT wired to pipeline/transpiler; padanan = HTTP provider (SMTP impossible, hard) | F |
 | Queues / Jobs | Cloudflare Queues (free: 10k ops/day) or D1 queue | 🟡 | | F |
 | Scheduler | Cron Triggers → one dispatcher reads schedule | 🟡 | kernel/scheduler.mjs exists but NOT wired to runtime; padanan = Cron Triggers (free: 5 triggers/account → dispatcher) | F |
-| Cache | D1 `database` store (Laravel parity) + KV cache-aside | ✅/🟡 | `DatabaseCacheStore` mirrors `Illuminate\Cache\DatabaseStore` 13.37, oracle-verified incl. raw rows (M18); KV stays for build-time/simple caching (eventual consistency trade) | F |
+| Cache | D1 `database` store (Laravel parity) + KV cache-aside | ✅/🟡 | `DatabaseCacheStore` mirrors `Illuminate\Cache\DatabaseStore` 13.37, oracle-verified incl. raw rows (M18); KV stays for build-time/simple caching (eventual consistency trade); the `Cache` facade compiles to it (`get`/`has`/`put`/`add`/`forever`/`forget`/`remember`/`pull`/`increment`/`decrement`/`touch`/`flush`) | F |
 | Storage / filesystem | Uploads → R2; `file_exists`/`public_path` → build-time snapshot | 🟡 | no local FS (hard) → R2 is the padanan | F |
 | HTTP client | `fetch` | ✅ | no raw sockets (hard); 6 concurrent conns → batch/queue | F |
 | Logging | Console + optional external sink via fetch | 🟡 | no Log module; `Log::` facade not mapped → port; console + fetch sinks only | F |

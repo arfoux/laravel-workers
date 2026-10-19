@@ -28,7 +28,20 @@ const TYPE_MAP = {
 };
 
 // Static classes that are allowed even though they are not Eloquent models.
-const NON_MODEL_STATICS = new Set(['Route', 'self', 'static', 'parent', 'Auth', 'Illuminate\\Support\\Facades\\Auth', 'ValidationException', 'Illuminate\\Validation\\ValidationException']);
+const NON_MODEL_STATICS = new Set([
+  'Route',
+  'self',
+  'static',
+  'parent',
+  'Auth',
+  'Illuminate\\Support\\Facades\\Auth',
+  'ValidationException',
+  'Illuminate\\Validation\\ValidationException',
+  'Cache',
+  'Illuminate\\Support\\Facades\\Cache',
+  'Hash',
+  'Illuminate\\Support\\Facades\\Hash',
+]);
 
 function lwErr(code, message, loc, hint) {
   return {
@@ -169,9 +182,15 @@ function analyzeParams(method, uses = null, nsName = null) {
         // Request $request — injected from the HTTP context, not a route segment.
         entry.inject = 'request';
         entry.typeHint = tn;
+        entry.typeFqcn = REQUEST_FQCN;
+        entry.typeOk = true;
       } else {
+        // Any other class type (a FormRequest, a service, ...). The build dumps
+        // the candidate classes at build time; a FormRequest is injected, every
+        // other service type fails loud.
         entry.typeOk = false;
         entry.typeHint = tn || 'complex (union/intersection)';
+        entry.typeFqcn = tn ? resolveTypeFqcn(tn, uses, nsName) : null;
       }
     }
     if (entry.hasDefault) {
@@ -185,26 +204,36 @@ function analyzeParams(method, uses = null, nsName = null) {
 }
 
 // Walk the method body for static class references and literal view() names.
-function scanBody(node, classes, views) {
+function scanBody(node, classes, views, constants) {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) {
-    for (const n of node) scanBody(n, classes, views);
+    for (const n of node) scanBody(n, classes, views, constants);
     return;
   }
+  // A call whose target is a static lookup (`Post::where(...)`) — the class is a
+  // model/facade reference, not a constant read, so the target is not revisited.
+  let skipTarget = false;
   if (node.kind === 'call') {
     const what = node.what;
     if (what && what.kind === 'staticlookup') {
       const alias = what.what && what.what.name;
       if (typeof alias === 'string') classes.add(alias);
+      skipTarget = true;
     }
     if (what && what.kind === 'name' && what.name === 'view') {
       const a0 = (node.arguments || [])[0];
       if (a0 && a0.kind === 'string') views.add(String(a0.value));
     }
+  } else if (node.kind === 'staticlookup') {
+    // A class *constant* read (e.g. RouteServiceProvider::HOME) — the value is
+    // dumped at build time. (A static call is handled by the `call` branch.)
+    const alias = node.what && node.what.name;
+    if (typeof alias === 'string' && constants) constants.add(alias);
   }
   for (const k of Object.keys(node)) {
     if (k === 'loc') continue;
-    scanBody(node[k], classes, views);
+    if (k === 'what' && skipTarget) continue;
+    scanBody(node[k], classes, views, constants);
   }
 }
 
@@ -232,9 +261,16 @@ export function extractController(source, methodName) {
   const params = analyzeParams(method, uses, nsName);
   const classSet = new Set();
   const viewSet = new Set();
-  scanBody(method.body, classSet, viewSet);
+  const constantSet = new Set();
+  scanBody(method.body, classSet, viewSet, constantSet);
 
   const classes = [...classSet]
+    .filter((alias) => !NON_MODEL_STATICS.has(alias))
+    .map((alias) => ({ alias, fqcn: uses[alias] || (nsName ? nsName + '\\' + alias : alias) }));
+  classes.sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
+
+  // Classes read for a *constant* (e.g. RouteServiceProvider::HOME).
+  const constantClasses = [...constantSet]
     .filter((alias) => !NON_MODEL_STATICS.has(alias))
     .map((alias) => ({ alias, fqcn: uses[alias] || (nsName ? nsName + '\\' + alias : alias) }))
     .sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
@@ -248,6 +284,7 @@ export function extractController(source, methodName) {
     uses,
     params,
     classes,
+    constants: constantClasses,
     views: [...viewSet].sort(),
     methodNode: method,
   };
@@ -264,7 +301,16 @@ export function emitController(source, methodName, meta = {}) {
   if (!info.ok) return { code: null, errors: info.errors };
 
   const errors = [];
-  const params = info.params;
+  // FormRequest classes (verified at build time by tools/formrequest-dump.php)
+  // are injected like a Request; every other class type fails loud.
+  const formRequestMap = meta.formRequests && typeof meta.formRequests === 'object' ? meta.formRequests : {};
+  const params = info.params.map((p) => {
+    if (p.inject === 'request') return p;
+    if (p.typeFqcn && formRequestMap[p.typeFqcn]) {
+      return { ...p, inject: 'request', typeOk: true };
+    }
+    return p;
+  });
   const routeParams = (Array.isArray(meta.routeParams) ? meta.routeParams : []).map((s) =>
     String(s).replace(/[?*]$/, '')
   );
@@ -319,13 +365,34 @@ export function emitController(source, methodName, meta = {}) {
       errors.push(
         lwErr(
           'LW003',
-          `${c.fqcn} is not a registered Eloquent model for this route — only Eloquent models (find/findOrFail/all/where/whereIn) and Route::has transpile; ` +
+          `${c.fqcn} is not a registered Eloquent model for this route — only Eloquent models (find/findOrFail/all/where/whereIn/create) and Route::has transpile; ` +
             PORT_HINT,
           null,
           PORT_HINT
         )
       );
     }
+  }
+
+  // A FormRequest parameter must have a dumped rule set, otherwise the route
+  // would validate nothing at the edge (Laravel validates before the method).
+  const formRequests = new Map();
+  for (const p of params) {
+    if (p.inject !== 'request') continue;
+    if (!p.typeFqcn || p.typeFqcn === REQUEST_FQCN) continue;
+    const dumped = formRequestMap[p.typeFqcn];
+    if (!dumped) {
+      errors.push(
+        lwErr(
+          'LW003',
+          `${p.typeFqcn} is not a registered FormRequest — its rules could not be dumped; ` + PORT_HINT,
+          null,
+          PORT_HINT
+        )
+      );
+      continue;
+    }
+    formRequests.set(vname(p.name), dumped);
   }
 
   if (errors.length) return { code: null, errors };
@@ -338,6 +405,8 @@ export function emitController(source, methodName, meta = {}) {
     indent: '    ',
     paramVars,
     requestVars,
+    constants: meta.constants && typeof meta.constants === 'object' ? meta.constants : {},
+    formRequests,
   });
   if (emitted.errors.length) return { code: null, errors: emitted.errors };
 
@@ -364,6 +433,21 @@ export function emitController(source, methodName, meta = {}) {
     );
   });
 
+  // A FormRequest validates *before* the controller method runs (the container
+  // resolves the FormRequest, which validates and authorizes it). The compiled
+  // handler does the same: validate first, then run the method body.
+  const formRequestLines = [];
+  for (const p of params) {
+    if (p.inject !== 'request') continue;
+    if (!p.typeFqcn || p.typeFqcn === REQUEST_FQCN) continue;
+    const dumped = formRequestMap[p.typeFqcn];
+    if (!dumped) continue;
+    formRequestLines.push(
+      `    await rt.request().validate(${JSON.stringify(dumped.rules || {})}, ` +
+        `${JSON.stringify(dumped.messages || {})}, ${JSON.stringify(dumped.attributes || {})});`
+    );
+  }
+
   const lines = [];
   lines.push(`// generated by laravel-workers — ${info.fqcn}@${methodName} (do not edit)`);
   lines.push("import { buildRt } from '../runtime/rt-from-context.mjs';");
@@ -383,11 +467,15 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    views: VIEWS,');
   lines.push("    origin: (function () { var r = ctx && ctx.request; if (!r) return null; var h = (typeof r.host === 'function') ? r.host() : r.host; if (!h) return null; if (typeof r.schemeAndHttpHost === 'function') return r.schemeAndHttpHost(); var s = (typeof r.scheme === 'function') ? r.scheme() : 'https'; return s + '://' + h; })(),");
   lines.push('    routeMap: LW_ROUTE_MAP,');
+  // The app's bcrypt rounds (hashing.bcrypt.rounds) — Hash::make() parity.
+  const hashRounds = Number(meta.hashRounds);
+  lines.push('    hashRounds: ' + (Number.isFinite(hashRounds) ? hashRounds : 12) + ',');
   lines.push('    // Live HTTP wiring from the compiled kernel: session()/old()/csrf_*()/auth().');
   lines.push('    http: ctx,');
   lines.push('  });');
   lines.push('  try {');
   for (const l of paramLines) lines.push(l);
+  for (const l of formRequestLines) lines.push(l);
   if (emitted.code) lines.push(emitted.code);
   lines.push('    throw new Error(' + JSON.stringify('controller ' + info.fqcn + '@' + methodName + ' returned no response') + ');');
   lines.push('  } catch (e) {');

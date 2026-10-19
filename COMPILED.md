@@ -67,9 +67,21 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   the compiled universe, traits/inheritance/interfaces/enums, union/nullable types, defaults,
   spread/variadics, closures, generators
 - Output: one module per class + `classes.generated.mjs` registry (`new $x` / `make($x)`)
-- Multi-verb URIs: a URI compiles its primary GET/POST handler *and* any extra POST verbs
-  (separate module, e.g. `login-post.mjs`) — a `GET /login` view snapshot plus a
-  `POST /login` controller coexist; other extra verbs (PUT/PATCH/DELETE) need a port
+- Multi-verb URIs: a URI compiles its primary GET/POST handler *and* any extra verb
+  (separate module, e.g. `login--post.mjs`) — a `GET /login` view snapshot plus a
+  `POST /login` controller coexist; PUT/PATCH/DELETE compile the same way. OPTIONS is
+  not compiled (the platform answers the CORS preflight) → the build fails loud
+- Compiled controller subset: scalar params + `Request`/FormRequest injection, model
+  chains (`find`/`findOrFail`/`all`/`where`/`whereIn`/`create`), Eloquent writes
+  (`fill`/`save`/`delete`/`forceDelete`/`restore`, `$model->attr = …`), views,
+  `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`,
+  `response()`/`response()->json()`, `Cache::*`/`Hash::*` facades, class constants
+  (`RouteServiceProvider::HOME`), `ValidationException::withMessages()`.
+  Everything else fails loud (never a wrong compile)
+- FormRequest: `rules()`/`messages()`/`attributes()` are dumped at build time and
+  compiled into the handler — the request is validated *before* the method body and
+  `validated()` returns the ruled attributes. `authorize()` must be true and
+  `prepareForValidation()` is not supported (build fails loud)
 - Out-of-subset class body → per-class build error (never a wrong compile)
 
 ### 1.3 Shadow harness (the proof machine)

@@ -73,7 +73,7 @@ class PostController extends Controller
 
     public function badStatic()
     {
-        $x = Post::create(['title' => 'nope']);
+        $x = Post::destroy(1);
         return view('posts.index');
     }
 
@@ -196,7 +196,7 @@ test('emit: unknown model static fails with LW003', () => {
   const res = emitController(SAMPLE, 'badStatic', META_BASE);
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW003');
-  assert.match(res.errors[0].message, /Post::create/);
+  assert.match(res.errors[0].message, /Post::destroy/);
 });
 
 test('emit: $this fails with LW002', () => {
@@ -404,6 +404,214 @@ test('emit: an unsupported ValidationException static fails loud (LW002)', () =>
   const res = emitController(src, 'store', { routeUri: '/login', routeParams: [], models: [], views: [] });
   assert.equal(res.errors.length, 1);
   assert.equal(res.errors[0].code, 'LW002');
+});
+
+// ---------------------------------------------------------------------------
+// emit — FormRequest, facades, writes, constants
+// ---------------------------------------------------------------------------
+
+test('emit: a FormRequest parameter is injected and validated before the body', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Http\\Requests\\StorePostRequest;\n' +
+    'class C {\n' +
+    '    public function store(StorePostRequest $request)\n' +
+    '    {\n' +
+    "        $data = $request->validated();\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/posts',
+    routeParams: [],
+    models: [],
+    views: [],
+    formRequests: {
+      'App\\Http\\Requests\\StorePostRequest': {
+        rules: { title: ['required', 'string'] },
+        messages: { 'title.required': 'The :attribute is required.' },
+        attributes: { title: 'post title' },
+      },
+    },
+  });
+  assert.equal(res.errors.length, 0);
+  // The rules are compiled in and the request is validated before the body.
+  assert.match(res.code, /await rt\.request\(\)\.validate\(\{"title":\["required","string"\]\}/);
+  assert.match(res.code, /let v_request = rt\.request\(\);/);
+  assert.match(res.code, /v_request\.validated\(\)/);
+});
+
+test('emit: a class-typed parameter that is not a FormRequest fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Support\\Dingus;\n' +
+    'class C {\n' +
+    '    public function store(Dingus $dingus)\n' +
+    '    {\n' +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/posts', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /unsupported type/);
+});
+
+test('emit: the Cache and Hash facades compile to the rt cache/hash helpers', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Cache;\n' +
+    'use Illuminate\\Support\\Facades\\Hash;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Cache::put('k', 'v', 60);\n" +
+    "        Cache::forget('k');\n" +
+    "        $v = Cache::get('k', 'missing');\n" +
+    "        $h = Hash::make('secret');\n" +
+    "        return response($v . $h);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /\(await rt\.cache\(\)\.put\("k", "v", 60\)\)/);
+  assert.match(res.code, /\(await rt\.cache\(\)\.forget\("k"\)\)/);
+  assert.match(res.code, /\(await rt\.cache\(\)\.get\("k", "missing"\)\)/);
+  assert.match(res.code, /\(await rt\.hash\.make\("secret"\)\)/);
+});
+
+test('emit: an unsupported Cache/Hash method fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Cache;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Cache::store('redis');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /Cache::store/);
+});
+
+test('emit: `$model->attr = $value` compiles to rt.propSet', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function update(string $id)\n' +
+    '    {\n' +
+    "        $post = Post::findOrFail($id);\n" +
+    "        $post->title = 'x';\n" +
+    "        $post->save();\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'update', {
+    routeUri: '/posts/{id}',
+    routeParams: ['id'],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+  });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /rt\.propSet\(v_post, "title", "x"\)/);
+  // The write needs the D1 binding and is awaited.
+  assert.match(res.code, /\(await v_post\.save\(rt\.db\(\)\)\)/);
+});
+
+test('emit: Post::create() compiles to an awaited rt.model(...).create()', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Post::create(['title' => 'x']);\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/posts',
+    routeParams: [],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+  });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /\(await rt\.model\("Post"\)\.create\(/);
+});
+
+test('emit: a class constant is baked in from the build-time dump', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Providers\\RouteServiceProvider;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        return redirect(RouteServiceProvider::HOME);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/x',
+    routeParams: [],
+    models: [],
+    views: [],
+    constants: { RouteServiceProvider: { HOME: '/dashboard' } },
+  });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /rt\.redirect\("\/dashboard"\)/);
+});
+
+test('emit: an unknown class constant fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Providers\\RouteServiceProvider;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        return redirect(RouteServiceProvider::HOME);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /RouteServiceProvider::HOME/);
+});
+
+test('emit: response() returns a status/headers/body response object', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /\{ status: 200, headers: \{\}, body: "ok" \}/);
+});
+
+test('emit: the extract lists the class constants the method reads', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Providers\\RouteServiceProvider;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        $p = Post::find(1);\n" +
+    "        return redirect(RouteServiceProvider::HOME);\n" +
+    '    }\n' +
+    '}\n';
+  const info = extractController(src, 'store');
+  assert.equal(info.ok, true);
+  // A static *call* is a model reference, not a constant read.
+  assert.deepEqual(info.classes.map((c) => c.alias), ['Post']);
+  assert.deepEqual(info.constants.map((c) => c.alias), ['RouteServiceProvider']);
+  assert.equal(info.constants[0].fqcn, 'App\\Providers\\RouteServiceProvider');
 });
 
 // ---------------------------------------------------------------------------

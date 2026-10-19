@@ -58,6 +58,7 @@ if (cmd === 'extract') {
     method: info.method,
     params: info.params,
     classes: info.classes,
+    constants: info.constants,
     views: info.views,
   };
   const text = JSON.stringify(out);

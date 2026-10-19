@@ -117,7 +117,7 @@ function buildFixture() {
   assert.equal(res.status, 0, `fixture build --strict must exit 0:\n${log}`);
   assert.match(
     log,
-    /controller POST \/login -> .*login-post\.mjs/,
+    /controller POST \/login -> .*login--post\.mjs/,
     'the multi-verb pass must compile POST /login (extra verb on an otherwise GET-only uri)'
   );
 }
