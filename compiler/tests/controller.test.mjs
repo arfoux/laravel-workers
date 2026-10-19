@@ -427,9 +427,19 @@ function writeTree(root, files) {
   }
 }
 
+// The mini dist tree lives outside the package, so bare `bcryptjs` would not
+// resolve from it. Point the copied hash.mjs at the real package entry instead
+// of duplicating node_modules.
+const bcryptEntryUrl = pathToFileURL(
+  path.join(pkgDir, 'node_modules', 'bcryptjs', 'index.js')
+).href;
+
 writeTree(tmpRoot, {
   'kernel/model.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'model.mjs'), 'utf8'),
   'kernel/db.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'db.mjs'), 'utf8'),
+  'kernel/hash.mjs': fs
+    .readFileSync(path.join(pkgDir, 'kernel', 'hash.mjs'), 'utf8')
+    .replace("from 'bcryptjs'", `from ${JSON.stringify(bcryptEntryUrl)}`),
   'kernel/validation.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation.mjs'), 'utf8'),
   'kernel/validator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validator.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(

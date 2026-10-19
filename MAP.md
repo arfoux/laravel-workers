@@ -157,9 +157,9 @@ The escape hatch stays: **ports**.
 | Controllers / closures | PHP-subset → JS | ✅ | single-verb GET/HEAD/POST controllers compiled: scalar params + `Request $request` injection, model chains + views, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`; fail loud elsewhere | F |
 | Service classes / helpers | PHP-subset → JS | ✅ | | F |
 | Form Requests | Compile rules + authorize | 🟡 | | F |
-| Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | `$request->validate()`/`validateWithBag()` compile to an awaited kernel-validator call; a failure renders like Laravel — 302 back (Referer → previous URL → `/`) with flashed `errors` + `_old_input` (minus `dontFlash`), or 422 JSON for `expectsJson`. json session serialization only (the ViewErrorBag php-serialization path fails loud) (M19). FormRequests still a port | F |
+| Validation | Rule subset in kernel; `unique`/`exists` via D1 | 🟡 | `$request->validate()`/`validateWithBag()` compile to an awaited kernel-validator call; a failure renders like Laravel — 302 back (Referer → previous URL → `/`) with flashed `errors` + `_old_input` (minus `dontFlash`), or 422 JSON for `expectsJson`. `$attributes` display names (exact/wildcard/PHP-truthiness/raw-implicit/`Str::snake` fallback) and `:attribute` custom-message replacement are wired; json session serialization only (the ViewErrorBag php-serialization path fails loud) (M19/T10). FormRequests still a port | F |
 | Events / Listeners | Synchronous compiled | ✅ | queued listeners → queue | F |
-| Exceptions / error pages | Kernel map → static error pages | 🟡 | renderer subset | F |
+| Exceptions / error pages | Kernel map → static error pages | 🟡 | `resources/views/errors/{code}.blade.php` compile at build time and render for `abort()`/HTTP errors when present; otherwise status-only stubs | F |
 
 ### D. Data
 
@@ -189,15 +189,15 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Mail | HTTP providers (Resend etc.) via `fetch` | ✅ | no SMTP — no sockets (hard) → HTTP is the padanan | F |
+| Mail | HTTP providers (Resend etc.) via `fetch` | 🟡 | kernel/mail.mjs exists (log/noop/resend) but NOT wired to pipeline/transpiler; padanan = HTTP provider (SMTP impossible, hard) | F |
 | Queues / Jobs | Cloudflare Queues (free: 10k ops/day) or D1 queue | 🟡 | | F |
-| Scheduler | Cron Triggers → one dispatcher reads schedule | ✅ | free: 5 triggers/account → dispatcher pattern covers all | F |
+| Scheduler | Cron Triggers → one dispatcher reads schedule | 🟡 | kernel/scheduler.mjs exists but NOT wired to runtime; padanan = Cron Triggers (free: 5 triggers/account → dispatcher) | F |
 | Cache | D1 `database` store (Laravel parity) + KV cache-aside | ✅/🟡 | `DatabaseCacheStore` mirrors `Illuminate\Cache\DatabaseStore` 13.37, oracle-verified incl. raw rows (M18); KV stays for build-time/simple caching (eventual consistency trade) | F |
 | Storage / filesystem | Uploads → R2; `file_exists`/`public_path` → build-time snapshot | 🟡 | no local FS (hard) → R2 is the padanan | F |
 | HTTP client | `fetch` | ✅ | no raw sockets (hard); 6 concurrent conns → batch/queue | F |
-| Logging | Console + optional external sink via fetch | ✅ | | F |
+| Logging | Console + optional external sink via fetch | 🟡 | no Log module; `Log::` facade not mapped → port; console + fetch sinks only | F |
 | Realtime / WebSockets | Polling / SSE; Durable Objects beyond | 🔴 | wall: no long-lived conn → padanan: polling/SSE first | F* / $ |
-| i18n | Lang frozen to JSON; pluralization subset | 🟡 | | F |
+| i18n | Lang frozen to JSON; pluralization subset | 🟡 | Lang frozen to JSON; pluralization subset (see `localization`) | F |
 
 ### G. Frontend / DX
 
@@ -340,14 +340,14 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | ai | ⛔ | dev tooling (Boost/AI guidelines) |
 | ai-sdk | 🟡 ph3 | HTTP + streaming via fetch fits |
 | artisan | ⛔ | local-only; edge CLI equivalents |
-| authentication | 🟡 | kernel SessionGuard oracle-verified (M14); wiring pending |
-| authorization | 🟡 ph2 | gates/policies compile |
-| billing | 🟡 ph3 | Cashier via fetch; webhooks = HMAC routes |
-| blade | ✅ | views compile (echo/if/loops/expr); layouts (`$__env`) via port |
+| authentication | 🟡 | kernel SessionGuard oracle-verified (M14); wired M15–M20 (auth.test 4/4, login-flow E2E) |
+| authorization | 🟡 ph2 | no Gate facade; build fails loud on `can:`/`authorize()`; KERJA (Gate/Policy compile) |
+| billing | 🟡 ph3 | Cashier via fetch; webhooks = HMAC routes (padanan) |
+| blade | 🟡 | views compile (echo/if/loops/expr); layouts (`$__env`) via port |
 | boost | ⛔ | dev tooling only |
 | broadcasting | 🔴 | SSE/polling padanan; WS via DO/external |
-| cache | 🟡 | KV/D1 drivers; tag emulation |
-| cashier-paddle | 🟡 ph3 | same as billing |
+| cache | 🟡 | D1 store wired (throttle/session); KV driver + tags + facade pending (T4) |
+| cashier-paddle | 🟡 ph3 | same as billing (padanan) |
 | collections | 🟡 | kernel shim subset; fail loud per method |
 | concurrency | 🟡 | Promise.all; 6-conn limit → batch |
 | configuration | ✅ | frozen at build + secrets |
@@ -356,7 +356,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | single-verb GET/HEAD/POST controllers compiled (M10/M17); `$request->validate()` + error/old-input flash compiled (M19); `redirect()->intended()` + session `regenerate`/`invalidate`/`regenerateToken` compiled (M20); multi-verb/paginated routes → ports |
+| controllers | 🟡 | M10/M17 single-verb + M22 multi-verb URIs compiled; `$request->validate()` + flash (M19); `redirect()->intended()` + session regen/invalidate (M20); pagination + FormRequests still port; fail-loud LW002 (unsupported construct) / LW003; REQUEST_CALL synced to kernel (#2: date removed, str added) |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |
@@ -365,23 +365,23 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | dusk | ⛔ | local browser tests |
 | eloquent | 🟡 | schema-driven ORM subset |
 | eloquent-collections | 🟡 | collections shim |
-| eloquent-factories | ✅ | local + SQL import for remote |
-| eloquent-mutators | 🟡 | compiled accessors/casts |
+| eloquent-factories | 🟡 | local dev tooling; no runtime code (unverified) |
+| eloquent-mutators | 🟡 | compiled accessors/casts; build-time `fillable` dump; `hashed` cast |
 | eloquent-relationships | 🟡 | lazy + eager subset |
 | eloquent-resources | 🟡 | compiled toJSON subset |
 | eloquent-serialization | 🟡 | toArray/toJson subset |
 | encryption | 🟡 | AES-CBC+HMAC WebCrypto; serialize subset |
 | envoy | ⛔ | local (SSH deploys) |
-| errors | 🟡 | static pages + renderer subset |
-| events | ✅ | sync compiled; queued → queue |
-| facades | ✅ | kernel shims |
-| filesystem | 🟡 | R2 padanan; local = build-only |
-| folio | ✅ | page routes appear in dump; auto-covered |
-| fortify | 🟡 ph2 | compile routes/actions, or manual auth |
+| errors | 🟡 | build-time compiled error views when present; status-only stubs otherwise |
+| events | 🟡 | AuthEvents objects exist; `Event::dispatch` not mapped → port; queued → queue (dead) |
+| facades | 🟡 | kernel shims; 8 facades unmapped (mail/queue/storage/cache/gate/hash/notification/password) |
+| filesystem | 🟡 | kernel/storage.mjs exists (memory/R2) but NOT wired; R2 padanan; local = build-only |
+| folio | ⛔ | NOT ported (0 code); Laravel Folio page routing unsupported |
+| fortify | 🟡 ph2 | compile routes/actions, or manual auth (padanan) |
 | frontend | ✅ | Vite unchanged; proven |
-| hashing | 🟡 | PBKDF2 both-sides; bcrypt = Paid; argon ⛔ |
+| hashing | 🟡 | PBKDF2 both-sides; bcrypt runs on free (bcryptjs, verdict safe); argon (N/A at edge); PHP 8.3 `password_get_info` parity + `hashed` cast |
 | head | 🟡 ph2 | metadata pkg; view-time render |
-| helpers | 🟡 | kernel shim subset |
+| helpers | 🟡 | kernel shim subset incl. html-entities, php-json, php-serialize |
 | homestead | ⛔ | local VM |
 | horizon | ⛔ | Redis dashboard; padanan CF dashboard |
 | http-client | ✅ | fetch (already HTTP) |
@@ -391,21 +391,21 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | license | ⛔ | meta |
 | lifecycle | ✅ | §3 execution model |
 | localization | 🟡 | frozen JSON; pluralization subset |
-| logging | ✅ | console + fetch sinks |
-| mail | ✅ | HTTP providers; SMTP impossible (hard) |
-| mcp | 🟡 ph3 | HTTP/SSE servers compile; stdio ⛔ |
-| middleware | 🟡 | captured metadata; chain wired in port |
+| logging | 🟡 | no Log module; `Log::` facade not mapped → port; console + fetch sinks only |
+| mail | 🟡 | kernel/mail.mjs exists (log/noop/resend) but NOT wired to pipeline/transpiler; padanan = HTTP provider (SMTP impossible, hard) |
+| mcp | 🟡 ph3 | HTTP/SSE servers compile; stdio (N/A at edge) (padanan) |
+| middleware | 🟡 | compiled pipeline wired (throttle + guest/auth stages); aliases auth.session/precognitive/can* fail loud |
 | migrations | ✅ | ops-time; remote via wrangler/SQL |
 | mix | ⛔ | legacy; Vite is the path |
 | mocking | ⛔ | local; harness mocks fetch |
 | mongodb | ⛔ | D1 = SQLite only; explicit out-of-scope |
-| notifications | 🟡 | mail/db channels; broadcast → SSE |
+| notifications | 🟡 | no module; needs mail+queue+sse padanan (mail/db channels; broadcast → SSE) |
 | octane | ⛔ | server runner irrelevant at edge |
 | packages | ⛔ | meta (this repo becomes one) |
 | pagination | ✅ | kernel paginator |
-| passport | 🟡 ph3 | OAuth endpoints compile; JWT WebCrypto |
-| passwords | 🟡 | tokens + mail; signed URLs |
-| pennant | 🟡 | D1/KV store driver |
+| passport | 🟡 ph3 | OAuth endpoints compile; JWT WebCrypto (padanan) |
+| passwords | 🟡 | tokens + mail; signed URLs (signed URLs ok; token+mail wiring pending) |
+| pennant | 🟡 | D1/KV store driver (padanan) |
 | pint | ⛔ | local style tool |
 | precognition | 🟡 ph2 | validation kernel + headers |
 | processes | 🔴 | no process spawning → off-edge padanan |
@@ -413,24 +413,24 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | providers | 🟡 | compile-time registration subset |
 | pulse | 🟡 ph3 | D1-backed; or CF analytics padanan |
 | queries | 🟡 | builder: where/or/join/group/having/distinct |
-| queues | 🟡 | CF Queues (free tier) / D1 queue |
-| rate-limiting | 🟡 | D1/KV counters |
+| queues | 🟡 | kernel/queue.mjs exists but NOT wired; CF Queues (free: 10k ops/day) / D1 queue padanan |
+| rate-limiting | 🟡 | D1 counters (KV driver pending); throttle build-gated |
 | readme | ⛔ | meta |
 | redis | 🔴 | KV/D1 drivers; Upstash REST optional |
 | releases | ⛔ | meta; pin 13.x policy |
-| requests | ✅ | kernel request subset |
-| responses | ✅ | kernel responses + SSE |
+| requests | 🟡 | kernel request subset |
+| responses | 🟡 | kernel responses + SSE |
 | reverb | 🔴 | WS server → DO/external/SSE padanan |
 | routing | ✅ | compiled router |
 | sail | ⛔ | local Docker |
-| sanctum | 🟡 ph2 | tokens; SPA via sessions |
-| scheduling | ✅ | cron dispatcher (single-trigger pattern) |
-| scout | 🟡 | engines via HTTP; D1 FTS fallback |
+| sanctum | 🟡 ph2 | tokens; SPA via sessions (padanan) |
+| scheduling | 🟡 | kernel/scheduler.mjs exists but NOT wired; cron dispatcher (single-trigger pattern) padanan |
+| scout | 🟡 | engines via HTTP; D1 FTS fallback (padanan) |
 | search | 🟡 | FTS5; vector → CF Vectorize padanan |
-| seeding | ✅ | local + SQL import |
-| session | 🟡 | D1 store; write budget soft |
-| socialite | 🟡 ph3 | fetch-based OAuth |
-| starter-kits | 🟡 ph2 | kit = app code; covered with auth + blade |
+| seeding | 🟡 | local dev tooling; no runtime code (unverified) |
+| session | 🟡 | D1 store; write budget soft; driver kv/encrypt pending |
+| socialite | 🟡 ph3 | fetch-based OAuth (padanan) |
+| starter-kits | 🟡 ph2 | kit = app code; covered with auth + blade (padanan) |
 | strings | 🟡 | Str shim subset; fail loud |
 | structure | ✅ | §7 source of truth |
 | telescope | ⛔ | local debugger |
@@ -438,11 +438,11 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | upgrade | ⛔ | meta; upgrade = recompile + parity |
 | urls | ✅ | url/route/asset; signed URLs |
 | valet | ⛔ | local env |
-| validation | 🟡 | 60+ rules; `$request->validate()` → redirect-back / 422 JSON (M19); unique/exists via D1; FormRequests still a port |
-| verification | 🟡 | signed URLs + mail |
-| views | ✅ | compiled view handlers (echo/if/concat subset) |
+| validation | 🟡 | 60+ rules; `$request->validate()` → redirect-back / 422 JSON (M19); unique/exists via D1; `$attributes` display names + wildcard custom messages (T10); FormRequests still a port |
+| verification | 🟡 | signed URLs + mail (signed URLs ok; mail wiring pending) |
+| views | 🟡 | compiled view handlers (echo/if/concat subset) |
 | vite | ✅ | manifest shims; proven today |
 
-**Tally: 105/105 pages have a verdict — 27 ✅ · 48 🟡 · 5 🔴 (each with padanan) · 25 ⛔ (local-only/meta). Zero blanks.**
+**Tally: 105/105 pages have a verdict — 15 ✅ · 59 🟡 · 5 🔴 (each with padanan) · 26 ⛔ (local-only/meta). Zero blanks.** (reclassified 2026-10: 11 ✅→🟡 subset/overclaim + 1 ✅→⛔ not ported; stale notes synced)
 
 *Keep this doc tight. Update the tables; don't grow prose.*

@@ -416,3 +416,199 @@ test('required conditional error shape has field/rule/message', async () => {
   assert.ok(errs.name && errs.name.length === 1);
   assert.match(errs.name[0], /name/i);
 });
+
+// ---------------------------------------------------------------------------
+// $attributes display names (Laravel FormatsMessages oracle, 13.37 / PHP 8.3)
+// ---------------------------------------------------------------------------
+
+test('display names: default humanisation matches Str::snake + underscores', async () => {
+  const cases = [
+    ['first_name', 'first name'],
+    ['email', 'email'],
+    ['userID', 'user i d'],
+    ['URLValue', 'u r l value'],
+    ['Email Address', 'email address'],
+    ['address.city', 'address.city'],
+    ['a1', 'a1'],
+  ];
+  for (const [field, expected] of cases) {
+    const v = new Validator({}, { [field]: 'required' });
+    await v.fails();
+    assert.equal(v.errors()[field][0], `The ${expected} field is required.`, field);
+  }
+});
+
+test('display names: exact $attributes entry wins', async () => {
+  const v = new Validator(
+    { email: '' },
+    { email: 'required|email' },
+    {},
+    { attributes: { email: 'E-mail Address' } }
+  );
+  await v.fails();
+  // Laravel short-circuits non-implicit rules after `required` fails, so the
+  // only message is the required one (vendor oracle).
+  assert.deepEqual(v.errors().email, ['The E-mail Address field is required.']);
+});
+
+test('display names: empty and "0" names fall through like PHP truthiness', async () => {
+  for (const value of ['', '0', null, false]) {
+    const v = new Validator(
+      { first_name: '' },
+      { first_name: 'required' },
+      {},
+      { attributes: { first_name: value } }
+    );
+    await v.fails();
+    assert.equal(v.errors().first_name[0], 'The first name field is required.');
+  }
+});
+
+test('display names: wildcard $attributes resolve concrete and primary keys', async () => {
+  const data = { items: [{ name: '' }, { name: '' }] };
+  const rules = { 'items.*.name': 'required' };
+
+  let v = new Validator(data, rules, {}, { attributes: { 'items.*.name': 'Item name' } });
+  await v.fails();
+  assert.deepEqual(v.errors()['items.0.name'], ['The Item name field is required.']);
+  assert.deepEqual(v.errors()['items.1.name'], ['The Item name field is required.']);
+
+  // Exact concrete key wins over the wildcard pattern.
+  v = new Validator(data, rules, {}, {
+    attributes: { 'items.0.name': 'First item name', 'items.*.name': 'Item name' },
+  });
+  await v.fails();
+  assert.deepEqual(v.errors()['items.0.name'], ['The First item name field is required.']);
+  assert.deepEqual(v.errors()['items.1.name'], ['The Item name field is required.']);
+
+  // A non-matching wildcard key leaves the raw implicit name.
+  v = new Validator(data, rules, {}, { attributes: { 'items.*.title': 'Nope' } });
+  await v.fails();
+  assert.deepEqual(v.errors()['items.0.name'], ['The items.0.name field is required.']);
+});
+
+test('display names: implicit wildcard fields stay raw without a custom name', async () => {
+  const v = new Validator({ items: [{ name: '' }] }, { 'items.*.name': 'required' });
+  await v.fails();
+  assert.deepEqual(v.errors()['items.0.name'], ['The items.0.name field is required.']);
+});
+
+test('custom messages replace :attribute/:ATTRIBUTE/:Attribute', async () => {
+  const v = new Validator(
+    { email: '' },
+    { email: 'required' },
+    { 'email.required': 'Custom :attribute / :ATTRIBUTE / :Attribute' },
+    { attributes: { email: 'E-mail Address' } }
+  );
+  await v.fails();
+  assert.deepEqual(v.errors().email, [
+    'Custom E-mail Address / E-MAIL ADDRESS / E-mail Address',
+  ]);
+});
+
+test('custom messages: wildcard keys and rule/attribute fallbacks', async () => {
+  const data = { items: [{ name: '' }] };
+  const rules = { 'items.*.name': 'required' };
+
+  let v = new Validator(
+    data,
+    rules,
+    { 'items.*.name.required': 'Wildcard :attribute' },
+    { attributes: { 'items.*.name': 'Item name' } }
+  );
+  await v.fails();
+  assert.deepEqual(v.errors()['items.0.name'], ['Wildcard Item name']);
+
+  // Bare rule key applies to every field (Laravel getFromLocalArray order).
+  v = new Validator({ a: '', b: '' }, { a: 'required', b: 'required' }, { required: 'Missing :attribute' });
+  await v.fails();
+  assert.deepEqual(v.errors().a, ['Missing a']);
+  assert.deepEqual(v.errors().b, ['Missing b']);
+
+  // Field-only key applies to every rule on that field (required short-circuits
+  // the remaining non-implicit rules, as in Laravel).
+  v = new Validator({ a: '' }, { a: 'required|email' }, { a: ':attribute is bad' });
+  await v.fails();
+  assert.deepEqual(v.errors().a, ['a is bad']);
+});
+
+test('custom messages: empty and "0" are kept like Laravel (is_null check)', async () => {
+  let v = new Validator({ email: '' }, { email: 'required' }, { 'email.required': '' });
+  await v.fails();
+  assert.deepEqual(v.errors().email, ['']);
+
+  v = new Validator({ email: '' }, { email: 'required' }, { 'email.required': '0' });
+  await v.fails();
+  assert.deepEqual(v.errors().email, ['0']);
+
+  v = new Validator({ email: '' }, { email: 'required' }, { email: '0' });
+  await v.fails();
+  assert.deepEqual(v.errors().email, ['0']);
+});
+
+test('custom messages: size-rule arrays resolve by attribute type (getAttributeType)', async () => {
+  // `field.rule => { type: message }` picks the attribute type.
+  let v = new Validator({ title: 'abcdef' }, { title: 'max:3' }, { 'title.max': { string: 'S :attribute', numeric: 'N :attribute' } });
+  await v.fails();
+  assert.deepEqual(v.errors().title, ['S title']);
+
+  v = new Validator({ qty: 10 }, { qty: 'numeric|max:3' }, { 'qty.max': { string: 'S :attribute', numeric: 'N :attribute' } });
+  await v.fails();
+  assert.deepEqual(v.errors().qty, ['N qty']);
+
+  // A missing type key falls through to the default message.
+  v = new Validator({ title: 'abcdef' }, { title: 'max:3' }, { 'title.max': { numeric: 'N :attribute' } });
+  await v.fails();
+  assert.deepEqual(v.errors().title, ['The title must not be greater than 3.']);
+
+  // `field => { rule: message }` indexes by rule name, not by type.
+  v = new Validator({ title: 'abcdef' }, { title: 'max:3' }, { title: { max: 'FIELD :attribute' } });
+  await v.fails();
+  assert.deepEqual(v.errors().title, ['FIELD title']);
+
+  v = new Validator({ title: 'abcdef' }, { title: 'max:3' }, { title: { string: 'TYPE :attribute' } });
+  await v.fails();
+  assert.deepEqual(v.errors().title, ['The title must not be greater than 3.']);
+});
+
+test('custom messages: wildcard keys with punctuation match (no JS regex escape bug)', async () => {
+  // `preg_quote()` escapes `-`/`:` but a JS `u`-mode identity escape is a
+  // SyntaxError; only JS syntax characters may be escaped.
+  let v = new Validator({ 'foo-bar': { x: 'abcdef' } }, { 'foo-bar.*': 'max:3' }, { 'foo-bar.*.max': 'W :attribute' });
+  await v.fails();
+  assert.deepEqual(v.errors()['foo-bar.x'], ['W foo-bar.x']);
+
+  v = new Validator({ 'a:b': { x: 'abcdef' } }, { 'a:b.*': 'max:3' }, { 'a:b.*.max': 'C :attribute' });
+  await v.fails();
+  assert.deepEqual(v.errors()['a:b.x'], ['C a:b.x']);
+
+  // Wildcard array messages index by rule name (Laravel), not attribute type.
+  v = new Validator({ 'foo-bar': { x: 'abcdef' } }, { 'foo-bar.*': 'max:3' }, { 'foo-bar.*.max': { max: 'R :attribute' } });
+  await v.fails();
+  assert.deepEqual(v.errors()['foo-bar.x'], ['R foo-bar.x']);
+
+  v = new Validator({ 'foo-bar': { x: 'abcdef' } }, { 'foo-bar.*': 'max:3' }, { 'foo-bar.*.max': { string: 'S :attribute' } });
+  await v.fails();
+  assert.deepEqual(v.errors()['foo-bar.x'], ['The foo-bar.x must not be greater than 3.']);
+});
+
+test('display names: wildcard keys with punctuation match (no JS regex escape bug)', async () => {
+  let v = new Validator({ 'foo-bar': { x: '' } }, { 'foo-bar.*': 'required' }, {}, { attributes: { 'foo-bar.*': 'Fancy item' } });
+  await v.fails();
+  assert.deepEqual(v.errors()['foo-bar.x'], ['The Fancy item field is required.']);
+
+  v = new Validator({ 'a:b': { x: '' } }, { 'a:b.*': 'required' }, {}, { attributes: { 'a:b.*': 'Colon item' } });
+  await v.fails();
+  assert.deepEqual(v.errors()['a:b.x'], ['The Colon item field is required.']);
+});
+
+test('display names: validation integration passes $attributes through request.validate', async () => {
+  const { installValidation } = await import('../validation.mjs');
+  const request = { all: () => ({ email: '' }) };
+  installValidation(request);
+  await assert.rejects(
+    () => request.validate({ email: 'required' }, {}, { email: 'E-mail Address' }),
+    (err) => err.errors().email[0] === 'The E-mail Address field is required.'
+  );
+});
+

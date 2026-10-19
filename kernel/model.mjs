@@ -1,7 +1,26 @@
 // kernel/model.mjs — Model base
 import { table as tableBuilder } from './db.mjs';
+import { isHashedDigest, makeSync, verifyConfiguration } from './hash.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
+
+// Eloquent `castAttributeAsHashedString()`: plaintext is hashed with Hash::make()
+// at set-time; an already-hashed value is passed through only when it matches the
+// configured hasher (bcrypt cost <= rounds), otherwise Laravel throws
+// RuntimeException("Could not verify the hashed value's configuration.").
+// `isHashedDigest` mirrors HashManager::isHashed() on PHP 8.3 exactly: only a
+// full `$2y$` digest (or an argon2 digest) counts as already hashed.
+function castAttributeAsHashedString(value, rounds) {
+  if (value === null || value === undefined) return null;
+  if (!isHashedDigest(value)) return makeSync(value, { rounds });
+  if (!verifyConfiguration(value, { rounds })) {
+    const err = new Error("Could not verify the hashed value's configuration.");
+    err.name = 'RuntimeException';
+    err.phpClass = 'RuntimeException';
+    throw err;
+  }
+  return value;
+}
 
 function applyCast(value, cast) {
   if (value == null) return value;
@@ -33,6 +52,9 @@ export class Model {
   static primaryKey = 'id';
   static fillable = [];
   static casts = {};
+  // bcrypt rounds used by the `hashed` cast (build bakes config
+  // hashing.bcrypt.rounds; Laravel's BcryptHasher default is 12).
+  static hashRounds = 12;
   static hidden = [];
   static visible = [];
   static appends = [];
@@ -66,8 +88,13 @@ export class Model {
       next = this[mutator](value);
     } else {
       const cast = this.constructor.casts[key];
-      if (cast != null && JSON_CASTS.has(String(cast).toLowerCase())) {
-        next = value == null ? null : JSON.stringify(value);
+      if (cast != null) {
+        const spec = String(cast).toLowerCase();
+        if (spec === 'hashed') {
+          next = castAttributeAsHashedString(value, this.constructor.hashRounds);
+        } else if (JSON_CASTS.has(spec)) {
+          next = value == null ? null : JSON.stringify(value);
+        }
       }
     }
     this.attributes[key] = next;

@@ -10,6 +10,7 @@ import { createDatabaseCache } from '../kernel/cache.mjs';
 import { routeTable, handlers, builtAt } from './routes.generated.mjs';
 import config from './config.generated.mjs';
 import { models } from './models.generated.mjs';
+import { renderErrorView } from './error-renderer.mjs';
 
 const table = normalizeTable(routeTable);
 
@@ -57,6 +58,7 @@ export default {
           db,
           cache: makeCache(env),
           models,
+          renderErrorView,
         }
       );
       if (res) return toResponse(res, request.method);

@@ -2,6 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { table, DB, QueryBuilder } from '../db.mjs';
 import { Model } from '../model.mjs';
+import { check, makeSync } from '../hash.mjs';
+
+// PHP 8.3 / Laravel 13.37 oracle values (fresh-app vendor, 2026-10-19).
+const HASH10 = '$2y$10$cyT1llBUHIVeZFxw/hKj0eIeqIJNsMI0SUhpbh6K5FWh7NxcNqnf.';
+const HASH12 = '$2y$12$d0pIpZcCKtpClnDI9BCFgeYNp2hPFUuoGalG4focVyYVTL01s2ZmW';
+const HASH14 = '$2y$14$d0pIpZcCKtpClnDI9BCFgeYNp2hPFUuoGalG4focVyYVTL01s2ZmW';
+const HASH12_A = '$2a$12$d0pIpZcCKtpClnDI9BCFgeYNp2hPFUuoGalG4focVyYVTL01s2ZmW';
+const SHORT_2Y = '$2y$10$abcdefghijklmnopqrstuv';
+const ARGON = '$argon2id$v=19$m=65536,t=4,p=1$c29tZXNhbHQ$abc';
 
 function mockDb(responses = {}) {
   return {
@@ -465,6 +474,132 @@ test('Model casts, accessors/mutators, hidden/visible/appends', () => {
   assert.deepEqual(json.meta, { a: 1 });
   assert.equal(json.price, '3.50');
 });
+
+class HashedModel extends Model {
+  static table = 'users';
+  static fillable = ['name', 'password'];
+  static casts = { password: 'hashed' };
+  static hashRounds = 12;
+}
+
+class HashedLowCostModel extends Model {
+  static table = 'users';
+  static fillable = ['password'];
+  static casts = { password: 'hashed' };
+  static hashRounds = 4;
+}
+
+test('Model fillable blocks non-fillable mass assignment', () => {
+  const m = new HashedModel();
+  m.fill({ name: 'Ada', password: null, is_admin: true });
+  assert.equal(m.attributes.name, 'Ada');
+  assert.equal(Object.prototype.hasOwnProperty.call(m.attributes, 'password'), true);
+  assert.equal(m.attributes.password, null);
+  assert.equal(Object.prototype.hasOwnProperty.call(m.attributes, 'is_admin'), false);
+  // forceFill bypasses the guard (Eloquent parity).
+  m.forceFill({ is_admin: true });
+  assert.equal(m.attributes.is_admin, true);
+});
+
+test('Model hashed cast hashes plaintext at set-time with $2y$', async () => {
+  const m = new HashedLowCostModel();
+  m.set('password', 'secret');
+  assert.equal(m.attributes.password.slice(0, 7), '$2y$04$');
+  assert.equal(m.attributes.password.length, 60);
+  assert.equal(await check('secret', m.attributes.password), true);
+  assert.equal(await check('wrong', m.attributes.password), false);
+
+  // fill()/create() go through set(), so the cast applies there too.
+  const filled = new HashedLowCostModel();
+  filled.fill({ password: 'hunter2' });
+  assert.equal(filled.attributes.password.slice(0, 7), '$2y$04$');
+  assert.equal(await check('hunter2', filled.attributes.password), true);
+});
+
+test('Model hashed cast passes through valid bcrypt cost <= rounds', async () => {
+  const m = new HashedModel();
+  m.set('password', HASH10);
+  assert.equal(m.attributes.password, HASH10);
+  m.set('password', HASH12);
+  assert.equal(m.attributes.password, HASH12);
+});
+
+test('Model hashed cast rejects cost > rounds with RuntimeException', () => {
+  const m = new HashedModel();
+  assert.throws(
+    () => m.set('password', HASH14),
+    (err) =>
+      err.name === 'RuntimeException' &&
+      err.phpClass === 'RuntimeException' &&
+      err.message === "Could not verify the hashed value's configuration."
+  );
+});
+
+test('Model hashed cast re-hashes $2a$/$2b$/truncated $2y$ like PHP 8.3', async () => {
+  // PHP's password_get_info() reports algo=null for these, so Laravel's
+  // Hash::isHashed() is false and the cast hashes the digest string itself.
+  const m = new HashedLowCostModel();
+  m.set('password', HASH12_A);
+  assert.notEqual(m.attributes.password, HASH12_A);
+  assert.equal(m.attributes.password.slice(0, 7), '$2y$04$');
+  assert.equal(await check(HASH12_A, m.attributes.password), true);
+
+  m.set('password', SHORT_2Y);
+  assert.notEqual(m.attributes.password, SHORT_2Y);
+  assert.equal(await check(SHORT_2Y, m.attributes.password), true);
+});
+
+test('Model hashed cast rejects argon2 (bcrypt-only verifier)', () => {
+  const m = new HashedModel();
+  assert.throws(
+    () => m.set('password', ARGON),
+    /Could not verify the hashed value's configuration\./
+  );
+});
+
+test('Model hashed cast null/empty behavior and mutator priority', async () => {
+  const m = new HashedModel();
+  m.set('password', null);
+  assert.equal(m.attributes.password, null);
+  m.set('password', undefined);
+  assert.equal(m.attributes.password, null);
+  m.set('password', '');
+  assert.equal(m.attributes.password.slice(0, 7), '$2y$12$');
+  assert.equal(await check('', m.attributes.password), true);
+
+  class MutatorModel extends Model {
+    static table = 'users';
+    static fillable = ['password'];
+    static casts = { password: 'hashed' };
+    static hashRounds = 12;
+    setPasswordAttribute(value) {
+      return 'mutated:' + value;
+    }
+  }
+  const mm = new MutatorModel();
+  mm.set('password', 'secret');
+  assert.equal(mm.attributes.password, 'mutated:secret');
+});
+
+test('Model constructor bypasses casts (DB hydration parity)', () => {
+  // Documented divergence: Eloquent's constructor uses setRawAttributes(), so
+  // rows loaded from D1 must not be re-hashed. fill()/create()/update() apply casts.
+  const m = new HashedModel({ password: 'plain' });
+  assert.equal(m.attributes.password, 'plain');
+  assert.notEqual(m.attributes.password.slice(0, 7), '$2y$12$');
+});
+
+test('makeSync is deterministic in shape and model uses configured rounds', async () => {
+  const a = makeSync('x', { rounds: 4 });
+  const b = makeSync('x', { rounds: 4 });
+  assert.equal(a.slice(0, 7), '$2y$04$');
+  assert.equal(b.slice(0, 7), '$2y$04$');
+  assert.notEqual(a, b);
+  const m = new HashedLowCostModel();
+  m.set('password', 'x');
+  assert.equal(m.attributes.password.slice(0, 7), '$2y$04$');
+});
+
 
 test('Model json cast is stored as a string', async () => {
   const calls = [];

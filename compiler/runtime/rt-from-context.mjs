@@ -185,12 +185,18 @@ export function buildRt(context, opts = {}) {
   const liveSession = (opts && opts.http && opts.http.session) ? opts.http.session : null;
   const liveRequest = (opts && opts.http && opts.http.request) ? opts.http.request : null;
   const liveAuth = (opts && opts.http && opts.http.auth) ? opts.http.auth : null;
+  const liveCache = (opts && opts.http && opts.http.cache) ? opts.http.cache : null;
 
   const noHttp = (fn) => {
     throw new Error(fn + '(): no HTTP context (static snapshot / build-time evaluation)');
   };
   rt.request = () => (liveRequest || noHttp('request'));
   rt.session = () => (liveSession || noHttp('session'));
+  rt.cache = () => {
+    if (liveCache) return liveCache;
+    if (opts && opts.http) throw new Error('cache(): no cache store configured (cache.driver !== "database" or no D1 binding)');
+    return noHttp('cache');
+  };
   // Laravel's old($key, $default) -> session()->getOldInput($key, $default).
   rt.old = (key, def = null) => (liveSession ? liveSession.getOldInput(key, def) : noHttp('old'));
   rt.csrf_token = () => rt.session().token();

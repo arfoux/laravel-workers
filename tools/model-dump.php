@@ -3,7 +3,8 @@
 // Dump Eloquent model metadata for the edge build — build time only.
 // Usage: php tools/model-dump.php "App\Models\Post" ["App\Models\User" ...]
 // Output (stdout): JSON array of
-//   {fqcn, model, table, primaryKey, casts, timestamps, softDeletes, hidden, appends, error}
+//   {fqcn, model, table, primaryKey, fillable, casts, timestamps, softDeletes,
+//    hidden, appends, error}
 // `model` is false and `error` explains why when the class is not a usable model.
 //
 // The app is booted through the same HTTP-kernel path as tools/prerender.php so the
@@ -29,6 +30,7 @@ foreach (array_slice($argv, 1) as $fqcn) {
         'model' => false,
         'table' => null,
         'primaryKey' => null,
+        'fillable' => [],
         'casts' => [],
         'timestamps' => true,
         'softDeletes' => false,
@@ -67,6 +69,9 @@ foreach (array_slice($argv, 1) as $fqcn) {
         $entry['model'] = true;
         $entry['table'] = $instance->getTable();
         $entry['primaryKey'] = $instance->getKeyName();
+        // getFillable() merges the `#[Fillable]` class attribute (Laravel 13.x)
+        // with the classic `$fillable` property.
+        $entry['fillable'] = array_values($instance->getFillable());
         $entry['casts'] = $casts;
         $entry['timestamps'] = (bool) $instance->usesTimestamps();
         $entry['softDeletes'] = in_array(

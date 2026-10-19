@@ -130,6 +130,25 @@ const KNOWN_RULES = new Set([
   'doesnt_start_with', 'doesnt_end_with', 'list', 'required_array_keys', 'array_keys',
   'in_array', 'decimal', 'timezone',
 ]);
+// PHP `is_array()`: associative arrays arrive as plain JS objects, so an
+// `Array.isArray()` check would miss `['string' => '...']` message maps.
+const isPhpArray = (value) => typeof value === 'object' && value !== null;
+
+// Illuminate\Validation\Validator::$sizeRules / $numericRules.
+const SIZE_RULES = new Set(['size', 'between', 'min', 'max', 'gt', 'lt', 'gte', 'lte']);
+const NUMERIC_RULES = new Set(['numeric', 'integer', 'decimal']);
+const ARRAY_RULES = new Set(['array', 'list']);
+
+// `preg_quote($sourceKey, '#')` + `str_replace('\*', '([^.]*)', ...)`: only
+// JavaScript's regex syntax characters need escaping here (PCRE also escapes
+// `-`, `:`, `#`, ... but a JS `u`-mode identity escape for those is a
+// SyntaxError), then each `*` becomes one dot-free segment and `\z` becomes
+// `$(?![\s\S])` so a trailing newline still fails.
+const JS_REGEX_SYNTAX = /[\\^$.*+?()[\]{}|]/g;
+function wildcardPattern(sourceKey) {
+  const escaped = String(sourceKey).replace(JS_REGEX_SYNTAX, '\\$&');
+  return new RegExp('^' + escaped.replace(/\\\*/g, '([^.]*)') + '$(?![\\s\\S])', 'u');
+}
 
 function parsePipeString(str) {
   if (!str) return [];
@@ -235,6 +254,53 @@ function setIn(root, path, value) {
   cur[segs[segs.length - 1]] = value;
 }
 
+// Illuminate\Support\Str::snake() (the part validation display names need):
+// ctype_lower() strings pass through; otherwise ucwords -> strip whitespace ->
+// insert `_` before each capital -> lower-case.
+function phpSnake(value) {
+  const str = String(value);
+  if (str.length && /^[a-z]+$/.test(str)) return str;
+  let v = str.replace(/(^|\s)([A-Za-z])/g, (m, pre, ch) => pre + ch.toUpperCase());
+  v = v.replace(/\s+/gu, '');
+  v = v.replace(/(.)(?=[A-Z])/gu, '$1_');
+  return v.toLowerCase();
+}
+
+// Illuminate\Validation\Concerns\FormatsMessages::getAttributeFromLocalArray():
+// exact key first, then `*` patterns (each star matches a dot-free segment).
+function attributeFromLocalArray(attribute, source) {
+  if (!source || typeof source !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(source, attribute) && source[attribute] != null) {
+    return source[attribute];
+  }
+  for (const sourceKey of Object.keys(source)) {
+    if (!String(sourceKey).includes('*')) continue;
+    if (wildcardPattern(sourceKey).test(attribute)) return source[sourceKey];
+  }
+  return null;
+}
+
+// Illuminate\Validation\Concerns\FormatsMessages::replaceAttributePlaceholder().
+function replaceAttributePlaceholder(message, value) {
+  const upper = value.toUpperCase();
+  const ucfirst = value.charAt(0).toUpperCase() + value.slice(1);
+  return String(message).replace(/:attribute|:ATTRIBUTE|:Attribute/g, (m) => {
+    if (m === ':ATTRIBUTE') return upper;
+    if (m === ':Attribute') return ucfirst;
+    return value;
+  });
+}
+
+// PHP truthiness (`if ($inlineAttribute = ...)` in getDisplayableAttribute()):
+// null/false/0/0.0/''/'0'/[] are falsy; everything else (including non-empty
+// arrays and objects) is truthy. JavaScript's `if (custom)` differs on '0' and [].
+function phpTruthy(value) {
+  if (value === null || value === undefined || value === false) return false;
+  if (value === 0 || value === '' || value === '0') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
 export class Validator {
   constructor(data = {}, rules = {}, customMessages = {}, opts = {}) {
     this.data = data;
@@ -242,6 +308,9 @@ export class Validator {
     this.customMessages = customMessages;
     this.opts = opts || {};
     this.parsed = {};
+    // concrete field -> unparsed wildcard rule key (Laravel implicitAttributes)
+    this._primary = {};
+    this._implicit = new Set();
     for (const [field, raw] of Object.entries(rules)) {
       let arr;
       if (Array.isArray(raw)) arr = raw.map(String);
@@ -253,8 +322,10 @@ export class Validator {
           throw new Error('unknown validation rule: ' + r.name);
         }
       }
+      if (String(field).includes('*')) this._implicit.add(field);
       for (const [concrete, rules] of this._expandField(field, parsed)) {
         this.parsed[concrete] = (this.parsed[concrete] || []).concat(rules);
+        if (concrete !== field && !(concrete in this._primary)) this._primary[concrete] = field;
       }
     }
     this._errors = null;
@@ -765,10 +836,77 @@ export class Validator {
     return null;
   }
 
+  // Illuminate\Validation\Validator::getPrimaryAttribute(): the unparsed
+  // wildcard key that produced this concrete field.
+  _primaryAttribute(attribute) {
+    return this._primary[attribute] || attribute;
+  }
+
+  // Illuminate\Validation\Concerns\FormatsMessages::getDisplayableAttribute():
+  // custom `$attributes` names first (exact concrete field, then primary wildcard
+  // key, then wildcard patterns), otherwise implicit fields stay raw and plain
+  // fields are humanised with Str::snake() + `_` -> space.
+  _displayName(attribute) {
+    const primary = this._primaryAttribute(attribute);
+    const names = attribute !== primary ? [attribute, primary] : [attribute];
+    const source = this.opts.attributes || {};
+    for (const name of names) {
+      const custom = attributeFromLocalArray(name, source);
+      // PHP: `if ($inlineAttribute = ...)` — falsy names fall through.
+      if (phpTruthy(custom)) return String(custom);
+    }
+    if (this._implicit.has(primary)) return String(attribute);
+    return phpSnake(attribute).replace(/_/g, ' ');
+  }
+
+  // Illuminate\Validation\Concerns\FormatsMessages::getFromLocalArray() for the
+  // `$messages` array: keys tried are `field.rule`, `rule`, `field`, and a
+  // wildcard source key expands each `*` to one dot-free segment. Returns the
+  // raw inline entry exactly like getFromLocalArray() does — the size-rule
+  // attribute-type resolution happens in _addError (getInlineMessage).
+  _customMessage(field, rule) {
+    const lowerRule = phpSnake(rule);
+    const keys = [`${field}.${lowerRule}`, lowerRule, field];
+    for (const key of keys) {
+      for (const sourceKey of Object.keys(this.customMessages || {})) {
+        const message = this.customMessages[sourceKey];
+        if (String(sourceKey).includes('*')) {
+          if (wildcardPattern(sourceKey).test(key)) {
+            return isPhpArray(message) ? message[lowerRule] ?? null : message;
+          }
+          continue;
+        }
+        if (sourceKey === key) {
+          return sourceKey === field && isPhpArray(message) ? message[lowerRule] ?? null : message;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Illuminate\Validation\Concerns\FormatsMessages::getAttributeType(): the
+  // numeric rules win over array/list; files are not supported at the edge,
+  // so everything else is a string.
+  _attributeType(field) {
+    const rules = this.parsed[field] || [];
+    if (rules.some((r) => NUMERIC_RULES.has(r.name))) return 'numeric';
+    if (rules.some((r) => ARRAY_RULES.has(r.name))) return 'array';
+    const value = this.get(field);
+    if (value && typeof value === 'object' && typeof File !== 'undefined' && value instanceof File) return 'file';
+    return 'string';
+  }
+
   _addError(field, rule, param) {
-    const key = `${field}.${rule}`;
-    let msg = this.customMessages[key];
-    if (!msg) msg = DEFAULT_MESSAGES(field, rule, param);
+    const display = this._displayName(field);
+    let msg = this._customMessage(field, rule);
+    // getInlineMessage(): a size rule's array message is keyed by attribute type.
+    if (isPhpArray(msg) && SIZE_RULES.has(phpSnake(rule))) {
+      msg = msg[this._attributeType(field)] ?? null;
+    }
+    // Laravel checks `is_null($inlineMessage)`, so an empty custom message is
+    // kept (it becomes an empty error string), unlike a JS truthiness check.
+    if (msg == null) msg = DEFAULT_MESSAGES(display, rule, param);
+    else msg = replaceAttributePlaceholder(msg, display);
     if (!this._errors[field]) this._errors[field] = [];
     this._errors[field].push(msg);
   }

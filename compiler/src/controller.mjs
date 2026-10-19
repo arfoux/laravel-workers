@@ -381,7 +381,7 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    db: env && env.DB ? env.DB : null,');
   lines.push('    models: LW_MODELS,');
   lines.push('    views: VIEWS,');
-  lines.push("    origin: ctx && ctx.request && ctx.request.host ? 'https://' + ctx.request.host : null,");
+  lines.push("    origin: (function () { var r = ctx && ctx.request; if (!r) return null; var h = (typeof r.host === 'function') ? r.host() : r.host; if (!h) return null; if (typeof r.schemeAndHttpHost === 'function') return r.schemeAndHttpHost(); var s = (typeof r.scheme === 'function') ? r.scheme() : 'https'; return s + '://' + h; })(),");
   lines.push('    routeMap: LW_ROUTE_MAP,');
   lines.push('    // Live HTTP wiring from the compiled kernel: session()/old()/csrf_*()/auth().');
   lines.push('    http: ctx,');
@@ -392,7 +392,15 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    throw new Error(' + JSON.stringify('controller ' + info.fqcn + '@' + methodName + ' returned no response') + ');');
   lines.push('  } catch (e) {');
   lines.push('    if (e && e.lwKernel) throw e;');
-  lines.push('    if (e && e.status) return rt.errorResponse(e);');
+  lines.push('    if (e && e.status) {');
+  lines.push('      const rendered = (ctx && typeof ctx.renderErrorView === "function")');
+  lines.push('        ? ctx.renderErrorView(e.status, ctx.request, ctx, e)');
+  lines.push('        : null;');
+  lines.push('      if (rendered != null) {');
+  lines.push('        return { status: Number(e.status) || 500, headers: { "content-type": "text/html; charset=utf-8" }, body: String(rendered) };');
+  lines.push('      }');
+  lines.push('      return rt.errorResponse(e);');
+  lines.push('    }');
   lines.push('    throw e;');
   lines.push('  }');
   lines.push('}');

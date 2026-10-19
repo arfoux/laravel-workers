@@ -802,3 +802,41 @@ test('routes with no compiled handler return null (assets served by the worker)'
   });
   assert.equal(res, null);
 });
+
+// status-only smoke tests for the three interim error codes (419/429/500).
+test('status-only: missing CSRF token returns 419', async () => {
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable(ROUTES);
+  const res = await handleHttp(
+    { method: 'POST', url: BASE + '/__probe/state', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP }
+  );
+  assert.equal(res.status, 419);
+});
+
+test('status-only: handler throwing HttpError(500) renders 500', async () => {
+  const { HttpError } = await import('../http.mjs');
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable([{ uri: '/__probe/boom', methods: ['GET', 'HEAD'], middleware: ['web'] }]);
+  const boomHandlers = { 'GET /__probe/boom': async () => { throw new HttpError('boom', 500); } };
+  const res = await handleHttp(
+    { method: 'GET', url: BASE + '/__probe/boom', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers: boomHandlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP }
+  );
+  assert.equal(res.status, 500);
+});
+
+test('status-only: renderErrorView hook overrides 419 body', async () => {
+  const { db } = makeDb();
+  const config = baseConfig();
+  const table = normalizeTable(ROUTES);
+  const res = await handleHttp(
+    { method: 'POST', url: BASE + '/__probe/state', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    { table, handlers, config, env: { DB: db }, db, models: { LWOracleUser }, clock: () => FREEZE_S, clientIp: CLIENT_IP,
+      renderErrorView: (status) => (status === 419 ? '<html><body>custom-419</body></html>' : null) }
+  );
+  assert.equal(res.status, 419);
+  assert.match(res.body, /custom-419/);
+});

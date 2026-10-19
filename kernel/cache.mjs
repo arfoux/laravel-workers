@@ -202,6 +202,21 @@ export class DatabaseCacheStore {
     return next;
   }
 
+  /** DatabaseStore::remember() — get or compute+store. */
+  async remember(key, seconds, callback) {
+    const value = await this.get(key);
+    if (value !== null) return value;
+    const result = typeof callback === 'function' ? await callback() : callback;
+    await this.put(key, result, seconds);
+    return result;
+  }
+
+  /** Repository::pull() — get then forget. */
+  async pull(key, defaultValue = null) {
+    const value = await this.get(key);
+    await this.forget(key);
+    return value === null ? phpValue(defaultValue) : value;
+  }
   /** DatabaseStore::forget() — also clears the flexible-created marker. */
   async forget(key) {
     const keys = [this.prefix + key, this.prefix + FLEXIBLE_CREATED_KEY_PREFIX + key];

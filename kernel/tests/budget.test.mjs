@@ -73,4 +73,44 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(avg <= 2, `storage avg ${avg}`);
     assert.ok(p95 <= 5, `storage p95 ${p95}`);
   }
+
+  // rt.cache() facade (controller-facing Cache::* surface over the D1 store).
+  const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+  const fakeCache = { async get() { return 1; }, async put() {}, async forget() {} };
+  const rt = buildRt({}, { http: { cache: fakeCache } });
+  {
+    const a = [];
+    for (let i = 0; i < N; i++) { const t0 = performance.now(); rt.cache(); a.push(performance.now() - t0); }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `rt.cache avg ${avg}`);
+    assert.ok(p95 <= 5, `rt.cache p95 ${p95}`);
+  }
+
+  // Eloquent `hashed` cast. The bcrypt work itself is deliberately measured at
+  // cost 4 here; the free-plan cost of the default cost 12 is recorded in
+  // COMPILED.md (measured ~679ms CPU on Workers, matching Laravel).
+  const { Model } = await import('../model.mjs');
+  const { makeSync } = await import('../hash.mjs');
+  class BudgetHashed extends Model {}
+  BudgetHashed.table = 'users';
+  BudgetHashed.casts = { password: 'hashed' };
+  BudgetHashed.hashRounds = 4;
+  const hashed = makeSync('secret', { rounds: 4 });
+  {
+    const m = new BudgetHashed();
+    const a = [];
+    for (let i = 0; i < N; i++) { const t0 = performance.now(); m.set('password', hashed); a.push(performance.now() - t0); }
+    const { avg, p95 } = stats(a);
+    // Already-hashed passthrough is regex-only (no bcrypt); must stay cheap.
+    assert.ok(avg <= 2, `hashed-cast passthrough avg ${avg}`);
+    assert.ok(p95 <= 5, `hashed-cast passthrough p95 ${p95}`);
+  }
+  {
+    const m = new BudgetHashed();
+    const a = [];
+    for (let i = 0; i < 20; i++) { const t0 = performance.now(); m.set('password', 'secret-' + i); a.push(performance.now() - t0); }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 25, `hashed-cast bcrypt cost4 avg ${avg}`);
+    assert.ok(p95 <= 40, `hashed-cast bcrypt cost4 p95 ${p95}`);
+  }
 });

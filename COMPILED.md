@@ -126,8 +126,16 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 - ✅ `ValidationException::withMessages([...])` (M21): a compiled controller throwing it
   becomes `rt.validationExceptionWithMessages(...)` and rides the same 302/422 path; the
   kernel's `ValidationException` is the same module instance, so `instanceof` holds.
+- ✅ `$attributes` display names (T10): `getDisplayableAttribute` parity — exact concrete key,
+  primary wildcard key, wildcard patterns (one dot-free segment per `*`, safe for punctuation
+  like `-`/`:`), PHP-truthiness fallthrough (`''`/`'0'`/`null`), raw name for implicit
+  wildcard fields, and the `Str::snake` + `_`→space fallback. Custom messages support
+  `field.rule`, `rule`, `field`, and wildcard keys, replace `:attribute`/`:ATTRIBUTE`/
+  `:Attribute`, and resolve size-rule array messages by attribute type
+  (`numeric`/`array`/`string`) with wildcard arrays indexed by rule name; an empty custom
+  message is kept (Laravel's `is_null` check). Attribute/message translations are unwired.
 - `Validator::make` + custom messages are accepted by the runtime entrypoint; the
-  display-name/`attributes` path (`getDisplayableAttribute`, `_`→space) is not wired yet.
+  display-name/`attributes` path is now wired (see above).
 - `FormRequest` lifecycle (authorize, rules, messages, attributes, `prepareForValidation`,
   `passedValidation`, `after`/`withValidator` closures) — not compiled yet; write a port.
 - Rule-string matrix + implicit rules; Rule objects compiled via 1.2; nested + wildcards
@@ -144,6 +152,17 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   + `Attribute` class, `$appends/$hidden/$visible`, serialization with ISO-8601 date parity,
   collection semantics, global scopes, model events + observers, `sole`/`upsert`/`firstOrNew`/
   `firstOr(create)`/`updateOrCreate`, refresh/touch
+  - `fillable` is dumped at build time (`tools/model-dump.php`) and enforced by `fill()`;
+    models that declare no `$fillable` keep the historical allow-all fallback (divergence
+    from Laravel's `$guarded = ['*']`). `guarded` semantics are not implemented.
+  - `hashed` cast (T9): applied at set-time like `HasAttributes::setAttribute`, using
+    PHP 8.3 `password_get_info` semantics — a full `$2y$NN$` digest with cost ≤ configured
+    rounds passes through; `$2a$`/`$2b$`/truncated `$2y$` are treated as plaintext and
+    re-hashed; argon2 or cost > rounds throws
+    `RuntimeException("Could not verify the hashed value's configuration.")`; null stays
+    null; mutators take priority. `makeSync` emits `$2y$` with rounds baked from
+    `hashing.bcrypt.rounds` (default 12). Cost 12 costs ~679 ms CPU on Workers — it matches
+    Laravel but exceeds the nominal Free 10 ms budget; keep it on login/reset paths only.
 - Relations (full matrix): hasMany/hasOne/belongsTo + **belongsToMany** (attach/detach/sync/
   toggle/updateExistingPivot/custom pivot/`withPivot`), hasManyThrough, morphTo/morphMany/
   morphToMany (morph map), withDefault, inverse; eager (`with('a.b')`, constrained closures,
@@ -167,8 +186,10 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   pair (WebCrypto caps iterations at 100k; 600k rejected); argon2 → fail loud / port
 - Cache: the `database` store compiles to D1 (`DatabaseCacheStore`, M18 — oracle-verified incl.
   the raw `cache` rows) and backs `throttle`; any other driver fails the build for `throttle`
-  routes. Queue / Mail / Filesystem / Broadcast / Notifications / Scheduler: **call sites and
-  class code compile** (jobs, mailables, notifications are classes) — stores/delivery are
+  routes. Controllers get a narrow facade, `rt.cache()` → `get`/`put`/`forget`/`remember`/
+  `has`/`pull` over the same D1 store; other `Cache::*` call sites still fail loud. Queue /
+  Mail / Filesystem / Broadcast / Notifications / Scheduler: **call sites and class code
+  compile** (jobs, mailables, notifications are classes) — stores/delivery are
   adapter-pending, flagged in `report`, never a silent no-op
 - HTTP client (`Http::get`): fetch mapping, retries/timeouts; streaming declares limits
 
@@ -206,8 +227,11 @@ Everything else in Laravel's web surface: **compilable** — this document is th
    bytes per step. `throttle:n,m` now runs on the D1-backed `database` cache store (M18
    `DatabaseCacheStore`, mirrors `Illuminate\Cache\DatabaseStore` 13.37 and is oracle-verified
    incl. the raw `cache` rows); named `throttle:name` needs its `AppServiceProvider` definition
-   and fails the build loud, as does `cache.driver !== 'database'`. Still open: 419/429/500 HTML
-   bodies are status-only stubs, and multi-verb routes still need a port.
+   and fails the build loud, as does `cache.driver !== 'database'`. Error views: every
+   `resources/views/errors/{code}.blade.php` is compiled at build time and rendered through
+   `renderErrorView` for `abort()`/HTTP errors when present; otherwise 419/429/500 bodies
+   remain status-only stubs. Multi-verb routes still need a port — `--strict` fails the build
+   when a route advertises an extra non-POST verb that was not compiled.
    `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `request()`
    and `Request $request` injection in compiled controllers shipped in M16; single-method `POST`
    actions joined the compiled set in M17 (handler registered under `METHOD uri`); and

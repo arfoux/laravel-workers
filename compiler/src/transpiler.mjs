@@ -107,6 +107,12 @@ function tx(node) {
       if (typeof name !== 'string') {
         throw mkErr('LW002', 'unsupported property access', node.loc);
       }
+      if (CTX && node.what && node.what.kind === 'call') {
+        const _m = requestMethodOfCall(node.what);
+        if (_m && REQUEST_NO_CHAIN.has(_m)) {
+          throw mkErr('LW002', '$request->' + _m + '() result cannot be chained - ' + PORT_HINT, node.loc, PORT_HINT);
+        }
+      }
       return 'rt.prop(' + tx(node.what) + ', ' + JSON.stringify(name) + ')';
     }
     case 'nullsafeproperty':
@@ -265,15 +271,28 @@ const SESSION_ASYNC = new Set(['regenerate', 'invalidate', 'migrate']);
 // silently returning wrong data at the edge.
 const REQUEST_CALL = new Set([
   'input', 'all', 'query', 'post', 'has', 'hasAny', 'filled', 'isNotFilled', 'missing',
-  'only', 'except', 'string', 'integer', 'float', 'boolean', 'date', 'isMethod', 'method',
-  'path', 'url', 'fullUrl', 'ajax', 'pjax', 'expectsJson', 'wantsJson', 'accepts',
-  'acceptsAnyContentType', 'acceptsJson', 'prefetch', 'header', 'headers', 'hasHeader',
-  'bearerToken', 'cookie', 'hasCookie', 'ip', 'userAgent', 'route', 'session', 'old',
+  'only', 'except', 'string', 'str', 'integer', 'float', 'boolean', 'isMethod', 'method',
+  'path', 'url', 'fullUrl', 'ajax', 'pjax', 'expectsJson', 'wantsJson', 'acceptsAnyContentType',
+  'prefetch', 'header', 'headers', 'hasHeader', 'bearerToken', 'cookie', 'hasCookie', 'ip',
+  'userAgent', 'route', 'session', 'json',
 ]);
 const REQUEST_ASYNC = new Set(['user']);
+// Request methods whose result is a primitive/Stringable value that must NOT be
+// chained (Laravel's Stringable chains are not modelled by the compiled rung).
+const REQUEST_NO_CHAIN = new Set(['input','all','query','post','has','hasAny','filled','isNotFilled','missing','only','except','string','str','integer','float','boolean','isMethod','method','path','url','fullUrl','ajax','pjax','expectsJson','wantsJson','acceptsAnyContentType','prefetch','header','headers','hasHeader','bearerToken','cookie','hasCookie','ip','userAgent','json']);
 const REQUEST_DENY = new Set([
   'file', 'files', 'allFiles', 'hasFile', 'hasValidFile', 'fileIsValid',
 ]);
+
+function requestMethodOfCall(callNode) {
+  if (!callNode || callNode.kind !== 'call') return null;
+  const w = callNode.what;
+  if (!w || w.kind !== 'propertylookup') return null;
+  const inner = w.what;
+  if (!inner || inner.kind !== 'variable') return null;
+  if (!CTX || !CTX.requestVars || !CTX.requestVars.has(vname(inner.name))) return null;
+  return (typeof w.offset?.name === 'string') ? w.offset.name : null;
+}
 
 function txRequestCall(node, args) {
   const what = node.what;
@@ -558,6 +577,12 @@ function txCall(node) {
   }
   if (what.kind === 'propertylookup') {
     const obj = tx(what.what);
+    if (CTX && what.what && what.what.kind === 'call') {
+      const _m = requestMethodOfCall(what.what);
+      if (_m && REQUEST_NO_CHAIN.has(_m)) {
+        throw mkErr('LW002', '$request->' + _m + '() result cannot be chained - ' + PORT_HINT, node.loc, PORT_HINT);
+      }
+    }
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
     const expr = obj + '.' + meth + '(' + args + ')';
@@ -973,3 +998,5 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
 }
 
 export default transpile;
+
+export { REQUEST_CALL, REQUEST_NO_CHAIN, REQUEST_ASYNC, REQUEST_DENY };

@@ -631,6 +631,21 @@ export function buildRequest(raw, options = {}) {
     boolean(key = null, def = false) {
       return phpFilterVarBoolean(request.input(key, def));
     },
+    isMethod(method) {
+      return request.method() === String(method).toUpperCase();
+    },
+    headers() {
+      return request.headersAll();
+    },
+    userAgent() {
+      return request.header('User-Agent');
+    },
+    bearerToken() {
+      const h = request.header('Authorization');
+      if (!h) return null;
+      const m = String(h).match(/^Bearer\s+(.+)$/i);
+      return m ? m[1].trim() : null;
+    },
   };
   return request;
 }
@@ -1019,9 +1034,19 @@ async function renderException(error, request, ctx) {
     return new HttpResponse({ status: 302, headers: { location } });
   }
   if (error instanceof TokenMismatchError) {
+    // A compiled error view (ctx.renderErrorView) takes precedence when present,
+    // even for JSON requests (the view is the app's chosen 419 representation).
+    const rendered419 =
+      typeof ctx.renderErrorView === 'function' ? ctx.renderErrorView(419, request, ctx, error) : null;
+    if (rendered419 != null) {
+      return new HttpResponse({
+        status: 419,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: String(rendered419),
+      });
+    }
     // Laravel renders 419 through the exception handler: JSON for expectsJson
     // (`{"message":"CSRF token mismatch."}`), the app's errors/419 view otherwise.
-    // The compiled rung ships no error views, so the HTML body is a plain stub.
     if (requestExpectsJson(request)) {
       return new HttpResponse({
         status: 419,
@@ -1042,6 +1067,14 @@ async function renderException(error, request, ctx) {
     return toHttpResponse(error.response);
   }
   if (error instanceof HttpError) {
+    const rendered = typeof ctx.renderErrorView === 'function' ? ctx.renderErrorView(error.status, request, ctx, error) : null;
+    if (rendered != null) {
+      return new HttpResponse({
+        status: error.status,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: String(rendered),
+      });
+    }
     return new HttpResponse({
       status: error.status,
       headers: { 'content-type': 'text/plain; charset=UTF-8' },
@@ -1245,6 +1278,7 @@ export async function handleHttp(raw, options = {}) {
     routeRegistry,
     redirectFactory,
     limiterFactory: limiterFor,
+    renderErrorView: options.renderErrorView || null,
     loginUri: () => {
       const uri = routeRegistry.route('login');
       return uri === null ? null : uri;
@@ -1271,6 +1305,7 @@ export async function handleHttp(raw, options = {}) {
         ctxRequest: request,
         ctxExtra: {
           session: store,
+          cache,
           auth,
           user: () => auth.guard().user(),
           route: matched.route,
