@@ -107,7 +107,7 @@ npx laravel-workers build     # --strict build; reads registry.json / edge/regis
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (369)
+laravel-workers test            # all kernel tests (370)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only
