@@ -150,6 +150,13 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 - Generators / fibers-lite: JS iterators / async mapping with declared edges
 
 ### 1.5 Tooling
+
+- The **packaging gate** (`tools/pack-smoke.mjs`, `npm run test:pack`): it packs the
+  repo, installs the tarball into an empty project and runs the *installed*
+  toolchain against a real Laravel app (the CLI build, the compiler import, the
+  shadow harness). The published file set is proven, not assumed - a file missing
+  from `package.json#files` or an undeclared dependency fails the gate. The CI
+  e2e job installs the tarball (not the workspace) for the same reason.
 - `laravel-workers report`: reachability graph, compiled %, fail-loud list per class/route
 - `laravel-workers ports:scaffold <route>`: emit a stub port from the extracted controller
 - `laravel-workers shadow`: run the 1.3 harness locally

@@ -57,7 +57,7 @@ Fails loud (build error or `LW002`), use a port instead:
 
 - `compiler/` — **M1 view compiler** + **M10 controller compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `bin/controller.mjs`, `src/transpiler.mjs`, `src/controller.mjs`, `runtime/rt-from-context.mjs`, `tests/` (corpus 51, parity, smoke, controller).
 - `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), `session.mjs` + `csrf.mjs` + `ratelimit.mjs` + `auth.mjs` (M11–M14 compiled-rung layers, PHP-8.3-oracle-verified), `cache.mjs` `DatabaseCacheStore` (M18, D1-backed `database` cache for `throttle`), `validation.mjs` `ValidationException` + session error-bag shape (M19, drives `handleHttp`'s redirect-back/422), `http.mjs` (M15 compiled HTTP pipeline), budget gate (M8).
-- `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `model-dump.php` (M10 Eloquent metadata), `constants-dump.php` + `formrequest-dump.php` (M23 class constants + FormRequest rules), `php-shadow-oracle.php` (the M24 shadow harness oracle), `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe).
+- `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `model-dump.php` (M10 Eloquent metadata), `constants-dump.php` + `formrequest-dump.php` (M23 class constants + FormRequest rules), `php-shadow-oracle.php` (the M24 shadow harness oracle), `verify-s0.php`, `schema-dump.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe), `pack-smoke.mjs` (M31: packs the repo, installs the tarball into an empty project and builds a real app with it - the published file set is proven, not assumed).
 - `shadow/` — the proof machine (M24): `run.mjs` replays a scenario against the real app (PHP oracle) and the compiled worker and diffs status/headers/body byte-wise; `scenarios/<app>.mjs` is the per-app corpus. `npm run test:shadow -- --app <app-root>` or `laravel-workers shadow --app <app-root>`.
 - `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `dist/schema.sql` (the same schema as SQL, for `wrangler d1 execute`) + `routes.generated.mjs` route table with names/domains and a `routeNames` map + `public/_routes.json` for Cloudflare Static Assets).
 - `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy).
@@ -127,7 +127,7 @@ npm test                      # kernel
 npm run test:corpus
 npm run build
 npm run verify
-# also: npm run bench / npm run check:docs / npm run test:budget / npm run test:services etc.
+# also: npm run bench / npm run check:docs / npm run test:budget / npm run test:services / npm run test:pack etc.
 ```
 
 ## Zero-touch / CI (Workers Builds)
@@ -150,7 +150,7 @@ JSON
 cat > wrangler.jsonc <<'JSONC'
 { "name": "my-app", "main": "./dist/src/worker.mjs", "compatibility_date": "2026-10-01",
   "assets": { "directory": "./dist/public", "binding": "ASSETS" },
-  "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<wrangler d1 create id>" } ],
+  "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<the id from: npx wrangler d1 create my-app>" } ],
   "observability": { "enabled": true } }
 JSONC
 composer install --no-interaction
@@ -158,6 +158,8 @@ cp .env.example .env && php artisan key:generate
 php artisan migrate --force
 npm run build
 npx -y laravel-workers@0.3.1 build --strict
+# the D1 schema: the app's tables (+ lw_blobs when the app uses Storage::)
+npx wrangler d1 execute DB --file=dist/schema.sql --remote
 # deploy command: npx wrangler deploy
 ```
 

@@ -86,17 +86,23 @@ jobs:
           php artisan migrate --force
           npm install # a fresh Laravel app ships no package-lock.json, so npm ci cannot be used
           npm run build
-      - name: Zero-config strict build with laravel-workers
+      - name: Pack the published artifact
+        run: npm pack --pack-destination "$GITHUB_WORKSPACE"
+      - name: Zero-config strict build with laravel-workers (from the tarball)
         run: |
           cd e2e-app
-          npm i --no-save --no-package-lock --install-links "$GITHUB_WORKSPACE"
+          # The *tarball*, not the workspace: this is the artifact a user installs.
+          npm i --no-save --no-package-lock "$GITHUB_WORKSPACE"/laravel-workers-*.tgz
           npx laravel-workers build
+      - name: The packaging gate (the installed tarball builds the app)
+        run: node tools/pack-smoke.mjs --app e2e-app
       - name: Assert the dist artifact
         run: |
           test -f e2e-app/dist/src/worker.mjs
           test -f e2e-app/dist/src/routes.generated.mjs
           test -f e2e-app/dist/public/index.html
           test -f e2e-app/dist/schema.json
+          test -f e2e-app/dist/schema.sql
       - name: Runtime smoke (worker boots; / and /health answer 200)
         run: |
           cd e2e-app

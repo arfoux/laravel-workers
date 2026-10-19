@@ -37,7 +37,8 @@
     "kernel",
     "src",
     "tools",
-    "shadow"
+    "shadow",
+    "!tools/pack-smoke.mjs"
   ],
   "scripts": {
     "setup": "npm install && npm --prefix compiler install",
@@ -53,7 +54,8 @@
     "test:budget": "node --test kernel/tests/budget.test.mjs",
     "check:docs": "node tools/docs-check.mjs",
     "bench": "node tools/bench.mjs",
-    "test:shadow": "node shadow/run.mjs"
+    "test:shadow": "node shadow/run.mjs",
+    "test:pack": "node tools/pack-smoke.mjs"
   },
   "engines": {
     "node": ">=22"
