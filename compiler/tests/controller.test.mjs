@@ -325,6 +325,54 @@ test('emit: session()/old()/csrf_token()/csrf_field()/auth() map to the rt HTTP 
   assert.match(res.code, /\(await rt\.auth\(\)\.id\(\)\)/);
 });
 
+test('emit: redirect()->intended() pulls url.intended from the session (default /)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    '        return redirect()->intended();\n' +
+    '    }\n' +
+    '    public function go()\n' +
+    '    {\n' +
+    "        return redirect()->intended('/dashboard');\n" +
+    '    }\n' +
+    '}\n';
+  const meta = { routeUri: '/login', routeParams: [], models: [], views: [] };
+  const a = emitController(src, 'store', meta);
+  assert.deepEqual(a.errors, []);
+  assert.match(a.code, /return rt\.redirect\(rt\.session\(\)\.pull\("url\.intended", "\/"\)\);/);
+  const b = emitController(src, 'go', meta);
+  assert.deepEqual(b.errors, []);
+  assert.match(b.code, /return rt\.redirect\(rt\.session\(\)\.pull\("url\.intended", "\/dashboard"\)\);/);
+});
+
+test('emit: session()->regenerate()/invalidate() await, regenerateToken() stays sync', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    '        $request->session()->regenerate();\n' +
+    '        $request->session()->regenerateToken();\n' +
+    "        return redirect('/');\n" +
+    '    }\n' +
+    '    public function out()\n' +
+    '    {\n' +
+    '        session()->invalidate();\n' +
+    "        return redirect('/');\n" +
+    '    }\n' +
+    '}\n';
+  const a = emitController(src, 'store', { routeUri: '/login', routeParams: [], models: [], views: [] });
+  assert.deepEqual(a.errors, []);
+  assert.match(a.code, /\(await v_request\.session\(\)\.regenerate\(\)\);/);
+  assert.match(a.code, /v_request\.session\(\)\.regenerateToken\(\);/);
+  const b = emitController(src, 'out', { routeUri: '/logout', routeParams: [], models: [], views: [] });
+  assert.deepEqual(b.errors, []);
+  assert.match(b.code, /\(await rt\.session\(\)\.invalidate\(\)\);/);
+});
+
 // ---------------------------------------------------------------------------
 // runtime — a mini dist tree + mock D1
 // ---------------------------------------------------------------------------
@@ -633,4 +681,70 @@ test('runtime: session()/request() fail loud without an HTTP ctx (static evaluat
   assert.throws(() => rt.session(), /no HTTP context/);
   assert.throws(() => rt.request(), /no HTTP context/);
   assert.throws(() => rt.old('email'), /no HTTP context/);
+});
+
+test('runtime: redirect()->intended() pulls url.intended; session mutation methods run', async () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'use Illuminate\\Support\\Facades\\Auth;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    "        Auth::attempt(['email' => $request->input('email')]);\n" +
+    '        $request->session()->regenerate();\n' +
+    '        $request->session()->regenerateToken();\n' +
+    "        return redirect()->intended('/home');\n" +
+    '    }\n' +
+    '}\n';
+  const handle = await handlerFromSource(src, 'store', {
+    routeUri: '/login',
+    routeParams: [],
+    models: [],
+    views: [],
+  });
+
+  const calls = [];
+  const store = {
+    attrs: { 'url.intended': 'https://example.com/dashboard' },
+    pull(k, d) {
+      calls.push('pull:' + k);
+      if (Object.prototype.hasOwnProperty.call(this.attrs, k)) {
+        const v = this.attrs[k];
+        delete this.attrs[k];
+        return v;
+      }
+      return d;
+    },
+    async regenerate() {
+      calls.push('regenerate');
+    },
+    regenerateToken() {
+      calls.push('regenerateToken');
+    },
+  };
+  const auth = {
+    check: async () => false,
+    guest: async () => true,
+    user: async () => null,
+    id: async () => null,
+    guard: () => ({ attempt: async () => true }),
+  };
+  const request = { input: (k) => (k === 'email' ? 'a@b.com' : null) };
+
+  const res = await handle(
+    { params: {}, request: { ...request, session: () => store }, session: store, auth },
+    { DB: dbWithRow }
+  );
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, 'https://example.com/dashboard');
+  assert.deepEqual(calls, ['regenerate', 'regenerateToken', 'pull:url.intended']);
+
+  const empty = { pull: (k, d) => d, async regenerate() {}, regenerateToken() {} };
+  const res2 = await handle(
+    { params: {}, request: { ...request, session: () => empty }, session: empty, auth },
+    { DB: dbWithRow }
+  );
+  assert.equal(res2.status, 302);
+  assert.equal(res2.headers.location, '/home');
 });

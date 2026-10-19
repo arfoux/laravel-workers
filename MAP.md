@@ -132,7 +132,7 @@ The escape hatch stays: **ports**.
 | Basic routes, params | Compiled router (pattern match) | ✅ | from `route:list` dump | F |
 | Named routes, `route()`, `url()` | Frozen name map | ✅ | | F |
 | Route groups / middleware | Compiled pipeline | ✅ | `handleHttp` runs web group + `auth`/`guest`/`throttle`; 11-step oracle parity (M15) | F |
-| Redirects | `Response` redirect | ✅ | | F |
+| Redirects | `Response` redirect | ✅ | `redirect()`/`->to`/`->route` + `->intended()` (M20, pulls `url.intended`); `back()` needs session | F |
 | Signed URLs | HMAC in kernel | ✅ | same key derivation | F |
 | Route model binding | Compiled lookup | 🟡 | id-first subset initially | F |
 | Custom middleware | Compiled like controllers | ✅ | | F |
@@ -180,7 +180,7 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Sessions | D1-backed store + encrypted cookie | ✅ | kernel Store + cookie/D1 handlers, oracle byte-parity (M11); wired in `handleHttp`, payload bytes compared per step (M15) | F |
+| Sessions | D1-backed store + encrypted cookie | ✅ | kernel Store + cookie/D1 handlers, oracle byte-parity (M11); wired in `handleHttp`, payload bytes compared per step (M15); `regenerate()`/`invalidate()`/`regenerateToken()` wired from compiled controllers (M20) | F |
 | Auth (guard, login/logout, remember) | Kernel + D1 users | ✅ | kernel SessionGuard, EloquentUserProvider, BcryptHasher, `auth`/`guest` middleware oracle-verified (M14); wired in the compiled pipeline + end-to-end parity (M15) | F |
 | Password hashing | bcrypt via bcryptjs (`$2y$` parity) | ✅ | kernel BcryptHasher make/check/needsRehash/verifyConfiguration (M5); free-plan CPU banked (measured) | F |
 | Rate limiting | D1 counters (`cache` table) | ✅ | kernel RateLimiter + ThrottleRequests oracle-verified (M12); runs on the D1 `database` cache store (M18). `increment` is read-then-write — D1 has no interactive transactions | F |
@@ -356,7 +356,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | single-verb GET/HEAD/POST controllers compiled (M10/M17); `$request->validate()` + error/old-input flash compiled (M19); multi-verb/paginated routes → ports |
+| controllers | 🟡 | single-verb GET/HEAD/POST controllers compiled (M10/M17); `$request->validate()` + error/old-input flash compiled (M19); `redirect()->intended()` + session `regenerate`/`invalidate`/`regenerateToken` compiled (M20); multi-verb/paginated routes → ports |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |

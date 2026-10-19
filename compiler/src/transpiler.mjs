@@ -255,6 +255,10 @@ const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'req
 // Recaller/guard methods that return a promise at the edge.
 const AUTH_ASYNC = new Set(['check', 'guest', 'user', 'id', 'attempt', 'once', 'login', 'logout']);
 const AUTH_FACADE_RE = /^rt\.auth\((?:[^()]*)\)(?:\.guard\((?:[^()]*)\))?$/;
+// Session store mutation methods that touch the handler and are therefore async
+// on the compiled Store (kernel/session.mjs). regenerateToken() stays sync.
+const SESSION_STORE_RE = /(?:^|\.)session\(\)$/;
+const SESSION_ASYNC = new Set(['regenerate', 'invalidate', 'migrate']);
 
 // $request->method() allowlist (sync unless listed in REQUEST_ASYNC). Anything
 // else fails loud at build time so the route falls back to a port instead of
@@ -410,6 +414,13 @@ function txRedirectChain(node) {
         if (!a.length) throw mkErr('LW002', 'redirect()->to() needs a location', node.loc, PORT_HINT);
         return 'rt.redirect(' + a.map(tx).join(', ') + ')';
       }
+      // Redirector::intended($default = '/') -> pull('url.intended', $default).
+      if (m === 'intended') {
+        const a = node.arguments || [];
+        if (a.length > 1) throw mkErr('LW002', 'redirect()->intended() supports at most 1 argument', node.loc, PORT_HINT);
+        const def = a.length ? tx(a[0]) : '"/"';
+        return 'rt.redirect(rt.session().pull("url.intended", ' + def + '))';
+      }
       throw mkErr('LW002', 'unsupported redirect()->' + m + '() — ' + PORT_HINT, node.loc, PORT_HINT);
     }
     if (base === 'response') {
@@ -542,6 +553,10 @@ function txCall(node) {
     // auth()->user() / auth()->guard()->attempt() resolve the user async (Timebox).
     if (CTX && CTX.controller && AUTH_FACADE_RE.test(obj) && AUTH_ASYNC.has(meth)) {
       return txAwait(expr, node, 'an authenticated call');
+    }
+    // session()->regenerate()/invalidate()/migrate() touch the handler (async).
+    if (CTX && CTX.controller && SESSION_STORE_RE.test(obj) && SESSION_ASYNC.has(meth)) {
+      return txAwait(expr, node, 'session()->' + meth + '()');
     }
     return expr;
   }

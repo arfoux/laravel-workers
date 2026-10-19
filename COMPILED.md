@@ -93,16 +93,16 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 | Area | Full target | Notes |
 |---|---|---|
 | Request | input/query/post/json/headers/cookies/files (multipart subset)/ip/fullUrl/is/route/validate | dot paths; `old()`/`user()`/`session()` hang off session/auth |
-| Response | json/make/view/download(stream)/file; redirect→route/away/back/intended; `with/withErrors/withInput`; cookie queue; headers | `back()`/`intended()` need session |
+| Response | json/make/view/download(stream)/file; redirect→route/away/back/intended; `with/withErrors/withInput`; cookie queue; headers | `back()` needs session; `intended()` compiled (M20) |
 | Middleware | groups (`web`/`api`), route params (`throttle:60,1`, `can:`), sorting, terminable | compiled pipeline |
 | Route-model binding | implicit/explicit/scoped/nullable | |
 | CSRF | token in session, `X-CSRF-TOKEN`/`X-XSRF-TOKEN`, except list, SameSite | full VerifyCsrfToken semantics |
 | Signed URLs | `signedRoute`, `temporarySignedRoute`, `hasValidSignature` | HMAC kernel done |
 | Cookies | EncryptCookies parity, queued cookies, cookie jar | M5 parity done |
-| **Sessions** | cookie driver (stateless encrypted payload) + D1 driver; flash rotation (`_flash.new/old`), `old()` input, error bag (`$errors`), `regenerate`/`invalidate`/`migrate`, lifetime/expiry | **byte-parity goal for the cookie payload** (encrypter + serialize subset in place) |
+| **Sessions** | cookie driver (stateless encrypted payload) + D1 driver; flash rotation (`_flash.new/old`), `old()` input, error bag (`$errors`), `regenerate`/`invalidate`/`migrate`, lifetime/expiry | **byte-parity goal for the cookie payload** (encrypter + serialize subset in place); `regenerate`/`invalidate`/`regenerateToken` callable from compiled controllers (M20) |
 | Rate limiting | `throttle` middleware full; `RateLimiter::for()` compiled | D1 `database` store (M18); `increment` is read-then-write (D1 has no interactive transactions) — a race under concurrency, flagged not atomic |
 | **Auth** | session guard full API (attempt/login/logout/once/validate/user/id/check/guest), remember-me recaller cookie + rotation, Eloquent + database providers, auth events, `auth`/`guest`/`can`/`password.confirm` middleware, `Auth::viaRemember` | compiles on top of Sessions above |
-| Auth flows (Fortify-shaped) | login/register/logout/forgot/reset/verify as **compiled controllers**: validate → attempt → regenerate → intended; reset tokens in D1; mail delivery flagged *adapter* (flow compiles now) | throttling via Rate limiter |
+| Auth flows (Fortify-shaped) | login/register/logout/forgot/reset/verify as **compiled controllers**: validate → attempt → regenerate → intended; reset tokens in D1; mail delivery flagged *adapter* (flow compiles now) | throttling via Rate limiter; validate → attempt → regenerate → intended all compile (M19/M20) |
 | Sanctum | personal access tokens (D1), abilities + middleware; SPA cookie mode last | |
 | Localization | `__()`, `trans_choice`, `@lang`, locale switch mid-request | rides on 1.1 dumps |
 
@@ -197,7 +197,8 @@ Everything else in Laravel's web surface: **compilable** — this document is th
    bodies are status-only stubs, and multi-verb routes still need a port.
    `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `request()`
    and `Request $request` injection in compiled controllers shipped in M16; single-method `POST`
-   actions joined the compiled set in M17 (handler registered under `METHOD uri`)*
+   actions joined the compiled set in M17 (handler registered under `METHOD uri`); and
+   `redirect()->intended()` + session `regenerate()`/`invalidate()`/`regenerateToken()` in M20)*
 4. **Validation flow (3)** — rides on sessions *(shipped M19: `$request->validate()` /
    `validateWithBag()` compile to an awaited kernel-validator call; failure renders the
    Handler::invalid redirect-back with flashed `errors` + `_old_input` (minus `dontFlash`)
