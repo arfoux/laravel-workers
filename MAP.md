@@ -377,7 +377,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | eloquent-serialization | 🟡 | toArray/toJson subset |
 | encryption | 🟡 | AES-CBC+HMAC WebCrypto; serialize subset |
 | envoy | ⛔ | local (SSH deploys) |
-| errors | 🟡 | build-time compiled error views when present; status-only stubs otherwise |
+| errors | 🟡 | build-time compiled error views when present; status-only stubs otherwise; `new <PHP exception>` + `throw_if`/`throw_unless` compile (M34) |
 | events | 🟡 | AuthEvents objects exist; `Event::dispatch` not mapped → port; queued → queue (dead) |
 | facades | 🟡 | kernel shims; the `Cache`/`Hash`/`Storage` facades compile (M23/M28/M30); mail/queue/gate/notification/password still unmapped → port |
 | filesystem | 🟡 | wired (M28/M30): `Storage::` → R2 when bound, else the D1 blob store (`lw_blobs`); `file_exists`/`public_path` stay build-only (no local FS) |

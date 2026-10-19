@@ -44,6 +44,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M31** The packaging gate (2026-10-20) — `tools/pack-smoke.mjs` (`npm run test:pack`) packs the repo, installs the **tarball** into an empty project and runs the *installed* toolchain against a real Laravel app (the CLI build, the compiler import, the shadow harness). The published file set is proven, not assumed; the CI e2e job now installs the tarball instead of the workspace.
 - **M32** The `Storage::` facade keeps Laravel's return values (2026-10-20) — read in the vendor: `FilesystemAdapter::put()` answers a **bool**, `delete()` answers a **bool** (`false` when the file was missing) and `get()` **throws** `UnableToReadFile` for a missing file. The compiled store now answers the same (`put` → `true`, `delete` → a bool from the D1 `meta.changes` / the memory Map / an R2 `head()` check, a missing `get` → a loud failure, not `null`). The shadow step exposes the values (`hello-shadow|yes|yes|yes|no`) and both sides are byte-identical.
 - **M33** The helper verbs (2026-10-20) — `abort_if()`/`abort_unless()` compile (they answer null unless they abort), `now()`/`today()` follow the **request clock** (the oracle freezes Carbon; the wall clock diverged — a hidden parity bug), and the `Log::` facade compiles to the **platform log** (the Workers console, the padanan for the app log file). The shadow step proves it: `POST /verbs-demo` answers the same date on both sides. npm test **372/372**.
+- **M34** The `new` expression (2026-10-20) — only the **PHP built-in exceptions** compile (`new RuntimeException('boom')` → an error with the same class name and message; the handler answers the same 500 as Laravel). An app class (`new App\Exceptions\Mine`) is **not** compiled: it fails loud with LW002, it never becomes a silent stub. `throw_if()`/`throw_unless()` compile too. The step found two real harness bugs: the oracle let whoops print the debug error page over its JSON (whoops exits → the whole run died), and an uncaught error on the compiled side escaped the harness — both fixed, and the 500 is now a documented divergence. npm test **375/375**.
 
 ## Supported vs unsupported
 
@@ -110,7 +111,7 @@ npx laravel-workers build     # --strict build; reads registry.json / edge/regis
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (372)
+laravel-workers test            # all kernel tests (375)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only

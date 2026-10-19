@@ -112,6 +112,12 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   store, the real app to the local disk, and both read the object back); on the
   Breeze-shaped fresh app: **10/10 byte-identical, 0
   unexplained**.
+- The oracle is hardened against a step that explodes (M34): nothing but its JSON
+  may reach stdout (`display_errors=0` + an output buffer), it runs with
+  `app.debug=false` (whoops prints the debug error page and exits, which would
+  destroy the result), and a step whose error page fails still gets a response
+  instead of losing the run. The harness mirrors the worker exactly: an
+  uncaught error is not caught there either, so the platform answers the 500.
 - A step may use the cookie jar (`jar: true`) or not (a separate visitor). A
   *snapshot* is a static asset, so its fair comparison is a guest request. The scenario file is picked up by the app's directory name
   (`shadow/scenarios/<app>.mjs`) or passed with `--scenarios`.
@@ -267,6 +273,11 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   (they answer null unless they abort), `now()`/`today()` follow the **request clock**
   (the oracle freezes Carbon; the wall clock would diverge) and the `Log::` facade
   compiles to the platform log (the Workers console - the padanan for the app log file)
+- The `new` expression (M34): only the **PHP built-in exceptions** compile (`new
+  RuntimeException('boom')` -> an error with the same class name and message; the
+  handler answers the same 500 as Laravel). An app class (`new App\Exceptions\Mine`)
+  is not compiled - it fails loud with LW002, it never becomes a silent stub. The
+  same goes for `throw_if()`/`throw_unless()` (they throw the given error)
 - HTTP client (`Http::get`): fetch mapping, retries/timeouts; streaming declares limits
 
 ## 6. The full mentok — compiled-rung boundary (permanent)

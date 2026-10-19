@@ -7,7 +7,39 @@ const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositio
 const vname = (name) => 'v_' + String(name).replace(/^\\$/, '').replace(/[^A-Za-z0-9_]/g, '_');
 const fname = (name) => 'fn_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 // The global helpers whose runtime name differs from the Laravel one.
-const RENAME_FUNCS = new Map([['abort_if', 'abortIf'], ['abort_unless', 'abortUnless']]);
+const RENAME_FUNCS = new Map([
+  ['abort_if', 'abortIf'],
+  ['abort_unless', 'abortUnless'],
+  ['throw_if', 'throwIf'],
+  ['throw_unless', 'throwUnless'],
+]);
+// The PHP built-in exceptions: the only classes a compiled controller may
+// instantiate. An app class (`new App\\Exceptions\\Mine`) is not compiled
+// - it fails loud, it never becomes a silent stub.
+const NEW_CLASSES = new Set([
+  'Exception',
+  'Error',
+  'ErrorException',
+  'RuntimeException',
+  'LogicException',
+  'InvalidArgumentException',
+  'OutOfRangeException',
+  'OutOfBoundsException',
+  'LengthException',
+  'DomainException',
+  'RangeException',
+  'OverflowException',
+  'UnderflowException',
+  'UnexpectedValueException',
+  'TypeError',
+  'ValueError',
+  'ArithmeticError',
+  'DivisionByZeroError',
+  'ArgumentCountError',
+  'AssertionError',
+  'UnhandledMatchError',
+  'JsonException',
+]);
 // The Log facade levels that compile (the padanan is the platform log).
 const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
 
@@ -189,6 +221,38 @@ function tx(node) {
       }
       return '[' + items.map((it) => tx(it.value)).join(', ') + ']';
     }
+    case 'new':
+      // `new SomeException('msg')` - the PHP built-in exceptions only. The
+      // class name is resolved by PHP already (an unqualified name falls
+      // back to the global namespace), so it is matched as written.
+      if (!node.what || node.what.kind !== 'name') {
+        throw mkErr(
+          'LW002',
+          'new <expression> is not supported - only the PHP built-in exceptions compile; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      const cls = String(node.what.name).replace(/^\\/, '');
+      if (cls.includes('\\')) {
+        throw mkErr(
+          'LW002',
+          'new ' + cls + '() is not supported - the app classes are not compiled; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      if (!NEW_CLASSES.has(cls)) {
+        throw mkErr(
+          'LW002',
+          'new ' + cls + '() is not supported - only the PHP built-in exceptions compile (' +
+            [...NEW_CLASSES].join(', ') + '); ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      const ctorArgs = (node.arguments || []).map(tx).join(', ');
+      return 'rt.newError(' + JSON.stringify(cls) + (ctorArgs ? ', ' + ctorArgs : '') + ')';
     case 'call':
       return txCall(node);
     case 'closure':

@@ -618,6 +618,39 @@ test('emit: the Storage facade compiles to the R2-backed store', () => {
   assert.match(res.code, /\(await rt\.storage\(\)\.delete\("a\/b\.txt"\)\)/);
 });
 
+test('emit: new <PHP exception> compiles (the built-in exceptions only)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    "        throw new \\RuntimeException('boom');\n" +
+    "        throw_if(false, new \\InvalidArgumentException('x', 42));\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /rt\.newError\("RuntimeException", "boom"\)/);
+  assert.match(res.code, /rt\.throwIf\(false, rt\.newError\("InvalidArgumentException", "x", 42\)\)/);
+});
+
+test('emit: new <app class> fails loud (LW002) - the app classes are not compiled', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    "        throw new App\\Exceptions\\Mine('x');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /App\\Exceptions\\Mine/);
+});
+
 test('emit: the helper verbs compile (abort_if, abort_unless, today, Log::)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

@@ -155,6 +155,18 @@ export default {
       expectBody: '2026-01-01',
     },
     {
+      // A thrown exception: both sides answer 500. The bodies differ -
+      // Laravel's error page is a framework asset, the compiled side answers
+      // a status-only HTML page (the same documented divergence as the 401).
+      label: 'POST /throw-demo (a thrown exception)',
+      method: 'POST',
+      uri: '/throw-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expect: 'diverges',
+      why: "the 500 error page is a Laravel framework asset; the compiled side answers a status-only HTML page",
+    },
+    {
       // A bcrypt digest has a random salt, so the two bodies can never be equal.
       // The step declares the *shape* both sides must have.
       label: 'GET /hash-demo (bcrypt digest, random salt)',

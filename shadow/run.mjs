@@ -325,7 +325,9 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
     }
 
     const url = BASE + (step.uri || '/');
-    const res = await handleHttp(
+    let res;
+    try {
+      res = await handleHttp(
       { method: step.method || 'GET', url, headers, body },
       {
         table,
@@ -345,7 +347,18 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         strRandom: rand,
         clientIp: CLIENT_IP,
       }
-    );
+      );
+    } catch (e) {
+      // The worker does not catch an uncaught error either: the platform
+      // answers the 500 (workerd's default response).
+      res = {
+        status: 500,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+        body: 'Internal Server Error',
+        setCookie: [],
+        cookies: [],
+      };
+    }
     if (!res) {
       // No compiled handler: the route is served from the *static bundle* (a
       // build-time snapshot). Compare the prerendered file with the live render

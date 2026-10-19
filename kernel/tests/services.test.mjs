@@ -87,6 +87,21 @@ test('cache kv binding', async () => {
   assert.equal(await c.get('k'), null);
 });
 
+// The `new` expression: the built-in exceptions become errors with the same
+// class name and message (Laravel answers a 500 for them too).
+test('the runtime: rt.newError keeps the PHP class name and message', async () => {
+  const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+  const rt = buildRt(null, { runtime: true });
+  const e = rt.newError('RuntimeException', 'boom');
+  assert.equal(e.name, 'RuntimeException');
+  assert.equal(e.message, 'boom');
+  assert.equal(e.phpClass, 'RuntimeException');
+  assert.equal(rt.throwIf(false, e), null);
+  assert.throws(() => rt.throwIf(true, e), /boom/);
+  assert.equal(rt.throwUnless(true, e), null);
+  assert.throws(() => rt.throwUnless(false, e), /boom/);
+});
+
 // The helper verbs: the request clock (now()/today()) and the log sink.
 test('the runtime: now()/today() follow the request clock and rt.log reaches the sink', async () => {
   const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');

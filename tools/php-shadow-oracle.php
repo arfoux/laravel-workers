@@ -56,8 +56,18 @@ if (isset($input['freeze_ms'])) {
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 $kernel->bootstrap();
+// Nothing but the JSON may reach stdout: a PHP notice, or an uncaught error
+// (the app's own error page can itself fail), would corrupt the result.
+ini_set('display_errors', '0');
+ini_set('log_errors', '0');
+ob_start();
 
 $config = $app['config'];
+
+// The oracle runs in a controlled environment: whoops (the debug error page)
+// prints the error page to stdout and exits, which would destroy the harness
+// result. With debug off Laravel renders the error page as a normal response.
+$config->set('app.debug', false);
 
 // ---------------------------------------------------------------------------
 // Dedicated sqlite database (the app's own schema + the oracle's own tables).
@@ -328,7 +338,17 @@ foreach (($input['steps'] ?? []) as $step) {
         $request->headers->set($h, $v);
     }
 
-    $response = $kernel->handle($request);
+    try {
+        $response = $kernel->handle($request);
+    } catch (\Throwable $e) {
+        // The app's error handling itself failed (a broken error page, a
+        // missing view): the step still gets a response, so the harness can
+        // compare it instead of losing the whole run.
+        $response = new Illuminate\Http\Response(
+            'The application failed to render the error page: ' . $e->getMessage(),
+            500
+        );
+    }
 
     $headers = [];
     foreach ($response->headers->all() as $name => $values) {
@@ -414,4 +434,6 @@ foreach (($input['steps'] ?? []) as $step) {
     app()->forgetInstance('request');
 }
 
-echo json_encode($out);
+$json = json_encode($out);
+ob_end_clean();
+echo $json;

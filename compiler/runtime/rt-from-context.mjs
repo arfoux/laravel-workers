@@ -217,6 +217,26 @@ export function buildRt(context, opts = {}) {
     if (opts && opts.http) throw new Error('storage(): no object store — bind R2 (env.R2) or D1 (env.DB); Storage:: needs object storage at the edge');
     return noHttp('storage');
   };
+  // `new SomeException('msg')` - the PHP built-in exceptions. The compiled
+  // side throws an error with the same class name and message; the handler
+  // answers the same status (500) as Laravel.
+  rt.newError = (className, message, code) => {
+    const e = new Error(message === undefined || message === null ? '' : String(message));
+    e.name = String(className);
+    e.phpClass = String(className);
+    if (code !== undefined && code !== null) e.code = Number(code);
+    return e;
+  };
+  // throw_if()/throw_unless(): they throw the given error when the condition
+  // says so, and answer null otherwise (like Laravel).
+  rt.throwIf = (condition, error) => {
+    if (condition) throw error;
+    return null;
+  };
+  rt.throwUnless = (condition, error) => {
+    if (!condition) throw error;
+    return null;
+  };
   // Log:: — the padanan is the platform log (the Workers console); the sink
   // comes from the HTTP context.
   rt.log = (level, message, context) => {

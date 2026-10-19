@@ -203,6 +203,20 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(p95 <= 5, `schedule cron evaluation p95 ${p95}`);
   }
 
+  // The `new` expression (the built-in exceptions) + throw_if/throw_unless.
+  {
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      rt.newError('RuntimeException', 'budget row');
+      rt.throwIf(false, rt.newError('RuntimeException', 'never'));
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `new exception avg ${avg}`);
+    assert.ok(p95 <= 5, `new exception p95 ${p95}`);
+  }
+
   // The helper verbs: rt.abortIf/rt.abortUnless/rt.today/rt.log (the request
   // clock, the platform log) - the local cost only.
   {

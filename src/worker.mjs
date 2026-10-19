@@ -128,7 +128,7 @@ export default {
           db,
           cache: makeCache(env),
           storage: makeStorage(env),
-    log: makeLogger(),
+          log: makeLogger(),
           mail: makeMail(env),
           queue: makeQueue(env),
           models,
