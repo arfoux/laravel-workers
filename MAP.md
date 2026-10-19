@@ -3,7 +3,7 @@
 **Repo:** `laravel-workers` (name decided — GitHub/npm checked; see §10)
 **Status:** v1.1 — living doc. Basis: **measured evidence + verified platform limits**, not theory.
 **Coverage guarantee:** Appendix C maps **all 105 pages** of the official Laravel 13.x docs to a verdict — a page without a verdict is a gap, and gaps are build-blocking. See §5.
-**What this is:** a build-time toolchain — `compiler` (Blade → PHP → JS, byte-parity vs PHP 8.3) + Workers-native `kernel` + `build.mjs` pipeline. Not a Laravel runtime, not PHP-in-Worker. Controllers are not transpiled (use `ports/*.mjs`); anything unverified fails the build.
+**What this is:** a build-time toolchain — `compiler` (Blade → PHP → JS, byte-parity vs PHP 8.3) + Workers-native `kernel` + `build.mjs` pipeline. Not a Laravel runtime, not PHP-in-Worker. Controllers are transpiled (a documented subset — M10/M17/M22/M23); anything outside it fails the build and needs a `ports/*.mjs` handler.
 **Scope:** how a Laravel app runs natively on Workers — Laravel stays the source of truth for dev; the edge artifact is compiled (static assets + JS handlers + D1). No PHP at request time.
 
 > **This is the "padanan" map.** Every Laravel feature is classified:
@@ -325,6 +325,11 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | View-compile spike (S0 dump) | ✅ first artifact produced |
 | Repo name | `laravel-workers` (decided; GitHub/npm checked) |
 | Repo strategy | standalone; extract from `edge/` at M1–M2 |
+| Compiled rung (kernel layers M11–M22) | ✅ session/csrf/ratelimit/auth/hash/encrypter/validator/cache/validation — PHP-8.3-oracle verified |
+| Controller transpilation (M10/M17/M22/M23) | ✅ GET/POST/PUT/PATCH/DELETE, one handler per verb; FormRequests, `Cache`/`Hash` facades, class constants, Eloquent writes, `auth.basic`; anything outside the subset fails the build |
+| Shadow harness (M24) | ✅ the real app (PHP 8.3 + sqlite) vs the compiled worker, byte-wise diff of status/headers/body; construct app 17/19 byte-identical (2 documented divergences), fresh app 9/10 (1), 0 unexplained |
+| CI (M25) | ✅ `test` + `parity` (the PHP oracle parity runs for real against a fresh app) + `e2e` (fresh Laravel, zero config) |
+| Test counts | npm test 359/359 · corpus 51/51 · docs-check 105/105 |
 | W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (51/51) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (128/128 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |
 
@@ -356,7 +361,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | M10/M17 single-verb + M22 multi-verb URIs compiled; `$request->validate()` + flash (M19); `redirect()->intended()` + session regen/invalidate (M20); pagination + FormRequests still port; fail-loud LW002 (unsupported construct) / LW003; REQUEST_CALL synced to kernel (#2: date removed, str added) |
+| controllers | 🟡 | M10/M17/M22/M23: GET/POST/PUT/PATCH/DELETE actions compiled (one handler per verb); `$request->validate()` + flash (M19); `redirect()->intended()` + session regen/invalidate (M20); FormRequests, `Cache`/`Hash` facades, class constants and Eloquent writes compile (M23); pagination + Eloquent relations still a port; fail-loud LW002 (unsupported construct) / LW003; REQUEST_CALL synced to kernel (#2: date removed, str added) |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |
