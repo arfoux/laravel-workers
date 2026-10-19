@@ -386,7 +386,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | frontend | ✅ | Vite unchanged; proven |
 | hashing | 🟡 | PBKDF2 both-sides; bcrypt runs on free (bcryptjs, verdict safe); argon (N/A at edge); PHP 8.3 `password_get_info` parity + `hashed` cast |
 | head | 🟡 ph2 | metadata pkg; view-time render |
-| helpers | 🟡 | kernel shim subset incl. html-entities, php-json, php-serialize |
+| helpers | 🟡 | kernel shim subset incl. html-entities, php-json, php-serialize; `abort_if`/`abort_unless`/`now`/`today` compile (M33) |
 | homestead | ⛔ | local VM |
 | horizon | ⛔ | Redis dashboard; padanan CF dashboard |
 | http-client | ✅ | fetch (already HTTP) |
@@ -396,7 +396,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | license | ⛔ | meta |
 | lifecycle | ✅ | §3 execution model |
 | localization | 🟡 | frozen JSON; pluralization subset |
-| logging | 🟡 | no Log module; `Log::` facade not mapped → port; console + fetch sinks only |
+| logging | 🟡 | the `Log::` facade compiles (M33) → the platform log (the Workers console); no Log module (a local file sink) |
 | mail | 🟡 | **wired** (M28): the worker builds the mailer from the app config (`mail.default` -> log/noop/resend) and hands it to the handler; the fluent `Mail::to()->send()` facade still needs a port (the mailable class is not compiled); padanan = HTTP provider (SMTP impossible, hard) |
 | mcp | 🟡 ph3 | HTTP/SSE servers compile; stdio (N/A at edge) (padanan) |
 | middleware | 🟡 | compiled pipeline wired (throttle + guest/auth stages); aliases auth.session/precognitive/can* fail loud |

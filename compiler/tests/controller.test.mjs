@@ -90,7 +90,8 @@ class PostController extends Controller
 
     public function badClass()
     {
-        $x = Log::info('hi');
+        // Gate is not a mapped facade: it must still fail loud with LW003.
+        $x = Gate::allows('update', $post);
         return redirect('/');
     }
 }
@@ -213,11 +214,11 @@ test('emit: a database query inside a closure fails with LW002', () => {
   assert.match(res.errors[0].message, /closure/);
 });
 
-test('emit: a non-model class (Log) fails with LW003', () => {
+test('emit: a non-model class (Gate) fails with LW003', () => {
   const res = emitController(SAMPLE, 'badClass', META_BASE);
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW003');
-  assert.match(res.errors[0].message, /App\\Http\\Controllers\\Log|Log/);
+  assert.match(res.errors[0].message, /App\\Http\\Controllers\\Gate|Gate/);
 });
 
 test('emit: Request $request is injected (other services still fail loud)', () => {
@@ -617,6 +618,26 @@ test('emit: the Storage facade compiles to the R2-backed store', () => {
   assert.match(res.code, /\(await rt\.storage\(\)\.delete\("a\/b\.txt"\)\)/);
 });
 
+test('emit: the helper verbs compile (abort_if, abort_unless, today, Log::)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    "        abort_if(false, 404, 'never');\n" +
+    "        abort_unless(true, 500, 'never');\n" +
+    "        $t = today()->toDateString();\n" +
+    "        \\Illuminate\\Support\\Facades\\Log::info('hello');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /rt\.abortIf\(false, 404, "never"\)/);
+  assert.match(res.code, /rt\.abortUnless\(true, 500, "never"\)/);
+  assert.match(res.code, /rt\.today\(\)\.toDateString\(\)/);
+  assert.match(res.code, /rt\.log\("info", "hello"\)/);
+});
 test('emit: an unsupported Storage method fails loud (LW002)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

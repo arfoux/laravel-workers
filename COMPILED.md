@@ -263,6 +263,10 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   lazily, 1.5 MB per object). The build prints the store it picked and fails loud when the app
   binds neither R2 nor D1 (no silent in-memory writes); `Storage::disk()` and the fluent
   facades still need a port (the disk/mailable/job classes are not compiled)
+- The helper verbs (M33): `abort_if()`/`abort_unless()` compile to the runtime helpers
+  (they answer null unless they abort), `now()`/`today()` follow the **request clock**
+  (the oracle freezes Carbon; the wall clock would diverge) and the `Log::` facade
+  compiles to the platform log (the Workers console - the padanan for the app log file)
 - HTTP client (`Http::get`): fetch mapping, retries/timeouts; streaming declares limits
 
 ## 6. The full mentok — compiled-rung boundary (permanent)

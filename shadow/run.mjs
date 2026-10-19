@@ -295,6 +295,7 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
   // so the worker would use the D1 blob store - one row per object.
   const storage = createStorage({ d1: db, secret: config['app.key'] });
 
+  const logs = [];
   const jar = new Map();
   let lastToken = null;
   let randSeq = 0;
@@ -334,6 +335,10 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         db,
         cache,
         storage,
+        log: (level, message, context) => {
+          logs.push({ level, message, context: context ?? null });
+          return null;
+        },
         models,
         clock: () => FREEZE_S,
         randomString: rand,

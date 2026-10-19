@@ -6,6 +6,10 @@ const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositio
 // PHP variable names are mangled to JS identifiers so reserved words ($null, $new, ...) are safe.
 const vname = (name) => 'v_' + String(name).replace(/^\\$/, '').replace(/[^A-Za-z0-9_]/g, '_');
 const fname = (name) => 'fn_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
+// The global helpers whose runtime name differs from the Laravel one.
+const RENAME_FUNCS = new Map([['abort_if', 'abortIf'], ['abort_unless', 'abortUnless']]);
+// The Log facade levels that compile (the padanan is the platform log).
+const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
 
 function mkErr(code, message, loc, hint) {
   const e = new Error(message);
@@ -606,9 +610,11 @@ function txCall(node) {
       'json_encode', 'json_decode', 'optional',
       'array_sum', 'array_slice', 'array_reverse', 'array_unique', 'array_count_values', 'array_flip',
       'now',
+      'today',
       'collect',
     ]);
     if (whitelisted.has(name) || builtins.has(name)) return 'rt.' + name + '(' + args + ')';
+    if (RENAME_FUNCS.has(name)) return 'rt.' + RENAME_FUNCS.get(name) + '(' + args + ')';
     if (FUNCS.has(name)) return fname(name) + '(' + args + ')';
     throw mkErr('LW001', 'unknown function ' + name, node.loc);
   }
@@ -628,6 +634,18 @@ function txCall(node) {
         );
       }
       return 'rt.validationExceptionWithMessages(' + args + ')';
+    }
+    // Illuminate\Support\Facades\Log — the platform log (the Workers console).
+    if ((cls === 'Log' || cls === 'Illuminate\\Support\\Facades\\Log') && CTX && CTX.controller) {
+      if (!LOG_LEVELS.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Log::' + meth + '() is not supported — allowed: ' + [...LOG_LEVELS].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.log(' + JSON.stringify(meth) + (args ? ', ' + args : '') + ')';
     }
     // Illuminate\Support\Facades\Cache — the D1-backed `database` cache store.
     if ((cls === 'Cache' || cls === 'Illuminate\\Support\\Facades\\Cache') && CTX && CTX.controller) {

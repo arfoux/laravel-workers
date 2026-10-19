@@ -42,6 +42,16 @@ function makeStorage(env) {
   return null;
 }
 
+// The log padanan: the platform log (the Workers console). The app's log
+// file has no place at the edge.
+function makeLogger() {
+  return (level, message, context) => {
+    const line = '[' + String(level) + '] ' + String(message);
+    if (context !== undefined && context !== null) console.log(line, JSON.stringify(context));
+    else console.log(line);
+    return null;
+  };
+}
 // The mailer: `log` (default, no network), `noop` or `resend`.
 function makeMail(env) {
   return createMailer({
@@ -118,6 +128,7 @@ export default {
           db,
           cache: makeCache(env),
           storage: makeStorage(env),
+    log: makeLogger(),
           mail: makeMail(env),
           queue: makeQueue(env),
           models,

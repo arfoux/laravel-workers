@@ -1390,6 +1390,7 @@ export async function handleHttp(raw, options = {}) {
           clock: nowS,
           // The service adapters (storage/mail/queue) the worker hands down.
           storage: options.storage || null,
+  log: options.log || null,
           mail: options.mail || null,
           queue: options.queue || null,
         },

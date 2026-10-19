@@ -87,6 +87,27 @@ test('cache kv binding', async () => {
   assert.equal(await c.get('k'), null);
 });
 
+// The helper verbs: the request clock (now()/today()) and the log sink.
+test('the runtime: now()/today() follow the request clock and rt.log reaches the sink', async () => {
+  const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+  const logged = [];
+  const rt = buildRt(null, {
+    runtime: true,
+    http: {
+      clock: () => 1767225600, // 2026-01-01T00:00:00Z (the shadow freeze)
+      log: (level, message) => { logged.push({ level, message }); return null; },
+    },
+  });
+  assert.equal(rt.now().toDateTimeString(), '2026-01-01 00:00:00');
+  assert.equal(rt.today().toDateString(), '2026-01-01');
+  assert.equal(rt.abortIf(false, 404, 'never'), null);
+  assert.throws(() => rt.abortIf(true, 404, 'gone'), (e) => e.status === 404);
+  assert.equal(rt.abortUnless(true, 404, 'never'), null);
+  assert.throws(() => rt.abortUnless(false, 500, 'gone'), (e) => e.status === 500);
+  assert.equal(rt.log('info', 'hello'), null);
+  assert.deepEqual(logged, [{ level: 'info', message: 'hello' }]);
+});
+
 // storage — memory
 test('storage memory put/get/delete', async () => {
   const s = createStorage({});

@@ -192,6 +192,9 @@ export function buildRt(context, opts = {}) {
     opts && opts.http && typeof opts.http.clock === 'function' ? opts.http.clock : null;
   // The service adapters the worker hands down (storage/mail/queue).
   const liveStorage = (opts && opts.http && opts.http.storage) ? opts.http.storage : null;
+  // The log sink the platform hands down (the worker: the Workers console).
+  const liveLog =
+    (opts && opts.http && typeof opts.http.log === 'function') ? opts.http.log : null;
   const liveMail = (opts && opts.http && opts.http.mail) ? opts.http.mail : null;
   const liveQueue = (opts && opts.http && opts.http.queue) ? opts.http.queue : null;
 
@@ -213,6 +216,12 @@ export function buildRt(context, opts = {}) {
     if (liveStorage) return liveStorage;
     if (opts && opts.http) throw new Error('storage(): no object store — bind R2 (env.R2) or D1 (env.DB); Storage:: needs object storage at the edge');
     return noHttp('storage');
+  };
+  // Log:: — the padanan is the platform log (the Workers console); the sink
+  // comes from the HTTP context.
+  rt.log = (level, message, context) => {
+    if (liveLog) return liveLog(level, message, context);
+    return null;
   };
   // Mail:: — the mailer (log/noop/resend).
   rt.mail = () => {
@@ -857,7 +866,15 @@ export function buildRt(context, opts = {}) {
     };
     return api;
   }
-  rt.now = () => makeCarbon(new Date());
+  // The request clock (integer seconds): the oracle freezes Carbon, so the
+  // compiled side must read the same instant - the wall clock diverges.
+  const clockDate = () => (requestClock ? new Date(requestClock() * 1000) : new Date());
+  rt.now = () => makeCarbon(clockDate());
+  rt.today = () => {
+    const d = clockDate();
+    d.setUTCHours(0, 0, 0, 0);
+    return makeCarbon(d);
+  };
 
   // ---- controller runtime (view data, models, responses) ----
   // rt.var reads runtime view data (injected by controller renders). When no data is
@@ -961,6 +978,15 @@ export function buildRt(context, opts = {}) {
   };
   rt.statusErr = statusErr;
   rt.abort = (code, message) => { throw statusErr(code, message || ('HTTP ' + code)); };
+  // Laravel's abort_if()/abort_unless(): they answer null unless they abort.
+  rt.abortIf = (condition, code, message) => {
+    if (condition) rt.abort(code, message);
+    return null;
+  };
+  rt.abortUnless = (condition, code, message) => {
+    if (!condition) rt.abort(code, message);
+    return null;
+  };
   rt.errorResponse = (e) => ({
     status: (e && e.status) || 500,
     headers: { 'content-type': 'text/plain; charset=utf-8' },

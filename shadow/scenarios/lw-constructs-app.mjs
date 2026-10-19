@@ -144,6 +144,17 @@ export default {
       expectBody: 'hello-shadow|yes|yes|yes|no',
     },
     {
+      // The helper verbs: `today()` follows the request clock (the oracle
+      // freezes Carbon, so both sides answer the same date), the abort
+      // helpers are no-ops here, and `Log::` goes to the platform log.
+      label: 'POST /verbs-demo (today/abort_if/Log)',
+      method: 'POST',
+      uri: '/verbs-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: '2026-01-01',
+    },
+    {
       // A bcrypt digest has a random salt, so the two bodies can never be equal.
       // The step declares the *shape* both sides must have.
       label: 'GET /hash-demo (bcrypt digest, random salt)',

@@ -203,6 +203,23 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(p95 <= 5, `schedule cron evaluation p95 ${p95}`);
   }
 
+  // The helper verbs: rt.abortIf/rt.abortUnless/rt.today/rt.log (the request
+  // clock, the platform log) - the local cost only.
+  {
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      rt.abortIf(false, 404, 'never');
+      rt.abortUnless(true, 500, 'never');
+      rt.today().toDateString();
+      rt.log('info', 'budget row');
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `helper verbs avg ${avg}`);
+    assert.ok(p95 <= 5, `helper verbs p95 ${p95}`);
+  }
+
   // The D1 blob store (the Storage facade on D1 - no R2, no card): the local
   // part of one put + one get (the SQL text, the size check, the row shape).
   // The D1 round trip itself is not measurable here; on the free plan a blob

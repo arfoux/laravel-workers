@@ -43,6 +43,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M30** The object store is pluggable + the FQCN fix (2026-10-20) — `Storage::` now has two backends: **R2** when the app binds it, else the **D1 blob store** (one row per object in `lw_blobs` — no extra Cloudflare product, no credit card; the build prints which store it picked and fails loud when the app binds neither). The build also emits `dist/schema.sql` (the app's tables + `lw_blobs`) so the D1 schema can be created with `wrangler d1 execute DB --file=dist/schema.sql`. A fully-qualified static call (`\Illuminate\Support\Facades\Storage::put()`, `\App\Models\Post::create()`) now resolves to the global class instead of the controller's namespace, and the `laravel-workers shadow` CLI command runs the shadow harness. The shadow harness now proves the store end to end (`POST /storage-demo`: the compiled side writes to the D1 blob store, the real app to the local disk, and both read the object back — **20/22 byte-identical, 0 unexplained**). npm test **369/369**.
 - **M31** The packaging gate (2026-10-20) — `tools/pack-smoke.mjs` (`npm run test:pack`) packs the repo, installs the **tarball** into an empty project and runs the *installed* toolchain against a real Laravel app (the CLI build, the compiler import, the shadow harness). The published file set is proven, not assumed; the CI e2e job now installs the tarball instead of the workspace.
 - **M32** The `Storage::` facade keeps Laravel's return values (2026-10-20) — read in the vendor: `FilesystemAdapter::put()` answers a **bool**, `delete()` answers a **bool** (`false` when the file was missing) and `get()` **throws** `UnableToReadFile` for a missing file. The compiled store now answers the same (`put` → `true`, `delete` → a bool from the D1 `meta.changes` / the memory Map / an R2 `head()` check, a missing `get` → a loud failure, not `null`). The shadow step exposes the values (`hello-shadow|yes|yes|yes|no`) and both sides are byte-identical.
+- **M33** The helper verbs (2026-10-20) — `abort_if()`/`abort_unless()` compile (they answer null unless they abort), `now()`/`today()` follow the **request clock** (the oracle freezes Carbon; the wall clock diverged — a hidden parity bug), and the `Log::` facade compiles to the **platform log** (the Workers console, the padanan for the app log file). The shadow step proves it: `POST /verbs-demo` answers the same date on both sides. npm test **372/372**.
 
 ## Supported vs unsupported
 
@@ -109,7 +110,7 @@ npx laravel-workers build     # --strict build; reads registry.json / edge/regis
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (370)
+laravel-workers test            # all kernel tests (372)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only
