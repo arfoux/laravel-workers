@@ -302,7 +302,9 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
     for (const [k, v] of Object.entries(step.headers || {})) {
       headers[String(k).toLowerCase()] = v;
     }
-    if (jar.size) headers.cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+    // Only a step that *uses* the jar sends it (a step without it is a separate
+    // visitor) — the same rule the PHP oracle follows.
+    if (step.jar && jar.size) headers.cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
 
     let body = '';
     if (step.form) {
@@ -354,6 +356,9 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
     }
 
     for (const sc of res.setCookie) {
+      // Only a step that used the jar may update it (a step without it is a
+      // separate visitor) — the same rule the PHP oracle follows.
+      if (!step.jar) continue;
       const c = parseSetCookie(sc);
       if (c.value === '' && /expires=/i.test(sc) && /max-age=0/i.test(sc)) jar.delete(c.name);
       else jar.set(c.name, c.value);
@@ -444,6 +449,7 @@ async function main() {
 
     const results = [];
     let matched = 0;
+    let shaped = 0;
     let diverged = 0;
     let failed = 0;
     for (let i = 0; i < scenario.steps.length; i++) {
@@ -461,13 +467,28 @@ async function main() {
       // A snapshot route is compared against the live render with the origin
       // rewritten to relative URLs (the build does the same).
       const phpBody = j.source === 'snapshot' ? relativise(p.body) : p.body;
-      const body = bodiesEqual(phpBody, j.body);
+      // A step may declare a `shape` (a regex) instead of byte equality — for a
+      // body that is random by construction (a bcrypt digest, a session id).
+      // Both sides must match the shape; the verdict is then "shape", not
+      // "identical".
+      let body = bodiesEqual(phpBody, j.body);
+      let shapeOk = false;
+      if (!body.equal && step.shape) {
+        const re = new RegExp(step.shape);
+        shapeOk = re.test(String(phpBody ?? '')) && re.test(String(j.body ?? ''));
+      }
       const statusOk = p.status === j.status;
       const ok = statusOk && headerDiff.length === 0 && body.equal;
       const expected = step.expect || 'match';
       let verdict;
       if (ok) {
         verdict = expected === 'diverges' ? 'MATCHED (expected a divergence)' : 'match';
+        matched++;
+      } else if (shapeOk && statusOk && headerDiff.length === 0) {
+        // The body is random by construction (a bcrypt digest): both sides match
+        // the declared shape, so the step is verified — but not byte-identical.
+        verdict = 'shape';
+        shaped++;
         matched++;
       } else if (expected === 'diverges') {
         verdict = 'diverges (known)';
@@ -499,11 +520,13 @@ async function main() {
       scenario: scenarioFile,
       total: scenario.steps.length,
       matched,
+      shaped,
       diverged,
       failed,
-      // The byte-identical rate — a documented divergence is *not* a match.
-      coverage: scenario.steps.length ? matched / scenario.steps.length : 1,
-      // Every step is accounted for: identical, documented, or unexplained.
+      // The byte-identical rate — a shape-verified step is *not* byte-identical.
+      coverage: scenario.steps.length ? (matched - shaped) / scenario.steps.length : 1,
+      // Every step is accounted for: identical, shape-verified, documented, or
+      // unexplained.
       accounted: scenario.steps.length ? (matched + diverged) / scenario.steps.length : 1,
       results,
     };
@@ -533,9 +556,9 @@ async function main() {
         }
       }
       console.log(
-        `\nshadow: ${matched}/${scenario.steps.length} byte-identical, ${diverged} documented divergence(s), ` +
-          `${failed} unexplained — coverage ${(report.coverage * 100).toFixed(0)}% ` +
-          `(accounted ${(report.accounted * 100).toFixed(0)}%)`
+        `\nshadow: ${matched - shaped}/${scenario.steps.length} byte-identical, ${shaped} shape-verified, ` +
+          `${diverged} documented divergence(s), ${failed} unexplained — coverage ` +
+          `${(report.coverage * 100).toFixed(0)}% (accounted ${(report.accounted * 100).toFixed(0)}%)`
       );
     }
     process.exit(failed ? 1 : 0);

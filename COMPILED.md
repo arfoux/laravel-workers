@@ -100,20 +100,28 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   own migrations, a dedicated sqlite file, a cookie jar, the CSRF token read back out of
   the session row) and the harness replays the same steps through the compiled worker
   from a *copy of the same database*. It diffs status, the header set and the body
-  bytes, and reports three verdicts: **byte-identical**, **documented divergence** (a
-  step may declare `expect: 'diverges'` with the reason — e.g. a build-time snapshot
-  cannot know the visitor session, a bcrypt digest has a random salt) and
-  **unexplained** (a failure). `npm run test:shadow -- --app <app-root>`.
-  Measured on the construct-coverage app: **17/19 byte-identical, 2 documented
-  divergences, 0 unexplained** (19 steps over all 10 app routes); on the
-  Breeze-shaped fresh app: **9/10 byte-identical, 1 documented divergence, 0
-  unexplained**. The scenario file is picked up by the app's directory name
+  bytes, and reports four verdicts: **byte-identical**, **shape-verified** (a step may
+  declare `shape: "<regex>"` for a body that is random by construction — a bcrypt
+  digest; both sides must match the shape), **documented divergence** (a step may
+  declare `expect: 'diverges'` with the reason — e.g. Laravel's default error page is
+  a framework asset) and **unexplained** (a failure). `npm run test:shadow -- --app <app-root>`.
+  Measured on the construct-coverage app: **17/19 byte-identical, 1 shape-verified, 1
+  documented divergence, 0 unexplained** (19 steps over all 10 app routes); on the
+  Breeze-shaped fresh app: **10/10 byte-identical, 0 unexplained**.
+- A step may use the cookie jar (`jar: true`) or not (a separate visitor). A
+  *snapshot* is a static asset, so its fair comparison is a guest request. The scenario file is picked up by the app's directory name
   (`shadow/scenarios/<app>.mjs`) or passed with `--scenarios`.
-- The harness found three real divergences, now fixed: the compiled `response()` had no
-  `content-type` (Symfony's `text/html; charset=utf-8`), the compiled responses had no
-  default `Cache-Control: no-cache, private`, and the compiled model timestamps used the
+- The harness found six real divergences, all fixed: the compiled `response()` had no
+  `content-type` (Symfony's `text/html; charset=utf-8`); the compiled responses had no
+  default `Cache-Control: no-cache, private`; the compiled model timestamps used the
   wall clock instead of the request clock (so a frozen-clock write carried a different
-  `created_at` than the PHP side).
+  `created_at` than the PHP side); the compiled `auth.basic` challenge was
+  `Basic realm="Basic"` instead of Symfony's `Basic`; the compiled error body was
+  plain text instead of Laravel's HTML error page; and the compiled side answered a
+  request without credentials as if it were authenticated.
+- The harness also caught three bugs in *itself* (a session leaking between steps, a
+  cookie jar sent on every step, and a jar replaced by a step that did not use it) —
+  the kind of bug that would have produced false confidence.
 - **CI:** the oracle parity needs a real Laravel app, so the `test` job (no app) *skips*
   those tests — the report says "skipped" with the reason, never "green by omission".
   The `parity` job creates a fresh Laravel app, points `LW_LARAVEL_APP` at it and runs

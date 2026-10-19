@@ -27,8 +27,9 @@ export default {
     },
   ],
   steps: [
-    // The guest request bootstraps the session (and the CSRF token).
-    { label: 'GET /dashboard (guest)', method: 'GET', uri: '/dashboard' },
+    // The first request bootstraps the session (and the CSRF token): it uses the
+    // jar so the session cookie is kept for the steps that follow.
+    { label: 'GET /dashboard (guest)', method: 'GET', uri: '/dashboard', jar: true },
     {
       label: 'POST /login (wrong password)',
       method: 'POST',
@@ -83,9 +84,15 @@ export default {
       form: { _token: '@token' },
     },
     {
+      // A missing Basic header: Laravel answers 401 with Symfony's
+      // UnauthorizedHttpException. The status and the `WWW-Authenticate: Basic`
+      // challenge match; the *error page* itself is a Laravel framework asset
+      // (the compiled side answers a status-only HTML page).
       label: 'GET /admin (auth.basic, no header)',
       method: 'GET',
       uri: '/admin',
+      expect: 'diverges',
+      why: "Laravel's default 401 error page is a framework asset; the compiled side answers a status-only HTML page",
     },
     {
       label: 'GET /admin (auth.basic, valid credentials)',
@@ -94,20 +101,22 @@ export default {
       headers: { Authorization: BASIC },
     },
     {
-      label: 'GET / (welcome snapshot)',
+      // A snapshot is a *static asset*: the platform serves it without a session,
+      // so the fair comparison is a guest request (no cookie jar). Both sides
+      // then render the guest nav and the bodies are byte-identical.
+      label: 'GET / (welcome snapshot, guest)',
       method: 'GET',
       uri: '/',
-      expect: 'diverges',
-      why: 'a snapshot is prerendered at build time — the nav cannot know the visitor session',
     },
     { label: 'GET /login (view snapshot)', method: 'GET', uri: '/login' },
     { label: 'GET /cache-demo (cache snapshot)', method: 'GET', uri: '/cache-demo' },
     {
-      label: 'GET /hash-demo (bcrypt salt is random)',
+      // A bcrypt digest has a random salt, so the two bodies can never be equal.
+      // The step declares the *shape* both sides must have.
+      label: 'GET /hash-demo (bcrypt digest, random salt)',
       method: 'GET',
       uri: '/hash-demo',
-      expect: 'diverges',
-      why: 'bcrypt uses a random salt, so the snapshot and the live render differ',
+      shape: '^\\$2y\\$\\d{2}\\$[./A-Za-z0-9]{53}$',
     },
     {
       label: 'POST /logout',

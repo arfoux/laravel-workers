@@ -894,9 +894,10 @@ function basicCredentials(req) {
 }
 
 // Symfony\Component\HttpKernel\Exception\UnauthorizedHttpException('Basic'):
-// 401 with `WWW-Authenticate: Basic realm="Basic"`.
+// a 401 with `WWW-Authenticate: Basic` (the challenge is the exception's
+// argument — Laravel's `auth.basic` middleware passes 'Basic', not a realm).
 function unauthorizedBasic() {
-  return new HttpError('Invalid credentials.', 401, { 'www-authenticate': 'Basic realm="Basic"' });
+  return new HttpError('Invalid credentials.', 401, { 'www-authenticate': 'Basic' });
 }
 
 function middlewareStages(list, ctx) {
@@ -1124,10 +1125,12 @@ async function renderException(error, request, ctx) {
         body: String(rendered),
       });
     }
+    // No compiled error view: a status-only HTML page (Laravel renders an HTML
+    // error page too — the exact bytes are a framework asset we do not ship).
     return new HttpResponse({
       status: error.status,
-      headers: { 'content-type': 'text/plain; charset=UTF-8', ...(error.headers || {}) },
-      body: error.message,
+      headers: { 'content-type': 'text/html; charset=utf-8', ...(error.headers || {}) },
+      body: `<html><body><h1>${error.status}</h1><p>${escapeHtmlText(error.message)}</p></body></html>`,
     });
   }
   throw error;
@@ -1140,9 +1143,17 @@ async function renderException(error, request, ctx) {
 // Symfony\Component\HttpFoundation\Response::isRedirect()
 const REDIRECT_STATUSES = new Set([201, 301, 302, 303, 307, 308]);
 
-// Symfony\Component\HttpFoundation\RedirectResponse::setTargetUrl() renders the
-// target URL into an HTML body with `htmlspecialchars($url, ENT_QUOTES, 'UTF-8')`
-// (LF newlines, matching the vendor template byte for byte).
+// Symfony's RedirectResponse renders the target URL into an HTML body with
+// `htmlspecialchars($url, ENT_QUOTES, 'UTF-8')` (the vendor template, byte for byte).
+function escapeHtmlText(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function symfonyRedirectBody(url) {
   const escaped = String(url)
     .replace(/&/g, '&amp;')

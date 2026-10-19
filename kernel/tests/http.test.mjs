@@ -805,7 +805,9 @@ test('auth.basic: a missing Basic header is a 401 with the challenge', async () 
     }
   );
   assert.equal(res.status, 401);
-  assert.equal(res.headers['www-authenticate'], 'Basic realm="Basic"');
+  // Symfony's UnauthorizedHttpException('Basic') — the challenge is the
+  // exception's argument, so the header is exactly `Basic`.
+  assert.equal(res.headers['www-authenticate'], 'Basic');
 });
 
 test('auth.basic: wrong credentials are a 401, valid credentials log the user in', async () => {
@@ -832,7 +834,7 @@ test('auth.basic: wrong credentials are a 401, valid credentials log the user in
 
   const bad = await call(basicHeader('u@example.com', 'wrong'));
   assert.equal(bad.status, 401);
-  assert.equal(bad.headers['www-authenticate'], 'Basic realm="Basic"');
+  assert.equal(bad.headers['www-authenticate'], 'Basic');
 
   const ok = await call(basicHeader('u@example.com', 'secret'));
   assert.equal(ok.status, 200);

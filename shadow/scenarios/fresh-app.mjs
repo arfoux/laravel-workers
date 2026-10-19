@@ -20,8 +20,9 @@ export default {
     },
   ],
   steps: [
-    // The guest request bootstraps the session (and the CSRF token).
-    { label: 'GET /dashboard (guest)', method: 'GET', uri: '/dashboard' },
+    // The first request bootstraps the session (and the CSRF token): it uses the
+    // jar so the session cookie is kept for the steps that follow.
+    { label: 'GET /dashboard (guest)', method: 'GET', uri: '/dashboard', jar: true },
     {
       label: 'POST /login (wrong password)',
       method: 'POST',
@@ -40,11 +41,11 @@ export default {
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {
-      label: 'GET / (welcome snapshot)',
+      // A snapshot is a *static asset*: the platform serves it without a session,
+      // so the fair comparison is a guest request (no cookie jar).
+      label: 'GET / (welcome snapshot, guest)',
       method: 'GET',
       uri: '/',
-      expect: 'diverges',
-      why: 'a snapshot is prerendered at build time — the nav cannot know the visitor session',
     },
     { label: 'GET /login (view snapshot)', method: 'GET', uri: '/login' },
     {

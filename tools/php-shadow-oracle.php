@@ -168,6 +168,9 @@ if ($schema->hasTable('users') && $userInput['id'] !== null) {
     }
 }
 
+// The oracle uses the app's own auth provider (the same model + table the
+// compiled worker uses) so both sides authenticate the *same* row. The row is
+// seeded in the oracle's own sqlite database, so the app's data is untouched.
 if (!class_exists('LWOracleUser')) {
     class LWOracleUser extends \Illuminate\Foundation\Auth\User
     {
@@ -184,7 +187,10 @@ $config->set('session.driver', 'database');
 $config->set('session.connection', 'lw_http');
 $config->set('session.table', 'sessions');
 $config->set('session.encrypt', false);
-$config->set('auth.providers.users', ['driver' => 'eloquent', 'model' => 'LWOracleUser']);
+// The oracle keeps the app's own auth provider (the same model + table the
+// compiled worker uses) so both sides authenticate the *same* row. The row is
+// seeded in the oracle's own sqlite database, so the app's data is untouched.
+// (A `LWOracleUser` swap is still possible via `user.provider` in the scenario.)
 
 $config->set('cache.default', 'database');
 $config->set('cache.stores.database', [
@@ -291,6 +297,20 @@ foreach (($input['steps'] ?? []) as $step) {
     }
 
     $server = array_merge(['HTTP_ACCEPT' => 'text/html,application/xhtml+xml'], $step['server'] ?? []);
+    $headers = lwResolve($step['headers'] ?? [], $jar, $lastToken);
+    // A web server turns `Authorization: Basic ...` into PHP_AUTH_USER/PHP_AUTH_PW
+    // (Symfony's Request::getUser()/getPassword() read those). Request::create()
+    // does not, so the oracle does it here.
+    if (isset($headers['Authorization']) || isset($headers['authorization'])) {
+        $raw = $headers['Authorization'] ?? $headers['authorization'];
+        if (preg_match('/^\s*Basic\s+(.+)$/i', (string) $raw, $m)) {
+            $decoded = base64_decode(trim($m[1]), true);
+            if (is_string($decoded) && ($sep = strpos($decoded, ':')) !== false) {
+                $server['PHP_AUTH_USER'] = substr($decoded, 0, $sep);
+                $server['PHP_AUTH_PW'] = substr($decoded, $sep + 1);
+            }
+        }
+    }
     $params = isset($step['form']) ? lwResolve($step['form'], $jar, $lastToken) : [];
     $query = isset($step['query']) ? lwResolve($step['query'], $jar, $lastToken) : [];
     $content = null;
@@ -304,7 +324,7 @@ foreach (($input['steps'] ?? []) as $step) {
     if (!empty($query)) {
         $request->query->replace($query);
     }
-    foreach (lwResolve($step['headers'] ?? [], $jar, $lastToken) as $h => $v) {
+    foreach ($headers as $h => $v) {
         $request->headers->set($h, $v);
     }
 
@@ -322,17 +342,21 @@ foreach (($input['steps'] ?? []) as $step) {
 
     $body = $response->getContent();
 
-    // Update the jar from Set-Cookie, browser-style (raw values).
-    foreach ($setCookie as $sc) {
-        $pair = explode(';', $sc, 2)[0];
-        $eq = strpos($pair, '=');
-        if ($eq === false) continue;
-        $name = urldecode(substr($pair, 0, $eq));
-        $value = urldecode(substr($pair, $eq + 1));
-        if ($value === '' && stripos($sc, 'expires=') !== false && stripos($sc, 'max-age=0') !== false) {
-            unset($jar[$name]);
-        } else {
-            $jar[$name] = $value;
+    // Update the jar from Set-Cookie, browser-style (raw values). Only a step
+    // that *used* the jar may update it: a step without the jar is a separate
+    // visitor, whose cookies must not replace the main flow's session.
+    if (!empty($step['jar'])) {
+        foreach ($setCookie as $sc) {
+            $pair = explode(';', $sc, 2)[0];
+            $eq = strpos($pair, '=');
+            if ($eq === false) continue;
+            $name = urldecode(substr($pair, 0, $eq));
+            $value = urldecode(substr($pair, $eq + 1));
+            if ($value === '' && stripos($sc, 'expires=') !== false && stripos($sc, 'max-age=0') !== false) {
+                unset($jar[$name]);
+            } else {
+                $jar[$name] = $value;
+            }
         }
     }
 
@@ -373,12 +397,20 @@ foreach (($input['steps'] ?? []) as $step) {
     ];
 
     // One app instance is reused across steps; flush per-request state so the next
-    // step starts like a fresh worker request would.
+    // step starts like a fresh worker request would. The session store is
+    // *cleared* (not replaced): Laravel's Store::loadSession() MERGES the
+    // handler's row into the in-memory attributes, so a step without the cookie
+    // would otherwise still see the previous step's session (and its user).
     $cookieJar->flushQueuedCookies();
     if ($app->bound('auth')) {
         $app->make('auth')->forgetGuards();
     }
     $app->forgetInstance('auth.driver');
+    if ($app->bound('session.store')) {
+        $store = $app->make('session.store');
+        $store->flush();
+        $store->setId(null);
+    }
     app()->forgetInstance('request');
 }
 
