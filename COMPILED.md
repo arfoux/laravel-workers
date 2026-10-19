@@ -105,7 +105,10 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   cannot know the visitor session, a bcrypt digest has a random salt) and
   **unexplained** (a failure). `npm run test:shadow -- --app <app-root>`.
   Measured on the construct-coverage app: **17/19 byte-identical, 2 documented
-  divergences, 0 unexplained** (19 steps over all 10 app routes).
+  divergences, 0 unexplained** (19 steps over all 10 app routes); on the
+  Breeze-shaped fresh app: **9/10 byte-identical, 1 documented divergence, 0
+  unexplained**. The scenario file is picked up by the app's directory name
+  (`shadow/scenarios/<app>.mjs`) or passed with `--scenarios`.
 - The harness found three real divergences, now fixed: the compiled `response()` had no
   `content-type` (Symfony's `text/html; charset=utf-8`), the compiled responses had no
   default `Cache-Control: no-cache, private`, and the compiled model timestamps used the
