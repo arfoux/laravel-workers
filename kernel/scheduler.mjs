@@ -107,6 +107,37 @@ export function defineSchedule(fn, opts = {}) {
 }
 export default { defineSchedule };
 
+/**
+ * The cron matching the edge uses for the *dumped* Laravel schedule: does
+ * `expression` fire at `date` (in `timeZone`, UTC when omitted)?
+ */
+export function cronMatches(expression, date = new Date(), timeZone) {
+  return match(date, String(expression), timeZone);
+}
+
+/**
+ * The events of a dumped Laravel schedule that are due at `date`.
+ *
+ * A dumped event is `{ name, expression, command, description, timezone }`
+ * (the build writes `dist/src/schedule.generated.mjs`). The edge can only
+ * *trigger* an event — the command itself still needs the app runtime, so the
+ * caller queues it.
+ */
+export function dueEvents(events, date = new Date(), timeZone) {
+  const list = Array.isArray(events) ? events : [];
+  return list.filter((ev) => {
+    const expr = ev && (ev.expression || ev.cron);
+    if (!expr) return false;
+    const tz = ev.timezone || timeZone;
+    try {
+      return match(date, String(expr), tz);
+    } catch {
+      return false;
+    }
+  });
+}
+
+
 
 
 

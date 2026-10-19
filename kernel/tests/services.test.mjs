@@ -106,6 +106,23 @@ test('storage r2 binding', async () => {
 });
 
 // scheduler — cron
+test('the dumped schedule: dueEvents picks the events that fire now', async () => {
+  const { dueEvents, cronMatches } = await import('../scheduler.mjs');
+  const events = [
+    { name: 'posts:prune', expression: '*/5 * * * *', command: 'posts:prune', timezone: 'UTC' },
+    { name: 'inspire', expression: '0 9 * * *', command: 'inspire', timezone: 'UTC' },
+    { name: 'broken', expression: '', command: 'x' },
+  ];
+  assert.equal(cronMatches('*/5 * * * *', new Date('2026-10-18T12:15:00Z')), true);
+  assert.equal(cronMatches('*/5 * * * *', new Date('2026-10-18T12:16:00Z')), false);
+  const due = dueEvents(events, new Date('2026-10-18T12:15:00Z'));
+  assert.equal(due.length, 1);
+  assert.equal(due[0].name, 'posts:prune');
+  // An event without an expression is never due (and never throws).
+  assert.equal(dueEvents([{ name: 'x' }], new Date('2026-10-18T12:15:00Z')).length, 0);
+  // A broken expression is skipped, not fatal.
+  assert.equal(dueEvents([{ name: 'y', expression: 'not a cron' }], new Date('2026-10-18T12:15:00Z')).length, 0);
+});
 test('scheduler every minute', async () => {
   const s = defineSchedule(api => { api.call('a', '* * * * *', async()=>{}); });
   const d = new Date('2026-10-18T12:34:00Z');

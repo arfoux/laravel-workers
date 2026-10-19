@@ -10,7 +10,9 @@ import { createDatabaseCache } from '../kernel/cache.mjs';
 import { createMailer } from '../kernel/mail.mjs';
 import { createStorage } from '../kernel/storage.mjs';
 import { createQueue } from '../kernel/queue.mjs';
+import { dueEvents } from '../kernel/scheduler.mjs';
 import { routeTable, handlers, builtAt } from './routes.generated.mjs';
+import { events as scheduleEvents } from './schedule.generated.mjs';
 import config from './config.generated.mjs';
 import { models } from './models.generated.mjs';
 import { renderErrorView } from './error-renderer.mjs';
@@ -60,9 +62,37 @@ function toResponse(res, method) {
   return new Response(method === 'HEAD' ? null : res.body, { status: res.status, headers });
 }
 
+// The Cloudflare Cron Trigger: the app's dumped schedule fires here, and every
+// due event is queued for the app runtime that still exists (the edge triggers,
+// it does not run artisan).
+async function runSchedule(env, now = new Date()) {
+  const due = dueEvents(scheduleEvents, now);
+  if (due.length === 0) return { due: [], queued: [] };
+  const queue = makeQueue(env);
+  const queued = [];
+  for (const ev of due) {
+    const job = {
+      name: ev.name,
+      expression: ev.expression,
+      command: ev.command,
+      timezone: ev.timezone || null,
+    };
+    await queue.push('laravel-schedule', job);
+    queued.push(job.name);
+  }
+  return { due: due.map((e) => e.name), queued };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // The cron trigger also has an HTTP face (`POST /__lw/cron`), so an app
+    // (or a wrangler dev session) can fire the schedule by hand.
+    if (url.pathname === '/__lw/cron' && request.method === 'POST') {
+      const out = await runSchedule(env, new Date());
+      return Response.json({ ok: true, ...out });
+    }
 
     if (DISPATCH_METHODS.has(request.method)) {
       const body = request.method === 'GET' || request.method === 'HEAD' ? '' : await request.text();
@@ -98,5 +128,11 @@ export default {
     }
 
     return env.ASSETS.fetch(request);
+  },
+
+  // The Cloudflare Cron Trigger entry point (`scheduled`).
+  async scheduled(env, ctx) {
+    const out = await runSchedule(env, new Date());
+    return { ok: true, ...out };
   },
 };
