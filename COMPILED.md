@@ -95,6 +95,22 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   against `tools/php-login-flow-oracle.php` (real PHP 8.3 + the fixture app): status,
   header set, `Set-Cookie` names/attrs, session rows and payload, JSON bodies, Symfony
   redirect HTML bytes — all 1:1.
+- **The general harness** (`shadow/run.mjs` + `tools/php-shadow-oracle.php`): a scenario
+  file lists the request steps; the oracle replays them through the real app (the app's
+  own migrations, a dedicated sqlite file, a cookie jar, the CSRF token read back out of
+  the session row) and the harness replays the same steps through the compiled worker
+  from a *copy of the same database*. It diffs status, the header set and the body
+  bytes, and reports three verdicts: **byte-identical**, **documented divergence** (a
+  step may declare `expect: 'diverges'` with the reason — e.g. a build-time snapshot
+  cannot know the visitor session, a bcrypt digest has a random salt) and
+  **unexplained** (a failure). `npm run test:shadow -- --app <app-root>`.
+  Measured on the construct-coverage app: **17/19 byte-identical, 2 documented
+  divergences, 0 unexplained** (19 steps over all 10 app routes).
+- The harness found three real divergences, now fixed: the compiled `response()` had no
+  `content-type` (Symfony's `text/html; charset=utf-8`), the compiled responses had no
+  default `Cache-Control: no-cache, private`, and the compiled model timestamps used the
+  wall clock instead of the request clock (so a frozen-clock write carried a different
+  `created_at` than the PHP side).
 
 ### 1.4 Runtime completeness (corpus-driven, continuous)
 - Arrays (ordered maps) — done; references → cells; int64 → BigInt discipline + overflow fail-loud

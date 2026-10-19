@@ -518,11 +518,18 @@ function txCall(node) {
   if (what.kind === 'name') {
     const name = what.name;
     if (name === 'response') {
+      // Illuminate\Routing\ResponseFactory::make() — a text/html response by
+      // default (the compiled kernel serves the body as-is).
       const a = node.arguments || [];
-      if (a.length === 0) return '{ status: 200, headers: {}, body: "" }';
-      if (a.length === 1) return '{ status: 200, headers: {}, body: ' + tx(a[0]) + ' }';
-      if (a.length === 2) return '{ status: ' + tx(a[1]) + ', headers: {}, body: ' + tx(a[0]) + ' }';
-      return '{ status: ' + tx(a[1]) + ', headers: ' + tx(a[2]) + ', body: ' + tx(a[0]) + ' }';
+      const headers = "{ 'content-type': 'text/html; charset=utf-8' }";
+      if (a.length === 0) return '{ status: 200, headers: ' + headers + ', body: "" }';
+      if (a.length === 1) return '{ status: 200, headers: ' + headers + ', body: ' + tx(a[0]) + ' }';
+      if (a.length === 2) {
+        return '{ status: ' + tx(a[1]) + ', headers: ' + headers + ', body: ' + tx(a[0]) + ' }';
+      }
+      return (
+        '{ status: ' + tx(a[1]) + ', headers: Object.assign(' + headers + ', ' + tx(a[2]) + '), body: ' + tx(a[0]) + ' }'
+      );
     }
     if (name === 'app') {
       if ((node.arguments || []).length === 0) return 'rt.app()';

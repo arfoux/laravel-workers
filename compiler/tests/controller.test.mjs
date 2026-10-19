@@ -591,7 +591,8 @@ test('emit: response() returns a status/headers/body response object', () => {
     '}\n';
   const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.errors.length, 0);
-  assert.match(res.code, /\{ status: 200, headers: \{\}, body: "ok" \}/);
+  // Laravel's response() is a text/html response (Symfony's default charset).
+  assert.match(res.code, /\{ status: 200, headers: \{ 'content-type': 'text\/html; charset=utf-8' \}, body: "ok" \}/);
 });
 
 test('emit: the extract lists the class constants the method reads', () => {

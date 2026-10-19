@@ -51,7 +51,8 @@
     "test:services": "node --test kernel/tests/services.test.mjs",
     "test:budget": "node --test kernel/tests/budget.test.mjs",
     "check:docs": "node tools/docs-check.mjs",
-    "bench": "node tools/bench.mjs"
+    "bench": "node tools/bench.mjs",
+    "test:shadow": "node shadow/run.mjs"
   },
   "engines": {
     "node": ">=22"

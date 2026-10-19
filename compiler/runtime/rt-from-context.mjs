@@ -187,6 +187,9 @@ export function buildRt(context, opts = {}) {
   const liveRequest = (opts && opts.http && opts.http.request) ? opts.http.request : null;
   const liveAuth = (opts && opts.http && opts.http.auth) ? opts.http.auth : null;
   const liveCache = (opts && opts.http && opts.http.cache) ? opts.http.cache : null;
+  // The request clock (integer seconds) — the model timestamps follow it.
+  const requestClock =
+    opts && opts.http && typeof opts.http.clock === 'function' ? opts.http.clock : null;
 
   const noHttp = (fn) => {
     throw new Error(fn + '(): no HTTP context (static snapshot / build-time evaluation)');
@@ -998,6 +1001,9 @@ export function buildRt(context, opts = {}) {
   const makeFacade = (M) => {
     if (facadeCache.has(M)) return facadeCache.get(M);
     if (!db) throw new Error('rt.model: no database binding (env.DB) available');
+    // The model timestamps follow the request clock (a frozen clock in the
+    // parity tests), so a write carries the same `created_at` as the PHP side.
+    if (requestClock && typeof M.clock !== 'undefined') M.clock = requestClock;
     const name = M.name || 'Model';
     const facade = {
       find: (id) => M.find(db, id),

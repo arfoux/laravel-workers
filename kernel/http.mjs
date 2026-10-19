@@ -1359,6 +1359,8 @@ export async function handleHttp(raw, options = {}) {
           user: () => auth.guard().user(),
           route: matched.route,
           routeParams: matched.params,
+          // The request clock — the compiled model timestamps follow it.
+          clock: nowS,
         },
       }
     );
@@ -1434,11 +1436,15 @@ export async function handleHttp(raw, options = {}) {
     response.body = symfonyRedirectBody(response.headers.location);
     response.headers['content-type'] = 'text/html; charset=utf-8';
   }
+  // Symfony's Response::prepare() adds the default cache-control to every
+  // response that is not a redirect (a redirect carries none).
+  if (!REDIRECT_STATUSES.has(response.status)) {
+    withDefaultCacheControl(response);
+  }
   if (sessionPersistent(config)) {
     response.cookies.set(sessionCookie(config, store, nowS));
   }
   await store.save();
-
   for (const cookie of jar.getQueuedCookies()) response.cookies.set(cookie);
 
   const encrypted = await encryptor.encryptResponseCookies(response.cookies.list());

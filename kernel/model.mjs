@@ -38,6 +38,16 @@ function applyCast(value, cast) {
   return value;
 }
 
+// Laravel's `freshTimestampString()` - the app date format (`Y-m-d H:i:s`)
+// in the app timezone (UTC on the compiled rung).
+export function phpDateString(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return (
+    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+  );
+}
+
 // Accessors/mutators follow Laravel's naming: getFooBarAttribute / setFooBarAttribute.
 function studly(key) {
   return String(key)
@@ -61,6 +71,11 @@ export class Model {
   static timestamps = true;
   static softDeletes = false;
   static deletedAtColumn = 'deleted_at';
+  // The clock the model timestamps use. The kernel injects the request clock
+  // (a frozen clock in the parity tests) so a write carries the same
+  // `created_at`/`updated_at` as the PHP side.
+  static clock = null;
+  static now = () => phpDateString(this.clock ? new Date(this.clock() * 1000) : new Date());
   // Declared relations, used by `with()` / `related()` (Laravel's `$with`):
   //   static relations = { comments: { type: 'hasMany', model: Comment } };
   static relations = {};
@@ -249,7 +264,7 @@ export class Model {
 
   async save(db) {
     const ctor = this.constructor;
-    const now = new Date().toISOString();
+    const now = this.constructor.now();
     const data = {};
     // Eloquent persists the model's dirty attribute set. The compiled rung
     // keeps its fillable-when-declared baseline for unmodified models and
@@ -291,7 +306,7 @@ export class Model {
     const ctor = this.constructor;
     const pk = ctor.primaryKey;
     if (ctor.softDeletes) {
-      const now = new Date().toISOString();
+      const now = this.constructor.now();
       const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).update({ [ctor.deletedAtColumn]: now });
       this.attributes[ctor.deletedAtColumn] = now;
       return res;
