@@ -902,7 +902,23 @@ function unauthorizedBasic() {
 
 function middlewareStages(list, ctx) {
   const stages = [];
-  for (const raw of list || []) {
+  // Laravel sorts the route middleware by $middlewarePriority, where
+  // ThrottleRequests sits *before* the auth/guest middleware. The compiled rung
+  // mirrors that: the rate limiter answers (and adds its X-RateLimit-* headers)
+  // even when a later middleware short-circuits the request.
+  const priority = { throttle: 0 };
+  const ordered = (list || [])
+    .map((raw, i) => ({ raw, i }))
+    .sort((a, b) => {
+      const pa = priority[String(a.raw).split(':')[0]];
+      const pb = priority[String(b.raw).split(':')[0]];
+      if (pa !== undefined && pb !== undefined) return pa - pb;
+      if (pa !== undefined) return -1;
+      if (pb !== undefined) return 1;
+      return a.i - b.i;
+    })
+    .map((x) => x.raw);
+  for (const raw of ordered) {
     const str = String(raw);
     const colon = str.indexOf(':');
     const name = colon === -1 ? str : str.slice(0, colon);
@@ -1372,6 +1388,10 @@ export async function handleHttp(raw, options = {}) {
           routeParams: matched.params,
           // The request clock — the compiled model timestamps follow it.
           clock: nowS,
+          // The service adapters (storage/mail/queue) the worker hands down.
+          storage: options.storage || null,
+          mail: options.mail || null,
+          queue: options.queue || null,
         },
       }
     );

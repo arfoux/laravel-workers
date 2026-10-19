@@ -637,6 +637,21 @@ function txCall(node) {
       }
       return txAwait('rt.cache().' + meth + '(' + args + ')', node, 'Cache::' + meth + '()');
     }
+    // Illuminate\Support\Facades\Storage — the R2-backed store (the padanan for
+    // the app's local disk). Only the flat static calls are compiled; the fluent
+    // disk API (`Storage::disk('local')`) fails loud.
+    if ((cls === 'Storage' || cls === 'Illuminate\\Support\\Facades\\Storage') && CTX && CTX.controller) {
+      const STORAGE_ASYNC = { put: 'put', get: 'getText', exists: 'exists', delete: 'delete' };
+      if (!STORAGE_ASYNC[meth]) {
+        throw mkErr(
+          'LW002',
+          'Storage::' + meth + '() is not supported — allowed: ' + Object.keys(STORAGE_ASYNC).join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return txAwait('rt.storage().' + STORAGE_ASYNC[meth] + '(' + args + ')', node, 'Storage::' + meth + '()');
+    }
     // Illuminate\Support\Facades\Hash — bcrypt, with the app's configured rounds.
     if ((cls === 'Hash' || cls === 'Illuminate\\Support\\Facades\\Hash') && CTX && CTX.controller) {
       if (!HASH_FACADE.has(meth)) {

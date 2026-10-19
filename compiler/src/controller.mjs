@@ -39,6 +39,8 @@ const NON_MODEL_STATICS = new Set([
   'Illuminate\\Validation\\ValidationException',
   'Cache',
   'Illuminate\\Support\\Facades\\Cache',
+  'Storage',
+  'Illuminate\\Support\\Facades\\Storage',
   'Hash',
   'Illuminate\\Support\\Facades\\Hash',
 ]);

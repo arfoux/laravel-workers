@@ -105,5 +105,8 @@ $put('cache.driver', $cacheStore['driver'] ?? null);
 $put('cache.table', $cacheStore['table'] ?? 'cache');
 $put('cache.lock_table', $cacheStore['lock_table'] ?? 'cache_locks');
 $put('cache.serializable_classes', $config->get('cache.serializable_classes') ?? null);
+// The mailer the worker builds: `log` (default, no network), `noop` or `resend`.
+$put('mail.driver', $config->get('mail.default'));
+$put('mail.from.address', $config->get('mail.from.address'));
 
 echo json_encode($dump, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";

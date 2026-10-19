@@ -189,11 +189,11 @@ The escape hatch stays: **ports**.
 
 | Laravel | Edge equivalent | Class | Notes / padanan | Plan |
 |---|---|---|---|---|
-| Mail | HTTP providers (Resend etc.) via `fetch` | 🟡 | kernel/mail.mjs exists (log/noop/resend) but NOT wired to pipeline/transpiler; padanan = HTTP provider (SMTP impossible, hard) | F |
-| Queues / Jobs | Cloudflare Queues (free: 10k ops/day) or D1 queue | 🟡 | | F |
+| Mail | HTTP providers (Resend etc.) via `fetch` | 🟡 | kernel/mail.mjs exists (log/noop/resend); **wired** (M28) — the worker builds the mailer from the app config (`mail.default` → log/noop/resend) and hands it to the handler; the fluent `Mail::to()->send()` facade still needs a port (padanan = HTTP provider; SMTP impossible, hard) | F |
+| Queues / Jobs | Cloudflare Queues (free: 10k ops/day) or D1 queue | 🟡 | **wired** (M28) — the worker hands the queue adapter to the handler (a port can push); the `Queue::push(SomeJob::class)` facade still needs a port (job classes are not compiled) | F |
 | Scheduler | Cron Triggers → one dispatcher reads schedule | 🟡 | kernel/scheduler.mjs exists but NOT wired to runtime; padanan = Cron Triggers (free: 5 triggers/account → dispatcher) | F |
 | Cache | D1 `database` store (Laravel parity) + KV cache-aside | ✅/🟡 | `DatabaseCacheStore` mirrors `Illuminate\Cache\DatabaseStore` 13.37, oracle-verified incl. raw rows (M18); KV stays for build-time/simple caching (eventual consistency trade); the `Cache` facade compiles to it (`get`/`has`/`put`/`add`/`forever`/`forget`/`remember`/`pull`/`increment`/`decrement`/`touch`/`flush`) | F |
-| Storage / filesystem | Uploads → R2; `file_exists`/`public_path` → build-time snapshot | 🟡 | no local FS (hard) → R2 is the padanan | F |
+| Storage / filesystem | Uploads → R2; `file_exists`/`public_path` → build-time snapshot | 🟡 | no local FS (hard) → R2 is the padanan; **wired** (M28): the `Storage::` facade compiles to the R2 store (`put`/`get`/`exists`/`delete`), the worker hands the adapter to the handler, and a missing R2 binding fails loud (no silent in-memory writes) | F |
 | HTTP client | `fetch` | ✅ | no raw sockets (hard); 6 concurrent conns → batch/queue | F |
 | Logging | Console + optional external sink via fetch | 🟡 | no Log module; `Log::` facade not mapped → port; console + fetch sinks only | F |
 | Realtime / WebSockets | Polling / SSE; Durable Objects beyond | 🔴 | wall: no long-lived conn → padanan: polling/SSE first | F* / $ |
@@ -361,7 +361,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | M10/M17/M22/M23: GET/POST/PUT/PATCH/DELETE actions compiled (one handler per verb); `$request->validate()` + flash (M19); `redirect()->intended()` + session regen/invalidate (M20); FormRequests, `Cache`/`Hash` facades, class constants and Eloquent writes compile (M23); pagination + Eloquent relations still a port; fail-loud LW002 (unsupported construct) / LW003; REQUEST_CALL synced to kernel (#2: date removed, str added) |
+| controllers | 🟡 | M10/M17/M22/M23/M28: GET/POST/PUT/PATCH/DELETE actions compiled (one handler per verb); \->validate() + flash (M19); edirect()->intended() + session regen/invalidate (M20); FormRequests, Cache/Hash/Storage facades, class constants and Eloquent writes compile (M23/M28); pagination + Eloquent relations still a port; fail-loud LW002 (unsupported construct) / LW003; REQUEST_CALL synced to kernel (#2: date removed, str added) |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |

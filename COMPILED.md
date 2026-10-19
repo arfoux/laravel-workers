@@ -105,9 +105,10 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   digest; both sides must match the shape), **documented divergence** (a step may
   declare `expect: 'diverges'` with the reason — e.g. Laravel's default error page is
   a framework asset) and **unexplained** (a failure). `npm run test:shadow -- --app <app-root>`.
-  Measured on the construct-coverage app: **17/19 byte-identical, 1 shape-verified, 1
-  documented divergence, 0 unexplained** (19 steps over all 10 app routes); on the
-  Breeze-shaped fresh app: **10/10 byte-identical, 0 unexplained**.
+  Measured on the construct-coverage app: **20/22 byte-identical, 1 shape-verified, 1
+  documented divergence, 0 unexplained** (22 steps over all 10 app routes, incl. the
+  JSON error path); on the Breeze-shaped fresh app: **10/10 byte-identical, 0
+  unexplained**.
 - A step may use the cookie jar (`jar: true`) or not (a separate visitor). A
   *snapshot* is a static asset, so its fair comparison is a guest request. The scenario file is picked up by the app's directory name
   (`shadow/scenarios/<app>.mjs`) or passed with `--scenarios`.
@@ -121,7 +122,11 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   request without credentials as if it were authenticated.
 - The harness also caught three bugs in *itself* (a session leaking between steps, a
   cookie jar sent on every step, and a jar replaced by a step that did not use it) —
-  the kind of bug that would have produced false confidence.
+  the kind of bug that would have produced false confidence — and one more in the
+  compiled side: the route middleware ran in the wrong order (Laravel sorts the
+  route middleware by `$middlewarePriority`, where `throttle` runs *before* the
+  auth/guest middleware, so the rate limiter still answers when a later
+  middleware short-circuits).
 - **CI:** the oracle parity needs a real Laravel app, so the `test` job (no app) *skips*
   those tests — the report says "skipped" with the reason, never "green by omission".
   The `parity` job creates a fresh Laravel app, points `LW_LARAVEL_APP` at it and runs

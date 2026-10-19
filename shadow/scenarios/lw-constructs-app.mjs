@@ -38,6 +38,17 @@ export default {
       form: { _token: '@token', email: EMAIL, password: 'wrong' },
     },
     {
+      // The JSON error path: a failed validation answers 422 with the
+      // `{"message":...,"errors":{...}}` body (not a redirect back). It runs
+      // while the visitor is still a guest, so the controller is reached.
+      label: 'POST /login (wrong password, JSON)',
+      method: 'POST',
+      uri: '/login',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', email: EMAIL, password: 'wrong' },
+    },
+    {
       label: 'POST /login (authenticates)',
       method: 'POST',
       uri: '/login',
@@ -45,6 +56,13 @@ export default {
       form: { _token: '@token', email: EMAIL, password: PASSWORD },
     },
     { label: 'GET /dashboard (authenticated)', method: 'GET', uri: '/dashboard', jar: true },
+    {
+      label: 'GET /dashboard (JSON)',
+      method: 'GET',
+      uri: '/dashboard',
+      jar: true,
+      headers: { Accept: 'application/json' },
+    },
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {

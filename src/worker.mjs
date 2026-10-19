@@ -7,6 +7,9 @@
 import { normalizeTable } from '../kernel/router.mjs';
 import { handleHttp } from '../kernel/http.mjs';
 import { createDatabaseCache } from '../kernel/cache.mjs';
+import { createMailer } from '../kernel/mail.mjs';
+import { createStorage } from '../kernel/storage.mjs';
+import { createQueue } from '../kernel/queue.mjs';
 import { routeTable, handlers, builtAt } from './routes.generated.mjs';
 import config from './config.generated.mjs';
 import { models } from './models.generated.mjs';
@@ -23,6 +26,29 @@ const DISPATCH_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE
 function makeCache(env) {
   if (!env || !env.DB || config['cache.driver'] !== 'database') return null;
   return createDatabaseCache({ db: env.DB, config });
+}
+
+// The Storage padanan: the app's local disk is R2 at the edge (there is no local
+// filesystem). Without the R2 binding there is no store — `Storage::` then fails
+// loud inside the handler instead of writing into a per-isolate memory map.
+function makeStorage(env) {
+  if (!env || !env.R2) return null;
+  return createStorage({ r2: env.R2, secret: config['app.key'] });
+}
+
+// The mailer: `log` (default, no network), `noop` or `resend`.
+function makeMail(env) {
+  return createMailer({
+    transport: config['mail.driver'] || 'log',
+    from: config['mail.from.address'] || undefined,
+    fetchImpl: env && typeof env.fetch === 'function' ? env.fetch.bind(env) : undefined,
+  });
+}
+
+// The queue: a CF Queues binding when the app has one, else the in-memory
+// fallback (a port can push either way).
+function makeQueue(env) {
+  return createQueue({ binding: env && env.QUEUE ? env.QUEUE : null });
 }
 
 function toResponse(res, method) {
@@ -57,6 +83,9 @@ export default {
           env,
           db,
           cache: makeCache(env),
+          storage: makeStorage(env),
+          mail: makeMail(env),
+          queue: makeQueue(env),
           models,
           renderErrorView,
         }

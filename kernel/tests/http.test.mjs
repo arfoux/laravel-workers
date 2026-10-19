@@ -841,6 +841,50 @@ test('auth.basic: wrong credentials are a 401, valid credentials log the user in
   assert.equal(JSON.parse(ok.body).user, 1);
 });
 
+test('the service adapters (storage/mail/queue) reach the handler context', async () => {
+  const { db } = makeDb();
+  const sent = [];
+  const storage = {
+    async put(k, v) { sent.push(['put', k, v]); return k; },
+    async getText(k) { return sent.find((s) => s[1] === k) ? 'body' : null; },
+    async exists(k) { return sent.some((s) => s[1] === k); },
+    async delete(k) { sent.push(['delete', k]); },
+  };
+  const mail = { async send(m) { sent.push(['mail', m.to]); return { id: 'x' }; } };
+  const queue = { async push(q, p) { sent.push(['queue', q, p]); return { id: 'q' }; } };
+  const table = normalizeTable([{ uri: '/__probe/services', methods: ['GET', 'HEAD'], middleware: ['web'] }]);
+  const res = await handleHttp(
+    { method: 'GET', url: BASE + '/__probe/services', headers: { host: 'localhost', accept: 'application/json' }, body: '' },
+    {
+      table,
+      handlers: {
+        'GET /__probe/services': async (ctx) => {
+          await ctx.storage.put('a.txt', 'x');
+          const v = await ctx.storage.getText('a.txt');
+          await ctx.mail.send({ to: 'a@b.co' });
+          await ctx.queue.push('default', { id: 1 });
+          return json({ v, sent: sent.length });
+        },
+      },
+      config: baseConfig(),
+      env: { DB: db },
+      db,
+      models: { LWOracleUser },
+      storage,
+      mail,
+      queue,
+      clock: () => FREEZE_S,
+      clientIp: CLIENT_IP,
+    }
+  );
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(res.body).v, 'body');
+  assert.deepEqual(
+    sent.map((s) => s[0]),
+    ['put', 'mail', 'queue']
+  );
+});
+
 test('fail loud: session.encrypt=true and unknown drivers', async () => {
   await assert.rejects(
     callPipeline((o) => {

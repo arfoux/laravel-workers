@@ -595,6 +595,45 @@ test('emit: response() returns a status/headers/body response object', () => {
   assert.match(res.code, /\{ status: 200, headers: \{ 'content-type': 'text\/html; charset=utf-8' \}, body: "ok" \}/);
 });
 
+test('emit: the Storage facade compiles to the R2-backed store', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Storage;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Storage::put('a/b.txt', 'hello');\n" +
+    "        $v = Storage::get('a/b.txt');\n" +
+    "        $e = Storage::exists('a/b.txt');\n" +
+    "        Storage::delete('a/b.txt');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0);
+  assert.match(res.code, /\(await rt\.storage\(\)\.put\("a\/b\.txt", "hello"\)\)/);
+  assert.match(res.code, /\(await rt\.storage\(\)\.getText\("a\/b\.txt"\)\)/);
+  assert.match(res.code, /\(await rt\.storage\(\)\.exists\("a\/b\.txt"\)\)/);
+  assert.match(res.code, /\(await rt\.storage\(\)\.delete\("a\/b\.txt"\)\)/);
+});
+
+test('emit: an unsupported Storage method fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Storage;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Storage::disk('local');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /Storage::disk/);
+});
+
 test('emit: the extract lists the class constants the method reads', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

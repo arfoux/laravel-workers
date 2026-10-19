@@ -21,6 +21,23 @@ function makeStorage({ r2, secret: cfgSecret, mem } = {}) {
     url(key) { return '/r2/' + key; },
   };
 
+  // Laravel's Storage::get() returns the file *contents* (a string), not the
+  // object handle — the compiled facade needs the text.
+  async function getText(key) {
+    const obj = await base.get(key);
+    if (obj === null || obj === undefined) return null;
+    if (typeof obj.text === 'function') return obj.text();
+    if (typeof obj.body === 'string') return obj.body;
+    if (obj.body !== undefined && obj.body !== null) return String(obj.body);
+    return null;
+  }
+
+  // Laravel's Storage::exists() — a boolean, not a handle.
+  async function exists(key) {
+    const obj = await base.get(key);
+    return obj !== null && obj !== undefined;
+  }
+
   async function temporaryUrl(key, ttlMs, opts = {}) {
     const secret = (opts && opts.secret) !== undefined ? opts.secret : cfgSecret;
     if (!secret) throw new Error('storage temporaryUrl requires a secret');
@@ -47,7 +64,7 @@ function makeStorage({ r2, secret: cfgSecret, mem } = {}) {
     return expected === sig;
   }
 
-  return Object.assign({}, base, { temporaryUrl, verifyTemporaryUrl });
+  return Object.assign({}, base, { temporaryUrl, verifyTemporaryUrl, getText, exists });
 }
 
 export function createStorage({ r2, secret } = {}) {

@@ -156,4 +156,28 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(avg <= 2, `auth.basic header parse avg ${avg}`);
     assert.ok(p95 <= 5, `auth.basic header parse p95 ${p95}`);
   }
+
+  // The service adapters (storage/mail/queue) — the *local* part of the call
+  // (the facade lookup + the payload shape). The network cost (R2 / Resend / CF
+  // Queues) is not measurable here; it is a round trip per call.
+  {
+    const { createStorage } = await import('../storage.mjs');
+    const { createMailer } = await import('../mail.mjs');
+    const { createQueue } = await import('../queue.mjs');
+    const storage = createStorage({});
+    const mailer = createMailer({ transport: 'log' });
+    const queue = createQueue({});
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      await storage.put('k', 'v');
+      await storage.exists('k');
+      await mailer.send({ to: 'a@b.co', subject: 's', text: 't' });
+      await queue.push('default', { i });
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `services (storage/mail/queue) avg ${avg}`);
+    assert.ok(p95 <= 5, `services (storage/mail/queue) p95 ${p95}`);
+  }
 });

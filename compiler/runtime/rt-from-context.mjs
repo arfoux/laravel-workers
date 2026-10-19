@@ -190,6 +190,10 @@ export function buildRt(context, opts = {}) {
   // The request clock (integer seconds) — the model timestamps follow it.
   const requestClock =
     opts && opts.http && typeof opts.http.clock === 'function' ? opts.http.clock : null;
+  // The service adapters the worker hands down (storage/mail/queue).
+  const liveStorage = (opts && opts.http && opts.http.storage) ? opts.http.storage : null;
+  const liveMail = (opts && opts.http && opts.http.mail) ? opts.http.mail : null;
+  const liveQueue = (opts && opts.http && opts.http.queue) ? opts.http.queue : null;
 
   const noHttp = (fn) => {
     throw new Error(fn + '(): no HTTP context (static snapshot / build-time evaluation)');
@@ -200,6 +204,26 @@ export function buildRt(context, opts = {}) {
     if (liveCache) return liveCache;
     if (opts && opts.http) throw new Error('cache(): no cache store configured (cache.driver !== "database" or no D1 binding)');
     return noHttp('cache');
+  };
+  // Storage:: — the R2-backed store (the padanan for the app's local disk).
+  // Without the R2 binding this fails loud: a silent in-memory store would lose
+  // the writes at the end of the isolate.
+  rt.storage = () => {
+    if (liveStorage) return liveStorage;
+    if (opts && opts.http) throw new Error('storage(): no R2 binding (env.R2) — Storage:: needs object storage at the edge');
+    return noHttp('storage');
+  };
+  // Mail:: — the mailer (log/noop/resend).
+  rt.mail = () => {
+    if (liveMail) return liveMail;
+    if (opts && opts.http) throw new Error('mail(): no mailer configured');
+    return noHttp('mail');
+  };
+  // Queue:: — the queue (CF Queues or the in-memory fallback).
+  rt.queue = () => {
+    if (liveQueue) return liveQueue;
+    if (opts && opts.http) throw new Error('queue(): no queue binding configured');
+    return noHttp('queue');
   };
   // Laravel's old($key, $default) -> session()->getOldInput($key, $default).
   rt.old = (key, def = null) => (liveSession ? liveSession.getOldInput(key, def) : noHttp('old'));
