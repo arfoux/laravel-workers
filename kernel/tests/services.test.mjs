@@ -90,19 +90,33 @@ test('cache kv binding', async () => {
 // storage — memory
 test('storage memory put/get/delete', async () => {
   const s = createStorage({});
-  await s.put('a/b.txt', 'hello');
+  // Laravel's FilesystemAdapter::put() answers a bool, not the path.
+  assert.equal(await s.put('a/b.txt', 'hello'), true);
   const obj = await s.get('a/b.txt');
   assert.equal(obj.body, 'hello');
   assert.equal(s.url('a/b.txt'), '/r2/a/b.txt');
-  await s.delete('a/b.txt');
+  assert.equal(await s.delete('a/b.txt'), true);
   assert.equal(await s.get('a/b.txt'), null);
+  // Laravel answers false when the file was missing.
+  assert.equal(await s.delete('a/b.txt'), false);
+});
+test('storage: a missing file fails loud on get (Laravel throws UnableToReadFile)', async () => {
+  const s = createStorage({});
+  await assert.rejects(() => s.getText('nope.txt'), /does not exist/);
 });
 test('storage r2 binding', async () => {
   const m = new Map();
-  const r2 = { async put(k,v){ m.set(k,v); }, async get(k){ const v=m.get(k); return v===undefined?null:{ body: v }; }, async delete(k){ m.delete(k); } };
+  const r2 = {
+    async put(k,v){ m.set(k,v); },
+    async get(k){ const v=m.get(k); return v===undefined?null:{ body: v }; },
+    async head(k){ return m.has(k) ? { body: 'x' } : null; },
+    async delete(k){ m.delete(k); },
+  };
   const s = createStorage({ r2 });
-  await s.put('x', 'v');
+  assert.equal(await s.put('x', 'v'), true);
   assert.equal((await s.get('x')).body, 'v');
+  assert.equal(await s.delete('x'), true);
+  assert.equal(await s.delete('x'), false);
 });
 
 // storage — the D1 blob store (one row per object; no R2, no card)
@@ -136,8 +150,9 @@ function mockD1() {
             return { success: true, meta: { changes: 1 } };
           }
           if (/^DELETE/.test(sql)) {
+            const existed = rows.has(this.params[0]);
             rows.delete(this.params[0]);
-            return { success: true, meta: { changes: 1 } };
+            return { success: true, meta: { changes: existed ? 1 : 0 } };
           }
           return { success: true };
         },
@@ -152,13 +167,15 @@ test('storage d1 blob store: put/get/exists/delete (one row per object)', async 
   const d1 = mockD1();
   const s = createStorage({ d1 });
   assert.equal(s.kind, 'd1');
-  await s.put('a/b.txt', 'hello');
+  assert.equal(await s.put('a/b.txt', 'hello'), true);
   assert.equal(await s.getText('a/b.txt'), 'hello');
   assert.equal(await s.exists('a/b.txt'), true);
   assert.equal(s.url('a/b.txt'), '/storage/a/b.txt');
-  await s.delete('a/b.txt');
+  assert.equal(await s.delete('a/b.txt'), true);
   assert.equal(await s.exists('a/b.txt'), false);
-  assert.equal(await s.getText('a/b.txt'), null);
+  // Laravel: false when the file was missing; a missing file is not null on get.
+  assert.equal(await s.delete('a/b.txt'), false);
+  await assert.rejects(() => s.getText('a/b.txt'), /does not exist/);
 });
 
 test('storage d1 blob store: the table is created once per binding, not per request', async () => {

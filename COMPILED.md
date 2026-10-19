@@ -255,7 +255,10 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   Mail / Filesystem / Broadcast / Notifications / Scheduler: **call sites and class code
   compile** (jobs, mailables, notifications are classes) — stores/delivery are
   adapter-pending, flagged in `report`, never a silent no-op
-- Filesystem: `Storage::` (`put`/`get`/`exists`/`delete`) compiles to the object store — **R2**
+- Filesystem: `Storage::` (`put`/`get`/`exists`/`delete`) compiles to the object store — the
+  facade keeps Laravel's return values (`put` → `true`, `delete` → a bool that is `false`
+  when the object was missing, `get` → the contents and a **throw** for a missing file, like
+  `FilesystemAdapter::get`) — **R2**
   when the app binds it, else the **D1 blob store** (one row per object in `lw_blobs`, created
   lazily, 1.5 MB per object). The build prints the store it picked and fails loud when the app
   binds neither R2 nor D1 (no silent in-memory writes); `Storage::disk()` and the fluent

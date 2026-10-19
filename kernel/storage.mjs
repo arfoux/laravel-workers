@@ -48,9 +48,19 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
   const base = isR2 ? {
     kind: 'r2',
     prefix: '/r2/',
-    async put(key, body) { await r2.put(key, body); return key; },
+    // Laravel's FilesystemAdapter::put() returns a bool, not the path.
+    async put(key, body) { await r2.put(key, body); return true; },
     async get(key) { const obj = await r2.get(key); if (!obj) return null; return obj; },
-    async delete(key) { await r2.delete(key); },
+    async delete(key) {
+      // Laravel's delete() answers false when the file was missing; R2's delete
+      // is silent, so the existence is checked first (when the binding can).
+      if (typeof r2.head === 'function') {
+        const head = await r2.head(key);
+        if (!head) return false;
+      }
+      await r2.delete(key);
+      return true;
+    },
     url(key) { return '/r2/' + key; },
   } : isD1 ? {
     kind: 'd1',
@@ -69,7 +79,7 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
         .prepare('INSERT OR REPLACE INTO "' + BLOB_TABLE + '" ("key","body","size","created_at") VALUES (?,?,?,?)')
         .bind(key, text, size, new Date().toISOString())
         .run();
-      return key;
+      return true;
     },
     async get(key) {
       await ensureBlobTable(d1);
@@ -78,24 +88,31 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     },
     async delete(key) {
       await ensureBlobTable(d1);
-      await d1.prepare('DELETE FROM "' + BLOB_TABLE + '" WHERE "key" = ?').bind(key).run();
+      const info = await d1.prepare('DELETE FROM "' + BLOB_TABLE + '" WHERE "key" = ?').bind(key).run();
+      const changes = Number(info && info.meta && info.meta.changes);
+      // Laravel answers false when the file was missing.
+      return Number.isFinite(changes) ? changes > 0 : true;
     },
     url(key) { return '/storage/' + key; },
   } : {
     kind: 'memory',
     prefix: '/r2/',
     _mem: mem,
-    async put(key, body) { mem.set(key, body); return key; },
+    async put(key, body) { mem.set(key, body); return true; },
     async get(key) { const v = mem.get(key); return v !== undefined ? { body: v } : null; },
-    async delete(key) { mem.delete(key); },
+    async delete(key) { return mem.delete(key); },
     url(key) { return '/r2/' + key; },
   };
 
   // Laravel's Storage::get() returns the file *contents* (a string), not the
-  // object handle — the compiled facade needs the text.
+  // object handle — the compiled facade needs the text. A missing file is not
+  // null: Laravel's FilesystemAdapter::get() throws UnableToReadFile (the
+  // default `throwsExceptions`), so the compiled side fails loud too.
   async function getText(key) {
     const obj = await base.get(key);
-    if (obj === null || obj === undefined) return null;
+    if (obj === null || obj === undefined) {
+      throw new Error('storage get: the file "' + key + '" does not exist');
+    }
     if (typeof obj.text === 'function') return obj.text();
     if (typeof obj.body === 'string') return obj.body;
     if (obj.body !== undefined && obj.body !== null) return String(obj.body);

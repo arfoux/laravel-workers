@@ -141,7 +141,7 @@ export default {
       // The body must carry the round trip: the value that was written and read
       // back, plus the `exists` answer. It also keeps the step from passing
       // vacuously (a route that does not exist would answer 404 on both sides).
-      expectBody: 'hello-shadow|yes',
+      expectBody: 'hello-shadow|yes|yes|yes|no',
     },
     {
       // A bcrypt digest has a random salt, so the two bodies can never be equal.
