@@ -109,7 +109,17 @@ export default {
     }
 
     if (DISPATCH_METHODS.has(request.method)) {
-      const body = request.method === 'GET' || request.method === 'HEAD' ? '' : await request.text();
+      // A multipart body is binary: the bytes as they are (a text body would
+      // mangle them).
+      const isMultipart = (request.headers.get('content-type') || '')
+        .toLowerCase()
+        .includes('multipart/form-data');
+      const body =
+        request.method === 'GET' || request.method === 'HEAD'
+          ? ''
+          : isMultipart
+            ? new Uint8Array(await request.arrayBuffer())
+            : await request.text();
       const db = env && env.DB ? env.DB : null;
       const res = await handleHttp(
         {

@@ -37,7 +37,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCookieEncryptor } from '../cookies.mjs';
-import { handleHttp, parsePhpQuery } from '../http.mjs';
+import { handleHttp, parsePhpQuery, buildRequest } from '../http.mjs';
 import { createDatabaseCache } from '../cache.mjs';
 import { applyAuthenticatable } from '../auth.mjs';
 import { Model } from '../model.mjs';
@@ -1079,4 +1079,34 @@ test('status-only: renderErrorView hook overrides 419 body', async () => {
   );
   assert.equal(res.status, 419);
   assert.match(res.body, /custom-419/);
+});
+
+test('request: a multipart body is parsed (the fields + the uploaded file)', () => {
+  const boundary = '----lwBoundary';
+  const body =
+    `--${boundary}\r\n` +
+    'Content-Disposition: form-data; name="title"\r\n\r\n' +
+    'Shadow upload\r\n' +
+    `--${boundary}\r\n` +
+    'Content-Disposition: form-data; name="avatar"; filename="a b.txt"\r\n' +
+    'Content-Type: text/plain\r\n\r\n' +
+    'hello file\r\n' +
+    `--${boundary}--\r\n`;
+  const req = buildRequest({
+    method: 'POST',
+    url: 'http://localhost/upload',
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    body: new TextEncoder().encode(body),
+  });
+  assert.equal(req.input('title'), 'Shadow upload');
+  const file = req.file('avatar');
+  assert.equal(file.getClientOriginalName(), 'a b.txt');
+  assert.equal(file.getClientOriginalExtension(), 'txt');
+  assert.equal(file.getClientMimeType(), 'text/plain');
+  assert.equal(file.getSize(), 10);
+  assert.equal(new TextDecoder().decode(file.get()), 'hello file');
+  assert.equal(req.hasFile('avatar'), true);
+  assert.equal(req.hasFile('nope'), false);
+  assert.equal(req.allFiles().length, 1);
+  assert.equal(req.file('nope'), null);
 });

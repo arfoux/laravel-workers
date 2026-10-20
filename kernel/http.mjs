@@ -68,6 +68,7 @@ import {
   applyAuthenticatable,
 } from './auth.mjs';
 import { phpJsonDecode } from './php-json.mjs';
+import { parseMultipart } from './multipart.mjs';
 import {
   ValidationException,
   installValidation,
@@ -346,6 +347,40 @@ function headerBag(raw) {
 // Request
 // ---------------------------------------------------------------------------
 
+// An uploaded file (Illuminate\Http\UploadedFile): the metadata + the bytes.
+// The *storing* is not compiled yet (the compiled side fails loud on
+// `$request->file()`), so `store()` refuses instead of losing the file.
+function makeUploadedFile(desc) {
+  const filename = String(desc.filename == null ? '' : desc.filename);
+  const dot = filename.lastIndexOf('.');
+  return {
+    __uploadedFile: true,
+    name: desc.name,
+    filename,
+    mime: desc.mime,
+    size: desc.size,
+    bytes: desc.bytes,
+    getClientOriginalName() { return this.filename; },
+    getClientOriginalExtension() {
+      return dot > 0 ? filename.slice(dot + 1) : '';
+    },
+    getClientMimeType() { return this.mime; },
+    getSize() { return this.size; },
+    isValid() { return true; },
+    get() { return this.bytes; },
+    store() {
+      throw new Error(
+        'the uploaded file cannot be stored: the compiled side does not compile the file upload yet'
+      );
+    },
+    storeAs() {
+      throw new Error(
+        'the uploaded file cannot be stored: the compiled side does not compile the file upload yet'
+      );
+    },
+  };
+}
+
 export function buildRequest(raw, options = {}) {
   const rawMethod = String((raw && raw.method) || 'GET').toUpperCase();
   const urlString = String((raw && raw.url) || '');
@@ -366,13 +401,24 @@ export function buildRequest(raw, options = {}) {
 
   const query = parsePhpQuery(rawQuery);
 
-  const body = raw && raw.body != null ? String(raw.body) : '';
-  const contentType = (headers.get('content-type') || '').toLowerCase();
+  // The body: a string (the text bodies) or the raw bytes (a multipart upload).
+  const rawBody = raw && raw.body != null ? raw.body : '';
+  const bodyBytes =
+    rawBody instanceof Uint8Array
+      ? rawBody
+      : rawBody instanceof ArrayBuffer
+        ? new Uint8Array(rawBody)
+        : null;
+  const body = bodyBytes ? '' : String(rawBody);
+  // The raw content type: the multipart *boundary* is case-sensitive (RFC).
+  const rawContentType = headers.get('content-type') || '';
+  const contentType = rawContentType.toLowerCase();
   const contentTypeFormat = contentType.split(';')[0].trim();
   const isJson = contentTypeFormat === 'application/json' || contentTypeFormat.endsWith('+json');
   let post = {};
   let json = null;
-  if (body !== '' && rawMethod !== 'GET' && rawMethod !== 'HEAD') {
+  let files = {};
+  if ((body !== '' || bodyBytes) && rawMethod !== 'GET' && rawMethod !== 'HEAD') {
     if (isJson) {
       try {
         const decoded = phpJsonDecode(body);
@@ -384,7 +430,10 @@ export function buildRequest(raw, options = {}) {
     } else if (contentTypeFormat === '' || contentTypeFormat === 'application/x-www-form-urlencoded') {
       post = parsePhpQuery(body);
     } else if (contentTypeFormat === 'multipart/form-data') {
-      throw new HttpError('multipart/form-data request bodies are not supported by the compiled rung yet.', 500);
+      // The uploaded files + the form fields.
+      const parsed = parseMultipart(bodyBytes, rawContentType);
+      post = parsed.fields;
+      files = parsed.files;
     } else {
       throw new HttpError(`unsupported request content-type: ${contentTypeFormat}`, 500);
     }
@@ -540,6 +589,26 @@ export function buildRequest(raw, options = {}) {
     post(key = null, def = null) {
       if (key === null) return post;
       return dataGet(post, key, def);
+    },
+    // The uploaded files (a multipart/form-data body).
+    file(key = null, def = null) {
+      if (key === null) return files;
+      if (!Object.prototype.hasOwnProperty.call(files, key)) return def;
+      return makeUploadedFile(files[key]);
+    },
+    files(key = null, def = null) {
+      if (key === null) return Object.values(files);
+      const out = [];
+      for (const name of Object.keys(files)) {
+        if (name === key || name.startsWith(key + '[')) out.push(makeUploadedFile(files[name]));
+      }
+      return out.length ? out : def;
+    },
+    allFiles() {
+      return Object.values(files).map(makeUploadedFile);
+    },
+    hasFile(key) {
+      return Object.prototype.hasOwnProperty.call(files, key);
     },
     json(key = null, def = null) {
       if (key === null) return json;
