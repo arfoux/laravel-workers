@@ -66,6 +66,7 @@ Compiles today (byte-parity corpus + kernel tests):
 - **The route-model binding (M40)**: `show(Post $post)` compiles — the model comes from the route segment (a missing model is a 404, like Laravel's `ModelNotFoundException`).
 - **The method handling (M40)**: an `OPTIONS` request gets Laravel's **automatic OPTIONS response** (200, an empty body, the `Allow` header with the verbs the URI accepts) and a method that does not match answers like Laravel (405 with an `errors/405` view, else 500). A **CORS** config is not compiled: the build skips the routes under a CORS path (the `Access-Control-*` headers would be missing).
 - **The paginator (M40)**: `Post::paginate(10)` compiles to Laravel's `LengthAwarePaginator` — the items, the total, the pages, the first/last item, the previous/next URLs and the URL window (`elements()`); the page comes from the request (`?page=N`). The **pagination links** (`$paginator->links()`) need the framework's `pagination::tailwind` view compiled at build time — until then the build stops (LW003).
+- **The PHP casts (M40)**: `(string)`, `(int)`, `(bool)` and `(float)` compile with PHP's own semantics; the other casts fail loud.
 
 Fails loud (build error or `LW002`), use a port instead:
 - Blade **components** (`<x-...>`) that compile to `$__env->…` (the layouts compile — M40).

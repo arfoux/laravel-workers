@@ -299,6 +299,23 @@ function tx(node) {
       return txClosure(node);
     case 'arrowfunc':
       return txArrowFunc(node);
+    case 'cast': {
+      // `(string) $x`, `(int) $x`, `(bool) $x`, `(float) $x` — the PHP casts.
+      const type = String(node.type || '').toLowerCase();
+      const value = node.expr ? tx(node.expr) : 'null';
+      if (type === 'string') return 'rt.str(' + value + ')';
+      if (type === 'int' || type === 'integer') return 'rt.intval(' + value + ')';
+      if (type === 'bool' || type === 'boolean') return 'rt.truthy(' + value + ')';
+      if (type === 'float' || type === 'double' || type === 'real') {
+        return 'rt.floatval(' + value + ')';
+      }
+      throw mkErr(
+        'LW002',
+        'the (' + type + ') cast is not compiled (string, int, bool and float are) - ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
     default:
       throw mkErr('LW002', 'unsupported expression kind ' + node.kind, node.loc);
   }

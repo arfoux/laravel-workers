@@ -377,13 +377,14 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too). | M39 |
 | Blade `@extends` (a layout) | ✅ compiles | The sections travel to the layout (the shadow harness proves the bytes). | M40 |
 | `Model::paginate()` | ✅ compiles | The LengthAwarePaginator (the items, the total, the pages, the URLs); the pagination links need the pagination view (M40 part 4). | M40 |
+| A PHP cast (`(string) $x`) | ✅ compiles | The scalar casts with PHP's own semantics: (string), (int), (bool), (float). | M40 |
 | Route-model binding (a typed param) | ✅ compiles | The model comes from the route segment (Laravel's implicit binding); a missing model is a 404. | M40 |
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
 | File upload (`$request->file()`) | ⛔ fails loud (`LW002`) | An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40). | M41 |
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**38 constructs: 25 compile, 12 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**39 constructs: 26 compile, 12 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -478,6 +479,11 @@ or it **fails the build** - there is no third state (no silent degradation).
     to `$arr[null] = $x` — a *silent* wrong answer (the array stayed empty).
     Now it compiles to `rt.arrayPush()` and an array read without an offset
     fails loud.
+  - **The PHP casts** (`(string) $x`, `(int) $x`, `(bool) $x`, `(float) $x`):
+    they failed the build (LW002 — "unsupported expression kind cast"). Now
+    they compile with PHP's own semantics (`rt.str` / `rt.intval` /
+    `rt.truthy` / `rt.floatval`); the other casts (`(array)`, `(object)`) still
+    fail loud.
   What is left in this batch: the **pagination links** (the framework's
   `pagination::tailwind` view must be compiled at build time — the view name
   has a `::`, which is not a legal Windows file name) and the **file uploads**

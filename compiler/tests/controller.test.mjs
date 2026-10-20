@@ -1807,6 +1807,54 @@ test('emit+runtime: $arr[] = $x appends (it used to write a "null" key)', async 
   assert.equal(res.body, 'a,b');
 });
 
+test('emit+runtime: the PHP casts ((string), (int), (bool), (float))', async () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function casts()\n' +
+    '    {\n' +
+    '        $a = (string) 5;\n' +
+    '        $b = (int) "7abc";\n' +
+    '        $c = (bool) 0;\n' +
+    '        $d = (float) "1.5";\n' +
+    '        $e = (string) null;\n' +
+    '        return response($a . "|" . $b . "|" . ($c ? "yes" : "no") . "|" . $d . "|" . $e);\n' +
+    '    }\n' +
+    '}\n';
+  const handle = await handlerFromSource(src, 'casts', {
+    routeUri: '/casts',
+    routeParams: [],
+    models: [],
+    views: [],
+  });
+  const res = await handle({ params: {}, request: {} }, {});
+  assert.equal(res.status, 200);
+  // PHP: (string) 5 = "5"; (int) "7abc" = 7; (bool) 0 = false;
+  // (float) "1.5" = 1.5; (string) null = "".
+  assert.equal(res.body, '5|7|no|1.5|');
+});
+
+test('emit: a cast that is not compiled fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function casts()\n' +
+    '    {\n' +
+    '        $a = (array) 5;\n' +
+    '        return response("ok");\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'casts', {
+    routeUri: '/casts',
+    routeParams: [],
+    models: [],
+    views: [],
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /\(array\) cast/);
+});
+
 test('emit: Model::paginate() compiles to the paginator (the LengthAwarePaginator)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

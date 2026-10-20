@@ -357,6 +357,16 @@
       "status": "done"
     },
     {
+      "id": "php_cast",
+      "label": "A PHP cast (`(string) $x`)",
+      "php": "$s = (string) 5;",
+      "check": "compiler",
+      "expect": "ok",
+      "note": "The scalar casts with PHP's own semantics: (string), (int), (bool), (float).",
+      "batch": "M40",
+      "status": "done"
+    },
+    {
       "id": "route_model_binding",
       "label": "Route-model binding (a typed param)",
       "sig": "(Post $post)",
