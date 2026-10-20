@@ -465,14 +465,59 @@ const REQUEST_CALL = new Set([
   'path', 'url', 'fullUrl', 'ajax', 'pjax', 'expectsJson', 'wantsJson', 'acceptsAnyContentType',
   'prefetch', 'header', 'headers', 'hasHeader', 'bearerToken', 'cookie', 'hasCookie', 'ip',
   'userAgent', 'route', 'session', 'json',
+  // The upload: the file object of a multipart body.
+  'file', 'hasFile', 'allFiles',
 ]);
 const REQUEST_ASYNC = new Set(['user']);
 // Request methods whose result is a primitive/Stringable value that must NOT be
 // chained (Laravel's Stringable chains are not modelled by the compiled rung).
-const REQUEST_NO_CHAIN = new Set(['input','all','query','post','has','hasAny','filled','isNotFilled','missing','only','except','string','str','integer','float','boolean','isMethod','method','path','url','fullUrl','ajax','pjax','expectsJson','wantsJson','acceptsAnyContentType','prefetch','header','headers','hasHeader','bearerToken','cookie','hasCookie','ip','userAgent','json']);
+const REQUEST_NO_CHAIN = new Set(['input','all','query','post','has','hasAny','filled','isNotFilled','missing','only','except','string','str','integer','float','boolean','isMethod','method','path','url','fullUrl','ajax','pjax','expectsJson','wantsJson','acceptsAnyContentType','prefetch','header','headers','hasHeader','bearerToken','cookie','hasCookie','ip','userAgent','json','hasFile','allFiles']);
 const REQUEST_DENY = new Set([
-  'file', 'files', 'allFiles', 'hasFile', 'hasValidFile', 'fileIsValid',
+  // `$request->files` is a *property* in Laravel (Symfony's FileBag), not a
+  // method: the compiled side has no FileBag, so it fails loud.
+  'files',
 ]);
+// The methods of an uploaded file the compiled rung has. The file object is
+// what `$request->file('x')` returns (the kernel's Illuminate\Http\UploadedFile).
+const FILE_METHODS = new Set([
+  'getClientOriginalName', 'getClientOriginalExtension', 'getClientMimeType',
+  'getSize', 'isValid', 'store', 'storeAs',
+]);
+// The file methods that write to the object store (async at the edge).
+const FILE_ASYNC = new Set(['store', 'storeAs']);
+// The validation rules that read the file's *content* type (finfo): the edge
+// has only the type the browser declared, so the verdict would differ from
+// PHP's. The build stops instead of answering differently at the edge.
+const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes', 'image', 'dimensions']);
+
+// The content-mime rule in an inline rule set (`$request->validate(['a' =>
+// 'mimes:png'])`), or null when there is none. The rules are literals in the
+// source, so the build sees them.
+function contentMimeRuleInAst(node) {
+  let found = null;
+  const scan = (n) => {
+    if (found || !n || typeof n !== 'object') return;
+    if (Array.isArray(n)) {
+      for (const x of n) scan(x);
+      return;
+    }
+    if (n.kind === 'string' && typeof n.value === 'string') {
+      for (const token of n.value.split('|')) {
+        const name = String(token).split(':')[0].trim();
+        if (CONTENT_MIME_RULES.has(name)) {
+          found = name;
+          return;
+        }
+      }
+    }
+    for (const key of Object.keys(n)) {
+      if (key === 'loc') continue;
+      scan(n[key]);
+    }
+  };
+  scan(node);
+  return found;
+}
 
 function requestMethodOfCall(callNode) {
   if (!callNode || callNode.kind !== 'call') return null;
@@ -482,6 +527,31 @@ function requestMethodOfCall(callNode) {
   if (!inner || inner.kind !== 'variable') return null;
   if (!CTX || !CTX.requestVars || !CTX.requestVars.has(vname(inner.name))) return null;
   return (typeof w.offset?.name === 'string') ? w.offset.name : null;
+}
+
+// The kind of an uploaded-file expression: `$request->file('x')` is a file,
+// `$request->allFiles()` is a map of them.
+function fileExprKind(node) {
+  const m = requestMethodOfCall(node);
+  if (m === 'file') return 'file';
+  if (m === 'allFiles') return 'files';
+  return null;
+}
+
+// A method call on an uploaded file: only the compiled surface is allowed and
+// the ones that write to the object store are awaited.
+function txFileMethod(obj, meth, args, node) {
+  if (!FILE_METHODS.has(meth)) {
+    throw mkErr(
+      'LW003',
+      'the uploaded file method ->' + meth + '() is not compiled — allowed: ' + [...FILE_METHODS].join(', ') +
+        ' (the content type of the file cannot be sniffed at the edge like finfo does); ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  const expr = obj + '.' + meth + '(' + args + ')';
+  return FILE_ASYNC.has(meth) ? txAwait(expr, node, 'the uploaded file->' + meth + '()') : expr;
 }
 
 function txRequestCall(node, args) {
@@ -495,14 +565,13 @@ function txRequestCall(node, args) {
     throw mkErr('LW002', 'unsupported $request property access', node.loc, PORT_HINT);
   }
   if (REQUEST_DENY.has(meth)) {
-    // The upload: the edge has no multipart parser. The free path is the D1
-    // blob store (1.5 MB per object, no card); R2 (a bucket of its own) asks
-    // for a credit card. The build tells the user which one to enable — or to
-    // remove/disable the upload.
+    // `$request->files` is Symfony's FileBag (a property, not a method): the
+    // compiled side has no FileBag. The upload itself is compiled: the file
+    // comes from `$request->file('x')`.
     throw mkErr(
       'LW002',
-      '$request->' + meth + '() (an uploaded file) is not compiled — the edge has no multipart parser: the upload needs an object store (the free path is the D1 blob store: 1.5 MB per object, no card; R2 asks for a credit card) — enable it in wrangler.jsonc ("r2_buckets": [{"binding":"R2","bucket_name":"<bucket>"}]) or remove/disable the upload in this route; ' +
-        PORT_HINT,
+      '$request->' + meth + '() is not compiled — in Laravel it is a property (Symfony\'s FileBag), not a method: ' +
+        'use $request->file(\'x\') (the uploaded file) or $request->allFiles() (every file); ' + PORT_HINT,
       node.loc,
       PORT_HINT
     );
@@ -511,6 +580,20 @@ function txRequestCall(node, args) {
   // over the request input; a failure throws ValidationException, which the HTTP
   // kernel renders as redirect-back + flashed errors/old input (or 422 JSON).
   if (meth === 'validate' || meth === 'validateWithBag') {
+    // A rule that reads the file's *content* type (finfo) cannot be answered
+    // like PHP at the edge (the edge has only the type the browser declared),
+    // so the build stops and names the rule.
+    const mimeRule = contentMimeRuleInAst(node.arguments && node.arguments[0]);
+    if (mimeRule) {
+      throw mkErr(
+        'LW002',
+        'the ' + mimeRule + ' validation rule is not compiled — it reads the file\'s *content* type (finfo) and the edge ' +
+          'cannot sniff the content like PHP does: use the file rule with max (the size in kilobytes) instead, or check ' +
+          'the extension in the controller; ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
     const expr = vname(inner.name) + '.' + meth + '(' + args + ')';
     return txAwait(expr, node, '$request->' + meth + '()');
   }
@@ -1284,6 +1367,14 @@ function txCall(node) {
     }
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
+    // The uploaded file: `$request->file('x')->store('avatars')` (the chained
+    // form) and `$file->store('avatars')` (the variable holds a file). The
+    // methods that write to the object store are awaited.
+    if (CTX && CTX.controller) {
+      const chainedFile = what.what.kind === 'call' && requestMethodOfCall(what.what) === 'file';
+      const varFile = what.what.kind === 'variable' && CTX.fileVars && CTX.fileVars.has(vname(what.what.name));
+      if (chainedFile || varFile) return txFileMethod(obj, meth, args, node);
+    }
     // `Storage::disk('x')->put(...)` — the fluent disk form. The compiled store
     // has the same surface (and the same return values) as the flat facade
     // calls; a method outside it fails loud (a promise must never leak into a
@@ -1514,6 +1605,11 @@ function txAssignExpr(node) {
   const left = node.left;
   const right = tx(node.right);
   // A model assignment: the variable holds a model (or a query builder).
+  // An uploaded file: the variable holds a file (`$file = $request->file('x')`).
+  if (left.kind === 'variable' && CTX && CTX.fileVars) {
+    const fileKind = fileExprKind(node.right);
+    if (fileKind) CTX.fileVars.set(vname(left.name), fileKind);
+  }
   if (left.kind === 'variable' && CTX && CTX.modelVars) {
     const kind = modelExprKind(node.right);
     if (kind) {
@@ -1566,6 +1662,11 @@ function txAssignStatement(node) {
   const left = node.left;
   const right = tx(node.right);
   // A model assignment: the variable holds a model (or a query builder).
+  // An uploaded file: the variable holds a file (`$file = $request->file('x')`).
+  if (left.kind === 'variable' && CTX && CTX.fileVars) {
+    const fileKind = fileExprKind(node.right);
+    if (fileKind) CTX.fileVars.set(vname(left.name), fileKind);
+  }
   if (left.kind === 'variable' && CTX && CTX.modelVars) {
     const kind = modelExprKind(node.right);
     if (kind) {
@@ -1862,6 +1963,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     // The variables that hold a model (or a query builder): a method call on
     // them is gated, so the build stops instead of answering a 500 at the edge.
     modelVars: new Map(),
+    // The variables that hold an uploaded file (`$request->file('x')`): the
+    // file methods are gated the same way.
+    fileVars: new Map(),
     // The model alias of each model variable (var -> alias/fqcn).
     modelAlias: new Map(),
     // The FQCN of each model variable (var -> FQCN): the Gate check needs it

@@ -1107,6 +1107,12 @@ test('request: a multipart body is parsed (the fields + the uploaded file)', () 
   assert.equal(new TextDecoder().decode(file.get()), 'hello file');
   assert.equal(req.hasFile('avatar'), true);
   assert.equal(req.hasFile('nope'), false);
-  assert.equal(req.allFiles().length, 1);
+  // allFiles(): the map of the uploaded files (Laravel's FileBag::all()).
+  assert.equal(Object.keys(req.allFiles()).length, 1);
+  assert.equal(req.allFiles().avatar.getClientOriginalName(), 'a b.txt');
   assert.equal(req.file('nope'), null);
+  // The files are in the validated data (Laravel's all() merges them).
+  assert.equal(req.all().avatar.getSize(), 10);
+  // ... but the body wins on a key that is in both.
+  assert.equal(typeof req.all().title, 'string');
 });

@@ -381,11 +381,16 @@ or it **fails the build** - there is no third state (no silent degradation).
 | A PHP cast (`(string) $x`) | ✅ compiles | The scalar casts with PHP's own semantics: (string), (int), (bool), (float). | M40 |
 | Route-model binding (a typed param) | ✅ compiles | The model comes from the route segment (Laravel's implicit binding); a missing model is a 404. | M40 |
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
-| File upload (`$request->file()`) | ⛔ fails loud (`LW002`) | An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40). | M41 |
+| File upload (`$request->file()`) | ✅ compiles | The multipart body is parsed at the edge: the file object carries the metadata (the name, the type the browser declared, the size) and the store (the app's default disk). Byte-proven by the shadow harness. | M40 |
+| The upload is stored (`$file->storeAs()`) | ✅ compiles | The object store (the D1 blob store on the free plan, R2 with a bucket of its own): the path is the disk-relative one Laravel returns (trim($path.'/'.$name, '/')). | M40 |
+| The upload is stored under a random name (`$file->store()`) | ✅ compiles | The name is a random hash (Str::random(40)) + the extension; the extension comes from the type the browser declared (Laravel sniffs the content with finfo). | M40 |
+| The content type of the upload (`$file->getMimeType()`) | ⛔ fails loud (`LW003`) | The content type is read from the file's bytes (finfo): the edge cannot sniff the content like PHP does, so the build stops (LW003). | M40 |
+| A `mimes` rule on an upload | ⛔ fails loud (`LW002`) | The `mimes` rule compares the extension the content sniffs (finfo): the edge has only the type the browser declared, so the build stops (LW002) instead of answering differently. | M40 |
+| The files bag as a method (`$request->files()`) | ⛔ fails loud (`LW002`) | In Laravel `$request->files` is a property (Symfony's FileBag), not a method: the build stops (LW002) and points at `$request->file()` / `$request->allFiles()`. | M40 |
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**40 constructs: 27 compile, 12 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**45 constructs: 30 compile, 14 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 

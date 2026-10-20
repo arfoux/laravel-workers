@@ -347,43 +347,126 @@ function headerBag(raw) {
 // Request
 // ---------------------------------------------------------------------------
 
-// An uploaded file (Illuminate\Http\UploadedFile): the metadata + the bytes.
-// The *storing* is not compiled yet (the compiled side fails loud on
-// `$request->file()`), so `store()` refuses instead of losing the file.
-function makeUploadedFile(desc) {
+// Symfony's MimeTypes map (the FIRST extension per mime type) - the extension
+// the edge can know: the type the browser declared. Laravel sniffs the
+// *content* (finfo); the edge cannot, so `store()`'s name is a documented
+// divergence (its name is random anyway).
+const MIME_EXTENSIONS = {
+  'text/plain': 'txt',
+  'text/html': 'html',
+  'text/csv': 'csv',
+  'text/xml': 'xml',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'application/pdf': 'pdf',
+  'application/zip': 'zip',
+  'application/gzip': 'gz',
+  'application/octet-stream': 'bin',
+};
+
+// Illuminate\Http\UploadedFile: the metadata + the bytes + the store.
+// The file object is what the compiled controller sees (`$request->file('x')`):
+//   - getClientOriginalName(): the basename (Symfony's File::getName()),
+//   - getClientOriginalExtension(): pathinfo(originalName, EXTENSION),
+//   - getClientMimeType(): the type the browser declared,
+//   - getSize(): the size in bytes,
+//   - isValid(): true (the edge received the whole part),
+//   - store()/storeAs(): the object store (the app's default disk).
+function makeUploadedFile(desc, storage, defaultDisk, randomString) {
   const filename = String(desc.filename == null ? '' : desc.filename);
-  const dot = filename.lastIndexOf('.');
-  return {
+  // Symfony's File::getName(): the name after the last '/' (the backslashes
+  // are separators too).
+  const slashed = filename.replace(/\\/g, '/');
+  const slash = slashed.lastIndexOf('/');
+  const originalName = slash === -1 ? slashed : slashed.slice(slash + 1);
+  // pathinfo($originalName, PATHINFO_EXTENSION): the part after the last dot
+  // ('.bashrc' -> 'bashrc', 'a.' -> '', 'noext' -> '').
+  const dot = originalName.lastIndexOf('.');
+  const extension = dot >= 0 ? originalName.slice(dot + 1) : '';
+  const bytes = desc.bytes;
+  const file = {
     __uploadedFile: true,
     name: desc.name,
-    filename,
+    filename: originalName,
     mime: desc.mime,
     size: desc.size,
-    bytes: desc.bytes,
+    bytes,
+    extension,
     getClientOriginalName() { return this.filename; },
-    getClientOriginalExtension() {
-      return dot > 0 ? filename.slice(dot + 1) : '';
-    },
+    getClientOriginalExtension() { return this.extension; },
     getClientMimeType() { return this.mime; },
     getSize() { return this.size; },
     isValid() { return true; },
+    // Illuminate\Http\UploadedFile::get(): the contents of the file. PHP
+    // returns a byte string; the edge returns the bytes (a string would
+    // re-encode them, so the compiled surface does not expose this method).
     get() { return this.bytes; },
-    store() {
-      throw new Error(
-        'the uploaded file cannot be stored: the compiled side does not compile the file upload yet'
-      );
+    // Illuminate\Http\UploadedFile::store(): the name is a random hash (the
+    // same 40 characters as Str::random) + the extension.
+    async store(path = '', options = {}) {
+      const hash = randomString(40);
+      const ext = MIME_EXTENSIONS[String(this.mime).toLowerCase()];
+      const name = ext ? hash + '.' + ext : hash;
+      return this.storeAs(path, name, options);
     },
-    storeAs() {
-      throw new Error(
-        'the uploaded file cannot be stored: the compiled side does not compile the file upload yet'
-      );
+    // Illuminate\Http\UploadedFile::storeAs(): the path on the disk (the
+    // default disk) and the name it is stored under.
+    async storeAs(path, name = null, options = {}) {
+      // `storeAs('avatars')` (no name) swaps the arguments: the name is the
+      // first argument, the path is empty and the options are the (array)
+      // second argument.
+      let p = path;
+      let n = name;
+      let o = options;
+      if (n === null || n === undefined || Array.isArray(n)) {
+        p = '';
+        o = n === null || n === undefined ? {} : n;
+        n = path;
+      }
+      // parseOptions(): a string is the disk name.
+      const opts = typeof o === 'string' ? { disk: o } : (o || {});
+      const disk = opts.disk || null;
+      if (disk && disk !== defaultDisk) {
+        throw new Error(
+          'the uploaded file cannot be stored on the disk "' + disk + '": the compiled side has one ' +
+            'object store (the app\'s default disk "' + (defaultDisk || 'local') + '"); a named disk needs ' +
+            'a bucket of its own (R2 asks for a credit card)'
+        );
+      }
+      if (!storage) {
+        throw new Error(
+          'the uploaded file cannot be stored: the compiled side has no object store - bind R2 (env.R2) ' +
+            'or D1 (env.DB)'
+        );
+      }
+      // FilesystemAdapter::putFileAs(): the path is trim($path.'/'.$name, '/').
+      const key = String(p).replace(/\/+$/, '') + '/' + String(n);
+      const trimmed = key.replace(/^\/+/, '').replace(/\/+$/, '');
+      const written = await storage.put(trimmed, this.bytes);
+      // The write failed -> false (Laravel's FilesystemAdapter::putFileAs).
+      return written ? trimmed : false;
     },
   };
+  // The file's data is not enumerable: PHP's UploadedFile has no public
+  // properties, so json_encode($request->all()) gives {"avatar":{}}.
+  for (const key of ['name', 'filename', 'mime', 'size', 'bytes', 'extension', '__uploadedFile']) {
+    Object.defineProperty(file, key, { value: file[key], enumerable: false, writable: true });
+  }
+  return file;
 }
 
 export function buildRequest(raw, options = {}) {
   const rawMethod = String((raw && raw.method) || 'GET').toUpperCase();
   const urlString = String((raw && raw.url) || '');
+  // The object store (the app's default disk) + the random source: the file
+  // object needs them to store the upload.
+  const storage = options.storage || null;
+  const defaultDisk = options.defaultDisk || null;
+  const randomString = options.randomString || ((n) => phpRandomString(n));
   let parsed = null;
   try {
     parsed = new URL(urlString);
@@ -466,6 +549,25 @@ export function buildRequest(raw, options = {}) {
     if (isJson && json !== null) return json;
     if (rawMethod === 'GET' || rawMethod === 'HEAD') return query;
     return post;
+  };
+
+  // The uploaded files: the descriptors become the file objects (a field with
+  // `name[]` is an array of them).
+  const makeFile = (desc) => {
+    if (Array.isArray(desc)) return desc.map(makeFile);
+    // A descriptor of one part (`__part`) becomes a file object; a container
+    // (the map of a nested field name) is walked.
+    if (desc && typeof desc === 'object' && !desc.__uploadedFile && !desc.__part) {
+      const out = {};
+      for (const key of Object.keys(desc)) out[key] = makeFile(desc[key]);
+      return out;
+    }
+    return makeUploadedFile(desc, storage, defaultDisk, randomString);
+  };
+  const fileObjects = () => {
+    const out = {};
+    for (const name of Object.keys(files)) out[name] = makeFile(files[name]);
+    return out;
   };
 
   // InteractsWithData support (see phpKeyList/phpFilterVarBoolean above).
@@ -591,24 +693,23 @@ export function buildRequest(raw, options = {}) {
       return dataGet(post, key, def);
     },
     // The uploaded files (a multipart/form-data body).
+    // Illuminate\Http\Request::file(): data_get($this->allFiles(), $key, $default).
     file(key = null, def = null) {
-      if (key === null) return files;
-      if (!Object.prototype.hasOwnProperty.call(files, key)) return def;
-      return makeUploadedFile(files[key]);
+      if (key === null) return fileObjects();
+      const found = dataGet(fileObjects(), key, undefined);
+      return found === undefined ? def : found;
     },
-    files(key = null, def = null) {
-      if (key === null) return Object.values(files);
-      const out = [];
-      for (const name of Object.keys(files)) {
-        if (name === key || name.startsWith(key + '[')) out.push(makeUploadedFile(files[name]));
-      }
-      return out.length ? out : def;
-    },
+    // allFiles(): every uploaded file (the files of a field with `name[]` are
+    // an array).
     allFiles() {
-      return Object.values(files).map(makeUploadedFile);
+      return fileObjects();
     },
+    // Illuminate\Http\Request::hasFile(): the field holds a valid file.
     hasFile(key) {
-      return Object.prototype.hasOwnProperty.call(files, key);
+      const found = dataGet(fileObjects(), key, undefined);
+      if (found === undefined) return false;
+      const list = Array.isArray(found) ? found : [found];
+      return list.some((f) => f && f.isValid());
     },
     json(key = null, def = null) {
       if (key === null) return json;
@@ -652,7 +753,10 @@ export function buildRequest(raw, options = {}) {
       return u && typeof u.getAuthIdentifier === 'function' ? u.getAuthIdentifier() : null;
     },
     all() {
-      return Object.assign({}, inputSource());
+      // Illuminate\Http\Request::all(): the input + the uploaded files (the
+      // input wins on a key that is in both).
+      const out = Object.assign({}, fileObjects());
+      return Object.assign(out, inputSource());
     },
     // --- InteractsWithData (Illuminate\Support\Traits\InteractsWithData) ----
     // `has`/`all` above predate this block; the accessors below mirror the trait
@@ -1160,6 +1264,12 @@ async function renderException(error, request, ctx) {
     // RedirectResponse::withInput() — flash everything except Handler::$dontFlash.
     const input = request.all();
     for (const key of DEFAULT_DONT_FLASH) delete input[key];
+    // RedirectResponse::removeFilesFromInput(): the uploaded files are not
+    // flashed (they cannot be put back into a form).
+    for (const key of Object.keys(input)) {
+      const value = input[key];
+      if (value && typeof value === 'object' && value.__uploadedFile) delete input[key];
+    }
     ctx.store.flashInput(input);
 
     // RedirectResponse::withErrors($errors, $request->input('_error_bag', $bag)).
@@ -1302,7 +1412,15 @@ export async function handleHttp(raw, options = {}) {
   if (!appKey) throw new HttpError('app.key is missing from config.generated.mjs', 500);
 
   const routeRegistry = makeRouteRegistry(table);
-  const request = buildRequest(raw, { clientIp: options.clientIp });
+  const request = buildRequest(raw, {
+    clientIp: options.clientIp,
+    // The uploaded file stores itself: the object store + the app's default
+    // disk (the name of the disk in `filesystems.default`).
+    storage: options.storage || null,
+    defaultDisk: config['filesystems.default'] || null,
+    // Str::random(40) (the hash of `store()`'s name).
+    randomString: options.strRandom || ((n) => phpRandomString(n)),
+  });
   // $request->validate() / validateWithBag() — compiled controllers call these
   // through rt.request(); the rule engine gets the D1 binding for unique/exists.
   installValidation(request, { db });

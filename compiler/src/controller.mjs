@@ -17,6 +17,25 @@ const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositio
 
 const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
+// The validation rules that read the file's *content* type (finfo): the edge
+// has only the type the browser declared, so the verdict would differ from
+// PHP's. The build stops instead of answering differently at the edge.
+const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes', 'image', 'dimensions']);
+
+// The name of a content-mime rule in a dumped rule set ('mimes:png' ->
+// 'mimes'), or null when the rule set has none.
+function contentMimeRuleOf(rules) {
+  const list = Array.isArray(rules) ? rules : [rules];
+  for (const raw of list) {
+    if (typeof raw !== 'string') continue;
+    for (const token of raw.split('|')) {
+      const name = String(token).split(':')[0].trim();
+      if (CONTENT_MIME_RULES.has(name)) return name;
+    }
+  }
+  return null;
+}
+
 const TYPE_MAP = {
   string: 'string',
   int: 'int',
@@ -567,6 +586,23 @@ export function emitController(source, methodName, meta = {}) {
         )
       );
       continue;
+    }
+    // The dumped rules: a rule that reads the file's *content* type (finfo)
+    // cannot be answered like PHP at the edge (the edge has only the type the
+    // browser declared), so the build stops and names the rule.
+    for (const [field, rules] of Object.entries(dumped.rules || {})) {
+      const name = contentMimeRuleOf(rules);
+      if (!name) continue;
+      errors.push(
+        lwErr(
+          'LW002',
+          `the ${name} validation rule on "${field}" is not compiled — it reads the file's *content* type (finfo) and ` +
+            `the edge cannot sniff the content like PHP does: use the file rule with max (the size in kilobytes) ` +
+            `instead, or check the extension in the controller; ` + PORT_HINT,
+          null,
+          PORT_HINT
+        )
+      );
     }
     formRequests.set(vname(p.name), dumped);
   }

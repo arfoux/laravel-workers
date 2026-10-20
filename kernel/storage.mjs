@@ -161,6 +161,8 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
   // object handle — the compiled facade needs the text. A missing file is not
   // null: Laravel's FilesystemAdapter::get() throws UnableToReadFile (the
   // default `throwsExceptions`), so the compiled side fails loud too.
+  // A binary object (the D1 blob store keeps the bytes base64-encoded) is
+  // decoded back to its bytes and read as UTF-8 text.
   async function getText(key) {
     const obj = await base.get(key);
     if (obj === null || obj === undefined) {
@@ -168,7 +170,21 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     }
     if (typeof obj.text === 'function') return obj.text();
     if (typeof obj.body === 'string') return obj.body;
+    if (obj.body instanceof Uint8Array) return new TextDecoder('utf-8').decode(obj.body);
     if (obj.body !== undefined && obj.body !== null) return String(obj.body);
+    return null;
+  }
+
+  // The bytes of an object (a binary file); the compiled facade uses it for
+  // the uploaded files.
+  async function getBytes(key) {
+    const obj = await base.get(key);
+    if (obj === null || obj === undefined) {
+      throw new Error('storage get: the file "' + key + '" does not exist');
+    }
+    if (typeof obj.body === 'string') return new TextEncoder().encode(obj.body);
+    if (obj.body instanceof Uint8Array) return obj.body;
+    if (obj.body !== undefined && obj.body !== null) return new TextEncoder().encode(String(obj.body));
     return null;
   }
 
@@ -204,7 +220,7 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     return expected === sig;
   }
 
-  return Object.assign({}, base, { temporaryUrl, verifyTemporaryUrl, getText, exists });
+  return Object.assign({}, base, { temporaryUrl, verifyTemporaryUrl, getText, getBytes, exists });
 }
 
 export function createStorage({ r2, d1, secret } = {}) {

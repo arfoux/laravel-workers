@@ -5,9 +5,61 @@
 // is supplied (opts.db) or an explicit resolver (opts.unique / opts.exists).
 // Unknown rules fail loud instead of silently passing.
 
-const DEFAULT_MESSAGES = (field, rule, param) => {
+// The messages of the size rules for an uploaded file (Laravel 13's
+// `validation.max.file` etc.): the size of a file is in kilobytes.
+const FILE_SIZE_MESSAGES = {
+  max: (field, param) => `The ${field} field must not be greater than ${param} kilobytes.`,
+  min: (field, param) => `The ${field} field must be at least ${param} kilobytes.`,
+  size: (field, param) => `The ${field} field must be ${param} kilobytes.`,
+  between: (field, param) => {
+    const [a, b] = String(param).split(',');
+    return `The ${field} field must be between ${a} and ${b} kilobytes.`;
+  },
+};
+
+// An uploaded file (the edge's file object).
+function isUploadedFileValue(value) {
+  return !!(value && typeof value === 'object' && value.__uploadedFile === true);
+}
+
+// The size of an uploaded file in kilobytes, exactly as Laravel's
+// `(string) ($file->getSize() / 1024)`: a decimal string (the division by a
+// power of two is exact, so the decimal expansion is exact too).
+function fileSizeKb(size) {
+  const bytes = BigInt(Math.trunc(Number(size) || 0));
+  const whole = bytes / 1024n;
+  const frac = (bytes % 1024n) * 9765625n; // 5^10: the /10^10 remainder
+  return whole.toString() + '.' + frac.toString().padStart(10, '0');
+}
+
+// BigNumber::of($a)->isLessThanOrEqualTo($b) for two decimal strings.
+function compareDecimal(a, b) {
+  const parse = (value) => {
+    const str = String(value).trim();
+    const dot = str.indexOf('.');
+    const int = (dot === -1 ? str : str.slice(0, dot)) || '0';
+    const frac = dot === -1 ? '' : str.slice(dot + 1);
+    return { int, frac };
+  };
+  const A = parse(a);
+  const B = parse(b);
+  const ai = BigInt(A.int);
+  const bi = BigInt(B.int);
+  if (ai !== bi) return ai < bi ? -1 : 1;
+  const len = Math.max(A.frac.length, B.frac.length);
+  const af = BigInt((A.frac + '0'.repeat(len)).slice(0, len) || '0');
+  const bf = BigInt((B.frac + '0'.repeat(len)).slice(0, len) || '0');
+  if (af === bf) return 0;
+  return af < bf ? -1 : 1;
+}
+
+const DEFAULT_MESSAGES = (field, rule, param, type = null) => {
+  // The size rules pick the message by the attribute's type (Laravel's
+  // getSizeMessage): a file's size is in kilobytes.
+  if (type === 'file' && FILE_SIZE_MESSAGES[rule]) return FILE_SIZE_MESSAGES[rule](field, param);
   const t = {
     required: `The ${field} field is required.`,
+    file: `The ${field} field must be a file.`,
     string: `The ${field} must be a string.`,
     integer: `The ${field} must be an integer.`,
     numeric: `The ${field} must be a number.`,
@@ -129,7 +181,12 @@ const KNOWN_RULES = new Set([
   'gt', 'gte', 'lt', 'lte', 'distinct',
   'doesnt_start_with', 'doesnt_end_with', 'list', 'required_array_keys', 'array_keys',
   'in_array', 'decimal', 'timezone',
+  'file',
 ]);
+// The validation rules that need the file's *content* type (finfo): the edge
+// cannot sniff the content like PHP does, so they are not compiled (the build
+// stops with LW002 and names the rule).
+const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes', 'image', 'dimensions']);
 // PHP `is_array()`: associative arrays arrive as plain JS objects, so an
 // `Array.isArray()` check would miss `['string' => '...']` message maps.
 const isPhpArray = (value) => typeof value === 'object' && value !== null;
@@ -318,6 +375,16 @@ export class Validator {
       else arr = [];
       const parsed = arr.map(parseRuleToken);
       for (const r of parsed) {
+        // The rules that read the file's *content* type (finfo): the edge has
+        // only the type the browser declared, so the verdict would differ from
+        // PHP's. They fail loud instead of answering differently.
+        if (CONTENT_MIME_RULES.has(r.name)) {
+          throw new Error(
+            'the ' + r.name + ' validation rule is not compiled: it reads the file\'s *content* type (finfo) and the edge ' +
+              'cannot sniff the content like PHP does - use the file rule with max (the size in kilobytes) instead, ' +
+              'or check the extension in the controller'
+          );
+        }
         if (!KNOWN_RULES.has(r.name)) {
           throw new Error('unknown validation rule: ' + r.name);
         }
@@ -630,6 +697,8 @@ export class Validator {
     const p = rule.param;
     switch (rule.name) {
       case 'string': return typeof value === 'string';
+      // Illuminate\Validation\Validator::validateFile(): a valid file instance.
+      case 'file': return isUploadedFileValue(value) && value.isValid();
       case 'integer': return isIntegerValue(value);
       case 'numeric': return isNumericValue(value);
       case 'boolean': return isBooleanLike(value);
@@ -725,28 +794,29 @@ export class Validator {
         return true;
       }
       case 'min': {
-        const n = Number(p);
         const size = this._size(value, hasNumeric);
         if (size === null) return false;
-        return size >= n;
+        if (typeof size === 'string') return compareDecimal(size, p) >= 0;
+        return size >= Number(p);
       }
       case 'max': {
-        const n = Number(p);
         const size = this._size(value, hasNumeric);
         if (size === null) return false;
-        return size <= n;
+        if (typeof size === 'string') return compareDecimal(size, p) <= 0;
+        return size <= Number(p);
       }
       case 'between': {
-        const [a, b] = String(p).split(',').map(Number);
+        const [a, b] = String(p).split(',');
         const size = this._size(value, hasNumeric);
         if (size === null) return false;
-        return size >= a && size <= b;
+        if (typeof size === 'string') return compareDecimal(size, a) >= 0 && compareDecimal(size, b) <= 0;
+        return size >= Number(a) && size <= Number(b);
       }
       case 'size': {
-        const n = Number(p);
         const size = this._size(value, hasNumeric);
         if (size === null) return false;
-        return size === n;
+        if (typeof size === 'string') return compareDecimal(size, p) === 0;
+        return size === Number(p);
       }
       case 'in': {
         const list = String(p).split(',');
@@ -829,6 +899,10 @@ export class Validator {
   }
 
   _size(value, hasNumeric) {
+    // An uploaded file: the size is in kilobytes (Laravel's
+    // `(string) ($file->getSize() / 1024)`) and the comparison is exact
+    // (BigNumber), so the size is a decimal string here.
+    if (isUploadedFileValue(value)) return fileSizeKb(value.getSize());
     if (hasNumeric && isNumericValue(value)) return Number(value);
     if (typeof value === 'string') return value.length;
     if (Array.isArray(value)) return value.length;
@@ -885,13 +959,14 @@ export class Validator {
   }
 
   // Illuminate\Validation\Concerns\FormatsMessages::getAttributeType(): the
-  // numeric rules win over array/list; files are not supported at the edge,
-  // so everything else is a string.
+  // numeric rules win over array/list; an uploaded file is a file; everything
+  // else is a string.
   _attributeType(field) {
     const rules = this.parsed[field] || [];
     if (rules.some((r) => NUMERIC_RULES.has(r.name))) return 'numeric';
     if (rules.some((r) => ARRAY_RULES.has(r.name))) return 'array';
     const value = this.get(field);
+    if (isUploadedFileValue(value)) return 'file';
     if (value && typeof value === 'object' && typeof File !== 'undefined' && value instanceof File) return 'file';
     return 'string';
   }
@@ -899,13 +974,14 @@ export class Validator {
   _addError(field, rule, param) {
     const display = this._displayName(field);
     let msg = this._customMessage(field, rule);
+    const type = this._attributeType(field);
     // getInlineMessage(): a size rule's array message is keyed by attribute type.
     if (isPhpArray(msg) && SIZE_RULES.has(phpSnake(rule))) {
-      msg = msg[this._attributeType(field)] ?? null;
+      msg = msg[type] ?? null;
     }
     // Laravel checks `is_null($inlineMessage)`, so an empty custom message is
     // kept (it becomes an empty error string), unlike a JS truthiness check.
-    if (msg == null) msg = DEFAULT_MESSAGES(display, rule, param);
+    if (msg == null) msg = DEFAULT_MESSAGES(display, rule, param, type);
     else msg = replaceAttributePlaceholder(msg, display);
     if (!this._errors[field]) this._errors[field] = [];
     this._errors[field].push(msg);

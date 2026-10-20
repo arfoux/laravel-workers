@@ -248,6 +248,36 @@ export default {
       expectBody: 'hello-shadow|yes|yes|yes|no|hello-disk|yes|yes|yes|no',
     },
     {
+      // The upload (a multipart body): the file's metadata, the store (the
+      // app's default disk) and the bytes that come back from it. The name is
+      // fixed (`storeAs`), so the path is the same on both sides - the random
+      // name of `store()` cannot be compared byte-wise.
+      label: 'POST /upload-demo (the upload)',
+      method: 'POST',
+      uri: '/upload-demo',
+      jar: true,
+      multipart: {
+        fields: { _token: '@token', title: 'Shadow upload' },
+        files: [{ name: 'avatar', filename: 'shadow.txt', type: 'text/plain', content: 'hello file' }],
+      },
+      expectBody: 'shadow.txt|txt|text/plain|10|uploads/shadow-upload.txt|10|hello file',
+    },
+    {
+      // The size rule of a file is in kilobytes (Laravel's
+      // `(string) ($file->getSize() / 1024)`): the file is 10 bytes, so the
+      // 0 KB limit fails. The JSON path answers 422 with the message.
+      label: 'POST /upload-strict-demo (the file is too big)',
+      method: 'POST',
+      uri: '/upload-strict-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      multipart: {
+        fields: { _token: '@token', title: 'Shadow upload' },
+        files: [{ name: 'avatar', filename: 'shadow.txt', type: 'text/plain', content: 'hello file' }],
+      },
+      expectStatus: 422,
+    },
+    {
       // The helper verbs: `today()` follows the request clock (the oracle
       // freezes Carbon, so both sides answer the same date), the abort
       // helpers are no-ops here, and `Log::` goes to the platform log.

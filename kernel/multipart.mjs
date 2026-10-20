@@ -62,7 +62,14 @@ export function parseMultipart(bytes, contentType) {
     }
     if (name !== null) {
       if (filename !== null) {
-        files[name] = { name, filename, mime, bytes: content, size: content.length };
+        setFile(files, name, {
+          name,
+          filename,
+          mime,
+          bytes: content,
+          size: content.length,
+          __part: true,
+        });
       } else {
         fields[name] = dec.decode(content);
       }
@@ -70,6 +77,71 @@ export function parseMultipart(bytes, contentType) {
     pos = next + delim.length;
   }
   return { fields, files };
+}
+
+// PHP's $_FILES naming: 'photos[]' is an append, 'photos[0]' is an index,
+// 'a[b]' is a key. The parser writes the files into the same shape.
+function setFile(files, name, desc) {
+  const m = /^([^[\]]*)((?:\[[^[\]]*\])*)$/.exec(name);
+  const base = m ? m[1] : name;
+  const brackets = m ? m[2] : '';
+  if (!brackets) {
+    if (base === '') files[''] = desc;
+    else files[base] = desc;
+    return;
+  }
+  // The path: the base + every bracket key ('' means "append").
+  const keys = brackets.slice(1, -1).split('][');
+  let node = files;
+  let container = base;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (container === '') {
+      container = '0';
+      if (!node[container] || typeof node[container] !== 'object') node[container] = [];
+    }
+    let child = node[container];
+    if (!child || typeof child !== 'object' || child.__uploadedFile || child.__part) {
+      // The next key decides the shape: '' or a number is a list, else a map.
+      const next = keys[i + 1];
+      child = next === undefined || next === '' || /^\d+$/.test(next) ? [] : {};
+      node[container] = child;
+    }
+    if (Array.isArray(child)) {
+      if (key === '') {
+        // The last segment: append the file.
+        if (i === keys.length - 1) {
+          child.push(desc);
+          return;
+        }
+        const created = [];
+        child.push(created);
+        node = created;
+        container = '';
+        continue;
+      }
+      const idx = Number(key);
+      if (!Number.isInteger(idx) || idx < 0) continue;
+      if (i === keys.length - 1) {
+        child[idx] = desc;
+        return;
+      }
+      if (!child[idx] || typeof child[idx] !== 'object') child[idx] = [];
+      node = child[idx];
+      container = '';
+      continue;
+    }
+    if (i === keys.length - 1) {
+      child[key] = desc;
+      return;
+    }
+    const next = keys[i + 1];
+    if (!child[key] || typeof child[key] !== 'object') {
+      child[key] = next === '' || /^\d+$/.test(next) ? [] : {};
+    }
+    node = child[key];
+    container = key;
+  }
 }
 
 export default { parseMultipart };

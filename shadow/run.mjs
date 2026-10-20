@@ -15,9 +15,14 @@
 //
 // A scenario file exports { name, steps, fixtures?, user? }:
 //   steps[]    { label, method, uri, jar?, headers?, form?, json?, query?,
-//                expect?: 'match' | 'diverges', why? }
+//                multipart?, expect?: 'match' | 'diverges', why? }
 //   fixtures[] { sql } — rows inserted before the steps (both sides see them)
 //   user       { id, email, password, password_hash? } — the seeded auth user
+//
+// A step may carry a multipart body:
+//   multipart  { fields?: { name: value }, files?: [{ name, filename?, type?, content }] }
+//   (`content` is the file's bytes as a UTF-8 string; `type` defaults to
+//   application/octet-stream, `filename` to the field's name.)
 //
 // Exit code 0 = every step that is expected to match, matched. A step marked
 // `expect: 'diverges'` is reported as a known divergence (it shrinks the
@@ -37,6 +42,9 @@ const BASE = 'http://localhost';
 const FREEZE_S = 1767225600; // 2026-01-01T00:00:00Z
 const USER_AGENT = 'laravel-workers-shadow/1.0';
 const CLIENT_IP = '127.0.0.1';
+// The multipart boundary: a fixed string, never random — the harness must be
+// reproducible (the same request, byte for byte, on every run).
+const MULTIPART_BOUNDARY = '----lwShadowBoundary';
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -198,6 +206,7 @@ function runOracle(appRoot, scenario, dbPath, seedPath) {
     ...(s.form ? { form: s.form } : {}),
     ...(s.json !== undefined ? { json: s.json } : {}),
     ...(s.query ? { query: s.query } : {}),
+    ...(s.multipart ? { multipart: s.multipart } : {}),
   }));
   const res = spawnSync(PHP, [ORACLE], {
     input: JSON.stringify({
@@ -225,6 +234,50 @@ function runOracle(appRoot, scenario, dbPath, seedPath) {
   const at = res.stdout.lastIndexOf(marker);
   const payload = at === -1 ? res.stdout : res.stdout.slice(at + marker.length);
   return JSON.parse(payload);
+}
+
+// ---------------------------------------------------------------------------
+// The multipart body
+// ---------------------------------------------------------------------------
+
+// A multipart/form-data body, as raw bytes: the kernel parses a multipart
+// body only when the body is bytes. The layout is the browser's — CRLF line
+// endings, the plain fields first, then the files.
+function buildMultipartBody(multipart) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const push = (text) => chunks.push(enc.encode(text));
+  const fields = (multipart && multipart.fields) || {};
+  const files = (multipart && multipart.files) || [];
+  // The plain form fields.
+  for (const [name, value] of Object.entries(fields)) {
+    push(`--${MULTIPART_BOUNDARY}\r\n`);
+    push(`Content-Disposition: form-data; name="${name}"\r\n\r\n`);
+    push(String(value ?? ''));
+    push('\r\n');
+  }
+  // The uploaded files: the content is the file's bytes, as they are.
+  for (const file of files) {
+    const name = String(file?.name ?? '');
+    const filename = String(file?.filename ?? name);
+    const type = String(file?.type || 'application/octet-stream');
+    push(`--${MULTIPART_BOUNDARY}\r\n`);
+    push(`Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n`);
+    push(`Content-Type: ${type}\r\n\r\n`);
+    push(String(file?.content ?? ''));
+    push('\r\n');
+  }
+  push(`--${MULTIPART_BOUNDARY}--\r\n`);
+  // One buffer: the body the worker receives.
+  let length = 0;
+  for (const chunk of chunks) length += chunk.length;
+  const body = new Uint8Array(length);
+  let at = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, at);
+    at += chunk.length;
+  }
+  return body;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +380,16 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
       body = typeof step.json === 'string' ? step.json : JSON.stringify(step.json);
       headers['content-type'] = 'application/json';
       headers.accept = 'application/json';
+    }
+    if (step.multipart) {
+      // A multipart body: the raw bytes (the kernel parses a multipart body
+      // only when the body is bytes) and the boundary that goes with them.
+      const fields = {};
+      for (const [k, v] of Object.entries(step.multipart.fields || {})) {
+        fields[k] = v === '@token' ? lastToken : v;
+      }
+      body = buildMultipartBody({ ...step.multipart, fields });
+      headers['content-type'] = `multipart/form-data; boundary=${MULTIPART_BOUNDARY}`;
     }
 
     // The query string is part of the request (the oracle sets it on the

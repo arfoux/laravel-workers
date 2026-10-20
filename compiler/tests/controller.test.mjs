@@ -1201,7 +1201,7 @@ test('emit: Cache::tags() fails loud with the store reason (LW002)', () => {
   assert.match(res.errors[0].message, /does not support tagging/);
 });
 
-test('emit: an uploaded file fails loud with the object-store instructions (LW002)', () => {
+test('emit: an uploaded file compiles (the file object + the object store)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
     'use Illuminate\\Http\\Request;\n' +
@@ -1209,17 +1209,98 @@ test('emit: an uploaded file fails loud with the object-store instructions (LW00
     '    public function store(Request $request)\n' +
     '    {\n' +
     "        $file = $request->file('avatar');\n" +
+    "        $path = $file->storeAs('avatars', 'a.txt');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /v_file = v_request\.file\("avatar"\)/);
+  // The store is async at the edge: the call is awaited.
+  assert.match(res.code, /\(await v_file\.storeAs\("avatars", "a\.txt"\)\)/);
+});
+
+test('emit: the chained upload compiles ($request->file("x")->store())', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    "        $path = $request->file('avatar')->store('avatars');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /\(await v_request\.file\("avatar"\)\.store\("avatars"\)\)/);
+});
+
+test('emit: a file method the edge cannot answer fails loud (LW003)', () => {
+  // getMimeType() reads the file's *content* type (finfo): the edge cannot
+  // sniff the content like PHP does.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    "        $file = $request->file('avatar');\n" +
+    "        $mime = $file->getMimeType();\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /getMimeType/);
+  assert.match(res.errors[0].message, /finfo/);
+});
+
+test('emit: $request->files() fails loud (it is a property in Laravel)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    '        $files = $request->files();\n' +
     "        return response('ok');\n" +
     '    }\n' +
     '}\n';
   const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
-  // the message says what to do: the object store (R2 asks for a credit card,
-  // the free path is the D1 blob store) or remove/disable the upload.
-  assert.match(res.errors[0].message, /credit card/);
-  assert.match(res.errors[0].message, /r2_buckets/);
-  assert.match(res.errors[0].message, /remove\/disable the upload/);
+  assert.match(res.errors[0].message, /FileBag/);
+});
+
+test('emit: a FormRequest with a mimes rule fails loud (the content type cannot be sniffed)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Http\\Requests\\UploadRequest;\n' +
+    'class C {\n' +
+    '    public function store(UploadRequest $request)\n' +
+    '    {\n' +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/x',
+    routeParams: [],
+    models: [],
+    views: [],
+    formRequests: {
+      'App\\Http\\Requests\\UploadRequest': {
+        rules: { avatar: ['required', 'file', 'mimes:png,jpg'] },
+        messages: {},
+        attributes: {},
+      },
+    },
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /mimes/);
+  assert.match(res.errors[0].message, /finfo/);
 });
 
 test('emit: a fully-qualified static call resolves to the global class', () => {

@@ -11,7 +11,8 @@
 // Usage: php tools/php-shadow-oracle.php
 //   stdin:  {"app_root":"...","db_path":"...","freeze_ms":<int>,
 //            "migrate":true,"user":{...},"fixtures":[{"sql":"..."}],
-//            "steps":[{"label","method","uri","jar","headers","form","json","query"}]}
+//            "steps":[{"label","method","uri","jar","headers","form","json","query",
+//                      "multipart"}]}
 //   stdout: {"app":...,"user":{...},"steps":[{"label","status","headers",
 //            "set_cookie","body","session_rows"}]}
 //
@@ -22,6 +23,9 @@
 //   form             form fields (map) — `@token` resolves to the CSRF token
 //   json             a JSON request body
 //   query            extra query parameters (map)
+//   multipart        a multipart/form-data body: { fields?: {name: value},
+//                    files?: [{ name, filename?, type?, content }] } — the
+//                    fields are the request body bag, the files are uploaded
 //   fixtures         SQL rows inserted before the steps (both sides see them)
 //
 // The schema comes from the app's own migrations, so the oracle and the
@@ -47,6 +51,10 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+
+// The multipart boundary: the same fixed string the compiled side uses, so
+// both sides describe the very same request.
+const LW_MULTIPART_BOUNDARY = '----lwShadowBoundary';
 
 $app = require $appRoot . '/bootstrap/app.php';
 
@@ -284,8 +292,47 @@ function lwDecryptCookie($encrypter, string $name, ?string $value)
     }
 }
 
+/**
+ * The uploaded files of a multipart step: each file's content is written to a
+ * temporary file, which is then handed to the request as an uploaded file.
+ *
+ * @param  array  $multipart  the step's multipart
+ * @param  array  $tmpFiles   the temporary files, to be deleted after the run
+ * @return array  the request's files bag
+ */
+function lwUploadedFiles(array $multipart, array &$tmpFiles): array
+{
+    $files = [];
+    foreach (($multipart['files'] ?? []) as $file) {
+        if (!is_array($file)) continue;
+        $name = (string) ($file['name'] ?? '');
+        if ($name === '') continue;
+        $filename = (string) ($file['filename'] ?? $name);
+        $type = (string) ($file['type'] ?? 'application/octet-stream');
+        if ($type === '') $type = 'application/octet-stream';
+        $content = $file['content'] ?? '';
+        if (!is_string($content)) {
+            $content = is_scalar($content) ? (string) $content : '';
+        }
+        $tmp = tempnam(sys_get_temp_dir(), 'lw');
+        if ($tmp === false) {
+            fwrite(STDERR, "php-shadow-oracle: could not create a temporary file\n");
+            exit(6);
+        }
+        file_put_contents($tmp, $content);
+        $tmpFiles[] = $tmp;
+        // The Laravel UploadedFile (not the Symfony one): Laravel's
+        // convertUploadedFiles() keeps this very instance (createFromBase
+        // returns it unchanged), so the test flag survives and isValid() is
+        // true without a real HTTP upload.
+        $files[$name] = new \Illuminate\Http\UploadedFile($tmp, $filename, $type, null, true);
+    }
+    return $files;
+}
+
 $jar = [];
 $lastToken = null;
+$tmpFiles = [];
 $out = [
     'app' => realpath($appRoot),
     'db_path' => $dbPath,
@@ -324,18 +371,33 @@ foreach (($input['steps'] ?? []) as $step) {
     $params = isset($step['form']) ? lwResolve($step['form'], $jar, $lastToken) : [];
     $query = isset($step['query']) ? lwResolve($step['query'], $jar, $lastToken) : [];
     $content = null;
+    $files = [];
     if (isset($step['json'])) {
         $content = is_string($step['json']) ? $step['json'] : json_encode($step['json']);
         $server['CONTENT_TYPE'] = 'application/json';
         $server['HTTP_ACCEPT'] = 'application/json';
     }
+    // A multipart body: the fields are the request body bag (exactly like
+    // `form`), the files are the uploaded files.
+    $multipart = isset($step['multipart']) && is_array($step['multipart']) ? $step['multipart'] : null;
+    if ($multipart !== null) {
+        $fields = isset($multipart['fields']) && is_array($multipart['fields']) ? $multipart['fields'] : [];
+        $params = lwResolve($fields, $jar, $lastToken);
+        $files = lwUploadedFiles($multipart, $tmpFiles);
+        $server['CONTENT_TYPE'] = 'multipart/form-data; boundary=' . LW_MULTIPART_BOUNDARY;
+    }
 
-    $request = Request::create($uri, $method, $params, $cookies, [], $server, $content);
+    $request = Request::create($uri, $method, $params, $cookies, $files, $server, $content);
     if (!empty($query)) {
         $request->query->replace($query);
     }
     foreach ($headers as $h => $v) {
         $request->headers->set($h, $v);
+    }
+    if ($multipart !== null) {
+        // The multipart content type wins over a step's own header — the
+        // compiled side sets it the same way.
+        $request->headers->set('content-type', 'multipart/form-data; boundary=' . LW_MULTIPART_BOUNDARY);
     }
 
     try {
@@ -447,6 +509,11 @@ foreach (($input['steps'] ?? []) as $step) {
         $store->setId(null);
     }
     app()->forgetInstance('request');
+}
+
+// The temporary files (the uploaded files' content) are not needed anymore.
+foreach ($tmpFiles as $tmp) {
+    @unlink($tmp);
 }
 
 $json = json_encode($out);

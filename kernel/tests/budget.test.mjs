@@ -114,6 +114,44 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(p95 <= 5, `storage p95 ${p95}`);
   }
 
+  // The upload path: the multipart body is parsed and the file is written to
+  // the object store (the D1/R2 round-trip is measured in the shadow harness;
+  // here the store is the in-memory one).
+  {
+    const { buildRequest } = await import('../http.mjs');
+    const { createStorage } = await import('../storage.mjs');
+    const storage = createStorage({});
+    const boundary = '----lwBudgetBoundary';
+    const body =
+      `--${boundary}\r\n` +
+      'Content-Disposition: form-data; name="title"\r\n\r\n' +
+      'budget\r\n' +
+      `--${boundary}\r\n` +
+      'Content-Disposition: form-data; name="avatar"; filename="a.txt"\r\n' +
+      'Content-Type: text/plain\r\n\r\n' +
+      'hello file\r\n' +
+      `--${boundary}--\r\n`;
+    const raw = {
+      method: 'POST',
+      url: 'http://localhost/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      body: new TextEncoder().encode(body),
+    };
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      const req = buildRequest(raw, { storage, defaultDisk: 'local' });
+      const file = req.file('avatar');
+      file.getClientOriginalName();
+      file.getSize();
+      await file.storeAs('uploads', 'a.txt');
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `upload avg ${avg}`);
+    assert.ok(p95 <= 5, `upload p95 ${p95}`);
+  }
+
   // rt.cache() facade (controller-facing Cache::* surface over the D1 store).
   const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
   const fakeCache = { async get() { return 1; }, async put() {}, async forget() {} };
