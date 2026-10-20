@@ -61,6 +61,8 @@ function probe(c) {
     views: [],
     // The dumped Gate metadata (the policies the check reads).
     policies: c.policies || {},
+    // The compiled classes (the event classes + their listeners).
+    classes: c.classes || {},
     // The app's object store: the default disk + the configured disk names.
     storage: c.storage || { defaultDisk: 'local', disks: ['local', 'public'] },
   });

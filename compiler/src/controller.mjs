@@ -618,6 +618,10 @@ export function emitController(source, methodName, meta = {}) {
     // The dumped policies (the Gate check reads them: the abilities, the guest
     // rules, the global Gate callbacks).
     policies: meta.policies && typeof meta.policies === 'object' ? meta.policies : {},
+    // The compiled classes (the event classes + their listeners): `new X(...)`
+    // and the event dispatch.
+    classes: (meta.classes && meta.classes.fqcns) || [],
+    classFqcns: (meta.classes && meta.classes.aliases) || {},
     // The app's object store (the default disk's name + the configured disks):
     // only the default disk compiles.
     storage: meta.storage && typeof meta.storage === 'object' ? meta.storage : {},
@@ -698,6 +702,12 @@ export function emitController(source, methodName, meta = {}) {
   if (emitted.usedGate) {
     lines.push("import { policies as LW_POLICIES } from '../policies.generated.mjs';");
   }
+  // The event dispatch reads the compiled classes (the listeners).
+  if (emitted.usedEvents) {
+    lines.push(
+      "import { classes as LW_CLASSES, eventListeners as LW_EVENT_LISTENERS } from '../classes.generated.mjs';"
+    );
+  }
   lines.push('');
   lines.push('const VIEWS = {');
   for (const e of viewEntries) lines.push(e + ',');
@@ -712,6 +722,10 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    views: VIEWS,');
   if (emitted.usedGate) {
     lines.push('    policies: LW_POLICIES,');
+  }
+  if (emitted.usedEvents) {
+    lines.push('    classes: LW_CLASSES,');
+    lines.push('    eventListeners: LW_EVENT_LISTENERS,');
   }
   lines.push("    origin: (function () { var r = ctx && ctx.request; if (!r) return null; var h = (typeof r.host === 'function') ? r.host() : r.host; if (!h) return null; if (typeof r.schemeAndHttpHost === 'function') return r.schemeAndHttpHost(); var s = (typeof r.scheme === 'function') ? r.scheme() : 'https'; return s + '://' + h; })(),");
   lines.push('    routeMap: LW_ROUTE_MAP,');

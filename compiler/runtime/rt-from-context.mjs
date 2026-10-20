@@ -424,6 +424,58 @@ export function buildRt(context, opts = {}) {
     };
   };
 
+  // ---- rt.newClass / rt.event: the compiled classes (the event listeners) ----
+  // The classes are compiled at build time (dist/src/classes.generated.mjs):
+  // the constructor (the promoted properties) and the public methods. Laravel
+  // dispatches an event synchronously, so the edge calls the listeners in the
+  // registration order — and a listener that answers stops the chain (Laravel's
+  // Dispatcher::dispatch()).
+  const classesMap = (opts && opts.classes && typeof opts.classes === 'object') ? opts.classes : {};
+  const eventListenersMap =
+    (opts && opts.eventListeners && typeof opts.eventListeners === 'object') ? opts.eventListeners : {};
+  rt.newClass = (fqcn, args) => {
+    const entry = classesMap[String(fqcn)];
+    if (!entry) {
+      throw new Error('newClass: the class ' + fqcn + ' is not compiled — the build did not dump it');
+    }
+    const obj = entry.ctor(Array.isArray(args) ? args : []);
+    // The class of the instance (the dispatch needs it) — not enumerable, so a
+    // JSON answer does not show it.
+    Object.defineProperty(obj, '__lwClass', { value: String(fqcn), enumerable: false });
+    for (const [name, fn] of Object.entries(entry.methods || {})) {
+      obj[name] = fn.bind(obj);
+    }
+    return obj;
+  };
+  rt.event = {
+    dispatch: async (event) => {
+      const fqcn = event && event.__lwClass;
+      if (!fqcn) {
+        throw new Error('event.dispatch: the event is not an instance of a compiled event class');
+      }
+      const listeners = eventListenersMap[fqcn] || [];
+      let result = null;
+      for (const listenerFqcn of listeners) {
+        const entry = classesMap[listenerFqcn];
+        if (!entry) {
+          throw new Error('event.dispatch: the listener ' + listenerFqcn + ' is not compiled');
+        }
+        const handle = entry.methods && entry.methods.handle;
+        if (!handle) {
+          throw new Error('event.dispatch: the listener ' + listenerFqcn + ' has no handle() method');
+        }
+        const listener = rt.newClass(listenerFqcn, []);
+        const answer = await handle.call(listener, rt, event);
+        // Laravel stops the chain when a listener answers (a non-null value).
+        if (answer !== null && answer !== undefined) {
+          result = answer;
+          break;
+        }
+      }
+      return result;
+    },
+  };
+
   // ---- rt.gate: the compiled policy check (Illuminate\Auth\Access\Gate) ----
   // The policies are compiled at build time (dist/src/policies.generated.mjs):
   // the abilities, the guest rules and the policy `before()` hook. The guest

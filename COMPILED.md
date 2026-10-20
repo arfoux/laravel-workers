@@ -363,7 +363,8 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `report()` | ✅ compiles | Reports an exception to the platform log (it does not answer it). | M37 |
 | `cache()` (the helper) | ✅ compiles | The helper form of the `Cache` facade (the facade compiles). | M37 |
 | `session([...])` (the array form) | ✅ compiles | The array form writes many keys: `session()->put([...])`. | M37 |
-| `Event::dispatch()` | ⛔ fails loud (`LW002`) | The listeners are classes - they are not compiled, so the dispatch is a port. | M39 |
+| `Event::dispatch()` (an event object) | ✅ compiles | The listener is a class, so the build compiles it (the event classes + the listeners, dist/src/classes.generated.mjs). The dispatch is synchronous, like Laravel's. | M39c |
+| `Event::dispatch()` (an event name) | ⛔ fails loud (`LW002`) | An event *name* has no class: the edge cannot know which listener answers, so the dispatch would be a silent no-op - dispatch the event object instead. | M39c |
 | `Gate::allows()` | ✅ compiles | The policy is compiled at build time: the abilities, the guest rules, the before() hook. | M39 |
 | `Gate::allows()` (the class-level check) | ✅ compiles | Laravel shifts the class name away before the ability is called. | M39 |
 | `Gate::authorize()` | ⛔ fails loud (`LW002`) | It throws an AuthorizationException (a 403) - the edge has no such error view yet. | M39 |
@@ -390,7 +391,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**45 constructs: 30 compile, 14 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**46 constructs: 31 compile, 14 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 

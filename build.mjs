@@ -19,6 +19,7 @@ import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import { compilePolicies } from './compiler/src/policy.mjs';
+import { compileClasses } from './compiler/src/classes.mjs';
 import { viewFileName } from './compiler/src/view-name.mjs';
 import {
   cpSync,
@@ -884,6 +885,23 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         }
       }
 
+      // The event listeners (the classes): at the edge there is no listener
+      // runtime, so the build compiles the listeners (and the event classes).
+      let classesDump = { events: {}, classes: {} };
+      try {
+        const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'event-dump.php'), appDir], {
+          cwd: appDir,
+          env: { ...process.env, LW_APP_ROOT: appDir },
+        }).toString('utf8');
+        classesDump = JSON.parse(raw);
+      } catch (e) {
+        console.log(
+          `  event dump failed — the routes that dispatch an event stay blocked: ${String(e.stderr || e.message || '')
+            .trim()
+            .slice(0, 200)}`
+        );
+      }
+
       // The models the policies mention (the user, the subject) need their
       // metadata too: a relation read inside a policy must fail loud.
       const policyModelFqcns = new Set();
@@ -1146,6 +1164,36 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         console.log(`     ! ${e.model}: ${e.message}`);
       }
 
+      // The classes (the event listeners + the event classes): the compiled
+      // constructors and methods (the edge has no listener runtime).
+      const classesCompile = compileClasses(classesDump, {
+        models: knownModelFqcnSet,
+        modelNotCompiled,
+        modelClassFqcns,
+        classes: new Set(Object.keys(classesDump.classes || {})),
+      });
+      writeFileSync(join(dist, 'src', 'classes.generated.mjs'), classesCompile.code);
+      // The alias of each compiled class (`new PostPublished($id)`): an
+      // ambiguous short name is not resolved (the build fails loud on it).
+      const classAliases = new Map();
+      for (const fqcn of Object.keys(classesCompile.meta)) {
+        const alias = fqcn.split('\\').pop();
+        if (classAliases.has(alias)) classAliases.delete(alias);
+        else classAliases.set(alias, fqcn);
+      }
+      const classesMeta = {
+        fqcns: Object.keys(classesCompile.meta),
+        aliases: Object.fromEntries(classAliases),
+      };
+      console.log(
+        `  -> dist/src/classes.generated.mjs (${classesMeta.fqcns.length} class(es)${
+          classesCompile.errors.length ? `, ${classesCompile.errors.length} did not compile` : ''
+        })`
+      );
+      for (const e of classesCompile.errors) {
+        console.log(`     ! ${e.class}: ${e.message}`);
+      }
+
       // phase C: emit one handler module per transpilable route
       let emittedCount = 0;
       for (const p of prepared) {
@@ -1289,6 +1337,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           formRequests,
           // The Gate metadata (the policies, their abilities, the guest rules).
           policies: policiesMeta,
+          classes: classesMeta,
           // The object store: the app's default disk (the compiled rung has ONE
           // store — the padanan for it) + the configured disk names.
           storage: {

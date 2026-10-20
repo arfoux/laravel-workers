@@ -150,6 +150,18 @@ export default {
       jar: true,
     },
     {
+      // The event dispatch: the listener is a class, so the build compiles it
+      // (at the edge there is no listener runtime). The listener writes to the
+      // post, so the answer shows the effect (Laravel dispatches it
+      // synchronously).
+      label: 'POST /event-demo (the event dispatch)',
+      method: 'POST',
+      uri: '/event-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'notified',
+    },
+    {
       // The Gate: the policy check (the compiled policies answer it at the
       // edge). The user owns the post, so `update` is allowed and `denies` is
       // false; the class-level `viewAny` is allowed for a signed-in user.

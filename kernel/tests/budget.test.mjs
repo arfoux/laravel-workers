@@ -152,6 +152,40 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(p95 <= 5, `upload p95 ${p95}`);
   }
 
+  // The event dispatch (the compiled classes): the listeners are called in the
+  // registration order, like Laravel (a listener that answers stops the chain).
+  {
+    const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+    const rt = buildRt(
+      {},
+      {
+        http: {},
+        classes: {
+          'App\\Events\\PostPublished': { ctor: (args) => ({ postId: args[0] }), methods: {} },
+          'App\\Listeners\\MarkPostNotified': {
+            ctor: () => ({}),
+            methods: {
+              handle: async function () {
+                this.seen = 1;
+                return null;
+              },
+            },
+          },
+        },
+        eventListeners: { 'App\\Events\\PostPublished': ['App\\Listeners\\MarkPostNotified'] },
+      }
+    );
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      await rt.event.dispatch(rt.newClass('App\\Events\\PostPublished', [i]));
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `event dispatch avg ${avg}`);
+    assert.ok(p95 <= 5, `event dispatch p95 ${p95}`);
+  }
+
   // rt.cache() facade (controller-facing Cache::* surface over the D1 store).
   const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
   const fakeCache = { async get() { return 1; }, async put() {}, async forget() {} };

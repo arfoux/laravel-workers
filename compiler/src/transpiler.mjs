@@ -124,6 +124,9 @@ function tx(node) {
       return JSON.stringify(String(node.name));
     case 'variable':
       if (node.name === 'this' && CTX) {
+        // Inside a compiled class method, `$this` is the instance (the method
+        // is a plain function, so `this` is the object it is called on).
+        if (CTX.classMethod) return 'this';
         throw mkErr('LW002', '$this is not supported in transpiled controllers — ' + PORT_HINT, node.loc, PORT_HINT);
       }
       return vname(node.name);
@@ -274,6 +277,15 @@ function tx(node) {
         );
       }
       const cls = String(node.what.name).replace(/^\\/, '');
+      const ctorArgs = (node.arguments || []).map(tx).join(', ');
+      // The app classes the build compiled (the event classes and their
+      // listeners): `new PostPublished($id)` -> the compiled constructor.
+      if (CTX && CTX.classFqcns) {
+        const fqcn = CTX.classFqcns.get(cls) || (CTX.classes && CTX.classes.has(cls) ? cls : null);
+        if (fqcn) {
+          return 'rt.newClass(' + JSON.stringify(fqcn) + (ctorArgs ? ', [' + ctorArgs + ']' : ', []') + ')';
+        }
+      }
       if (cls.includes('\\')) {
         throw mkErr(
           'LW002',
@@ -291,7 +303,6 @@ function tx(node) {
           PORT_HINT
         );
       }
-      const ctorArgs = (node.arguments || []).map(tx).join(', ');
       return 'rt.newError(' + JSON.stringify(cls) + (ctorArgs ? ', ' + ctorArgs : '') + ')';
     case 'call':
       return txCall(node);
@@ -1035,6 +1046,42 @@ function txCall(node) {
   if (what && what.kind === 'staticlookup' && CTX && CTX.controller) {
     const cls0 = what.what && what.what.name ? String(what.what.name).replace(/^\\/, '') : '';
     const meth0 = what.offset && what.offset.name;
+    // The event dispatch: the compiled listeners (the classes the build
+    // compiled). Laravel dispatches synchronously, so the edge does too.
+    if (
+      (cls0 === 'Event' || cls0 === 'Illuminate\\Support\\Facades\\Event') &&
+      meth0 === 'dispatch'
+    ) {
+      const args = node.arguments || [];
+      if (args.length !== 1) {
+        throw mkErr(
+          'LW002',
+          'Event::dispatch() takes the event only (the payload and the halt flag are not compiled) — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      const arg = args[0];
+      const eventClass =
+        arg && (arg.kind === 'new' || arg.kind === 'call') && arg.what && arg.what.kind === 'name'
+          ? String(arg.what.name).replace(/^\\/, '')
+          : null;
+      const fqcn =
+        eventClass && CTX.classFqcns
+          ? CTX.classFqcns.get(eventClass) || (CTX.classes && CTX.classes.has(eventClass) ? eventClass : null)
+          : null;
+      if (!fqcn) {
+        throw mkErr(
+          'LW002',
+          'Event::dispatch() needs an instance of a compiled event class — the edge has no listener runtime, so a ' +
+            'dispatch of an unknown event would be a silent no-op — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      CTX.usedEvents = true;
+      return txAwait('rt.event.dispatch(' + tx(arg) + ')', node, 'Event::dispatch()');
+    }
     const tailor = UNSUPPORTED_FACADES[cls0];
     if (tailor && typeof meth0 === 'string') {
       throw mkErr('LW002', tailor(meth0), node.loc, PORT_HINT);
@@ -1988,6 +2035,13 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     // The variables that hold an uploaded file (`$request->file('x')`): the
     // file methods are gated the same way.
     fileVars: new Map(),
+    // The app classes the build compiled (the event classes + the listeners):
+    // `new X(...)` and the event dispatch.
+    classes: opts.classes instanceof Set ? opts.classes : new Set(opts.classes || []),
+    // The alias of each compiled class (the FQCN): `new PostPublished($id)`.
+    classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(Object.entries(opts.classFqcns || {})),
+    // Inside a compiled class method, `$this` is the instance.
+    classMethod: !!opts.classMethod,
     // The model alias of each model variable (var -> alias/fqcn).
     modelAlias: new Map(),
     // The FQCN of each model variable (var -> FQCN): the Gate check needs it
@@ -2012,6 +2066,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     // Did this method use a paginator? (the handler then imports the
     // pagination view).
     usedPaginator: false,
+    // Did this method dispatch an event? (the handler then imports the
+    // compiled classes).
+    usedEvents: false,
   };
   // The seeded model variables (a policy parameter: the user, the subject).
   for (const seed of opts.modelVarSeeds || []) {
@@ -2028,10 +2085,12 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   if (declared.length) lines.push(indent + 'let ' + declared.join(', ') + ';');
   let usedGate = false;
   let usedPaginator = false;
+  let usedEvents = false;
   try {
     walkChildren(bodyChildren || [], lines, indent, {});
     usedGate = !!CTX.usedGate;
     usedPaginator = !!CTX.usedPaginator;
+    usedEvents = !!CTX.usedEvents;
   } catch (e) {
     const lw = e.lw || { code: 'LW002', message: e.message, line: 0, column: 0, hint: '' };
     return { code: null, errors: [lw] };
@@ -2039,7 +2098,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     CTX = null;
     CLOSURE_DEPTH = 0;
   }
-  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator };
+  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator, usedEvents };
 }
 
 export default transpile;

@@ -173,13 +173,26 @@
     },
     {
       "id": "event_dispatch",
-      "label": "`Event::dispatch()`",
+      "label": "`Event::dispatch()` (an event object)",
+      "php": "\\Illuminate\\Support\\Facades\\Event::dispatch(new PostPublished(1));",
+      "expect": "ok",
+      "note": "The listener is a class, so the build compiles it (the event classes + the listeners, dist/src/classes.generated.mjs). The dispatch is synchronous, like Laravel's.",
+      "batch": "M39c",
+      "status": "done",
+      "classes": {
+        "fqcns": ["App\\Events\\PostPublished"],
+        "aliases": { "PostPublished": "App\\Events\\PostPublished" }
+      }
+    },
+    {
+      "id": "event_dispatch_string",
+      "label": "`Event::dispatch()` (an event name)",
       "php": "\\Illuminate\\Support\\Facades\\Event::dispatch('post.created');",
       "expect": "fail",
       "code": "LW002",
-      "note": "The listeners are classes - they are not compiled, so the dispatch is a port.",
-      "batch": "M39",
-      "status": "todo"
+      "note": "An event *name* has no class: the edge cannot know which listener answers, so the dispatch would be a silent no-op - dispatch the event object instead.",
+      "batch": "M39c",
+      "status": "done"
     },
     {
       "id": "gate",
