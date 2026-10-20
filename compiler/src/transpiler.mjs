@@ -125,8 +125,9 @@ function tx(node) {
     case 'variable':
       if (node.name === 'this' && CTX) {
         // Inside a compiled class method, `$this` is the instance (the method
-        // is a plain function, so `this` is the object it is called on).
-        if (CTX.classMethod) return 'this';
+        // is a plain function, so `this` is the object it is called on). A
+        // constructor compiles into a factory, so it names its own object.
+        if (CTX.classMethod) return CTX.thisVar || 'this';
         throw mkErr('LW002', '$this is not supported in transpiled controllers — ' + PORT_HINT, node.loc, PORT_HINT);
       }
       return vname(node.name);
@@ -2042,6 +2043,8 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(Object.entries(opts.classFqcns || {})),
     // Inside a compiled class method, `$this` is the instance.
     classMethod: !!opts.classMethod,
+    // The name `$this` compiles to (a constructor builds its own object).
+    thisVar: opts.thisVar || null,
     // The model alias of each model variable (var -> alias/fqcn).
     modelAlias: new Map(),
     // The FQCN of each model variable (var -> FQCN): the Gate check needs it

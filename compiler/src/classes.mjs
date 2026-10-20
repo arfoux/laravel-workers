@@ -110,20 +110,13 @@ function literalOf(node) {
   }
 }
 
-function compileConstructor(fqcn, classNode) {
+function compileConstructor(fqcn, classNode, opts) {
   const ctor = findMethod(classNode, '__construct');
   const props = [];
   if (!ctor) return { js: '(args) => ({})' };
   const params = ctor.arguments || [];
   const body = (ctor.body && ctor.body.children) || [];
   const hasBody = body.some((s) => s && s.kind !== 'comment' && s.kind !== 'nop');
-  if (hasBody) {
-    return {
-      error:
-        'the constructor of ' + fqcn + ' has a body — the compiled class compiler handles the constructor ' +
-        'property promotion only (public function __construct(public int $id) {})',
-    };
-  }
   for (let i = 0; i < params.length; i++) {
     const p = params[i];
     if (!p || !p.name) continue;
@@ -141,8 +134,42 @@ function compileConstructor(fqcn, classNode) {
     }
     props.push('      ' + JSON.stringify(name) + ': (args[' + i + '] === undefined ? ' + fallback + ' : args[' + i + '])');
   }
-  if (!props.length) return { js: '(args) => ({})' };
-  return { js: '(args) => ({\n' + props.join(',\n') + ',\n    })' };
+  const promoted = props.length ? '{\n' + props.join(',\n') + ',\n    }' : '{}';
+  if (!hasBody) return { js: '(args) => (' + promoted + ')' };
+
+  // A constructor with a body: the body compiles like a method (the promoted
+  // properties and the assignments land on the same object).
+  const emitted = transpileControllerMethod(body, {
+    models: opts.modelAliases,
+    modelNotCompiled: opts.modelNotCompiled,
+    modelClassFqcns: opts.modelClassFqcns,
+    views: new Set(),
+    indent: '    ',
+    paramVars: new Set(params.map((p) => vname(nodeName(p.name)))),
+    requestVars: new Set(),
+    constants: opts.constants || {},
+    formRequests: new Map(),
+    modelVarSeeds: [],
+    classes: opts.classes,
+    classMethod: true,
+    // The constructor builds its own object.
+    thisVar: '__self',
+  });
+  if (emitted.errors.length) {
+    return { error: 'the constructor of ' + fqcn + ' did not compile: ' + emitted.errors[0].message };
+  }
+  const bodyCode = String(emitted.code || '')
+    .split('\n')
+    .map((l) => (l ? '    ' + l : l))
+    .join('\n');
+  return {
+    js:
+      'function (args) {\n' +
+      '    const __self = ' + promoted + ';\n' +
+      bodyCode + '\n' +
+      '    return __self;\n' +
+      '  }',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +305,7 @@ export function compileClasses(dump, opts = {}) {
       errors.push({ class: fqcn, message: 'the class ' + fqcn + ' is not in ' + info.file });
       continue;
     }
-    const ctor = compileConstructor(fqcn, classNode);
+    const ctor = compileConstructor(fqcn, classNode, options);
     if (ctor.error) {
       errors.push({ class: fqcn, message: ctor.error });
       continue;

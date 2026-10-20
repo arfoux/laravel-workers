@@ -42,7 +42,7 @@ foreach (array_slice($argv, 1) as $fqcn) {
         if ($rc->hasMethod('prepareForValidation')) {
             $m = $rc->getMethod('prepareForValidation');
             if ($m->getDeclaringClass()->getName() === $fqcn) {
-                $entry['error'] = 'prepareForValidation overridden';
+                $entry['error'] = 'prepareForValidation() is overridden - the compiled rung does not run it (the validated input would differ)';
                 $out[] = $entry;
                 continue;
             }
@@ -70,6 +70,29 @@ foreach (array_slice($argv, 1) as $fqcn) {
         $entry['rules'] = $fr->rules();
         $entry['messages'] = $fr->messages();
         $entry['attributes'] = $fr->attributes();
+
+        // A rule *object* (`Rule::file()->max(2048)`) is a class: the compiled
+        // rung evaluates the string rules only, so the build must stop instead
+        // of validating something else.
+        $objectRule = null;
+        $walk = function ($rules) use (&$walk, &$objectRule) {
+            foreach ((array) $rules as $key => $rule) {
+                if (is_object($rule)) {
+                    $objectRule = is_object($key) ? get_class($key) : get_class($rule);
+                    return;
+                }
+                if (is_array($rule)) {
+                    $walk($rule);
+                    if ($objectRule !== null) {
+                        return;
+                    }
+                }
+            }
+        };
+        $walk($entry['rules']);
+        if ($objectRule !== null) {
+            $entry['error'] = 'the rules use a rule object (' . $objectRule . ') - the compiled rung evaluates the string rules only';
+        }
     } catch (Throwable $e) {
         $entry['error'] = get_class($e) . ': ' . $e->getMessage();
     }

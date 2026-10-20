@@ -80,14 +80,14 @@ test('classes: a method compiles (and `$this` is the instance)', () => {
   assert.match(res.code, /rt\.propSet\(this, "seen"/);
 });
 
-test('classes: a constructor with a body fails loud', () => {
+test('classes: a constructor with a body compiles (the assignments land on the object)', () => {
   const file = classFile('WithBody', `<?php
 namespace App\\Events;
 class WithBody
 {
     public function __construct(public int $id)
     {
-        $this->id = $id + 1;
+        $this->doubled = $this->id * 2;
     }
 }
 `);
@@ -95,8 +95,11 @@ class WithBody
     { events: {}, classes: { 'App\\Events\\WithBody': { file } } },
     OPTIONS
   );
-  assert.equal(res.errors.length, 1);
-  assert.match(res.errors[0].message, /constructor property promotion only/);
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /ctor: function \(args\)/);
+  assert.match(res.code, /const __self = \{/);
+  assert.match(res.code, /rt\.propSet\(__self, "doubled"/);
+  assert.match(res.code, /return __self;/);
 });
 
 test('classes: a listener that takes a service fails loud', () => {
