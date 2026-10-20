@@ -370,13 +370,13 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Storage::disk()` | ⛔ fails loud (`LW002`) | The disk class is not compiled; the default disk compiles (M30). | M38 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags. | M38 |
 | Blade `@extends` (a layout) | — documented (build level) | A layout compiles to `$__env` - a view-level construct (not the controller compiler). | M39 |
-| `Model::paginate()` | — documented (build level) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M39 |
-| Route-model binding (a typed param) | — documented (build level) | The compiled handler takes the raw segment; the model is fetched explicitly. | M39 |
-| Eloquent relations (`$post->comments()`) | — documented (build level) | The relation methods are not compiled; the eager-loading subset needs the model dump. | M39 |
-| File upload (`$request->file()`) | — documented (build level) | Uploads need R2 (multipart parsing at the edge). | M39 |
+| `Model::paginate()` | ⛔ fails loud (`LW003`) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M39 |
+| Route-model binding (a typed param) | ⛔ fails loud (`LW004`) | The compiled handler takes the raw segment; the model is fetched explicitly. | M39 |
+| Eloquent relations (`$post->comments()`) | ✅ compiles | KNOWN GAP: it compiles, but the relation method does not exist on the compiled model - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on a model is open (M41). | M41 |
+| File upload (`$request->file()`) | ✅ compiles | KNOWN GAP: it compiles, but the request has no `file()` at the edge - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on the request is open (M41). | M41 |
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M39 |
 
-**31 constructs: 19 compile, 6 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**31 constructs: 21 compile, 8 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — the only exception is a listed **known gap** (it compiles, but the request answers a 500 instead of the build stopping it).
 
 <!-- construct-audit:end -->
 

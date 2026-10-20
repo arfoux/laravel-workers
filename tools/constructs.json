@@ -244,8 +244,8 @@
     {
       "id": "paginate",
       "label": "`Model::paginate()`",
-      "php": null,
-      "check": "build",
+      "php": "$p = \\App\\Models\\Post::paginate(10);",
+      "check": "compiler",
       "expect": "fail",
       "note": "The query builder has no pagination; D1 has no OFFSET-free paging guarantee.",
       "batch": "M39",
@@ -254,8 +254,8 @@
     {
       "id": "route_model_binding",
       "label": "Route-model binding (a typed param)",
-      "php": null,
-      "check": "build",
+      "php": "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Post;\nclass C {\n    public function show(Post $post)\n    {\n        return response('ok');\n    }\n}\n",
+      "check": "compiler",
       "expect": "fail",
       "note": "The compiled handler takes the raw segment; the model is fetched explicitly.",
       "batch": "M39",
@@ -264,22 +264,22 @@
     {
       "id": "relations",
       "label": "Eloquent relations (`$post->comments()`)",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "The relation methods are not compiled; the eager-loading subset needs the model dump.",
-      "batch": "M39",
-      "status": "todo"
+      "php": "$c = $post->comments();",
+      "check": "compiler",
+      "expect": "ok",
+      "note": "KNOWN GAP: it compiles, but the relation method does not exist on the compiled model - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on a model is open (M41).",
+      "batch": "M41",
+      "status": "gap"
     },
     {
       "id": "file_upload",
       "label": "File upload (`$request->file()`)",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "Uploads need R2 (multipart parsing at the edge).",
-      "batch": "M39",
-      "status": "todo"
+      "php": "$f = $request->file('avatar');",
+      "check": "compiler",
+      "expect": "ok",
+      "note": "KNOWN GAP: it compiles, but the request has no `file()` at the edge - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on the request is open (M41).",
+      "batch": "M41",
+      "status": "gap"
     },
     {
       "id": "options_route",

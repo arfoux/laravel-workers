@@ -87,13 +87,13 @@ const table = [
       r.verdict === 'ok'
         ? GLYPH.ok
         : r.verdict === 'fail'
-          ? `${GLYPH.fail} (\`${r.code}\`)`
+          ? (r.code ? `${GLYPH.fail} (\`${r.code}\`)` : GLYPH.fail)
           : '— documented (build level)';
     const drift = r.ok ? '' : ' **⚠ drift**';
     return `| ${r.label} | ${v}${drift} | ${r.note} | ${r.batch} |`;
   }),
   '',
-  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.`,
+  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — the only exception is a listed **known gap** (it compiles, but the request answers a 500 instead of the build stopping it).`,
 ].join('\n');
 
 if (CHECK) {
