@@ -22,6 +22,9 @@ const DATA = JSON.parse(readFileSync(join(ROOT, 'tools', 'constructs.json'), 'ut
 const { emitController } = await import(
   pathToFileURL(join(ROOT, 'compiler', 'src', 'controller.mjs')).href
 );
+const { transpile } = await import(
+  pathToFileURL(join(ROOT, 'compiler', 'src', 'transpiler.mjs')).href
+);
 
 const CHECK = process.argv.includes('--check');
 const START = '<!-- construct-audit:start -->';
@@ -31,11 +34,21 @@ const GLYPH = { ok: '✅ compiles', fail: '⛔ fails loud' };
 
 function probe(c) {
   if (!c.php) return { verdict: 'not probed', code: null, message: 'documented (a build-level construct)' };
+  // A view-level construct (a Blade layout): the compiled PHP goes through the
+  // view transpiler.
+  if (c.view) {
+    const res = transpile(c.php);
+    if (!res.errors.length) return { verdict: 'ok', code: null, message: 'compiles' };
+    const e = res.errors[0];
+    return { verdict: 'fail', code: e.code, message: String(e.message).split('\n')[0] };
+  }
   // A probe may carry a preamble (the context the construct needs), the
   // method parameters and the models of the route - so the probe is the real
   // code an app would have, not a fragment.
   const src =
-    '<?php\nnamespace App\\Http\\Controllers;\nclass C {\n    public function demo' +
+    '<?php\nnamespace App\\Http\\Controllers;\n' +
+    (c.uses || []).map((u) => 'use ' + u + ';\n').join('') +
+    'class C {\n    public function demo' +
     (c.sig || '()') +
     '\n    {\n' +
     (c.pre ? c.pre + '\n' : '') +
@@ -43,7 +56,7 @@ function probe(c) {
     '\n        return response("ok");\n    }\n}\n';
   const res = emitController(src, 'demo', {
     routeUri: '/x',
-    routeParams: [],
+    routeParams: c.routeParams || [],
     models: c.models || [],
     views: [],
     // The dumped Gate metadata (the policies the check reads).

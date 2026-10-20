@@ -784,9 +784,24 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       for (const p of prepared) {
         for (const c of p.meta.constants || []) constantFqcns.add(c.fqcn);
       }
-      const allFqcns = [...new Set([...aliasToFqcns.values()].flatMap((s) => [...s]))].filter(
-        (fqcn) => !formRequestFqcns.has(fqcn)
-      );
+      // The class-typed parameters: a FormRequest (injected like a Request) or a
+      // model (Laravel's implicit route-model binding). The model dump decides
+      // which one it is.
+      const paramTypeFqcns = new Set();
+      for (const p of prepared) {
+        for (const param of p.meta.params || []) {
+          if (param.inject === 'request') continue;
+          if (!param.typeFqcn) continue;
+          paramTypeFqcns.add(param.typeFqcn);
+        }
+      }
+      const allFqcns = [...new Set([...aliasToFqcns.values()].flatMap((s) => [...s]))];
+      // The model-bound parameters (Laravel's implicit route-model binding:
+      // `show(Post $post)`): the type must be dumped too — the model and the key
+      // it binds on.
+      for (const fqcn of paramTypeFqcns) {
+        if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
+      }
       // Eloquent auth provider models (config('auth.providers.*.model')) must be in the
       // generated registry even when no compiled controller references them.
       for (const fqcn of authProviderFqcns) {
@@ -911,18 +926,46 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       }
 
       // views used by prepared controllers (compiled once; skipped views block their routes)
+      // A view can depend on other views (a layout: `@extends('layouts.app')`, a
+      // partial: `@include('partials.x')`) — the compiled PHP names them, so
+      // the build compiles the whole closure and the handler imports it.
       const neededViews = new Set();
       for (const p of prepared) for (const v of p.meta.views || []) neededViews.add(v);
       const compiledViews = new Set();
-      for (const view of neededViews) {
+      const failedViews = new Set();
+      const viewDeps = new Map();
+      const scanViewDeps = (view, compiledPhp) => {
+        const deps = [];
+        const re = /make\(\s*'([^']+)'/g;
+        let m;
+        while ((m = re.exec(String(compiledPhp || '')))) {
+          if (m[1] && !deps.includes(m[1])) deps.push(m[1]);
+        }
+        viewDeps.set(view, deps);
+        return deps;
+      };
+      const viewQueue = [...neededViews];
+      while (viewQueue.length) {
+        const view = viewQueue.shift();
+        if (compiledViews.has(view) || failedViews.has(view)) continue;
         const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
-        if (existsSync(viewModulePath)) {
-          compiledViews.add(view);
+        const dumpPath = join(cacheDir, view + '.compiled.json');
+        if (existsSync(viewModulePath) && existsSync(dumpPath)) {
+          // Already compiled (another route used it): read the dump for the
+          // views it depends on.
+          try {
+            const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+            compiledViews.add(view);
+            for (const d of scanViewDeps(view, dump.compiled)) {
+              if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
+            }
+          } catch {
+            failedViews.add(view);
+          }
           continue;
         }
         console.log(`compiling view ${view} (controller)`);
         try {
-          const dumpPath = join(cacheDir, view + '.compiled.json');
           execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, '/'], {
             cwd: appDir,
             env: { ...process.env, LW_APP_ROOT: appDir },
@@ -934,10 +977,28 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           });
           writeFileSync(join(dist, 'src', 'contexts', view + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
           compiledViews.add(view);
+          for (const d of scanViewDeps(view, dump.compiled)) {
+            if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
+          }
         } catch (e) {
+          failedViews.add(view);
           console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
         }
       }
+      // The views a route needs: the ones it renders + the closure of their
+      // dependencies (the layout).
+      const viewsFor = (views) => {
+        const out = [];
+        const seen = new Set();
+        const add = (v) => {
+          if (seen.has(v)) return;
+          seen.add(v);
+          out.push(v);
+          for (const d of viewDeps.get(v) || []) add(d);
+        };
+        for (const v of views || []) add(v);
+        return out;
+      };
 
       // generated model classes + route-name -> uri map (imported by controller handlers)
       const classVarNames = new Map(); // fqcn -> generated class identifier
@@ -1033,7 +1094,6 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           continue;
         }
         const badModel = (p.meta.classes || []).find((c) => {
-          if (formRequestFqcns.has(c.fqcn)) return false; // FormRequest, not a model
           const d = modelDump.get(c.fqcn);
           return !d || !d.model;
         });
@@ -1053,6 +1113,10 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         for (const param of p.meta.params || []) {
           if (param.inject === 'request') continue;
           if (!param.typeFqcn) continue;
+          // A model-typed parameter is the implicit route-model binding (the
+          // model comes from the route segment) — it is not a FormRequest.
+          const md = modelDump.get(param.typeFqcn);
+          if (md && md.model) continue;
           const dumped = formRequestDump.get(param.typeFqcn);
           if (!dumped || dumped.error) {
             formRequestError = `$${param.name} has unsupported type "${param.typeHint}" — only scalar parameters, Illuminate\\Http\\Request and FormRequest are supported here`;
@@ -1088,7 +1152,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           console.log(`  controller ${p.route}: skipped — class constant ${constantError}`);
           continue;
         }
-        const missingView = (p.meta.views || []).find((v) => !compiledViews.has(v));
+        // The views the route renders + the ones they depend on (the layout).
+        const routeViews = viewsFor(p.meta.views || []);
+        const missingView = routeViews.find((v) => !compiledViews.has(v));
         if (missingView) {
           console.log(`  controller ${p.route}: skipped — view "${missingView}" did not compile`);
           continue;
@@ -1102,17 +1168,40 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         const meta = {
           routeUri: p.route,
           routeParams: (p.route.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1).replace(/[?*]$/, '')),
-          models: (p.meta.classes || [])
-            .filter((c) => !formRequestFqcns.has(c.fqcn))
-            .map((c) => ({
-              alias: c.alias,
-              fqcn: c.fqcn,
-              // The methods the app declares on the model (the relations, the
-              // accessors): the compiler rejects them (a relation read as a
-              // property used to answer null - a wrong answer, silently).
-              notCompiled: (modelDump.get(c.fqcn) || {}).notCompiled || [],
-            })),
-          views: p.meta.views || [],
+          models: (() => {
+            // The models this route uses: the classes in the body + the
+            // model-bound parameters (the implicit route-model binding).
+            const list = [];
+            const seen = new Set();
+            const push = (alias, fqcn) => {
+              if (!fqcn || seen.has(fqcn)) return;
+              seen.add(fqcn);
+              const d = modelDump.get(fqcn) || {};
+              list.push({
+                alias,
+                fqcn,
+                // The methods the app declares on the model (the relations, the
+                // accessors): the compiler rejects them (a relation read as a
+                // property used to answer null - a wrong answer, silently).
+                notCompiled: d.notCompiled || [],
+                // The route-model binding key ('id' by default) + the key.
+                routeKey: d.routeKey || d.primaryKey || 'id',
+                primaryKey: d.primaryKey || 'id',
+              });
+            };
+            for (const c of p.meta.classes || []) {
+              push(c.alias, c.fqcn);
+            }
+            for (const param of p.meta.params || []) {
+              if (param.inject === 'request') continue;
+              if (!param.typeFqcn) continue;
+              const d = modelDump.get(param.typeFqcn);
+              if (!d || !d.model) continue;
+              push(param.typeFqcn.split('\\').pop(), param.typeFqcn);
+            }
+            return list;
+          })(),
+          views: routeViews,
           constants,
           formRequests,
           // The Gate metadata (the policies, their abilities, the guest rules).

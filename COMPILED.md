@@ -375,15 +375,15 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Storage::disk()` (the default disk) | ✅ compiles | The default disk is the compiled object store (the D1 blob store, or R2 when bound). | M39 |
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too). | M39 |
-| Blade `@extends` (a layout) | — documented (build level) | A layout compiles to `$__env` - a view-level construct (not the controller compiler). | M40 |
+| Blade `@extends` (a layout) | ✅ compiles | The sections travel to the layout (the shadow harness proves the bytes). | M40 |
 | `Model::paginate()` | ⛔ fails loud (`LW003`) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M40 |
-| Route-model binding (a typed param) | ⛔ fails loud (`LW004`) | The compiled handler takes the raw segment; the model is fetched explicitly. | M40 |
+| Route-model binding (a typed param) | ✅ compiles | The model comes from the route segment (Laravel's implicit binding); a missing model is a 404. | M40 |
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
 | File upload (`$request->file()`) | ⛔ fails loud (`LW002`) | An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40). | M41 |
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**38 constructs: 22 compile, 14 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**38 constructs: 24 compile, 13 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -408,11 +408,45 @@ or it **fails the build** - there is no third state (no silent degradation).
   for a credit card) and `Cache::tags()` (a taggable store). They stay ports and
   the build keeps failing loud, deliberately, each with its own reason (LW002).
   Effort: large (a class compiler is a milestone of its own). Risk: high.
-- **M40 - the build-level constructs.** The Blade layouts (`@extends`), `paginate`,
-  route-model binding, the Eloquent relations, the file uploads and the `OPTIONS`
-  route. Effort: large; the uploads need R2 (multipart parsing at the edge).
+- **M40 - the build-level constructs (the layouts and the route-model binding are
+  done).** The **Blade layouts** compile now (`@extends`/`@section`/`@yield`: the
+  sections travel to the layout, the build compiles the view closure, and the
+  shadow harness proves the bytes) and the **route-model binding** compiles
+  (`show(Post $post)` fetches the model from the segment; a missing model is a
+  404). What is left: `paginate()` (the paginator + the pagination links), the
+  **file uploads** (the edge has no multipart parser yet — the build tells the
+  operator to enable R2 or to remove the upload) and the `OPTIONS` route (the
+  platform answers the CORS preflight; an app route that declares OPTIONS needs
+  a port). Effort: large; the uploads need the multipart parsing at the edge.
 
 ## 8. Definition of done (per item)
+- **M40 - the build-level constructs, part 1 (done).** Two of the five are
+  closed, both proven by the shadow harness (the same bytes as the real
+  Laravel):
+  - **The Blade layouts** (`@extends` / `@section` / `@yield`): a layout used
+    to compile to `$__env->…` — a view-level construct the compiler could not
+    answer. Now the env carries the **sections** (the same
+    `Illuminate\View\Concerns\ManagesLayouts` order: `startSection()` captures
+    the output, `stopSection()` keeps it, `yieldContent()` hands it to the
+    layout), the env is **shared** with the nested render (the layout is
+    rendered with the env of the view that extends it) and the build compiles
+    the **view closure** (the compiled PHP names the views it uses, so the
+    layout is compiled and imported too). The `get_defined_vars()` /
+    `array_diff_key()` pair (the data the layout receives) compiles to the
+    runtime equivalents, and a view's output is `ltrim`ed like
+    `PhpEngine::evaluatePath()` does.
+  - **The route-model binding** (`show(Post $post)`): the parameter used to be
+    an unsupported type (LW002 — the route needs a port). Now the model comes
+    from the route segment (`findOrFail` — a missing model is a 404, like
+    Laravel's `ModelNotFoundException`), the binding is checked the way
+    Laravel binds it (**by name**: a route parameter that does not match the
+    method's parameter fails the build, LW004) and a model that binds on
+    another key (`getRouteKeyName()`) fails loud (LW003) instead of binding the
+    wrong column.
+  What is left in this batch: `paginate()` (the paginator + the pagination
+  links — the Tailwind markup must match byte-wise), the **file uploads** (the
+  edge has no multipart parser yet) and the `OPTIONS` route.
+
 - **M39b - the class-bearing calls, bounded (done).** The Gate (M39a) and the
   **default disk** now compile; the rest fail loud with their own reason, and
   the build *validates* the two places where the compiled side would read or

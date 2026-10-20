@@ -100,6 +100,12 @@ export function buildRt(context, opts = {}) {
     else if (v === false) s = '';
     else if (typeof v === 'number') s = phpNumStr(v);
     else s = String(v);
+    // A view that is capturing a section (@section) sends its output into the
+    // section, not into the page.
+    if (bladeEnv.capturing()) {
+      bladeEnv.capture(s);
+      return s;
+    }
     rt.__output += s;
     return s;
   };
@@ -1011,8 +1017,16 @@ export function buildRt(context, opts = {}) {
   // incrementLoopIndices() / getLastLoop() / popLoop(). Provide a per-rt loop
   // stack that mirrors Illuminate\View\Concerns\ManagesLoops so compiled views
   // with loops render at runtime.
+  //
+  // The same object carries the **sections** (Illuminate\View\Concerns\ManagesLayouts):
+  // a layout is a compiled view that yields the sections of the view that
+  // extends it. The env is SHARED with the nested renders (the layout is
+  // rendered with the same env), so the sections it yields are the ones the
+  // child view pushed.
   const loopsStack = [];
-  const bladeEnv = {
+  const sections = {};
+  const sectionStack = [];
+  const ownEnv = {
     addLoop(dataSrc) {
       let length = null;
       if (Array.isArray(dataSrc)) length = dataSrc.length;
@@ -1056,12 +1070,80 @@ export function buildRt(context, opts = {}) {
     getLoopStack() {
       return loopsStack;
     },
+    // ---- the sections (a layout yields them) ----
+    // Illuminate\View\Concerns\ManagesLayouts: startSection($name, $content)
+    // with a content sets the section; without one it captures the output
+    // until stopSection().
+    startSection(name, content) {
+      const key = String(name);
+      if (content !== null && content !== undefined) {
+        sections[key] = String(content);
+        return;
+      }
+      sectionStack.push({ name: key, buffer: '' });
+    },
+    stopSection() {
+      const s = sectionStack.pop();
+      if (s) sections[s.name] = s.buffer;
+    },
+    yieldContent(name, fallback) {
+      const key = String(name);
+      if (Object.prototype.hasOwnProperty.call(sections, key)) return sections[key];
+      return fallback === null || fallback === undefined ? '' : String(fallback);
+    },
+    hasSection(name) {
+      return Object.prototype.hasOwnProperty.call(sections, String(name));
+    },
+    // The echo of a view that is capturing a section goes into the section.
+    capturing() {
+      return sectionStack.length > 0;
+    },
+    capture(text) {
+      if (!sectionStack.length) return;
+      sectionStack[sectionStack.length - 1].buffer += String(text);
+    },
+    // `make($view, $data)->render()` — the layout the view extends.
+    make(name, data) {
+      return {
+        render: () => {
+          const rendered = rt.view(String(name), data || {});
+          return rendered && rendered.body != null ? String(rendered.body) : '';
+        },
+      };
+    },
   };
+
+  // The env is shared with the nested renders (a layout is rendered with the
+  // env of the view that extends it) — the sections travel with it.
+  const bladeEnv = (opts && opts.env) || ownEnv;
 
   rt.var = (k) => {
     if (Object.prototype.hasOwnProperty.call(dataCtx, k)) return dataCtx[k];
     if (k === '__env') return bladeEnv;
     return undefined;
+  };
+
+  // rt.vars(): the variables a compiled view sees (PHP's get_defined_vars()):
+  // the data it was given + the locals the view set itself.
+  rt.vars = (locals) => {
+    const out = Object.assign({}, dataCtx);
+    if (locals && typeof locals === 'object') {
+      for (const k of Object.keys(locals)) {
+        if (locals[k] !== undefined) out[k] = locals[k];
+      }
+    }
+    return out;
+  };
+
+  // rt.array_diff_key($a, $b) — the keys of $a that $b does not have.
+  rt.array_diff_key = (a, b) => {
+    const out = {};
+    if (!a || typeof a !== 'object') return out;
+    for (const k of Object.keys(a)) {
+      if (b && Object.prototype.hasOwnProperty.call(b, k)) continue;
+      out[k] = a[k];
+    }
+    return out;
   };
 
   // rt.prop: PHP `->` property access on models (attributes via get()), plain
@@ -1276,9 +1358,17 @@ export function buildRt(context, opts = {}) {
       views: viewsMap,
       origin: origin,
       routeMap: routeMap,
+      // The same env: a layout yields the sections of the view that extends it.
+      env: bladeEnv,
     });
     entry.main(sub);
-    return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: sub.__output };
+    // Illuminate\View\Engines\PhpEngine::evaluatePath() returns
+    // ltrim(ob_get_clean()) — a view's output never starts with whitespace.
+    return {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+      body: String(sub.__output).replace(/^[ \t\n\r\0\x0B]+/, ''),
+    };
   };
 
   return rt;

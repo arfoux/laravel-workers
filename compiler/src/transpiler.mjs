@@ -353,6 +353,10 @@ function txBin(node) {
 // function table is injected by `transpile` (module-level, per-parse)
 let FUNCS = new Set();
 
+// The variables the compiled code sets itself (PHP's get_defined_vars()): the
+// data the view/controller was given is not in here — only the locals.
+let LOCAL_VARS = [];
+
 // ---- controller transpilation state (injected by `transpileControllerMethod`) ----
 // CTX is null when compiling Blade views; set to {models, views} when compiling a
 // controller method body. It enables: model query chains, redirect()/response()->json(),
@@ -1030,6 +1034,7 @@ function txCall(node) {
       'sprintf', 'strtolower', 'strtoupper', 'trim', 'number_format', 'nl2br',
       'strlen', 'substr', 'str_repeat', 'str_contains', 'str_starts_with', 'str_ends_with',
       'ucfirst', 'lcfirst', 'str_pad', 'array_key_exists', 'array_keys', 'array_values', 'array_merge',
+      'array_diff_key',
       'ltrim', 'rtrim', 'ucwords', 'strrev', 'strpos', 'strrpos', 'substr_count', 'strip_tags', 'htmlspecialchars',
       'is_null', 'is_bool', 'is_boolean', 'is_int', 'is_integer', 'is_long', 'is_float', 'is_double', 'is_real',
       'is_string', 'is_array', 'is_object', 'is_numeric', 'is_callable', 'is_countable',
@@ -1044,6 +1049,15 @@ function txCall(node) {
       'env',
       'collect',
     ]);
+    // get_defined_vars() — the variables the compiled code sees (the data it
+    // was given + the locals it set itself). A layout is rendered with them.
+    if (name === 'get_defined_vars') {
+      if (node.arguments && node.arguments.length) {
+        throw mkErr('LW002', 'get_defined_vars() takes no arguments', node.loc, PORT_HINT);
+      }
+      const locals = LOCAL_VARS.map((v) => JSON.stringify(String(v).replace(/^v_/, '')) + ': ' + v).join(', ');
+      return 'rt.vars({' + locals + '})';
+    }
     if (whitelisted.has(name) || builtins.has(name)) return 'rt.' + name + '(' + args + ')';
     if (RENAME_FUNCS.has(name)) return 'rt.' + RENAME_FUNCS.get(name) + '(' + args + ')';
     if (FUNCS.has(name)) return fname(name) + '(' + args + ')';
@@ -1480,6 +1494,10 @@ function txAssignStatement(node) {
       }
     }
   }
+  if (left.kind === 'variable' && op === '=') {
+    const v = vname(left.name);
+    if (!LOCAL_VARS.includes(v)) LOCAL_VARS.push(v);
+  }
   if (left.kind === 'variable') {
     const v = vname(left.name);
     if (op === '=') return v + ' = ' + right + ';';
@@ -1705,6 +1723,7 @@ export function transpile(compiledSource) {
   const vars = new Set();
   collect(ast.children || [], funcs, vars);
   FUNCS = funcs;
+  LOCAL_VARS = [];
 
   const lines = [];
   lines.push('export default function main(rt) {');
@@ -1736,6 +1755,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   const vars = new Set();
   collect(bodyChildren || [], funcs, vars);
   FUNCS = funcs;
+  LOCAL_VARS = [];
   CTX = {
     models: opts.models || new Set(),
     views: opts.views || new Set(),

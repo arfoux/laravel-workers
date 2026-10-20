@@ -346,10 +346,18 @@ export function emitController(source, methodName, meta = {}) {
   // FormRequest classes (verified at build time by tools/formrequest-dump.php)
   // are injected like a Request; every other class type fails loud.
   const formRequestMap = meta.formRequests && typeof meta.formRequests === 'object' ? meta.formRequests : {};
+  // The model-bound parameters (Laravel's implicit route-model binding):
+  // `show(Post $post)` — the model comes from the route segment, not from the
+  // raw string.
+  const modelByFqcn = new Map();
+  for (const m of meta.models || []) if (m.fqcn) modelByFqcn.set(m.fqcn, m);
   const params = info.params.map((p) => {
     if (p.inject === 'request') return p;
     if (p.typeFqcn && formRequestMap[p.typeFqcn]) {
       return { ...p, inject: 'request', typeOk: true };
+    }
+    if (p.typeFqcn && modelByFqcn.has(p.typeFqcn)) {
+      return { ...p, typeOk: true, modelBound: modelByFqcn.get(p.typeFqcn) };
     }
     return p;
   });
@@ -383,6 +391,35 @@ export function emitController(source, methodName, meta = {}) {
         );
       }
       continue;
+    }
+    if (p.modelBound) {
+      // Laravel's implicit binding binds by NAME: the route parameter must
+      // carry the same name as the method's parameter.
+      if (!routeParams.includes(p.name)) {
+        errors.push(
+          lwErr(
+            'LW004',
+            `the model-bound parameter $${p.name} has no matching route parameter (the route has: ${
+              routeParams.join(', ') || 'none'
+            }) — Laravel's implicit binding binds by name — ` + PORT_HINT,
+            null,
+            PORT_HINT
+          )
+        );
+      }
+      const key = p.modelBound.routeKey || 'id';
+      const primary = p.modelBound.primaryKey || 'id';
+      if (key !== primary) {
+        errors.push(
+          lwErr(
+            'LW003',
+            `the model ${p.modelBound.fqcn} binds on "${key}" (not on its key "${primary}") — the compiled binding fetches the model by its key — ` +
+              PORT_HINT,
+            null,
+            PORT_HINT
+          )
+        );
+      }
     }
     if (!p.defaultOk) {
       errors.push(lwErr('LW002', `parameter $${p.name} has a non-literal default value — ` + PORT_HINT, null, PORT_HINT));
@@ -471,6 +508,11 @@ export function emitController(source, methodName, meta = {}) {
     // The app's object store (the default disk's name + the configured disks):
     // only the default disk compiles.
     storage: meta.storage && typeof meta.storage === 'object' ? meta.storage : {},
+    // The model-bound parameters are models: a relation read on one must fail
+    // loud (it used to answer null - a wrong answer, silently).
+    modelVarSeeds: params
+      .filter((p) => p.modelBound)
+      .map((p) => ({ var: vname(p.name), kind: 'model', alias: p.modelBound.fqcn, fqcn: p.modelBound.fqcn })),
     views: new Set(info.views),
     indent: '    ',
     paramVars,
@@ -482,7 +524,10 @@ export function emitController(source, methodName, meta = {}) {
 
   const importLines = [];
   const viewEntries = [];
-  info.views.forEach((v, i) => {
+  // The views the handler imports: the ones the method renders + the ones
+  // they depend on (a layout: `@extends('layouts.app')`).
+  const viewNames = Array.isArray(meta.views) && meta.views.length ? meta.views : info.views;
+  viewNames.forEach((v, i) => {
     importLines.push(`import V${i} from '../views/${v}.mjs';`);
     importLines.push(`import VC${i} from '../contexts/${v}.mjs';`);
     viewEntries.push(`  ${JSON.stringify(v)}: { main: V${i}, context: VC${i} }`);
@@ -493,6 +538,15 @@ export function emitController(source, methodName, meta = {}) {
     if (p.inject === 'request') {
       // Request $request — handed down by the HTTP kernel through the handler ctx.
       return `    let ${vname(p.name)} = rt.request();`;
+    }
+    if (p.modelBound) {
+      // The implicit route-model binding: the segment is the model's key, and
+      // a missing model is a 404 (Laravel's ModelNotFoundException).
+      seg++;
+      return (
+        `    let ${vname(p.name)} = (await rt.model(${JSON.stringify(p.modelBound.fqcn)}).findOrFail(` +
+        `rt.param(ctx.params, ${JSON.stringify(p.name)}, "raw", false, null)));`
+      );
     }
     const segName = seg < routeParams.length ? routeParams[seg] : p.name;
     seg++;

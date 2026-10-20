@@ -73,6 +73,9 @@ foreach (array_slice($argv, 1) as $fqcn) {
         $entry['model'] = true;
         $entry['table'] = $instance->getTable();
         $entry['primaryKey'] = $instance->getKeyName();
+        // The route-model binding key (Laravel's implicit binding): the model's
+        // getRouteKeyName() ('id' by default, 'slug' when the app overrides it).
+        $entry['routeKey'] = $instance->getRouteKeyName();
         // getFillable() merges the `#[Fillable]` class attribute (Laravel 13.x)
         // with the classic `$fillable` property.
         $entry['fillable'] = array_values($instance->getFillable());

@@ -114,6 +114,12 @@ class PostController extends Controller
         $ok = Gate::allows('viewAny', Post::class);
         return response($ok ? 'yes' : 'no');
     }
+
+    public function layout()
+    {
+        $post = Post::find(1);
+        return view('posts.layout', ['post' => $post]);
+    }
 }
 `;
 
@@ -268,6 +274,71 @@ test('emit: a non-model class fails with LW003', () => {
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW003');
   assert.match(res.errors[0].message, /Dingus/);
+});
+
+// ---------------------------------------------------------------------------
+// emit — the route-model binding (Laravel's implicit binding)
+// ---------------------------------------------------------------------------
+
+const META_BOUND = {
+  routeUri: '/posts/{post}',
+  routeParams: ['post'],
+  models: [{ alias: 'Post', fqcn: 'App\\Models\\Post', routeKey: 'id', primaryKey: 'id' }],
+  views: [],
+};
+
+test('emit: a model-bound parameter fetches the model from the route segment', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function show(Post $post)\n' +
+    '    {\n' +
+    "        return response($post->title);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'show', META_BOUND);
+  assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
+  assert.match(
+    res.code,
+    /let v_post = \(await rt\.model\("App\\\\Models\\\\Post"\)\.findOrFail\(rt\.param\(ctx\.params, "post", "raw", false, null\)\)\);/
+  );
+});
+
+test('emit: a model-bound parameter whose route parameter does not match fails loud (LW004)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function show(Post $post)\n' +
+    '    {\n' +
+    "        return response($post->title);\n" +
+    '    }\n' +
+    '}\n';
+  // the route has {id}, the method has $post — Laravel binds by name.
+  const res = emitController(src, 'show', { ...META_BOUND, routeParams: ['id'] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW004');
+  assert.match(res.errors[0].message, /binds by name/);
+});
+
+test('emit: a model that binds on another key fails loud (LW003)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function show(Post $post)\n' +
+    '    {\n' +
+    "        return response($post->title);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'show', {
+    ...META_BOUND,
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post', routeKey: 'slug', primaryKey: 'id' }],
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /binds on "slug"/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1296,6 +1367,37 @@ writeTree(tmpRoot, {
   ].join('\n'),
   'src/contexts/posts.show.mjs': 'export default {};\n',
   'src/contexts/posts.index.mjs': 'export default {};\n',
+  // A view with a layout (the compiled Blade output: the sections travel to
+  // the layout through the shared env).
+  'src/views/posts.layout.mjs': [
+    'export default function main(rt) {',
+    '  let v___env, v_post;',
+    '  v___env = rt.var("__env");',
+    '  v_post = rt.var("post");',
+    '  v___env.startSection("title", rt.concat("Post ", rt.prop(v_post, "title")));',
+    '  v___env.startSection("content");',
+    '  rt.echo("<h1>");',
+    '  rt.echo(rt.e(rt.prop(v_post, "title")));',
+    '  rt.echo("</h1>");',
+    '  v___env.stopSection();',
+    '  rt.echo(v___env.make("layouts.app", rt.array_diff_key(rt.vars({}), {"__data": 1, "__path": 1})).render());',
+    '}',
+    '',
+  ].join('\n'),
+  'src/views/layouts.app.mjs': [
+    'export default function main(rt) {',
+    '  let v___env;',
+    '  v___env = rt.var("__env");',
+    '  rt.echo("<html><title>");',
+    '  rt.echo(v___env.yieldContent("title", "Default"));',
+    '  rt.echo("</title><body>");',
+    '  rt.echo(v___env.yieldContent("content"));',
+    '  rt.echo("</body></html>");',
+    '}',
+    '',
+  ].join('\n'),
+  'src/contexts/posts.layout.mjs': 'export default {};\n',
+  'src/contexts/layouts.app.mjs': 'export default {};\n',
   // The compiled policies (what build.mjs writes from the policy dump).
   'src/policies.generated.mjs': [
     'export const policies = {',
@@ -1483,6 +1585,21 @@ test('runtime: a class-level Gate check calls the policy without a subject', asy
   assert.equal(guest.body, 'no');
   const user = await handle(ctxFor({}, 'example.com', { user: async () => ({ id: 1 }) }), { DB: dbWithRow });
   assert.equal(user.body, 'yes');
+});
+
+test('runtime: a view with a layout renders the sections inside the layout', async () => {
+  const handle = await handlerFor('layout', {
+    ...META_BASE,
+    routeUri: '/layout',
+    routeParams: [],
+    views: ['posts.layout', 'layouts.app'],
+  });
+  const res = await handle(ctxFor({}), { DB: dbWithRow });
+  assert.equal(res.status, 200);
+  // the layout wraps the section content, and the title section is yielded.
+  assert.match(res.body, /<html><title>Post Hello Edge<\/title><body>/);
+  assert.match(res.body, /<h1>Hello Edge<\/h1>/);
+  assert.match(res.body, /<\/body><\/html>$/);
 });
 
 test('runtime: unresolved promise in view data fails loud at request time', async () => {

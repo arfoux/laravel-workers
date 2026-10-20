@@ -67,6 +67,32 @@ export default {
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {
+      // The implicit route-model binding: the model comes from the segment
+      // (`showBound(Post $post)`), so the page is the same one.
+      label: 'GET /posts/1/bound (the route-model binding)',
+      method: 'GET',
+      uri: '/posts/1/bound',
+      jar: true,
+    },
+    {
+      // A missing model is a 404 on both sides (Laravel's
+      // ModelNotFoundException; the compiled binding answers 404 too).
+      label: 'GET /posts/999/bound (a missing model)',
+      method: 'GET',
+      uri: '/posts/999/bound',
+      jar: true,
+      expect: 'diverges',
+      why: "the 404 error page is a Laravel framework asset; the compiled side answers a status-only HTML page",
+    },
+    {
+      // A view with a layout: the sections (@section) travel to the layout
+      // (@yield) — the compiled side renders the same bytes.
+      label: 'GET /posts/1/layout (a view with a layout)',
+      method: 'GET',
+      uri: '/posts/1/layout',
+      jar: true,
+    },
+    {
       // The Gate: the policy check (the compiled policies answer it at the
       // edge). The user owns the post, so `update` is allowed and `denies` is
       // false; the class-level `viewAny` is allowed for a signed-in user.

@@ -336,12 +336,12 @@
     {
       "id": "blade_layout",
       "label": "Blade `@extends` (a layout)",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "A layout compiles to `$__env` - a view-level construct (not the controller compiler).",
+      "view": true,
+      "php": "<?php $__env->startSection('title', 'T'); ?>\n<?php $__env->startSection('content'); ?>\n<p>hi</p>\n<?php $__env->stopSection(); ?>\n<?php echo $__env->make('layouts.app', array_diff_key(get_defined_vars(), ['__data' => 1, '__path' => 1]))->render(); ?>",
+      "expect": "ok",
+      "note": "The sections travel to the layout (the shadow harness proves the bytes).",
       "batch": "M40",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "paginate",
@@ -356,12 +356,18 @@
     {
       "id": "route_model_binding",
       "label": "Route-model binding (a typed param)",
-      "php": "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Post;\nclass C {\n    public function show(Post $post)\n    {\n        return response('ok');\n    }\n}\n",
+      "sig": "(Post $post)",
+      "php": "$title = $post->title;",
+      "uses": ["App\\Models\\Post"],
+      "routeParams": ["post"],
+      "models": [
+        { "alias": "Post", "fqcn": "App\\Models\\Post", "routeKey": "id", "primaryKey": "id" }
+      ],
       "check": "compiler",
-      "expect": "fail",
-      "note": "The compiled handler takes the raw segment; the model is fetched explicitly.",
+      "expect": "ok",
+      "note": "The model comes from the route segment (Laravel's implicit binding); a missing model is a 404.",
       "batch": "M40",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "relations",

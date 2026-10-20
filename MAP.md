@@ -348,7 +348,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | authentication | 🟡 | kernel SessionGuard oracle-verified (M14); wired M15–M20 (auth.test 4/4, login-flow E2E) |
 | authorization | 🟡 ph2 | the Gate facade compiles: `Gate::allows()`/`denies()` answer from the compiled policy (the guest rules included); `authorize()`/`any()`/`define()`/`before()` fail loud |
 | billing | 🟡 ph3 | Cashier via fetch; webhooks = HMAC routes (padanan) |
-| blade | 🟡 | views compile (echo/if/loops/expr); layouts (`$__env`) via port |
+| blade | 🟡 | views compile (echo/if/loops/expr); the **layouts** compile too (M40: the sections travel to the layout — `@extends`/`@section`/`@yield`); the Blade components (`<x-...>`) stay a port |
 | boost | ⛔ | dev tooling only |
 | broadcasting | 🔴 | SSE/polling padanan; WS via DO/external |
 | cache | 🟡 | the `Cache` facade + the `cache()` helper compile to the D1 `database` store; the tags need a taggable store (LW002 — the D1 store has none, Laravel throws there too); a non-`database` driver fails the build (it would read and write a different store) |
@@ -361,7 +361,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | context | 🟡 | request-scoped shim |
 | contracts | ✅ | type-erased; two-sided custom drivers |
 | contributions | ⛔ | meta |
-| controllers | 🟡 | M10/M17/M22/M23/M28: GET/POST/PUT/PATCH/DELETE actions compiled (one handler per verb); \->validate() + flash (M19); edirect()->intended() + session regen/invalidate (M20); FormRequests, Cache/Hash/Storage facades, class constants and Eloquent writes compile (M23/M28); pagination + Eloquent relations still a port; fail-loud LW002 (unsupported construct) / LW003; REQUEST_CALL synced to kernel (#2: date removed, str added) |
+| controllers | 🟡 | M10/M17/M22/M23/M28: GET/POST/PUT/PATCH/DELETE actions compiled (one handler per verb); \->validate() + flash (M19); edirect()->intended() + session regen/invalidate (M20); FormRequests, Cache/Hash/Storage facades, class constants and Eloquent writes compile (M23/M28); the **route-model binding** compiles (M40: `show(Post $post)` fetches the model from the segment); pagination + Eloquent relations still a port; fail-loud LW002 (unsupported construct) / LW003; REQUEST_CALL synced to kernel (#2: date removed, str added) |
 | csrf | ✅ | session token; @csrf/@method |
 | database | 🟡 | D1 builder: where/or/join/group/having |
 | database-testing | 🟡 | sqlite↔D1 parity harness |
