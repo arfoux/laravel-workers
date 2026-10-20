@@ -493,3 +493,64 @@ class WithService
   // swallowed).
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(rt, /);
 });
+test('classes: a listener that pushes to the queue fails loud (the edge can push it, nothing runs it)', () => {
+  // The refusal holds in a listener too: the compiled class would push the
+  // job and nothing would ever run it (a silent no-op).
+  const file = classFile('PushesJob', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+use Illuminate\\Support\\Facades\\Queue;
+class PushesJob
+{
+    public function handle(PostPublished $event): void
+    {
+        Queue::push(\\App\\Jobs\\SendMail::class);
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\PushesJob'],
+        },
+      },
+      classes: { 'App\\Listeners\\PushesJob': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /Queue::push\(\) is not supported/);
+  assert.match(res.errors[0].message, /the edge can push the job/);
+  assert.match(res.errors[0].message, /generates no consumer worker/);
+});
+test('classes: a listener that uses a tagged cache fails loud (the store has no tags)', () => {
+  const file = classFile('TagsCache', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+use Illuminate\\Support\\Facades\\Cache;
+class TagsCache
+{
+    public function handle(PostPublished $event): void
+    {
+        Cache::tags('a')->put('k', 'v');
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\TagsCache'],
+        },
+      },
+      classes: { 'App\\Listeners\\TagsCache': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /Cache::tags\(\) is not supported/);
+  assert.match(res.errors[0].message, /BadMethodCallException/);
+});

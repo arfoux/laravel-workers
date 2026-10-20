@@ -372,10 +372,10 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Gate::define()` | ⛔ fails loud (`LW002`) | A closure is not compiled - the global Gate registrations stay a port. | M39 |
 | `Gate::before()` | ⛔ fails loud (`LW002`) | The global Gate callbacks are not compiled (the policies are). | M39 |
 | `Mail::to()->send()` | ⛔ fails loud (`LW002`) | A mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view and produce the very same payload - and the shadow harness would have to compare the mail payload byte for byte (it cannot today: the log format differs). **Not mapped yet** (a milestone of its own). | M39 |
-| `Queue::push()` | ⛔ fails loud (`LW002`) | The queue is asynchronous and the edge has no consumer: the job would never run (a silent no-op), so the byte parity with Laravel is impossible. The job class compiles (M39c) - the blocker is the consumer, not the class. | M39 |
+| `Queue::push()` | ⛔ fails loud (`LW002`) | The edge can push the job (the producer writes the row to the queue binding), but nothing runs it: the toolchain generates no consumer worker, so the job would never run (a silent no-op) and the byte parity with Laravel is impossible. Two separate blockers: a consumer worker does not exist yet, and a hosted queue (Cloudflare Queues) is a paid product (it asks for a credit card); the free path is a D1 table + a cron consumer of your own - the job then runs later, not during the request (a documented divergence, not a parity). The job class compiles (M39c) - the blocker is the consumer, not the class. | M39 |
 | `Storage::disk()` (the default disk) | ✅ compiles | The default disk is the compiled object store (the D1 blob store, or R2 when bound). | M39 |
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
-| `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too). | M39 |
+| `Cache::tags()` | ⛔ fails loud (`LW002`) | The compiled cache store is the D1 `database` store, which has no tags: in Laravel the same store throws BadMethodCallException("This cache store does not support tagging.") when the route runs, so that route answers 500 there; the build refuses the route earlier (stricter than Laravel, not a parity), and a taggable store (redis/memcached) is not compiled. | M39 |
 | Blade `@extends` (a layout) | ✅ compiles | The sections travel to the layout (the shadow harness proves the bytes). | M40 |
 | `Model::paginate()` | ✅ compiles | The LengthAwarePaginator (the items, the total, the pages, the URLs) + the pagination links (the framework's `pagination::tailwind` view is compiled at build time). | M40 |
 | The translation helper (`__()`) | ✅ compiles | The strings are dumped at build time (the app's lang/ files + the framework's fallback); the place-holders are replaced like Laravel does. | M40 |
@@ -397,8 +397,10 @@ or it **fails the build** - there is no third state (no silent degradation).
 | A queued listener (`ShouldQueue`) | ⛔ fails loud | Laravel pushes a queued listener to the queue (it runs later); the edge has no queue consumer, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason. | M43 |
 | A listener that injects an app service the build compiles | ✅ compiles | The edge builds the service itself: the build compiles it (the class + the services it injects) and the runtime hands it to the listener. The dependency is recorded in the compiled class, so the edge never guesses. | M44 |
 | A listener that injects a framework service (the mailer) | ✅ compiles | The edge has no container: the worker hands the live service down (the mailer) and the compiled listener gets it. Its async methods are awaited in the compiled body (a promise must never leak into the response). | M44 |
+| A listener that pushes to the queue | ⛔ fails loud | The refusal holds in a compiled class too: the edge can push the job, but nothing runs it (the toolchain generates no consumer worker), so the listener would push a job that never runs - a silent no-op. | M45 |
+| A listener that uses a tagged cache | ⛔ fails loud | The D1 `database` store has no tags: in Laravel the same store throws BadMethodCallException("This cache store does not support tagging.") when the route runs; the build refuses the route earlier (stricter than Laravel, not a parity). | M45 |
 
-**53 constructs: 33 compile, 17 fail loud, 3 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**55 constructs: 33 compile, 19 fail loud, 3 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -413,15 +415,18 @@ or it **fails the build** - there is no third state (no silent degradation).
   needs its PHP-parity rule (the `Str` family is the big one: slug/limit/upper/lower/
   head/studly/...). Effort: medium. Risk: medium - the parity rules are exactly where
   the divergences hide.
-- **M39 - the class-bearing calls (the Gate and the default disk are done).**
-  `Gate::allows()`/`denies()` compile (M39a: the policy is compiled at build time)
-  and `Storage::disk('<the default disk>')` compiles to the compiled object store
-  (M39b). What is left needs the **class compiler** (the listeners, the
-  mailables, the jobs are classes): `Event::dispatch()`, `Mail::to()->send()`,
-  `Queue::push(SomeJob::class)` — plus the two constructs that need a product
-  or a store the edge does not have: a **named disk** (its own bucket — R2 asks
-  for a credit card) and `Cache::tags()` (a taggable store). They stay ports and
-  the build keeps failing loud, deliberately, each with its own reason (LW002).
+- **M39 - the class-bearing calls (the Gate, the default disk and the listeners
+  are done).**
+  `Gate::allows()`/`denies()` compile (M39a: the policy is compiled at build time),
+  `Storage::disk('<the default disk>')` compiles to the compiled object store
+  (M39b) and the **event listeners** compile (M39c: the build compiles the class
+  and the edge dispatches it). What is left needs the **class compiler** for the
+  mailables and the jobs: `Mail::to()->send()` — plus the constructs that need a
+  product, a store or a consumer the edge does not have: a **named disk** (its
+  own bucket — R2 asks for a credit card), `Cache::tags()` (a taggable store) and
+  `Queue::push(SomeJob::class)` (the edge can push the job, but nothing consumes
+  it - the toolchain generates no consumer worker). They stay ports and the build
+  keeps failing loud, deliberately, each with its own reason (LW002).
   Effort: large (a class compiler is a milestone of its own). Risk: high.
 - **M40 - the build-level constructs (the layouts, the route-model binding, the
   method handling, the paginator and the translations are done).** The **Blade
@@ -530,17 +535,26 @@ or it **fails the build** - there is no third state (no silent degradation).
     need a bucket of its own — R2 asks for a **credit card** (the free path is
     the D1 blob store: 1.5 MB per object, no card). A disk name that is not a
     literal fails loud too (the build cannot resolve it).
-  - `Cache::tags()` fails loud with Laravel's own reason: the D1 `database`
-    store has no tags ("This cache store does not support tagging." — Laravel
-    throws the same on that store). A taggable store (redis/memcached) is not
-    compiled.
+  - `Cache::tags()` fails loud: the compiled cache store is the D1 `database`
+    store, which has no tags. In Laravel the same store throws
+    `BadMethodCallException("This cache store does not support tagging.")` when
+    the route runs, so that route answers 500 there; the build refuses the
+    route **earlier** — stricter than Laravel, not a parity. A taggable store
+    (redis/memcached) is not compiled.
   - The build now **fails the build** when a compiled route uses the cache and
     the app's cache store is not `database`: the compiled store would read and
     write a different store — a silent divergence.
-  - `Event::dispatch()`, `Mail::to()->send()` and `Queue::push(SomeJob::class)`
-    fail loud with their reason: the listeners / the mailable / the job are
-    classes, and at the edge there is no listener runtime and no queue
-    consumer — a dispatch or a push would be a **silent no-op**.
+  - `Event::dispatch()` and `Mail::to()->send()` fail loud with their reason:
+    the listener / the mailable is a class, and at the edge there is no
+    listener runtime — a dispatch would be a **silent no-op**.
+  - `Queue::push(SomeJob::class)` fails loud for a different reason: the edge
+    **can** push the job (the producer writes the row to the queue binding),
+    but nothing runs it — the toolchain generates no consumer worker, so the
+    job would never run (a silent no-op). Two separate blockers: a consumer
+    worker does not exist yet, and a hosted queue (Cloudflare Queues) is a
+    **paid product** (it asks for a credit card). The free path is a D1 table
+    + a cron consumer of your own — the job then runs later, not during the
+    request (a documented divergence, not a parity).
   - The **file upload** (`$request->file()`) fails loud with the instructions:
     the edge has no multipart parser, so the upload needs an object store
     (R2 — credit card; the free path is the D1 blob store) or the upload has to

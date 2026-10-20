@@ -359,7 +359,7 @@
       "php": "\\Illuminate\\Support\\Facades\\Queue::push(\\App\\Jobs\\SendMail::class);",
       "expect": "fail",
       "code": "LW002",
-      "note": "The queue is asynchronous and the edge has no consumer: the job would never run (a silent no-op), so the byte parity with Laravel is impossible. The job class compiles (M39c) - the blocker is the consumer, not the class.",
+      "note": "The edge can push the job (the producer writes the row to the queue binding), but nothing runs it: the toolchain generates no consumer worker, so the job would never run (a silent no-op) and the byte parity with Laravel is impossible. Two separate blockers: a consumer worker does not exist yet, and a hosted queue (Cloudflare Queues) is a paid product (it asks for a credit card); the free path is a D1 table + a cron consumer of your own - the job then runs later, not during the request (a documented divergence, not a parity). The job class compiles (M39c) - the blocker is the consumer, not the class.",
       "batch": "M39",
       "status": "done"
     },
@@ -388,7 +388,7 @@
       "php": "\\Illuminate\\Support\\Facades\\Cache::tags('a')->put('k', 'v');",
       "expect": "fail",
       "code": "LW002",
-      "note": "Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too).",
+      "note": "The compiled cache store is the D1 `database` store, which has no tags: in Laravel the same store throws BadMethodCallException(\"This cache store does not support tagging.\") when the route runs, so that route answers 500 there; the build refuses the route earlier (stricter than Laravel, not a parity), and a taggable store (redis/memcached) is not compiled.",
       "batch": "M39",
       "status": "done"
     },
@@ -657,6 +657,26 @@
       "expect": "ok",
       "note": "The edge has no container: the worker hands the live service down (the mailer) and the compiled listener gets it. Its async methods are awaited in the compiled body (a promise must never leak into the response).",
       "batch": "M44",
+      "status": "done"
+    },
+    {
+      "id": "listener_queue_push",
+      "label": "A listener that pushes to the queue",
+      "check": "classes",
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Events\\PostPublished;\nuse Illuminate\\Support\\Facades\\Queue;\n\nclass L\n{\n    public function handle(PostPublished $event): void\n    {\n        Queue::push(\\App\\Jobs\\SendMail::class);\n    }\n}\n",
+      "expect": "fail",
+      "note": "The refusal holds in a compiled class too: the edge can push the job, but nothing runs it (the toolchain generates no consumer worker), so the listener would push a job that never runs - a silent no-op.",
+      "batch": "M45",
+      "status": "done"
+    },
+    {
+      "id": "listener_cache_tags",
+      "label": "A listener that uses a tagged cache",
+      "check": "classes",
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Events\\PostPublished;\nuse Illuminate\\Support\\Facades\\Cache;\n\nclass L\n{\n    public function handle(PostPublished $event): void\n    {\n        Cache::tags('a')->put('k', 'v');\n    }\n}\n",
+      "expect": "fail",
+      "note": "The D1 `database` store has no tags: in Laravel the same store throws BadMethodCallException(\"This cache store does not support tagging.\") when the route runs; the build refuses the route earlier (stricter than Laravel, not a parity).",
+      "batch": "M45",
       "status": "done"
     }
   ]

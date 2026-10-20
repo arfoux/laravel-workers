@@ -1199,6 +1199,10 @@ test('emit: Cache::tags() fails loud with the store reason (LW002)', () => {
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
   assert.match(res.errors[0].message, /does not support tagging/);
+  assert.match(res.errors[0].message, /BadMethodCallException/);
+  // The build refuses the route earlier than Laravel does: that is stricter,
+  // not a parity - the message must say so.
+  assert.match(res.errors[0].message, /stricter than Laravel, not a parity/);
 });
 
 test('emit: an uploaded file compiles (the file object + the object store)', () => {
@@ -2061,8 +2065,14 @@ test('emit: Queue::push() fails loud with the structural reason', () => {
   const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
-  assert.match(res.errors[0].message, /has no consumer/);
+  // The edge can push the job; what is missing is the consumer. The message
+  // must name the two blockers apart: a consumer worker that does not exist
+  // yet, and a hosted queue (a paid product).
+  assert.match(res.errors[0].message, /the edge can push the job/);
+  assert.match(res.errors[0].message, /generates no consumer worker/);
   assert.match(res.errors[0].message, /byte parity with Laravel is impossible/);
+  assert.match(res.errors[0].message, /paid product/);
+  assert.match(res.errors[0].message, /D1 table \+ a cron consumer/);
 });
 
 test('emit: a mailable fails loud with the structural reason', () => {

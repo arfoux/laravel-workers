@@ -858,6 +858,20 @@ const MAILABLE_REASON =
   'and produce the very same payload, and the shadow harness would have to compare the mail payload byte for byte ' +
   '(it cannot today - the log format differs), so the payload could not be proven - ';
 
+// The Queue facade: the edge CAN push the job (the producer writes the row to
+// the queue binding), but nothing runs it. The message names the two blockers
+// apart, because they are two different things: a consumer worker does not
+// exist yet (the toolchain generates none), and a hosted queue (the product
+// that comes with one) is a paid product. The free path is a D1 table + a
+// cron consumer of your own — then the job runs later, not during the request
+// (a documented divergence, not a parity).
+const queueRefusal = (m) =>
+  'Queue::' + m + '() is not supported — the edge can push the job (the producer writes the row to the queue ' +
+  'binding), but nothing runs it: the toolchain generates no consumer worker, so the job would never run (a ' +
+  'silent no-op) and the byte parity with Laravel is impossible. Two separate blockers: a consumer worker does ' +
+  'not exist yet, and a hosted queue (Cloudflare Queues) is a paid product (it asks for a credit card); the free ' +
+  'path is a D1 table + a cron consumer of your own — then the job runs later, not during the request (a ' +
+  'documented divergence, not a parity) — ' + PORT_HINT;
 // The facades whose work the edge cannot do with the same result. The message
 // says WHY (the structural reason), not "unknown class".
 const UNSUPPORTED_FACADES = {
@@ -869,12 +883,8 @@ const UNSUPPORTED_FACADES = {
     'are compiled too); a registration like this has no compiled counterpart, so it would be a silent no-op — ' + PORT_HINT,
   Mail: (m) => 'Mail::' + m + '() is not supported — ' + MAILABLE_REASON + PORT_HINT,
   'Illuminate\\Support\\Facades\\Mail': (m) => 'Mail::' + m + '() is not supported — ' + MAILABLE_REASON + PORT_HINT,
-  Queue: (m) =>
-    'Queue::' + m + '() is not supported — the queue is asynchronous and the edge has no consumer: the job would never ' +
-    'run (a silent no-op), so the byte parity with Laravel is impossible — ' + PORT_HINT,
-  'Illuminate\\Support\\Facades\\Queue': (m) =>
-    'Queue::' + m + '() is not supported — the queue is asynchronous and the edge has no consumer: the job would never ' +
-    'run (a silent no-op), so the byte parity with Laravel is impossible — ' + PORT_HINT,
+  Queue: (m) => queueRefusal(m),
+  'Illuminate\\Support\\Facades\\Queue': (m) => queueRefusal(m),
 };
 
 // The Gate checks the compiled rung answers: Gate::allows() / Gate::denies().
@@ -1384,8 +1394,10 @@ function txCall(node) {
       if (meth === 'tags') {
         throw mkErr(
           'LW002',
-          'Cache::tags() is not supported — the compiled cache store is the D1 `database` store, which has no tags (Laravel throws "This cache store does not support tagging." on the same store); a taggable store (redis/memcached) is not compiled — ' +
-            PORT_HINT,
+          'Cache::tags() is not supported — the compiled cache store is the D1 `database` store, which has no tags: ' +
+            'in Laravel the same store throws BadMethodCallException("This cache store does not support tagging.") ' +
+            'when the route runs, so that route answers 500 there; the build refuses the route earlier (stricter ' +
+            'than Laravel, not a parity), and a taggable store (redis/memcached) is not compiled — ' + PORT_HINT,
           node.loc,
           PORT_HINT
         );
