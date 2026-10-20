@@ -156,7 +156,7 @@ function compileMethod(entry, methodMeta, isBefore, opts, classNode) {
   const seeds = planParams(entry, methodMeta, isBefore, opts);
   const paramVars = new Set(params.map((p) => vname(p.name)));
   const emitted = transpileControllerMethod((methodNode.body && methodNode.body.children) || [], {
-    models: opts.modelSet,
+    models: opts.modelAliases,
     modelNotCompiled: opts.modelNotCompiled,
     modelClassFqcns: opts.modelClassFqcns,
     views: new Set(),
@@ -186,9 +186,15 @@ export function compilePolicies(dump, opts = {}) {
   const models = (dump && dump.models) || [];
   const modelSet = opts.models instanceof Set ? opts.models : new Set(opts.models || []);
   const modelClassFqcns = opts.modelClassFqcns || {};
+  // The class names the policy body may use (the aliases the app writes +
+  // the FQCNs): a model chain inside a policy (`Post::where(...)`) resolves
+  // against them.
+  const modelAliases =
+    opts.modelAliases instanceof Set ? opts.modelAliases : new Set(Object.keys(modelClassFqcns));
   const options = {
     models: modelSet,
     modelSet,
+    modelAliases,
     modelNotCompiled: opts.modelNotCompiled || new Map(),
     modelClassFqcns,
     userModel: opts.userModel || null,
