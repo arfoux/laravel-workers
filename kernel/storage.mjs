@@ -22,6 +22,40 @@ export const BLOB_DDL =
   '"created_at" TEXT NOT NULL)';
 // D1 caps a row at 2 MB; keep headroom for the row overhead.
 export const MAX_BLOB_BYTES = 1500000;
+// A binary object in the D1 blob store: the row is TEXT, so the bytes are
+// base64-encoded with this marker (the R2 path stores the bytes as they are).
+const B64_MARKER = 'lw-b64:';
+
+// The base64 of the bytes (the runtime has no Buffer: btoa() is latin1 only).
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function bytesToBase64(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += B64_CHARS[b0 >> 2];
+    out += B64_CHARS[((b0 & 3) << 4) | (b1 >> 4)];
+    out += i + 1 < bytes.length ? B64_CHARS[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+    out += i + 2 < bytes.length ? B64_CHARS[b2 & 63] : '=';
+  }
+  return out;
+}
+function base64ToBytes(text) {
+  const clean = String(text).replace(/[^A-Za-z0-9+/]/g, '');
+  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  let p = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const c0 = B64_CHARS.indexOf(clean[i]);
+    const c1 = B64_CHARS.indexOf(clean[i + 1]);
+    const c2 = B64_CHARS.indexOf(clean[i + 2]);
+    const c3 = B64_CHARS.indexOf(clean[i + 3]);
+    if (p < out.length) out[p++] = (c0 << 2) | (c1 >> 4);
+    if (p < out.length) out[p++] = ((c1 & 15) << 4) | (c2 >> 2);
+    if (p < out.length) out[p++] = ((c2 & 3) << 6) | c3;
+  }
+  return out;
+}
 
 // The table check is cached per D1 binding (one probe per isolate, not per
 // request): the probe succeeds when the table exists, otherwise it is created.
@@ -45,6 +79,13 @@ async function ensureBlobTable(d1) {
 function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
   const isR2 = r2 && typeof r2.put === 'function';
   const isD1 = !isR2 && d1 && typeof d1.prepare === 'function';
+  // A binary body (an uploaded file): the bytes as they are.
+  const toBytes = (body) => {
+    if (body instanceof Uint8Array) return body;
+    if (body instanceof ArrayBuffer) return new Uint8Array(body);
+    if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    return null;
+  };
   const base = isR2 ? {
     kind: 'r2',
     prefix: '/r2/',
@@ -67,8 +108,15 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     prefix: '/storage/',
     async put(key, body) {
       await ensureBlobTable(d1);
-      const text = typeof body === 'string' ? body : body === null || body === undefined ? '' : String(body);
-      const size = new TextEncoder().encode(text).length;
+      const bytes = toBytes(body);
+      // A binary object: the row is TEXT, so the bytes are base64-encoded (the
+      // marker tells the reader to decode them).
+      const text = bytes
+        ? B64_MARKER + bytesToBase64(bytes)
+        : body === null || body === undefined
+          ? ''
+          : String(body);
+      const size = bytes ? bytes.length : new TextEncoder().encode(text).length;
       if (size > MAX_BLOB_BYTES) {
         throw new Error(
           'storage put: the object is ' + size + ' bytes - the D1 blob store holds at most ' +
@@ -84,7 +132,12 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     async get(key) {
       await ensureBlobTable(d1);
       const row = await d1.prepare('SELECT "body" FROM "' + BLOB_TABLE + '" WHERE "key" = ?').bind(key).first();
-      return row === null || row === undefined ? null : { body: row.body };
+      if (row === null || row === undefined) return null;
+      const text = String(row.body);
+      if (text.startsWith(B64_MARKER)) {
+        return { body: base64ToBytes(text.slice(B64_MARKER.length)) };
+      }
+      return { body: text };
     },
     async delete(key) {
       await ensureBlobTable(d1);

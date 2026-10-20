@@ -283,6 +283,32 @@ test('storage d1 blob store: an object over the D1 row limit fails loud', async 
   await assert.rejects(() => s.put('big', 'x'.repeat(1500001)), /at most 1500000 bytes/);
 });
 
+test('storage: a binary object (an uploaded file) round-trips', async () => {
+  // The D1 blob store: the row is TEXT, so the bytes are base64-encoded.
+  const d1 = mockD1();
+  const s = createStorage({ d1 });
+  const bytes = new Uint8Array([0, 1, 2, 250, 251, 252, 65, 66, 67]);
+  assert.equal(await s.put('a/b.bin', bytes), true);
+  const read = await s.get('a/b.bin');
+  assert.ok(read.body instanceof Uint8Array, 'the binary object comes back as bytes');
+  assert.deepEqual(Array.from(read.body), Array.from(bytes));
+  // A text object stays text (no marker).
+  await s.put('a/c.txt', 'hello');
+  const text = await s.get('a/c.txt');
+  assert.equal(text.body, 'hello');
+  // The R2 path: the bytes as they are.
+  const m = new Map();
+  const r2 = {
+    async put(k, v) { m.set(k, v); },
+    async get(k) { const v = m.get(k); return v === undefined ? null : { body: v }; },
+    async delete(k) { m.delete(k); },
+  };
+  const s2 = createStorage({ r2 });
+  await s2.put('a/b.bin', bytes);
+  const read2 = await s2.get('a/b.bin');
+  assert.deepEqual(Array.from(read2.body), Array.from(bytes));
+});
+
 test('storage: r2 wins over d1 when the app binds both', async () => {
   const m = new Map();
   const r2 = { async put(k,v){ m.set(k,v); }, async get(k){ const v=m.get(k); return v===undefined?null:{ body: v }; }, async delete(k){ m.delete(k); } };
