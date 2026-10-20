@@ -22,6 +22,22 @@ const PORT_HINT = 'write a port handler for this route (build --scaffold) instea
 // PHP's. The build stops instead of answering differently at the edge.
 const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes', 'image', 'dimensions']);
 
+// A rule *object* (`Rule::file()->max(2048)`, `File::types([...])`) is a
+// class: the compiled validator evaluates the string rules only, so the rule
+// would be silently ignored and the validation would differ from Laravel's.
+// The build stops and names what it would take to compile it.
+const RULE_OBJECT_REASON =
+  'a rule object (Rule::file()->max(2048)) is a class — the compiled validator evaluates the string rules only, so ' +
+  'the rule would be silently ignored and the validation would differ from Laravel\'s. To compile it: the kernel ' +
+  'validator must evaluate the rule object, the FormRequest must be compiled and its prepared input merged into ' +
+  'the validated data - ';
+
+// Is this class a validation rule (the factory or a rule object)?
+function isValidationRuleClass(fqcn) {
+  const f = String(fqcn || '').replace(/^\\/, '');
+  return f === 'Illuminate\\Validation\\Rule' || f.startsWith('Illuminate\\Validation\\Rules\\');
+}
+
 // The name of a content-mime rule in a dumped rule set ('mimes:png' ->
 // 'mimes'), or null when the rule set has none.
 function contentMimeRuleOf(rules) {
@@ -556,6 +572,14 @@ export function emitController(source, methodName, meta = {}) {
     }
   }
   for (const c of info.classes) {
+    // A rule object (`Rule::file()->max(2048)`) is a class: the compiled
+    // validator evaluates the string rules only, so the rule would be silently
+    // ignored and the validation would differ. The build stops and says what
+    // it would take to compile it.
+    if (isValidationRuleClass(c.fqcn)) {
+      errors.push(lwErr('LW002', RULE_OBJECT_REASON + PORT_HINT, null, PORT_HINT));
+      continue;
+    }
     if (!modelAliases.has(c.alias)) {
       errors.push(
         lwErr(
@@ -622,6 +646,9 @@ export function emitController(source, methodName, meta = {}) {
     // and the event dispatch.
     classes: (meta.classes && meta.classes.fqcns) || [],
     classFqcns: (meta.classes && meta.classes.aliases) || {},
+    // The event classes that did not compile, with the reason: a dispatch of
+    // one of them would be a silent no-op, so the build stops and names it.
+    classBlocked: (meta.classes && meta.classes.blocked) || {},
     // The app's object store (the default disk's name + the configured disks):
     // only the default disk compiles.
     storage: meta.storage && typeof meta.storage === 'object' ? meta.storage : {},

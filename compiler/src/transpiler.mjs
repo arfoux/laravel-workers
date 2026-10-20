@@ -288,9 +288,21 @@ function tx(node) {
         }
       }
       if (cls.includes('\\')) {
+        // A mailable (the app's Mail namespace): it renders its own Blade
+        // view, so the compiled rung could not prove the payload. The build
+        // stops with that reason, not with "the class is unknown".
+        if (/\\Mail\\/.test(cls)) {
+          throw mkErr(
+            'LW002',
+            'new ' + cls + '() is not supported — ' + MAILABLE_REASON + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
         throw mkErr(
           'LW002',
-          'new ' + cls + '() is not supported - the app classes are not compiled; ' + PORT_HINT,
+          'new ' + cls + '() is not supported - the app classes are not compiled (the class compiler compiles the ' +
+            'event classes and their listeners); ' + PORT_HINT,
           node.loc,
           PORT_HINT
         );
@@ -825,23 +837,33 @@ function txRedirectChain(node) {
   return null;
 }
 
-// The facades whose work needs a class the build cannot compile: the message
-// says why (the listeners / the mailable / the job), not "unknown class".
+// A mailable renders its own Blade view. The compiled rung would have to
+// compile the mailable, render that view and produce the very same payload —
+// and the shadow harness would have to compare the mail payload byte for byte
+// (it cannot today: the log format differs). So the payload could not be
+// proven, and the build stops with that reason.
+const MAILABLE_REASON =
+  'a mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view ' +
+  'and produce the very same payload, and the shadow harness would have to compare the mail payload byte for byte ' +
+  '(it cannot today - the log format differs), so the payload could not be proven - ';
+
+// The facades whose work the edge cannot do with the same result. The message
+// says WHY (the structural reason), not "unknown class".
 const UNSUPPORTED_FACADES = {
   Event: (m) =>
-    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled; at the edge there is no listener runtime, so the dispatch would be a silent no-op — ' + PORT_HINT,
+    'Event::' + m + '() is not supported — the compiled rung dispatches the event objects it compiled (the listeners ' +
+    'are compiled too); a registration like this has no compiled counterpart, so it would be a silent no-op — ' + PORT_HINT,
   'Illuminate\\Support\\Facades\\Event': (m) =>
-    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled; at the edge there is no listener runtime, so the dispatch would be a silent no-op — ' + PORT_HINT,
-  Mail: (m) =>
-    'Mail::' + m + '() is not supported — the fluent mail API needs a mailable class, which is not compiled (the mailer adapter sends a payload; it does not render a mailable\'s Blade) — ' +
-    PORT_HINT,
-  'Illuminate\\Support\\Facades\\Mail': (m) =>
-    'Mail::' + m + '() is not supported — the fluent mail API needs a mailable class, which is not compiled (the mailer adapter sends a payload; it does not render a mailable\'s Blade) — ' +
-    PORT_HINT,
+    'Event::' + m + '() is not supported — the compiled rung dispatches the event objects it compiled (the listeners ' +
+    'are compiled too); a registration like this has no compiled counterpart, so it would be a silent no-op — ' + PORT_HINT,
+  Mail: (m) => 'Mail::' + m + '() is not supported — ' + MAILABLE_REASON + PORT_HINT,
+  'Illuminate\\Support\\Facades\\Mail': (m) => 'Mail::' + m + '() is not supported — ' + MAILABLE_REASON + PORT_HINT,
   Queue: (m) =>
-    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run (a silent no-op) — ' + PORT_HINT,
+    'Queue::' + m + '() is not supported — the queue is asynchronous and the edge has no consumer: the job would never ' +
+    'run (a silent no-op), so the byte parity with Laravel is impossible — ' + PORT_HINT,
   'Illuminate\\Support\\Facades\\Queue': (m) =>
-    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run (a silent no-op) — ' + PORT_HINT,
+    'Queue::' + m + '() is not supported — the queue is asynchronous and the edge has no consumer: the job would never ' +
+    'run (a silent no-op), so the byte parity with Laravel is impossible — ' + PORT_HINT,
 };
 
 // The Gate checks the compiled rung answers: Gate::allows() / Gate::denies().
@@ -1071,6 +1093,19 @@ function txCall(node) {
         eventClass && CTX.classFqcns
           ? CTX.classFqcns.get(eventClass) || (CTX.classes && CTX.classes.has(eventClass) ? eventClass : null)
           : null;
+      // The event (or one of its listeners) did not compile: the build knows
+      // WHY (the listener is queued, the listener injects a service, ...). The
+      // dispatch would be a silent no-op, so the build stops and names it.
+      const blockedKey = eventClass ? CTX.classFqcns.get(eventClass) || eventClass : null;
+      const blockedWhy = blockedKey ? CTX.classBlocked.get(blockedKey) : null;
+      if (blockedWhy) {
+        throw mkErr(
+          'LW002',
+          'Event::dispatch() cannot compile the event ' + eventClass + ' — ' + blockedWhy + ' — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
       if (!fqcn) {
         throw mkErr(
           'LW002',
@@ -2041,6 +2076,10 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     classes: opts.classes instanceof Set ? opts.classes : new Set(opts.classes || []),
     // The alias of each compiled class (the FQCN): `new PostPublished($id)`.
     classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(Object.entries(opts.classFqcns || {})),
+    // The event classes that did NOT compile, with the reason (the listener is
+    // queued, the listener injects a service, ...): a dispatch of one of them
+    // would be a silent no-op, so the build stops and names the reason.
+    classBlocked: opts.classBlocked instanceof Map ? opts.classBlocked : new Map(Object.entries(opts.classBlocked || {})),
     // Inside a compiled class method, `$this` is the instance.
     classMethod: !!opts.classMethod,
     // The name `$this` compiles to (a constructor builds its own object).

@@ -1181,9 +1181,31 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         if (classAliases.has(alias)) classAliases.delete(alias);
         else classAliases.set(alias, fqcn);
       }
+      // The events that did not compile (the event class itself or one of its
+      // listeners): a dispatch of one of them would be a silent no-op (the edge
+      // has no listener runtime), so the routes that dispatch it stay blocked -
+      // and the build names the reason (the listener is queued, the listener
+      // injects a service, ...).
+      const classErrors = new Map();
+      for (const e of classesCompile.errors) classErrors.set(e.class, e.message);
+      const blockedClasses = {};
+      const blockedShortNames = new Set();
+      for (const [event, info] of Object.entries(classesDump.events || {})) {
+        const names = [event, ...(info.listeners || [])];
+        const bad = names.find((n) => classErrors.has(n));
+        if (!bad) continue;
+        const why = classErrors.get(bad);
+        blockedClasses[event] = why;
+        const short = event.split('\\').pop();
+        if (!blockedShortNames.has(short)) {
+          blockedShortNames.add(short);
+          blockedClasses[short] = why;
+        }
+      }
       const classesMeta = {
         fqcns: Object.keys(classesCompile.meta),
         aliases: Object.fromEntries(classAliases),
+        blocked: blockedClasses,
       };
       console.log(
         `  -> dist/src/classes.generated.mjs (${classesMeta.fqcns.length} class(es)${
@@ -1228,7 +1250,13 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           if (md && md.model) continue;
           const dumped = formRequestDump.get(param.typeFqcn);
           if (!dumped || dumped.error) {
-            formRequestError = `$${param.name} has unsupported type "${param.typeHint}" — only scalar parameters, Illuminate\\Http\\Request and FormRequest are supported here`;
+            // The dump knows WHY (a rule object, an overridden
+            // prepareForValidation(), ...): the reason must survive - a generic
+            // "unsupported type" would hide it.
+            formRequestError =
+              dumped && dumped.error
+                ? `$${param.name} (${param.typeHint}): ${dumped.error}`
+                : `$${param.name} has unsupported type "${param.typeHint}" — only scalar parameters, Illuminate\\Http\\Request and FormRequest are supported here`;
             break;
           }
           formRequests[param.typeFqcn] = {

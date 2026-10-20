@@ -104,6 +104,12 @@ Versions actually tested (byte-parity corpus + CI + live deploy):
 - `php-parser@3.7.0` (npm) for the compiler, `bcryptjs@2.4.3` for `kernel/hash` (pure JS, no native).
 - Cloudflare account for deploy (D1 binding id `ad5876a0-c5eb-493c-917e-5e8f0e543200` in this repo's test Wrangler). **Free plan safe — measured 1–6 ms CPU.**
 
+### The Cloudflare tiers we target (in order)
+
+1. **Free plan first** — the D1 blob store (`lw_blobs`, 1,5 MB per object, no extra product, **no credit card**) is the default object store; the Workers free limits (10 ms CPU/req, 50 subrequests, 100k D1 writes/day, 5M reads/day) are the budget the kernel is measured against.
+2. **R2 when the app really needs it** — a **named** disk (its own bucket), an object above 1,5 MB, or many objects. R2's free tier (10 GB-month, 1M Class A, 10M Class B, free egress) is generous, but **R2 asks for a payment method** — so the build never turns it on by itself: it prints the `wrangler.jsonc` snippet and the operator decides.
+3. **The paid plan, only when the free path really cannot do it** — if an app needs more than the free quotas (or a paid-only Cloudflare feature), that is a *deliberate operator decision*: the toolchain stays free-plan-shaped by default, says exactly what the app needs, and the operator opts into the paid plan. Nothing in the compiler assumes a paid plan, and no construct is blocked *because* the free plan is too small — the build only fails loud when the edge genuinely cannot answer like PHP.
+
 ## Quick start
 
 ```bash

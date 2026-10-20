@@ -13,7 +13,8 @@
 // The table is written into COMPILED.md between the markers; `--check` verifies
 // that the document still matches the code (the docs cannot lie).
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -25,6 +26,9 @@ const { emitController } = await import(
 const { transpile } = await import(
   pathToFileURL(join(ROOT, 'compiler', 'src', 'transpiler.mjs')).href
 );
+const { compileClasses } = await import(
+  pathToFileURL(join(ROOT, 'compiler', 'src', 'classes.mjs')).href
+);
 
 const CHECK = process.argv.includes('--check');
 const START = '<!-- construct-audit:start -->';
@@ -32,7 +36,48 @@ const END = '<!-- construct-audit:end -->';
 
 const GLYPH = { ok: '✅ compiles', fail: '⛔ fails loud' };
 
+// The event class the class-level probes hang their listener on.
+const AUDIT_EVENT_PHP = `<?php
+namespace App\\Events;
+
+class PostPublished
+{
+    public function __construct(public int $id = 0)
+    {
+    }
+}
+`;
+
+// A class-level construct (a listener): the class compiler is the probe.
+function probeClasses(c) {
+  const dir = mkdtempSync(join(tmpdir(), 'lw-audit-'));
+  const eventFile = join(dir, 'Event.php');
+  const listenerFile = join(dir, 'Listener.php');
+  writeFileSync(eventFile, c.event_php || AUDIT_EVENT_PHP, 'utf8');
+  writeFileSync(listenerFile, c.class_php, 'utf8');
+  const event = c.class_event || 'App\\Events\\PostPublished';
+  const listener = c.class_listener || 'App\\Listeners\\L';
+  const dump = {
+    events: {
+      [event]: { file: eventFile, listeners: [listener], queued: c.queued ? [listener] : [] },
+    },
+    classes: {
+      [event]: { file: eventFile },
+      [listener]: { file: listenerFile },
+    },
+  };
+  const res = compileClasses(dump, {
+    modelClassFqcns: {},
+    classes: new Set([event, listener]),
+    constants: {},
+  });
+  if (!res.errors.length) return { verdict: 'ok', code: null, message: 'compiles' };
+  const e = res.errors[0];
+  return { verdict: 'fail', code: null, message: String(e.message).split('\n')[0] };
+}
+
 function probe(c) {
+  if (c.check === 'classes') return probeClasses(c);
   if (!c.php) return { verdict: 'not probed', code: null, message: 'documented (a build-level construct)' };
   // A view-level construct (a Blade layout): the compiled PHP goes through the
   // view transpiler.

@@ -303,7 +303,7 @@
       "php": "\\Illuminate\\Support\\Facades\\Mail::to('a@b.co')->send(new \\App\\Mail\\OrderMail());",
       "expect": "fail",
       "code": "LW002",
-      "note": "The mailable class is not compiled; the mailer adapter exists (M28).",
+      "note": "A mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view and produce the very same payload - and the shadow harness would have to compare the mail payload byte for byte (it cannot today: the log format differs). **Not mapped yet** (a milestone of its own).",
       "batch": "M39",
       "status": "todo"
     },
@@ -313,9 +313,9 @@
       "php": "\\Illuminate\\Support\\Facades\\Queue::push(\\App\\Jobs\\SendMail::class);",
       "expect": "fail",
       "code": "LW002",
-      "note": "The job class is not compiled; the queue adapter exists (M28).",
+      "note": "The queue is asynchronous and the edge has no consumer: the job would never run (a silent no-op), so the byte parity with Laravel is impossible. The job class compiles (M39c) - the blocker is the consumer, not the class.",
       "batch": "M39",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "storage_disk",
@@ -344,7 +344,7 @@
       "code": "LW002",
       "note": "Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too).",
       "batch": "M39",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "blade_layout",
@@ -524,6 +524,59 @@
       "code": "LW003",
       "note": "A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently.",
       "batch": "M42",
+      "status": "done"
+    },
+    {
+      "id": "rule_object",
+      "label": "A rule object (`Rule::file()->max()`)",
+      "php": "$v = $request->validate(['avatar' => [\\Illuminate\\Validation\\Rule::file()->max(1024)]]);",
+      "sig": "(\\Illuminate\\Http\\Request $request)",
+      "check": "compiler",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "A rule object is a class: the compiled validator evaluates the string rules only, so the rule would be silently ignored and the validation would differ. The build stops and names what it would take: the kernel validator must evaluate the rule object, the FormRequest must be compiled and its prepared input merged into the validated data.",
+      "batch": "M43",
+      "status": "todo"
+    },
+    {
+      "id": "form_request_rule_object",
+      "label": "A rule object in a FormRequest",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "The FormRequest dump reads the rules Laravel itself builds: a rule object is found there and the build stops (\"the rules use a rule object (Illuminate\\Validation\\Rules\\File) - the compiled rung evaluates the string rules only\"). The dump's reason reaches the operator - it is not swallowed by a generic message anymore.",
+      "batch": "M43",
+      "status": "todo"
+    },
+    {
+      "id": "prepare_for_validation",
+      "label": "`prepareForValidation()` (overridden)",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "The FormRequest dump sees the overridden hook: \"prepareForValidation() is overridden - the compiled rung does not run it (the validated input would differ)\". The build stops and the reason reaches the operator.",
+      "batch": "M43",
+      "status": "todo"
+    },
+    {
+      "id": "listener_service",
+      "label": "A listener that injects a service",
+      "check": "classes",
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Events\\PostPublished;\nuse App\\Services\\Mailer;\n\nclass L\n{\n    public function __construct(private Mailer $mailer)\n    {\n    }\n\n    public function handle(PostPublished $event): void\n    {\n        $this->mailer->send($event);\n    }\n}\n",
+      "expect": "fail",
+      "note": "The edge instantiates the listener itself: it cannot inject a service, so the constructor dependency is a build error. It used to compile - the property stayed undefined and the request died at runtime (a 500 the build said nothing about).",
+      "batch": "M43",
+      "status": "done"
+    },
+    {
+      "id": "listener_queued",
+      "label": "A queued listener (`ShouldQueue`)",
+      "check": "classes",
+      "queued": true,
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Events\\PostPublished;\n\nclass L\n{\n    public function handle(PostPublished $event): void\n    {\n        $event->id;\n    }\n}\n",
+      "expect": "fail",
+      "note": "Laravel pushes a queued listener to the queue (it runs later); the edge has no queue consumer, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason.",
+      "batch": "M43",
       "status": "done"
     }
   ]

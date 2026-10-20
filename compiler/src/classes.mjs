@@ -115,6 +115,32 @@ function compileConstructor(fqcn, classNode, opts) {
   const props = [];
   if (!ctor) return { js: '(args) => ({})' };
   const params = ctor.arguments || [];
+  // A listener is instantiated by the EDGE (the dispatch calls it): the edge
+  // cannot inject a service, so a constructor dependency is a build error. It
+  // used to compile - the property stayed undefined and the request died at
+  // runtime (a 500 that the build said nothing about).
+  if (opts.listeners && opts.listeners.has(fqcn)) {
+    for (const p of params) {
+      const type = typeNameOf(p && p.type);
+      const name = nodeName(p && p.name);
+      const isEvent =
+        type && (opts.eventClasses.has(type) || opts.eventShortNames.has(type));
+      if (type && !BUILTIN_TYPES.has(type.toLowerCase()) && !isEvent) {
+        return {
+          error:
+            'the constructor of ' + fqcn + ' injects the service ' + type + ' — the edge cannot instantiate a ' +
+            'service (the compiled listeners take the event and the plain values only)',
+        };
+      }
+      if (!p.value) {
+        return {
+          error:
+            'the constructor of ' + fqcn + ' needs $' + name + ' — the edge instantiates a listener without ' +
+            'arguments (Laravel resolves it through the container)',
+        };
+      }
+    }
+  }
   const body = (ctor.body && ctor.body.children) || [];
   const hasBody = body.some((s) => s && s.kind !== 'comment' && s.kind !== 'nop');
   for (let i = 0; i < params.length; i++) {
@@ -270,6 +296,9 @@ export function compileClasses(dump, opts = {}) {
     eventClasses: new Set(Object.keys(events)),
     // The short name of the event classes (the source writes `PostPublished`).
     eventShortNames: new Set(Object.keys(events).map((fqcn) => shortName(fqcn))),
+    // The listeners (the classes the EDGE instantiates when it dispatches):
+    // their constructor dependencies are services - the edge cannot inject one.
+    listeners: new Set(Object.values(events).flatMap((info) => info.listeners || [])),
   };
 
   const meta = {};
