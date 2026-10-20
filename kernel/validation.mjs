@@ -87,6 +87,9 @@ export function installValidation(request, opts = {}) {
     const { ok, errors, validated } = await runValidator(request.all(), rules, messages, {
       db: opts.db ?? null,
       attributes,
+      // The app's own validation messages (its published lang file wins over
+      // the framework's copy, exactly like Laravel's translator).
+      defaultMessages: opts.defaultMessages ?? null,
     });
     if (!ok) throw new ValidationException(errors, { errorBag });
     request._validatedData = validated;

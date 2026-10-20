@@ -325,7 +325,22 @@ function lwUploadedFiles(array $multipart, array &$tmpFiles): array
         // convertUploadedFiles() keeps this very instance (createFromBase
         // returns it unchanged), so the test flag survives and isValid() is
         // true without a real HTTP upload.
-        $files[$name] = new \Illuminate\Http\UploadedFile($tmp, $filename, $type, null, true);
+        $uploaded = new \Illuminate\Http\UploadedFile($tmp, $filename, $type, null, true);
+        // The PHP field name: `photos[]` is a list under `photos`, `photos[0]`
+        // is the index 0 (PHP's own $_FILES shape).
+        if (preg_match('/^([^\[\]]*)\[\]$/', $name, $m)) {
+            $base = $m[1];
+            $files[$base] = $files[$base] ?? [];
+            $files[$base][] = $uploaded;
+            continue;
+        }
+        if (preg_match('/^([^\[\]]*)\[(\d+)\]$/', $name, $m)) {
+            $base = $m[1];
+            $files[$base] = $files[$base] ?? [];
+            $files[$base][(int) $m[2]] = $uploaded;
+            continue;
+        }
+        $files[$name] = $uploaded;
     }
     return $files;
 }

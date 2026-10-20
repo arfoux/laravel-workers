@@ -559,7 +559,7 @@ test('custom messages: size-rule arrays resolve by attribute type (getAttributeT
   // A missing type key falls through to the default message.
   v = new Validator({ title: 'abcdef' }, { title: 'max:3' }, { 'title.max': { numeric: 'N :attribute' } });
   await v.fails();
-  assert.deepEqual(v.errors().title, ['The title must not be greater than 3.']);
+  assert.deepEqual(v.errors().title, ['The title field must not be greater than 3 characters.']);
 
   // `field => { rule: message }` indexes by rule name, not by type.
   v = new Validator({ title: 'abcdef' }, { title: 'max:3' }, { title: { max: 'FIELD :attribute' } });
@@ -568,7 +568,7 @@ test('custom messages: size-rule arrays resolve by attribute type (getAttributeT
 
   v = new Validator({ title: 'abcdef' }, { title: 'max:3' }, { title: { string: 'TYPE :attribute' } });
   await v.fails();
-  assert.deepEqual(v.errors().title, ['The title must not be greater than 3.']);
+  assert.deepEqual(v.errors().title, ['The title field must not be greater than 3 characters.']);
 });
 
 test('custom messages: wildcard keys with punctuation match (no JS regex escape bug)', async () => {
@@ -589,7 +589,7 @@ test('custom messages: wildcard keys with punctuation match (no JS regex escape 
 
   v = new Validator({ 'foo-bar': { x: 'abcdef' } }, { 'foo-bar.*': 'max:3' }, { 'foo-bar.*.max': { string: 'S :attribute' } });
   await v.fails();
-  assert.deepEqual(v.errors()['foo-bar.x'], ['The foo-bar.x must not be greater than 3.']);
+  assert.deepEqual(v.errors()['foo-bar.x'], ['The foo-bar.x field must not be greater than 3 characters.']);
 });
 
 test('display names: wildcard keys with punctuation match (no JS regex escape bug)', async () => {

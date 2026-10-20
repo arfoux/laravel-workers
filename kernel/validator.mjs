@@ -5,17 +5,13 @@
 // is supplied (opts.db) or an explicit resolver (opts.unique / opts.exists).
 // Unknown rules fail loud instead of silently passing.
 
-// The messages of the size rules for an uploaded file (Laravel 13's
-// `validation.max.file` etc.): the size of a file is in kilobytes.
-const FILE_SIZE_MESSAGES = {
-  max: (field, param) => `The ${field} field must not be greater than ${param} kilobytes.`,
-  min: (field, param) => `The ${field} field must be at least ${param} kilobytes.`,
-  size: (field, param) => `The ${field} field must be ${param} kilobytes.`,
-  between: (field, param) => {
-    const [a, b] = String(param).split(',');
-    return `The ${field} field must be between ${a} and ${b} kilobytes.`;
-  },
-};
+// Illuminate\Translation's default messages (Laravel 13's lang/en/validation.php) and
+// the placeholder replacement (Illuminate\Validation\ReplacesAttributes).
+import {
+  defaultValidationMessage,
+  renderValidationMessage,
+  LARAVEL_VALIDATION_MESSAGES,
+} from './validation-messages.mjs';
 
 // An uploaded file (the edge's file object).
 function isUploadedFileValue(value) {
@@ -53,86 +49,13 @@ function compareDecimal(a, b) {
   return af < bf ? -1 : 1;
 }
 
-const DEFAULT_MESSAGES = (field, rule, param, type = null) => {
-  // The size rules pick the message by the attribute's type (Laravel's
-  // getSizeMessage): a file's size is in kilobytes.
-  if (type === 'file' && FILE_SIZE_MESSAGES[rule]) return FILE_SIZE_MESSAGES[rule](field, param);
-  const t = {
-    required: `The ${field} field is required.`,
-    file: `The ${field} field must be a file.`,
-    string: `The ${field} must be a string.`,
-    integer: `The ${field} must be an integer.`,
-    numeric: `The ${field} must be a number.`,
-    boolean: `The ${field} must be true or false.`,
-    array: `The ${field} must be an array.`,
-    email: `The ${field} must be a valid email address.`,
-    url: `The ${field} must be a valid URL.`,
-    date: `The ${field} must be a valid date.`,
-    alpha: `The ${field} must only contain letters.`,
-    alpha_num: `The ${field} must only contain letters and numbers.`,
-    alpha_dash: `The ${field} must only contain letters, numbers, dashes and underscores.`,
-    min: `The ${field} must be at least ${param}.`,
-    max: `The ${field} must not be greater than ${param}.`,
-    between: `The ${field} must be between ${param}.`,
-    size: `The ${field} must be ${param}.`,
-    in: `The selected ${field} is invalid.`,
-    not_in: `The selected ${field} is invalid.`,
-    same: `The ${field} and ${param} must match.`,
-    different: `The ${field} and ${param} must be different.`,
-    confirmed: `The ${field} confirmation does not match.`,
-    regex: `The ${field} format is invalid.`,
-    not_regex: `The ${field} format is invalid.`,
-    accepted: `The ${field} must be accepted.`,
-    declined: `The ${field} must be declined.`,
-    digits: `The ${field} must be ${param} digits.`,
-    digits_between: `The ${field} must be between ${param} digits.`,
-    multiple_of: `The ${field} must be a multiple of ${param}.`,
-    uuid: `The ${field} must be a valid UUID.`,
-    ip: `The ${field} must be a valid IP address.`,
-    ipv4: `The ${field} must be a valid IPv4 address.`,
-    ipv6: `The ${field} must be a valid IPv6 address.`,
-    mac_address: `The ${field} must be a valid MAC address.`,
-    json: `The ${field} must be a valid JSON string.`,
-    ascii: `The ${field} must only contain ASCII characters.`,
-    lowercase: `The ${field} must be lowercase.`,
-    uppercase: `The ${field} must be uppercase.`,
-    hex_color: `The ${field} must be a valid hex color.`,
-    starts_with: `The ${field} must start with one of: ${param}.`,
-    ends_with: `The ${field} must end with one of: ${param}.`,
-    before: `The ${field} must be a date before ${param}.`,
-    after: `The ${field} must be a date after ${param}.`,
-    before_or_equal: `The ${field} must be a date before or equal to ${param}.`,
-    after_or_equal: `The ${field} must be a date after or equal to ${param}.`,
-    date_equals: `The ${field} must be a date equal to ${param}.`,
-    date_format: `The ${field} does not match the format ${param}.`,
-    gt: `The ${field} must be greater than ${param}.`,
-    gte: `The ${field} must be greater than or equal to ${param}.`,
-    lt: `The ${field} must be less than ${param}.`,
-    lte: `The ${field} must be less than or equal to ${param}.`,
-    distinct: `The ${field} field has a duplicate value.`,
-    unique: `The ${field} has already been taken.`,
-    exists: `The selected ${field} is invalid.`,
-    required_if: `The ${field} field is required when ${param}.`,
-    required_unless: `The ${field} field is required unless ${param}.`,
-    required_with: `The ${field} field is required when ${param} is present.`,
-    required_without: `The ${field} field is required when ${param} is not present.`,
-    required_with_all: `The ${field} field is required when ${param} is present.`,
-    required_without_all: `The ${field} field is required when ${param} is not present.`,
-    prohibited: `The ${field} field is prohibited.`,
-    prohibited_if: `The ${field} field is prohibited when ${param}.`,
-    prohibited_unless: `The ${field} field is prohibited unless ${param}.`,
-    missing: `The ${field} field must be missing.`,
-    present: `The ${field} field must be present.`,
-    list: `The ${field} field must be a list.`,
-    required_array_keys: `The ${field} field must contain entries for: ${param}.`,
-    decimal: `The ${field} field must have ${param} decimal places.`,
-    timezone: `The ${field} field must be a valid timezone.`,
-    in_array: `The selected ${field} is invalid.`,
-    doesnt_start_with: `The ${field} field must not start with one of the following: ${param}.`,
-    doesnt_end_with: `The ${field} field must not end with one of the following: ${param}.`,
-  };
-  return t[rule] || `The ${field} is invalid.`;
-};
+// The message of a rule: the table's entry, or the translator's key (Laravel
+// returns the key itself when a rule has no message).
+function ruleMessage(table, rule, type) {
+  const raw = defaultValidationMessage(table, rule, type);
+  if (raw !== null) return raw;
+  return SIZE_RULES.has(rule) ? 'validation.' + rule + '.' + type : 'validation.' + rule;
+}
 
 function isEmptyValue(v) {
   if (v === null || v === undefined) return true;
@@ -257,18 +180,76 @@ function parseRuleToken(token) {
   return { name: token.slice(0, idx).toLowerCase(), param: token.slice(idx + 1), raw: token };
 }
 
-// Minimal date-format translator (Y m d H i s only — the common set).
+// Illuminate\Validation\Concerns\ValidatesAttributes::validateDateFormat():
+// `DateTime::createFromFormat('!'.$format, $value)` must succeed AND the
+// re-formatted date must be the value (so '2026-13-01' is not a date, and
+// '1-2-2026' does not match the format 'Y-m-d').
+function daysInMonth(year, month) {
+  const days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month !== 2) return days[month - 1];
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return leap ? 29 : 28;
+}
+
+// Minimal date-format translator (Y y m n d j H G i s only — the common set).
 function matchDateFormat(value, format) {
   if (typeof value !== 'string') return false;
+  const fmt = String(format);
   const map = {
-    Y: '\\d{4}', y: '\\d{2}', m: '\\d{2}', n: '\\d{1,2}', d: '\\d{2}', j: '\\d{1,2}',
-    H: '\\d{2}', G: '\\d{1,2}', i: '\\d{2}', s: '\\d{2}',
+    Y: { rx: '\\d{4}', field: 'year' },
+    y: { rx: '\\d{2}', field: 'year' },
+    m: { rx: '\\d{2}', field: 'month' },
+    n: { rx: '\\d{1,2}', field: 'month' },
+    d: { rx: '\\d{2}', field: 'day' },
+    j: { rx: '\\d{1,2}', field: 'day' },
+    H: { rx: '\\d{2}', field: 'hour' },
+    G: { rx: '\\d{1,2}', field: 'hour' },
+    i: { rx: '\\d{2}', field: 'minute' },
+    s: { rx: '\\d{2}', field: 'second' },
   };
   let rx = '';
-  for (const ch of String(format)) {
-    rx += Object.prototype.hasOwnProperty.call(map, ch) ? map[ch] : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tokens = [];
+  for (const ch of fmt) {
+    const spec = map[ch];
+    if (spec) {
+      rx += '(' + spec.rx + ')';
+      tokens.push(ch);
+    } else {
+      rx += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
   }
-  try { return new RegExp('^' + rx + '$').test(value); } catch { return false; }
+  let m;
+  try { m = new RegExp('^' + rx + '$').exec(value); } catch { return false; }
+  if (!m) return false;
+  const f = { year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0 };
+  let twoDigitYear = null;
+  tokens.forEach((ch, i) => {
+    const n = Number(m[i + 1]);
+    if (ch === 'y') { twoDigitYear = n; return; }
+    f[map[ch].field] = n;
+  });
+  if (twoDigitYear !== null) f.year = twoDigitYear < 70 ? 2000 + twoDigitYear : 1900 + twoDigitYear;
+  // The calendar: PHP rejects an impossible date.
+  if (f.month < 1 || f.month > 12) return false;
+  if (f.day < 1 || f.day > daysInMonth(f.year, f.month)) return false;
+  if (f.hour > 23 || f.minute > 59 || f.second > 59) return false;
+  // The round trip: the re-formatted date must be the value.
+  let out = '';
+  for (const ch of fmt) {
+    const spec = map[ch];
+    if (!spec) { out += ch; continue; }
+    if (ch === 'Y') out += String(f.year).padStart(4, '0');
+    else if (ch === 'y') out += String(f.year % 100).padStart(2, '0');
+    else if (ch === 'm') out += String(f.month).padStart(2, '0');
+    else if (ch === 'n') out += String(f.month);
+    else if (ch === 'd') out += String(f.day).padStart(2, '0');
+    else if (ch === 'j') out += String(f.day);
+    else if (ch === 'H') out += String(f.hour).padStart(2, '0');
+    else if (ch === 'G') out += String(f.hour);
+    else if (ch === 'i') out += String(f.minute).padStart(2, '0');
+    else if (ch === 's') out += String(f.second).padStart(2, '0');
+  }
+  return out === value;
 }
 
 function dateValue(v, data) {
@@ -337,16 +318,9 @@ function attributeFromLocalArray(attribute, source) {
   return null;
 }
 
-// Illuminate\Validation\Concerns\FormatsMessages::replaceAttributePlaceholder().
-function replaceAttributePlaceholder(message, value) {
-  const upper = value.toUpperCase();
-  const ucfirst = value.charAt(0).toUpperCase() + value.slice(1);
-  return String(message).replace(/:attribute|:ATTRIBUTE|:Attribute/g, (m) => {
-    if (m === ':ATTRIBUTE') return upper;
-    if (m === ':Attribute') return ucfirst;
-    return value;
-  });
-}
+// Illuminate\Validation\Concerns\FormatsMessages::replaceAttributePlaceholder()
+// lives in kernel/validation-messages.mjs now (the renderer replaces the
+// placeholders of every message, the custom ones included).
 
 // PHP truthiness (`if ($inlineAttribute = ...)` in getDisplayableAttribute()):
 // null/false/0/0.0/''/'0'/[] are falsy; everything else (including non-empty
@@ -876,12 +850,19 @@ export class Validator {
         return Array.isArray(arr) && arr.some((x) => String(x) === String(value));
       }
       case 'decimal': {
+        // Illuminate\Validation\Concerns\ValidatesAttributes::validateDecimal():
+        // the number of decimal places must be exactly the parameter (or
+        // between the two parameters).
         if (!isNumericValue(value)) return false;
-        const [mn, mx] = String(p == null ? '' : p).split(',').map((s) => Number(s.trim()));
-        const digits = String(value).includes('.') ? String(value).split('.')[1].length : 0;
-        if (Number.isFinite(mn) && digits < mn) return false;
-        if (Number.isFinite(mx) && digits > mx) return false;
-        return true;
+        const m = /^[+-]?\d*\.?(\d*)$/.exec(String(value));
+        if (!m) return false;
+        const decimals = m[1].length;
+        const parts = String(p == null ? '' : p).split(',').map((s) => s.trim());
+        const min = Number(parts[0]);
+        if (!Number.isFinite(min)) return false;
+        if (parts.length < 2) return decimals === min;
+        const max = Number(parts[1]);
+        return decimals >= min && decimals <= max;
       }
       case 'timezone': {
         if (typeof value !== 'string') return false;
@@ -975,14 +956,31 @@ export class Validator {
     const display = this._displayName(field);
     let msg = this._customMessage(field, rule);
     const type = this._attributeType(field);
+    const lowerRule = phpSnake(rule);
     // getInlineMessage(): a size rule's array message is keyed by attribute type.
-    if (isPhpArray(msg) && SIZE_RULES.has(phpSnake(rule))) {
+    if (isPhpArray(msg) && SIZE_RULES.has(lowerRule)) {
       msg = msg[type] ?? null;
     }
     // Laravel checks `is_null($inlineMessage)`, so an empty custom message is
     // kept (it becomes an empty error string), unlike a JS truthiness check.
-    if (msg == null) msg = DEFAULT_MESSAGES(display, rule, param, type);
-    else msg = replaceAttributePlaceholder(msg, display);
+    if (msg == null) {
+      // The default message: the app's own lang file (dumped at build time)
+      // else the framework's copy.
+      const table = this.opts.defaultMessages && typeof this.opts.defaultMessages === 'object'
+        ? this.opts.defaultMessages
+        : LARAVEL_VALIDATION_MESSAGES;
+      msg = ruleMessage(table, lowerRule, type);
+    }
+    // makeReplacements(): the placeholders (':attribute', ':max', ':values', ...).
+    msg = renderValidationMessage(msg, {
+      attribute: field,
+      display,
+      rule: lowerRule,
+      params: param === null || param === undefined ? [] : String(param).split(','),
+      displayOf: (other) => this._displayName(other),
+      valueOf: (other) => this.get(other),
+      data: this.data,
+    });
     if (!this._errors[field]) this._errors[field] = [];
     this._errors[field].push(msg);
   }

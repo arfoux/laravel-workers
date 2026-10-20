@@ -540,12 +540,22 @@ function fileExprKind(node) {
 
 // A method call on an uploaded file: only the compiled surface is allowed and
 // the ones that write to the object store are awaited.
+const FILE_METHOD_REASONS = {
+  storePublicly: 'it needs the public disk (the edge has one object store - the app\'s default disk)',
+  move: 'it moves the file on a filesystem (the edge has no filesystem)',
+  get: 'it returns the file\'s bytes (a JS string would re-encode them)',
+  getMimeType: 'it reads the file\'s content type (finfo)',
+  guessExtension: 'it reads the file\'s content type (finfo)',
+  extension: 'it reads the file\'s content type (finfo)',
+  hashName: 'it reads the file\'s content type (finfo)',
+};
 function txFileMethod(obj, meth, args, node) {
   if (!FILE_METHODS.has(meth)) {
+    const reason = FILE_METHOD_REASONS[meth];
     throw mkErr(
       'LW003',
-      'the uploaded file method ->' + meth + '() is not compiled — allowed: ' + [...FILE_METHODS].join(', ') +
-        ' (the content type of the file cannot be sniffed at the edge like finfo does); ' + PORT_HINT,
+      'the uploaded file method ->' + meth + '() is not compiled' + (reason ? ' — ' + reason : '') +
+        ' — allowed: ' + [...FILE_METHODS].join(', ') + '; ' + PORT_HINT,
       node.loc,
       PORT_HINT
     );
@@ -1799,6 +1809,18 @@ function walkStatement(node, lines, indent, ctx) {
     }
     case 'foreach': {
       const tmp = '__e' + (walkStatement._n = (walkStatement._n || 0) + 1);
+      // An uploaded file in a loop (`foreach ($request->file('photos') as $f)`):
+      // the loop variable holds a file, so its methods are gated like the ones
+      // of a `$file = $request->file('x')` variable.
+      if (CTX && CTX.fileVars && node.value && node.value.kind === 'variable' && node.source) {
+        let srcKind = fileExprKind(node.source);
+        // The source may be a variable that holds the files
+        // (`$files = $request->file('photos'); foreach ($files as $f)`).
+        if (!srcKind && node.source.kind === 'variable') {
+          srcKind = CTX.fileVars.get(vname(node.source.name)) || null;
+        }
+        if (srcKind) CTX.fileVars.set(vname(node.value.name), srcKind);
+      }
       lines.push(indent + 'for (const ' + tmp + ' of rt.entries(' + tx(node.source) + ')) {');
       if (node.key) lines.push(indent + '  ' + tx(node.key) + ' = ' + tmp + '[0];');
       lines.push(indent + '  ' + tx(node.value) + ' = ' + tmp + '[1];');

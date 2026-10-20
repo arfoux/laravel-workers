@@ -279,8 +279,8 @@ test('pipeline: failed validation redirects back and flashes errors + old input'
     default: {
       format: ':message',
       messages: {
-        email: ['The email must be a valid email address.'],
-        password: ['The password must be at least 8.'],
+        email: ['The email field must be a valid email address.'],
+        password: ['The password field must be at least 8 characters.'],
       },
     },
   });
@@ -313,7 +313,7 @@ test('pipeline: expectsJson validation failure is a 422 JSON body with no flash'
   assert.equal(parsed.message, 'The email field is required. (and 1 more error)');
   assert.deepEqual(parsed.errors, {
     email: ['The email field is required.'],
-    password: ['The password must be at least 8.'],
+    password: ['The password field must be at least 8 characters.'],
   });
   const payload = payloadOf(rows);
   assert.ok(!('errors' in payload), 'json validation failures must not flash an error bag');

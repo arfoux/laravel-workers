@@ -52,6 +52,9 @@ $put('app.cipher', $config->get('app.cipher'));
 // for env() at the edge (there is no .env there).
 $put('app.env', $config->get('app.env'));
 $put('app.debug', $config->get('app.debug'));
+// The app's locale: the validation messages (and the translations) are read
+// from the app's own lang file for that locale.
+$put('app.locale', $config->get('app.locale'));
 
 // ---------- pagination ----------
 // The pagination view the paginator renders (Laravel's default:

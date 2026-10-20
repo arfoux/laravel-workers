@@ -1395,6 +1395,8 @@ writeTree(tmpRoot, {
     .replace("from 'bcryptjs'", `from ${JSON.stringify(bcryptEntryUrl)}`),
   'kernel/validation.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation.mjs'), 'utf8'),
   'kernel/validator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validator.mjs'), 'utf8'),
+  'kernel/validation-messages.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation-messages.mjs'), 'utf8'),
+  'kernel/validation-messages.data.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation-messages.data.mjs'), 'utf8'),
   'kernel/paginator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'paginator.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(
     path.join(pkgDir, 'compiler', 'runtime', 'rt-from-context.mjs'),

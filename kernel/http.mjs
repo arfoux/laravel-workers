@@ -1389,6 +1389,20 @@ function withDefaultCacheControl(res) {
 // handleHttp
 // ---------------------------------------------------------------------------
 
+// The app's validation messages (the build dumps the app's lang/ files with the
+// translations: the app's own file wins over the framework's copy, exactly
+// like Laravel's translator). The app's locale wins over the fallback locale
+// ('en'), like Laravel's FileLoader.
+function validationMessagesOf(config) {
+  const translations = config && config.translations;
+  if (!translations || typeof translations !== 'object') return null;
+  const locale = String((config && config['app.locale']) || 'en');
+  const base = translations.en && translations.en.validation;
+  const local = translations[locale] && translations[locale].validation;
+  if (!base && !local) return null;
+  return Object.assign({}, base || {}, local || {});
+}
+
 /**
  * Run one request through the compiled pipeline.
  *
@@ -1423,7 +1437,7 @@ export async function handleHttp(raw, options = {}) {
   });
   // $request->validate() / validateWithBag() — compiled controllers call these
   // through rt.request(); the rule engine gets the D1 binding for unique/exists.
-  installValidation(request, { db });
+  installValidation(request, { db, defaultMessages: validationMessagesOf(config) });
 
   const matchReq = {
     method: request.realMethod(),

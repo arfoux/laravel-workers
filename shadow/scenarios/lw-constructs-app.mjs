@@ -278,6 +278,50 @@ export default {
       expectStatus: 422,
     },
     {
+      // The size rule's message is Laravel 13's own ("... must not be greater
+      // than 255 characters."): the compiled side uses the same texts (the
+      // app's lang file wins - the build dumps it with the translations).
+      label: 'PUT /posts/1 (a too long title)',
+      method: 'PUT',
+      uri: '/posts/1',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'x'.repeat(300) },
+      expectStatus: 422,
+      expectBody: 'The title field must not be greater than 255 characters.',
+    },
+    {
+      // Several files in one field (`photos[]`): the names, the count and the
+      // total size are the same on both sides.
+      label: 'POST /upload-multi-demo (several files in one field)',
+      method: 'POST',
+      uri: '/upload-multi-demo',
+      jar: true,
+      multipart: {
+        fields: { _token: '@token' },
+        files: [
+          { name: 'photos[]', filename: 'a.txt', type: 'text/plain', content: 'aaa' },
+          { name: 'photos[]', filename: 'b.txt', type: 'text/plain', content: 'bbbb' },
+        ],
+      },
+      expectBody: '2|a.txt,b.txt|7',
+    },
+    {
+      // The free path's limit: the D1 blob store holds 1.5 MB per object, the
+      // local disk has no limit. The compiled side fails loud (a 500 with the
+      // limit in the message), the real app stores the file.
+      label: 'POST /upload-big-demo (a file bigger than the D1 blob limit)',
+      method: 'POST',
+      uri: '/upload-big-demo',
+      jar: true,
+      multipart: {
+        fields: { _token: '@token', title: 'Shadow upload' },
+        files: [{ name: 'avatar', filename: 'big.txt', type: 'text/plain', content: 'x'.repeat(1600000) }],
+      },
+      expect: 'diverges',
+      why: 'the D1 blob store (the free path) holds at most 1.5 MB per object - the compiled side fails loud, the local disk has no limit',
+    },
+    {
       // The helper verbs: `today()` follows the request clock (the oracle
       // freezes Carbon, so both sides answer the same date), the abort
       // helpers are no-ops here, and `Log::` goes to the platform log.
