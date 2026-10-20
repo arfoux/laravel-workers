@@ -493,7 +493,7 @@ class WithService
   // swallowed).
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(rt, /);
 });
-test('classes: a listener that pushes to the queue fails loud (the edge can push it, nothing runs it)', () => {
+test('classes: a listener that pushes to the queue fails loud (the call is refused, nothing would run it)', () => {
   // The refusal holds in a listener too: the compiled class would push the
   // job and nothing would ever run it (a silent no-op).
   const file = classFile('PushesJob', `<?php
@@ -522,8 +522,10 @@ class PushesJob
   );
   assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
   assert.match(res.errors[0].message, /Queue::push\(\) is not supported/);
-  assert.match(res.errors[0].message, /the edge can push the job/);
-  assert.match(res.errors[0].message, /generates no consumer worker/);
+  assert.match(res.errors[0].message, /the job would never run at the edge/);
+  assert.match(res.errors[0].message, /the worker has no queue handler/);
+  // The class path carries the fail-loud code like the controller path.
+  assert.equal(res.errors[0].code, 'LW002');
 });
 test('classes: a listener that uses a tagged cache fails loud (the store has no tags)', () => {
   const file = classFile('TagsCache', `<?php

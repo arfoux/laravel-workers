@@ -252,7 +252,7 @@ export function buildRt(context, opts = {}) {
       throw new Error(
         'Queue::' + method + '(): the job would never run at the edge — the worker has no queue handler, so ' +
           'nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that ' +
-          'work: a Cloudflare Queues binding (paid) with a consumer you write, or a D1 table the cron trigger reads.'
+          'work: a Cloudflare Queues binding with a consumer you write, or a D1 table the cron trigger reads.'
       );
     };
     return {

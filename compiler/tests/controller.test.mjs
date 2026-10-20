@@ -1203,6 +1203,7 @@ test('emit: Cache::tags() fails loud with the store reason (LW002)', () => {
   // The build refuses the route earlier than Laravel does: that is stricter,
   // not a parity - the message must say so.
   assert.match(res.errors[0].message, /stricter than Laravel, not a parity/);
+  assert.match(res.errors[0].message, /the build refuses the route before it ships/);
 });
 
 test('emit: an uploaded file compiles (the file object + the object store)', () => {
@@ -2065,14 +2066,13 @@ test('emit: Queue::push() fails loud with the structural reason', () => {
   const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
-  // The edge can push the job; what is missing is the consumer. The message
-  // must name the two blockers apart: a consumer worker that does not exist
-  // yet, and a hosted queue (a paid product).
-  assert.match(res.errors[0].message, /the edge can push the job/);
-  assert.match(res.errors[0].message, /generates no consumer worker/);
-  assert.match(res.errors[0].message, /byte parity with Laravel is impossible/);
-  assert.match(res.errors[0].message, /paid product/);
-  assert.match(res.errors[0].message, /D1 table \+ a cron consumer/);
+  // The wording is the runtime's own (rt.queue() throws the same at the
+  // edge): the job would never run, and the paths that work are named.
+  assert.match(res.errors[0].message, /the job would never run at the edge/);
+  assert.match(res.errors[0].message, /the worker has no queue handler/);
+  assert.match(res.errors[0].message, /carries a JSON body, not a PHP job/);
+  assert.match(res.errors[0].message, /a Cloudflare Queues binding with a consumer you write/);
+  assert.match(res.errors[0].message, /a D1 table the cron trigger reads/);
 });
 
 test('emit: a mailable fails loud with the structural reason', () => {

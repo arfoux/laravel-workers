@@ -247,7 +247,10 @@ function compileConstructor(fqcn, classNode, opts) {
     thisVar: '__self',
   });
   if (emitted.errors.length) {
-    return { error: 'the constructor of ' + fqcn + ' did not compile: ' + emitted.errors[0].message };
+    return {
+      error: 'the constructor of ' + fqcn + ' did not compile: ' + emitted.errors[0].message,
+      code: emitted.errors[0].code,
+    };
   }
   const bodyCode = String(emitted.code || '')
     .split('\n')
@@ -429,7 +432,10 @@ function compileMethod(fqcn, methodNode, opts) {
     injectedDeps: opts.injectedDeps instanceof Map ? opts.injectedDeps : new Map(),
   });
   if (emitted.errors.length) {
-    return { error: 'the method ' + fqcn + '::' + name + '() did not compile: ' + emitted.errors[0].message };
+    return {
+      error: 'the method ' + fqcn + '::' + name + '() did not compile: ' + emitted.errors[0].message,
+      code: emitted.errors[0].code,
+    };
   }
   const args = ['rt'].concat(params.map((p) => vname(p.name)));
   return {
@@ -542,7 +548,7 @@ export function compileClasses(dump, opts = {}) {
     options.imports = parsed.imports instanceof Map ? parsed.imports : new Map();
     const ctor = compileConstructor(fqcn, classNode, options);
     if (ctor.error) {
-      errors.push({ class: fqcn, message: ctor.error });
+      errors.push({ class: fqcn, message: ctor.error, code: ctor.code });
       continue;
     }
     // The injected services (the framework ones and the app ones): their
@@ -555,6 +561,7 @@ export function compileClasses(dump, opts = {}) {
     options.injectedDeps = injectedDeps;
     const methods = {};
     let failed = null;
+    let failedCode = null;
     for (const m of classMembers(classNode)) {
       if (!m || m.kind !== 'method') continue;
       if (m.visibility && m.visibility !== 'public') continue;
@@ -563,12 +570,13 @@ export function compileClasses(dump, opts = {}) {
       const r = compileMethod(fqcn, m, options);
       if (r.error) {
         failed = r.error;
+        failedCode = r.code;
         break;
       }
       methods[methodName] = { js: r.js, params: r.params };
     }
     if (failed) {
-      errors.push({ class: fqcn, message: failed });
+      errors.push({ class: fqcn, message: failed, code: failedCode });
       continue;
     }
     meta[fqcn] = { file: info.file, methods: Object.keys(methods) };

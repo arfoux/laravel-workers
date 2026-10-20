@@ -82,7 +82,7 @@ function probeClasses(c) {
   });
   if (!res.errors.length) return { verdict: 'ok', code: null, message: 'compiles' };
   const e = res.errors[0];
-  return { verdict: 'fail', code: null, message: String(e.message).split('\n')[0] };
+  return { verdict: 'fail', code: e.code || null, message: String(e.message).split('\n')[0] };
 }
 
 function probe(c) {

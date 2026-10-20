@@ -49,10 +49,6 @@ const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
 // The methods that deliver are async at the edge — the compiled code awaits them.
 const MAIL_SYNC = new Set(['to', 'cc', 'bcc']);
 const MAIL_ASYNC = new Set(['send', 'sendNow', 'raw', 'html', 'queue', 'later']);
-// The Queue facade methods that compile. They fail loud at the edge (nothing
-// consumes the queue binding), but the build has to know them by name.
-const QUEUE_ASYNC = new Set(['push', 'pushOn', 'later', 'bulk']);
-
 function mkErr(code, message, loc, hint) {
   const e = new Error(message);
   e.lw = { code, message, line: loc?.start?.line ?? 0, column: loc?.start?.column ?? 0, hint: hint || '' };
@@ -858,20 +854,16 @@ const MAILABLE_REASON =
   'and produce the very same payload, and the shadow harness would have to compare the mail payload byte for byte ' +
   '(it cannot today - the log format differs), so the payload could not be proven - ';
 
-// The Queue facade: the edge CAN push the job (the producer writes the row to
-// the queue binding), but nothing runs it. The message names the two blockers
-// apart, because they are two different things: a consumer worker does not
-// exist yet (the toolchain generates none), and a hosted queue (the product
-// that comes with one) is a paid product. The free path is a D1 table + a
-// cron consumer of your own — then the job runs later, not during the request
-// (a documented divergence, not a parity).
+// The Queue facade: the call is refused, so the compiled route cannot push
+// at all. The wording is the runtime's own (compiler/runtime/rt-from-context.mjs
+// throws the same when a route reaches rt.queue()): the job would never run
+// at the edge - the worker has no queue handler, nothing consumes the queue
+// binding, and the binding carries a JSON body, not a PHP job.
 const queueRefusal = (m) =>
-  'Queue::' + m + '() is not supported — the edge can push the job (the producer writes the row to the queue ' +
-  'binding), but nothing runs it: the toolchain generates no consumer worker, so the job would never run (a ' +
-  'silent no-op) and the byte parity with Laravel is impossible. Two separate blockers: a consumer worker does ' +
-  'not exist yet, and a hosted queue (Cloudflare Queues) is a paid product (it asks for a credit card); the free ' +
-  'path is a D1 table + a cron consumer of your own — then the job runs later, not during the request (a ' +
-  'documented divergence, not a parity) — ' + PORT_HINT;
+  'Queue::' + m + '() is not supported — the job would never run at the edge: the worker has no queue handler, so ' +
+  'nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a ' +
+  'Cloudflare Queues binding with a consumer you write, or a D1 table the cron trigger reads (a port handler ' +
+  'writes the row — the edge has no producer for it) — ' + PORT_HINT;
 // The facades whose work the edge cannot do with the same result. The message
 // says WHY (the structural reason), not "unknown class".
 const UNSUPPORTED_FACADES = {
@@ -1364,19 +1356,6 @@ function txCall(node) {
         PORT_HINT
       );
     }
-    // Illuminate\Support\Facades\Queue — it fails loud at the edge (nothing
-    // consumes the queue binding: the job would never run).
-    if ((cls === 'Queue' || cls === 'Illuminate\\Support\\Facades\\Queue') && CTX && CTX.controller) {
-      if (QUEUE_ASYNC.has(meth)) {
-        return txAwait('rt.queue().' + meth + '(' + args + ')', node, 'Queue::' + meth + '()');
-      }
-      throw mkErr(
-        'LW002',
-        'Queue::' + meth + '() is not supported — allowed: ' + [...QUEUE_ASYNC].join(', ') + '; ' + PORT_HINT,
-        node.loc,
-        PORT_HINT
-      );
-    }
     // Illuminate\Support\Str - the string helpers (the PHP-exact subset).
     if ((cls === 'Str' || cls === 'Illuminate\\Support\\Str') && CTX && CTX.controller) {
       if (!STR_METHODS.has(meth)) {
@@ -1395,9 +1374,9 @@ function txCall(node) {
         throw mkErr(
           'LW002',
           'Cache::tags() is not supported — the compiled cache store is the D1 `database` store, which has no tags: ' +
-            'in Laravel the same store throws BadMethodCallException("This cache store does not support tagging.") ' +
-            'when the route runs, so that route answers 500 there; the build refuses the route earlier (stricter ' +
-            'than Laravel, not a parity), and a taggable store (redis/memcached) is not compiled — ' + PORT_HINT,
+            'in Laravel this route 500s with BadMethodCallException("This cache store does not support tagging."); ' +
+            'the build refuses the route before it ships (stricter than Laravel, not a parity), and a taggable ' +
+            'store (redis/memcached) is not compiled — ' + PORT_HINT,
           node.loc,
           PORT_HINT
         );
