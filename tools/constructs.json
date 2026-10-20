@@ -94,21 +94,19 @@
       "id": "redirect_away",
       "label": "`redirect()->away()`",
       "php": "return redirect()->away('https://example.com');",
-      "expect": "fail",
-      "code": "LW002",
-      "note": "An absolute external URL (the compiled redirect only does local ones).",
+      "expect": "ok",
+      "note": "An absolute external URL (the compiled redirect keeps it absolute).",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "back",
       "label": "`back()`",
       "php": "return back();",
-      "expect": "fail",
-      "code": "LW001",
+      "expect": "ok",
       "note": "The Referer, or the session's `url.previous`, or `/`.",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "str",
@@ -124,61 +122,55 @@
       "id": "env",
       "label": "`env()`",
       "php": "$e = env('APP_ENV');",
-      "expect": "fail",
-      "code": "LW001",
-      "note": "The build-time config dump is the padanan (the edge has no .env).",
+      "expect": "ok",
+      "note": "The build-time config dump is the padanan (the edge has no .env); only the app.* keys are mapped.",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "data_get",
       "label": "`data_get()`",
       "php": "$v = data_get(['a' => 1], 'a');",
-      "expect": "fail",
-      "code": "LW001",
-      "note": "Dot/array access on an array or an object.",
+      "expect": "ok",
+      "note": "Dot/array access on an array or an object (the `*` wildcard is not ported).",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "tap",
       "label": "`tap()`",
       "php": "tap(1, function ($x) { return $x; });",
-      "expect": "fail",
-      "code": "LW001",
+      "expect": "ok",
       "note": "Passes the value through a closure (the closure support exists).",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "report",
       "label": "`report()`",
       "php": "report(new \\RuntimeException('x'));",
-      "expect": "fail",
-      "code": "LW001",
-      "note": "Reports an exception to the logger (it does not answer it).",
+      "expect": "ok",
+      "note": "Reports an exception to the platform log (it does not answer it).",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "cache_helper",
       "label": "`cache()` (the helper)",
       "php": "cache('k', 'v');",
-      "expect": "fail",
-      "code": "LW001",
+      "expect": "ok",
       "note": "The helper form of the `Cache` facade (the facade compiles).",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "session_array",
       "label": "`session([...])` (the array form)",
       "php": "session(['k' => 'v']);",
-      "expect": "fail",
-      "code": "LW002",
-      "note": "The array form writes many keys; `session()->put([...])` compiles.",
+      "expect": "ok",
+      "note": "The array form writes many keys: `session()->put([...])`.",
       "batch": "M37",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "event_dispatch",

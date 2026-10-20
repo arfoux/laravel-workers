@@ -1,6 +1,15 @@
 // compiler/runtime/rt-from-context.mjs — Runtime helpers (context → rt)
 import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } from '../../kernel/validation.mjs';
 import * as hashMod from '../../kernel/hash.mjs';
+
+// env() -> the config key: the build-time config dump is the padanan for env()
+// at the edge (there is no .env there). Keep in sync with tools/config-dump.php.
+const ENV_CONFIG_KEYS = {
+  APP_ENV: 'app.env',
+  APP_DEBUG: 'app.debug',
+  APP_KEY: 'app.key',
+  APP_URL: 'app.url',
+};
 export function buildRt(context, opts = {}) {
   const strict = !!(opts && opts.strict);
   const ctx = context || {};
@@ -66,7 +75,11 @@ export function buildRt(context, opts = {}) {
   }
 
   // config
-  const configCtx = has('config') ? ctx.config : {};
+  // A compiled controller calls buildRt(null, { ... http: ctx }) - the config
+  // lives on the HTTP context the kernel hands down (the flat dotted map).
+  let configCtx = has('config') ? ctx.config : null;
+  if (!configCtx && opts && opts.http && opts.http.config) configCtx = opts.http.config;
+  if (!configCtx) configCtx = {};
 
   // ---- phpNumStr (PHP-style float formatting) ----
   const phpNumStr = (v) => {
@@ -203,6 +216,55 @@ export function buildRt(context, opts = {}) {
   };
   rt.request = () => (liveRequest || noHttp('request'));
   rt.session = () => (liveSession || noHttp('session'));
+  // back(): the session's url.previous, else the Referer, else the fallback.
+  rt.back = (fallback = '/') => {
+    const previous =
+      liveSession && typeof liveSession.previousUrl === 'function' ? liveSession.previousUrl() : null;
+    const referer =
+      liveRequest && typeof liveRequest.header === 'function' ? liveRequest.header('referer') : null;
+    return rt.redirect(previous || referer || fallback);
+  };
+  // data_get(): the dot/array access (the `*` wildcard is not ported).
+  rt.dataGet = (target, key, def = null) => {
+    if (key === null || key === undefined) return target;
+    const parts = String(key).split('.');
+    let cur = target;
+    for (const part of parts) {
+      if (cur === null || cur === undefined) return def;
+      if (Array.isArray(cur)) {
+        const idx = Number(part);
+        if (!Number.isInteger(idx)) return def;
+        cur = cur[idx];
+        continue;
+      }
+      if (typeof cur !== 'object') return def;
+      if (!Object.prototype.hasOwnProperty.call(cur, part)) return def;
+      cur = cur[part];
+    }
+    return cur === undefined ? def : cur;
+  };
+  // tap(): the value through a closure (Laravel returns the value).
+  rt.tap = (value, callback) => {
+    if (typeof callback === 'function') callback(value);
+    return value;
+  };
+  // report(): the platform log (it does not answer the exception).
+  rt.report = (error) => {
+    const message = error && error.message ? String(error.message) : String(error);
+    if (liveLog) liveLog('error', message);
+    return null;
+  };
+  // env(): the build-time config dump is the padanan (there is no .env at the edge).
+  rt.env = (key, def = null) => {
+    const cfgKey = ENV_CONFIG_KEYS[String(key)];
+    if (!cfgKey) {
+      throw new Error(
+        'env(' + key + ') has no compiled counterpart - use config() (the build-time config dump is the padanan)'
+      );
+    }
+    const value = rt.config(cfgKey);
+    return value === undefined || value === null ? def : value;
+  };
   rt.cache = () => {
     if (liveCache) return liveCache;
     if (opts && opts.http) throw new Error('cache(): no cache store configured (cache.driver !== "database" or no D1 binding)');

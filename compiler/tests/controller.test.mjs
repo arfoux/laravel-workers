@@ -690,6 +690,35 @@ test('emit: the flash modifiers compile (redirect()->with/withInput/withErrors)'
   assert.match(res.code, /rt\.redirect\("\/x"\)\.withErrors\(\{/);
 });
 
+test('emit: the helper surface compiles (away, back, env, data_get, tap, report, cache, session[])', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    "        return redirect()->away('https://example.com');\n" +
+    "        return back();\n" +
+    "        $e = env('APP_ENV');\n" +
+    "        $v = data_get(['a' => 1], 'a');\n" +
+    "        $t = tap(1, function ($x) { return $x; });\n" +
+    "        report(new \\RuntimeException('x'));\n" +
+    "        cache('k', 'v');\n" +
+    "        session(['k' => 'v']);\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /rt\.redirect\("https:\/\/example\.com"\)/);
+  assert.match(res.code, /rt\.back\(\)/);
+  assert.match(res.code, /rt\.env\("APP_ENV"\)/);
+  assert.match(res.code, /rt\.dataGet\(/);
+  assert.match(res.code, /rt\.tap\(/);
+  assert.match(res.code, /rt\.report\(/);
+  assert.match(res.code, /rt\.cache\(\)\.get\("k", "v"\)/);
+  assert.match(res.code, /rt\.session\(\)\.put\(/);
+});
+
 test('emit: an unsupported Storage method fails loud (LW002)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

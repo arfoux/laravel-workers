@@ -47,6 +47,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M35 (planned)** The construct audit is generated (`npm run audit:constructs`): 31 constructs probed against the real compiler - 7 compile (and are proven by the shadow harness), 18 fail loud with their code, 6 are build-level (a Blade layout, `paginate`, route-model binding, the relations, the file uploads, an `OPTIONS` route). The plan: **M36** the flash (`redirect()->with()/withInput()/withErrors()`), **M37** the helper surface (`away()`, `back()`, `Str::*`, `env()`, `data_get()`, `tap()`, `report()`, the `cache()` helper, `session([...])`), **M38** the class-bearing calls (`Event::dispatch()`, `Gate`, the fluent `Mail::to()->send()`/`Queue::push(SomeJob::class)`/`Storage::disk()` - they need the class compiler), **M39** the build-level constructs.
 - **M34** The `new` expression (2026-10-20) — only the **PHP built-in exceptions** compile (`new RuntimeException('boom')` → an error with the same class name and message; the handler answers the same 500 as Laravel). An app class (`new App\Exceptions\Mine`) is **not** compiled: it fails loud with LW002, it never becomes a silent stub. `throw_if()`/`throw_unless()` compile too. The step found two real harness bugs: the oracle let whoops print the debug error page over its JSON (whoops exits → the whole run died), and an uncaught error on the compiled side escaped the harness — both fixed, and the 500 is now a documented divergence. npm test **375/375**.
 - **M36** The flash (2026-10-20) — `redirect()->with()`, `->withInput()` and `->withErrors()` compile: the flash goes into the **session** (Laravel reads it on the *next* request), reusing the same error-bag shape as the validation flow. The shadow harness proves it end to end (`POST /flash-demo` → 302 → `GET /flash-target` reads back `saved|Flash me`, byte-identical on both sides). npm test **377/377**.
+- **M37** The helper surface (2026-10-20) — `redirect()->away()`, `back()`, `env()`, `data_get()`, `tap()`, `report()`, the `cache()` helper and `session([...])` compile. `env()` is padded by the build-time config dump (there is no `.env` at the edge). The step found **three real bugs**: `config()` never reached a compiled controller (the router's context did not carry it), the D1 cache store wrote an **already-expired** row for a `put()` without a TTL (Laravel: a TTL of 0 means *forever*), and the `cache()` helper's semantics (`cache('k','v')` is a *get* with a default, not a put). npm test **379/379**.
 
 ## Supported vs unsupported
 
@@ -113,7 +114,7 @@ npx laravel-workers build     # --strict build; reads registry.json / edge/regis
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (377)
+laravel-workers test            # all kernel tests (379)
 laravel-workers test:db          # db/model only
 laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
 laravel-workers test:hash       # hash + encrypter only

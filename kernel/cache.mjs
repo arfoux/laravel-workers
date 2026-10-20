@@ -140,7 +140,10 @@ export class DatabaseCacheStore {
 
   /** DatabaseStore::putMany() — one upsert per row (D1 has no multi-row upsert). */
   async putMany(values, seconds) {
-    const expiration = this.currentTime() + phpIntCastValue(seconds);
+    // DatabaseStore::put(): a TTL of 0 (or less) means "forever" - Laravel
+    // stores it as now + 315360000 (a year), never as an expired row.
+    const ttl = phpIntCastValue(seconds);
+    const expiration = ttl > 0 ? this.currentTime() + ttl : this.currentTime() + FOREVER_SECONDS;
     let changes = 0;
     for (const [key, value] of Object.entries(values)) {
       const res = await this.db
@@ -165,7 +168,11 @@ export class DatabaseCacheStore {
     if ((await this.get(key)) !== null) return false;
     const res = await this.db
       .prepare(`INSERT OR IGNORE INTO ${this.table} ("key", "value", "expiration") VALUES (?, ?, ?)`)
-      .bind(this.prefix + key, this._serialize(value), this.currentTime() + phpIntCastValue(seconds))
+      .bind(
+        this.prefix + key,
+        this._serialize(value),
+        phpIntCastValue(seconds) > 0 ? this.currentTime() + phpIntCastValue(seconds) : this.currentTime() + FOREVER_SECONDS
+      )
       .run();
     return Number((res && res.meta && res.meta.changes) || 0) > 0;
   }

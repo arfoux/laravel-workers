@@ -10,6 +10,7 @@ const fname = (name) => 'fn_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 const RENAME_FUNCS = new Map([
   ['abort_if', 'abortIf'],
   ['abort_unless', 'abortUnless'],
+  ['data_get', 'dataGet'],
   ['throw_if', 'throwIf'],
   ['throw_unless', 'throwUnless'],
 ]);
@@ -347,14 +348,17 @@ const PORT_HINT = 'write a port handler for this route (build --scaffold) instea
 // onto rt.* (which reads the live session/request handed down by the kernel).
 // `auth()` / `Auth::*` need the request context too and the guard resolves the
 // user asynchronously (Timebox), so in controller mode those calls are awaited.
-const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'request']);
+const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'request', 'cache']);
 // Recaller/guard methods that return a promise at the edge.
 const AUTH_ASYNC = new Set(['check', 'guest', 'user', 'id', 'attempt', 'once', 'login', 'logout']);
 const AUTH_FACADE_RE = /^rt\.auth\((?:[^()]*)\)(?:\.guard\((?:[^()]*)\))?$/;
 // Cache facade methods that hit the D1-backed store (async at the edge).
+// The Cache facade methods that hit the D1-backed store (async at the edge).
+// `putMany` is not in the list: the store's putMany has another signature
+// than the Repository's, so it would write the wrong thing - it fails loud.
 const CACHE_ASYNC = new Set([
   'get', 'has', 'put', 'add', 'forever', 'forget', 'remember', 'pull',
-  'increment', 'decrement', 'touch', 'flush', 'many', 'putMany',
+  'increment', 'decrement', 'touch', 'flush', 'many',
 ]);
 // Hash facade methods (bcrypt).
 const HASH_FACADE = new Set(['make', 'check', 'needsRehash', 'isHashed']);
@@ -558,6 +562,13 @@ function txRedirectChain(node) {
         );
       }
       if (innerArgs.length !== 0) throw mkErr('LW002', 'unsupported redirect(...) usage', node.loc, PORT_HINT);
+      if (m === 'away') {
+        const a = node.arguments || [];
+        if (a.length !== 1) {
+          throw mkErr('LW002', 'redirect()->away() needs one URL', node.loc, PORT_HINT);
+        }
+        return 'rt.redirect(' + a.map(tx).join(', ') + ')';
+      }
       if (m === 'route') {
         const a = node.arguments || [];
         if (!a.length) throw mkErr('LW002', 'redirect()->route() needs a route name', node.loc, PORT_HINT);
@@ -577,6 +588,19 @@ function txRedirectChain(node) {
         return 'rt.redirect(rt.session().pull("url.intended", ' + def + '))';
       }
       throw mkErr('LW002', 'unsupported redirect()->' + m + '() — ' + PORT_HINT, node.loc, PORT_HINT);
+    }
+    if (base === 'cache') {
+      // cache()->put(...) - the same async D1 surface as the Cache facade.
+      if (!CACHE_ASYNC.has(m)) {
+        throw mkErr(
+          'LW002',
+          'Cache::' + m + '() is not supported - allowed: ' + [...CACHE_ASYNC].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      const cacheArgs = (node.arguments || []).map(tx).join(', ');
+      return txAwait('rt.cache().' + m + '(' + cacheArgs + ')', node, 'Cache::' + m + '()');
     }
     if (base === 'response') {
       if (innerArgs.length !== 0) throw mkErr('LW002', 'unsupported response(...) usage', node.loc, PORT_HINT);
@@ -640,9 +664,45 @@ function txCall(node) {
         if (a.length === 0) return 'rt.session()';
         if (a.length > 2) throw mkErr('LW002', 'session() supports at most 2 arguments', node.loc, PORT_HINT);
         if (a[0].kind === 'array') {
-          throw mkErr('LW002', "session(['k' => v]) is not supported — use session()->put([...])", node.loc, PORT_HINT);
+  // Laravel's session([...]) writes many keys: session()->put([...]).
+  return 'rt.session().put(' + a.map(tx).join(', ') + ')';
         }
         return 'rt.session().get(' + a.map(tx).join(', ') + ')';
+      }
+      if (name === 'cache') {
+        const a = node.arguments || [];
+        if (a.length === 0) return 'rt.cache()';
+        if (a[0].kind === 'closure' || a[0].kind === 'arrowfunc') {
+          throw mkErr(
+            'LW002',
+            'cache($callback, $key) is not supported - use Cache::remember($callback, $key)',
+            node.loc,
+            PORT_HINT
+          );
+        }
+        if (a[0].kind === 'array') {
+          throw mkErr(
+            'LW002',
+            'cache([...]) is not supported - use cache()->put($key, $value)',
+            node.loc,
+            PORT_HINT
+          );
+        }
+        // cache('k') / cache('k', $default) - a GET (the second argument is the
+        // default, NOT a value to store).
+        return txAwait('rt.cache().get(' + a.map(tx).join(', ') + ')', node, 'cache()');
+      }
+      if (name === 'env') {
+        const a = node.arguments || [];
+        if (a.length !== 1 || a[0].kind !== 'string') {
+          throw mkErr(
+            'LW002',
+            'env() needs a literal key at the edge (the build-time config dump is the padanan)',
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return 'rt.env(' + args + ')';
       }
       if (name === 'old') {
         if (a.length === 0 || a.length > 2) throw mkErr('LW002', 'old() needs 1-2 arguments', node.loc, PORT_HINT);
@@ -692,6 +752,10 @@ function txCall(node) {
       'array_sum', 'array_slice', 'array_reverse', 'array_unique', 'array_count_values', 'array_flip',
       'now',
       'today',
+      'back',
+      'tap',
+      'report',
+      'env',
       'collect',
     ]);
     if (whitelisted.has(name) || builtins.has(name)) return 'rt.' + name + '(' + args + ')';

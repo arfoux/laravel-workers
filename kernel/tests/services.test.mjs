@@ -130,6 +130,31 @@ test('the runtime: the redirect flashes into the session', async () => {
   assert.deepEqual(inputFlashed, [{ title: 'Flash me' }]);
 });
 
+// The helper surface: back(), data_get(), tap(), report() and env().
+test('the runtime: the helper surface (back/dataGet/tap/report/env)', async () => {
+  const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+  const logged = [];
+  const rt = buildRt(null, {
+    runtime: true,
+    http: {
+      session: { previousUrl: () => '/prev' },
+      request: { header: (h) => (h === 'referer' ? '/ref' : null) },
+      log: (level, message) => { logged.push({ level, message }); return null; },
+      config: { 'app.env': 'local' },
+    },
+  });
+  assert.equal(rt.back().headers.location, '/prev');
+  assert.equal(rt.back('/fallback').headers.location, '/prev');
+  assert.equal(rt.dataGet({ a: { b: 2 } }, 'a.b'), 2);
+  assert.equal(rt.dataGet({ a: [1, 2] }, 'a.1'), 2);
+  assert.equal(rt.dataGet({ a: 1 }, 'x', 'def'), 'def');
+  assert.equal(rt.tap('v', () => {}), 'v');
+  rt.report(new Error('boom'));
+  assert.deepEqual(logged, [{ level: 'error', message: 'boom' }]);
+  assert.equal(rt.env('APP_ENV'), 'local');
+  assert.throws(() => rt.env('NOPE'), /no compiled counterpart/);
+});
+
 // The helper verbs: the request clock (now()/today()) and the log sink.
 test('the runtime: now()/today() follow the request clock and rt.log reaches the sink', async () => {
   const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');

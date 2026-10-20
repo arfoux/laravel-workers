@@ -48,6 +48,10 @@ $put = function (string $key, $value) use (&$dump) {
 $put('app.key', $config->get('app.key'));
 $put('app.url', $config->get('app.url'));
 $put('app.cipher', $config->get('app.cipher'));
+// env('APP_ENV') / env('APP_DEBUG') - the build-time dump is the padanan
+// for env() at the edge (there is no .env there).
+$put('app.env', $config->get('app.env'));
+$put('app.debug', $config->get('app.debug'));
 
 // ---------- session ----------
 foreach ([

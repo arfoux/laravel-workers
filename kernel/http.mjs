@@ -1381,6 +1381,8 @@ export async function handleHttp(raw, options = {}) {
         ctxRequest: request,
         ctxExtra: {
           session: store,
+          // The compiled controller reads the config from the HTTP context.
+          config,
           cache,
           auth,
           user: () => auth.guard().user(),

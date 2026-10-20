@@ -171,6 +171,17 @@ export default {
       expectBody: 'saved|Flash me',
     },
     {
+      // The helper surface: env() (the build-time config dump is the
+      // padanan), data_get(), tap(), session([...]), the cache() helper
+      // and report() (the platform log).
+      label: 'POST /helpers-demo (the helper surface)',
+      method: 'POST',
+      uri: '/helpers-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'local|2|v|yes|cached',
+    },
+    {
       // A thrown exception: both sides answer 500. The bodies differ -
       // Laravel's error page is a framework asset, the compiled side answers
       // a status-only HTML page (the same documented divergence as the 401).

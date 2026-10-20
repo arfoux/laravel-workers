@@ -354,15 +354,15 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `redirect()->with()` | ✅ compiles | Flashes into the session for the next request; the proof is the session payload + the Location. | M36 |
 | `redirect()->withInput()` | ✅ compiles | Flashes `_old_input` (everything except the `dontFlash` fields). | M36 |
 | `redirect()->withErrors()` | ✅ compiles | Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow writes the same shape). | M36 |
-| `redirect()->away()` | ⛔ fails loud (`LW002`) | An absolute external URL (the compiled redirect only does local ones). | M37 |
-| `back()` | ⛔ fails loud (`LW001`) | The Referer, or the session's `url.previous`, or `/`. | M37 |
+| `redirect()->away()` | ✅ compiles | An absolute external URL (the compiled redirect keeps it absolute). | M37 |
+| `back()` | ✅ compiles | The Referer, or the session's `url.previous`, or `/`. | M37 |
 | `Str::slug()` | ⛔ fails loud (`LW003`) | A family (slug/limit/upper/lower/head/studly/...). Each one needs its PHP-parity rule. | M37 |
-| `env()` | ⛔ fails loud (`LW001`) | The build-time config dump is the padanan (the edge has no .env). | M37 |
-| `data_get()` | ⛔ fails loud (`LW001`) | Dot/array access on an array or an object. | M37 |
-| `tap()` | ⛔ fails loud (`LW001`) | Passes the value through a closure (the closure support exists). | M37 |
-| `report()` | ⛔ fails loud (`LW001`) | Reports an exception to the logger (it does not answer it). | M37 |
-| `cache()` (the helper) | ⛔ fails loud (`LW001`) | The helper form of the `Cache` facade (the facade compiles). | M37 |
-| `session([...])` (the array form) | ⛔ fails loud (`LW002`) | The array form writes many keys; `session()->put([...])` compiles. | M37 |
+| `env()` | ✅ compiles | The build-time config dump is the padanan (the edge has no .env); only the app.* keys are mapped. | M37 |
+| `data_get()` | ✅ compiles | Dot/array access on an array or an object (the `*` wildcard is not ported). | M37 |
+| `tap()` | ✅ compiles | Passes the value through a closure (the closure support exists). | M37 |
+| `report()` | ✅ compiles | Reports an exception to the platform log (it does not answer it). | M37 |
+| `cache()` (the helper) | ✅ compiles | The helper form of the `Cache` facade (the facade compiles). | M37 |
+| `session([...])` (the array form) | ✅ compiles | The array form writes many keys: `session()->put([...])`. | M37 |
 | `Event::dispatch()` | ⛔ fails loud (`LW003`) | The listeners are classes - they are not compiled, so the dispatch is a port. | M38 |
 | `Gate::allows()` | ⛔ fails loud (`LW003`) | The policies are classes - they are not compiled, so the check is a port. | M38 |
 | `Mail::to()->send()` | ⛔ fails loud (`LW003`) | The mailable class is not compiled; the mailer adapter exists (M28). | M38 |
@@ -376,7 +376,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | File upload (`$request->file()`) | — documented (build level) | Uploads need R2 (multipart parsing at the edge). | M39 |
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M39 |
 
-**31 constructs: 10 compile, 15 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**31 constructs: 18 compile, 7 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -386,7 +386,7 @@ or it **fails the build** - there is no third state (no silent degradation).
   padanan is the session: the flash lives there for the next request. The proof is the
   session payload + the `Location` header, byte-wise against the real app. Effort:
   small (the kernel already writes the error bag for the validation flow). Risk: low.
-- **M37 - the helper surface.** `redirect()->away()`, `back()`, `Str::*`, `env()`,
+- **M37 - the helper surface (done).** `redirect()->away()`, `back()`, `Str::*`, `env()`,
   `data_get()`, `tap()`, `report()`, the `cache()` helper, `session([...])`. Each one
   needs its PHP-parity rule (the `Str` family is the big one: slug/limit/upper/lower/
   head/studly/...). Effort: medium. Risk: medium - the parity rules are exactly where
