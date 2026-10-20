@@ -371,8 +371,8 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Gate::any()` | ⛔ fails loud (`LW002`) | Only `allows()` and `denies()` compile. | M39 |
 | `Gate::define()` | ⛔ fails loud (`LW002`) | A closure is not compiled - the global Gate registrations stay a port. | M39 |
 | `Gate::before()` | ⛔ fails loud (`LW002`) | The global Gate callbacks are not compiled (the policies are). | M39 |
-| `Mail::to()->send()` | ⛔ fails loud (`LW002`) | The mailable class is not compiled; the mailer adapter exists (M28). | M39 |
-| `Queue::push()` | ⛔ fails loud (`LW002`) | The job class is not compiled; the queue adapter exists (M28). | M39 |
+| `Mail::to()->send()` | ⛔ fails loud (`LW002`) | A mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view and produce the very same payload - and the shadow harness would have to compare the mail payload byte for byte (it cannot today: the log format differs). **Not mapped yet** (a milestone of its own). | M39 |
+| `Queue::push()` | ⛔ fails loud (`LW002`) | The queue is asynchronous and the edge has no consumer: the job would never run (a silent no-op), so the byte parity with Laravel is impossible. The job class compiles (M39c) - the blocker is the consumer, not the class. | M39 |
 | `Storage::disk()` (the default disk) | ✅ compiles | The default disk is the compiled object store (the D1 blob store, or R2 when bound). | M39 |
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too). | M39 |
@@ -390,8 +390,13 @@ or it **fails the build** - there is no third state (no silent degradation).
 | The files bag as a method (`$request->files()`) | ⛔ fails loud (`LW002`) | In Laravel `$request->files` is a property (Symfony's FileBag), not a method: the build stops (LW002) and points at `$request->file()` / `$request->allFiles()`. | M40 |
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
+| A rule object (`Rule::file()->max()`) | ⛔ fails loud (`LW002`) | A rule object is a class: the compiled validator evaluates the string rules only, so the rule would be silently ignored and the validation would differ. The build stops and names what it would take: the kernel validator must evaluate the rule object, the FormRequest must be compiled and its prepared input merged into the validated data. | M43 |
+| A rule object in a FormRequest | — documented (build level) | The FormRequest dump reads the rules Laravel itself builds: a rule object is found there and the build stops ("the rules use a rule object (Illuminate\Validation\Rules\File) - the compiled rung evaluates the string rules only"). The dump's reason reaches the operator - it is not swallowed by a generic message anymore. | M43 |
+| `prepareForValidation()` (overridden) | — documented (build level) | The FormRequest dump sees the overridden hook: "prepareForValidation() is overridden - the compiled rung does not run it (the validated input would differ)". The build stops and the reason reaches the operator. | M43 |
+| A listener that injects a service | ⛔ fails loud | The edge instantiates the listener itself: it cannot inject a service, so the constructor dependency is a build error. It used to compile - the property stayed undefined and the request died at runtime (a 500 the build said nothing about). | M43 |
+| A queued listener (`ShouldQueue`) | ⛔ fails loud | Laravel pushes a queued listener to the queue (it runs later); the edge has no queue consumer, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason. | M43 |
 
-**46 constructs: 31 compile, 14 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**51 constructs: 31 compile, 17 fail loud, 3 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
