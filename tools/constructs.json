@@ -405,9 +405,9 @@
       "php": null,
       "check": "build",
       "expect": "fail",
-      "note": "The platform answers the CORS preflight, not the app.",
+      "note": "The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route.",
       "batch": "M40",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "relation_property",

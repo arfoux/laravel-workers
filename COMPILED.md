@@ -380,7 +380,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | Route-model binding (a typed param) | ✅ compiles | The model comes from the route segment (Laravel's implicit binding); a missing model is a 404. | M40 |
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
 | File upload (`$request->file()`) | ⛔ fails loud (`LW002`) | An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40). | M41 |
-| An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M40 |
+| An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
 **38 constructs: 24 compile, 13 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
@@ -408,20 +408,23 @@ or it **fails the build** - there is no third state (no silent degradation).
   for a credit card) and `Cache::tags()` (a taggable store). They stay ports and
   the build keeps failing loud, deliberately, each with its own reason (LW002).
   Effort: large (a class compiler is a milestone of its own). Risk: high.
-- **M40 - the build-level constructs (the layouts and the route-model binding are
-  done).** The **Blade layouts** compile now (`@extends`/`@section`/`@yield`: the
-  sections travel to the layout, the build compiles the view closure, and the
-  shadow harness proves the bytes) and the **route-model binding** compiles
-  (`show(Post $post)` fetches the model from the segment; a missing model is a
-  404). What is left: `paginate()` (the paginator + the pagination links), the
-  **file uploads** (the edge has no multipart parser yet — the build tells the
-  operator to enable R2 or to remove the upload) and the `OPTIONS` route (the
-  platform answers the CORS preflight; an app route that declares OPTIONS needs
-  a port). Effort: large; the uploads need the multipart parsing at the edge.
+- **M40 - the build-level constructs (the layouts, the route-model binding and the
+  method handling are done).** The **Blade layouts** compile now
+  (`@extends`/`@section`/`@yield`: the sections travel to the layout, the build
+  compiles the view closure, and the shadow harness proves the bytes), the
+  **route-model binding** compiles (`show(Post $post)` fetches the model from
+  the segment; a missing model is a 404) and the **method handling** is
+  Laravel's: an `OPTIONS` request gets the automatic OPTIONS response (200, an
+  empty body, the `Allow` header) and a method that does not match answers
+  like Laravel (405 with an `errors/405` view, else the framework's error
+  renderer). What is left: `paginate()` (the paginator + the pagination links)
+  and the **file uploads** (the edge has no multipart parser yet — the build
+  tells the operator to enable R2 or to remove the upload). Effort: large; the
+  uploads need the multipart parsing at the edge.
 
 ## 8. Definition of done (per item)
-- **M40 - the build-level constructs, part 1 (done).** Two of the five are
-  closed, both proven by the shadow harness (the same bytes as the real
+- **M40 - the build-level constructs, part 1 (done).** Three of the five are
+  closed, all proven by the shadow harness (the same bytes as the real
   Laravel):
   - **The Blade layouts** (`@extends` / `@section` / `@yield`): a layout used
     to compile to `$__env->…` — a view-level construct the compiler could not
@@ -443,9 +446,24 @@ or it **fails the build** - there is no third state (no silent degradation).
     method's parameter fails the build, LW004) and a model that binds on
     another key (`getRouteKeyName()`) fails loud (LW003) instead of binding the
     wrong column.
+  - **The method handling** (the `OPTIONS` route and the method that is not
+    allowed): the compiled side used to answer the platform's 404 for both.
+    Now it is Laravel's `AbstractRouteCollection`:
+    - an **`OPTIONS`** request gets the **automatic OPTIONS response** — 200,
+      an empty body and the `Allow` header with the verbs the URI accepts
+      (`implode(',', …)`, in Laravel's verb order). The shadow harness proves
+      the bytes.
+    - any **other** method that does not match raises
+      `MethodNotAllowedHttpException`: the app answers **405** when it has an
+      `errors/405` view (the build dumps the flag) and the framework's error
+      renderer answers **500** without one — the compiled side answers the
+      same status (the error page itself is a Laravel framework asset).
+    - the **CORS** config (`config/cors.php`) is *not* compiled: the build
+      **skips** the routes under a CORS path (the `Access-Control-*` headers
+      would be missing, and a browser's CORS would break) and says what to do.
   What is left in this batch: `paginate()` (the paginator + the pagination
-  links — the Tailwind markup must match byte-wise), the **file uploads** (the
-  edge has no multipart parser yet) and the `OPTIONS` route.
+  links — the Tailwind markup must match byte-wise) and the **file uploads**
+  (the edge has no multipart parser yet).
 
 - **M39b - the class-bearing calls, bounded (done).** The Gate (M39a) and the
   **default disk** now compile; the rest fail loud with their own reason, and

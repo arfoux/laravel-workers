@@ -146,6 +146,45 @@ export function match(table, req) {
   return null;
 }
 
+// The methods the URI accepts (Laravel's AbstractRouteCollection): the verbs
+// (Router::$verbs, in Laravel's order) that have a route matching the URI —
+// the method itself is left out. Laravel's router answers 405 (or the
+// automatic OPTIONS response) when the URI matches a route but the method does
+// not; the Allow header lists these verbs.
+const ROUTER_VERBS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+
+export function allowedMethods(table, req) {
+  const method = resolveMethod(req);
+  let path = (req && req.path) || '/';
+  const qIdx = path.indexOf('?');
+  if (qIdx !== -1) path = path.slice(0, qIdx);
+  if (path.length > 1 && path.endsWith('/')) path = path.replace(/\/+$/, '');
+  const host = req && (req.host || req.hostname);
+  const tbl = Array.isArray(table) ? table : (table && table.routes) || [];
+  const verbs = [];
+  for (const verb of ROUTER_VERBS) {
+    if (verb === method) continue;
+    let found = false;
+    for (const route of tbl) {
+      const methods = (route.methods || []).map((m) => String(m).toUpperCase());
+      if (methods.indexOf(verb) === -1) continue;
+      if (!hostMatches(route, host)) continue;
+      let rx;
+      try {
+        rx = uriToRegex(route.uri);
+      } catch {
+        continue;
+      }
+      if (rx.test(path)) {
+        found = true;
+        break;
+      }
+    }
+    if (found) verbs.push(verb);
+  }
+  return verbs;
+}
+
 export async function dispatch(req, table, handlers, env, options = {}) {
   const m = match(table, req);
   if (!m) return null;
@@ -201,4 +240,4 @@ export async function dispatch(req, table, handlers, env, options = {}) {
   return { status: res.status, headers, body: res.body };
 }
 
-export default { normalizeTable, routeKey, match, dispatch };
+export default { normalizeTable, routeKey, match, allowedMethods, dispatch };

@@ -339,7 +339,16 @@ foreach (($input['steps'] ?? []) as $step) {
     }
 
     try {
-        $response = $kernel->handle($request);
+        // The error pages (a 405, a 500) are rendered into the output buffer
+        // instead of the response body in a CLI run. In a web request PHP
+        // captures that output as the response content, so the oracle does the
+        // same: the buffer is the body when the response carries none.
+        ob_start();
+        try {
+            $response = $kernel->handle($request);
+        } finally {
+            $echoed = ob_get_clean();
+        }
     } catch (\Throwable $e) {
         // The app's error handling itself failed (a broken error page, a
         // missing view): the step still gets a response, so the harness can
@@ -348,6 +357,7 @@ foreach (($input['steps'] ?? []) as $step) {
             'The application failed to render the error page: ' . $e->getMessage(),
             500
         );
+        $echoed = '';
     }
 
     $headers = [];
@@ -361,6 +371,11 @@ foreach (($input['steps'] ?? []) as $step) {
     }
 
     $body = $response->getContent();
+    // The error page (a 405, a 500) is rendered into the output buffer; in a
+    // web request that output IS the response body.
+    if ($body === '' && !empty($echoed)) {
+        $body = $echoed;
+    }
 
     // Update the jar from Set-Cookie, browser-style (raw values). Only a step
     // that *used* the jar may update it: a step without the jar is a separate
@@ -435,5 +450,10 @@ foreach (($input['steps'] ?? []) as $step) {
 }
 
 $json = json_encode($out);
-ob_end_clean();
-echo $json;
+// The error renderer (the Symfony error page) writes to the output stream
+// while it renders, so the JSON is printed behind a marker: the harness reads
+// what follows it.
+if (ob_get_level() > 0) {
+    @ob_end_clean();
+}
+echo "\n__LW_JSON__" . $json . "\n";

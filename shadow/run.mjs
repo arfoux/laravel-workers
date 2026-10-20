@@ -219,7 +219,12 @@ function runOracle(appRoot, scenario, dbPath, seedPath) {
   if (res.status !== 0) {
     throw new Error(`PHP oracle exited ${res.status}:\n${res.stderr}`);
   }
-  return JSON.parse(res.stdout);
+  // The oracle prints its JSON behind a marker: the error renderer (the
+  // Symfony error page) writes to the output stream while it renders.
+  const marker = '__LW_JSON__';
+  const at = res.stdout.lastIndexOf(marker);
+  const payload = at === -1 ? res.stdout : res.stdout.slice(at + marker.length);
+  return JSON.parse(payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +506,24 @@ async function main() {
         shapeOk = re.test(String(phpBody ?? '')) && re.test(String(j.body ?? ''));
       }
       const statusOk = p.status === j.status;
+      // A step may declare the status both sides must answer (`expectStatus`).
+      // It is what makes a documented divergence *provable*: the bodies of the
+      // error pages differ (a Laravel framework asset), but the status must be
+      // Laravel's.
+      const expectStatusOk =
+        step.expectStatus === undefined ||
+        (p.status === step.expectStatus && j.status === step.expectStatus);
+      // A step may declare the headers both sides must carry (`expectHeader`:
+      // { name: value }). The 405 carries the Allow header (the methods the URI
+      // accepts) - the same list Laravel's router answers.
+      let expectHeaderOk = true;
+      for (const [name, value] of Object.entries(step.expectHeader || {})) {
+        const key = String(name).toLowerCase();
+        if (ph[key] !== value || jh[key] !== value) {
+          expectHeaderOk = false;
+          break;
+        }
+      }
       // A step may declare the body it expects (`expectBody`: a string the body
       // must contain). It catches the vacuous match: if both sides are broken in
       // the same way (a route that does not exist answers 404 on both), the
@@ -509,7 +532,8 @@ async function main() {
         step.expectBody === undefined ||
         (String(phpBody ?? '').includes(String(step.expectBody)) &&
           String(j.body ?? '').includes(String(step.expectBody)));
-      const ok = statusOk && headerDiff.length === 0 && body.equal && expectBodyOk;
+      const ok =
+        statusOk && headerDiff.length === 0 && body.equal && expectBodyOk && expectStatusOk && expectHeaderOk;
       const expected = step.expect || 'match';
       let verdict;
       if (ok) {
@@ -521,7 +545,9 @@ async function main() {
         verdict = 'shape';
         shaped++;
         matched++;
-      } else if (expected === 'diverges') {
+      } else if (expected === 'diverges' && expectStatusOk && expectHeaderOk) {
+        // A known divergence: the bodies differ (a Laravel framework asset),
+        // but the status and the declared headers are the ones Laravel answers.
         verdict = 'diverges (known)';
         diverged++;
       } else {

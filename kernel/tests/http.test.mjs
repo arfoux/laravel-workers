@@ -737,6 +737,77 @@ test('fail loud: throttle middleware without a cache store', async () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// The method-not-allowed path (Laravel's AbstractRouteCollection):
+//   - an OPTIONS request gets the automatic OPTIONS response (200, an empty
+//     body, the Allow header with the verbs the URI accepts);
+//   - any other method raises MethodNotAllowedHttpException: 405 when the app
+//     has an errors/405 view, else the framework's error renderer answers 500.
+// ---------------------------------------------------------------------------
+
+async function callMethod(method, uri, mutate) {
+  const { db } = makeDb();
+  const config = baseConfig();
+  const options = {
+    table: normalizeTable(ROUTES),
+    handlers,
+    config,
+    env: { DB: db },
+    db,
+    models: { LWOracleUser },
+    clock: () => FREEZE_S,
+    randomString: (n) => 'A'.repeat(n),
+    strRandom: (n) => 'A'.repeat(n),
+    clientIp: CLIENT_IP,
+  };
+  if (mutate) mutate(options);
+  return handleHttp(
+    { method, url: BASE + uri, headers: { host: 'localhost' }, body: '' },
+    options
+  );
+}
+
+test('router: an OPTIONS request gets the automatic OPTIONS response', async () => {
+  const res = await callMethod('OPTIONS', '/__probe/state', (o) => {
+    o.table = normalizeTable([
+      { uri: '/__probe/state', methods: ['GET', 'HEAD'] },
+      { uri: '/__probe/state', methods: ['POST'] },
+    ]);
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body, '');
+  // Laravel: implode(',', $methods) - the verbs the URI accepts, no spaces.
+  assert.equal(res.headers.allow, 'GET,HEAD,POST');
+  assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
+  assert.equal(res.headers['cache-control'], 'no-cache, private');
+});
+
+test('router: a method that is not allowed answers like Laravel', async () => {
+  const res = await callMethod('DELETE', '/__probe/state', (o) => {
+    o.table = normalizeTable([{ uri: '/__probe/state', methods: ['GET', 'HEAD'] }]);
+  });
+  // No errors/405 view in the app: the framework's error renderer answers 500.
+  assert.equal(res.status, 500);
+  assert.equal(res.headers.allow, undefined);
+});
+
+test('router: a method that is not allowed answers 405 with an errors/405 view', async () => {
+  const res = await callMethod('DELETE', '/__probe/state', (o) => {
+    o.config['errors.405_view'] = true;
+    o.table = normalizeTable([{ uri: '/__probe/state', methods: ['GET', 'HEAD'] }]);
+  });
+  assert.equal(res.status, 405);
+  // Symfony's MethodNotAllowedHttpException: implode(', ', $allowedMethods).
+  assert.equal(res.headers.allow, 'GET, HEAD');
+});
+
+test('router: a URI that matches no route is left to the platform', async () => {
+  const res = await callMethod('GET', '/__probe/nothing', (o) => {
+    o.table = normalizeTable([{ uri: '/__probe/state', methods: ['GET', 'HEAD'] }]);
+  });
+  assert.equal(res, null);
+});
+
 test('throttle over the D1 cache store: first N allowed, then 429', async (t) => {
   if (noSqlite) return t.skip(noSqlite);
   const { sqlite, db } = makeDb();

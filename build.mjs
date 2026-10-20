@@ -373,6 +373,40 @@ try {
   console.log(`  -> dist/src/config.generated.mjs (session: ${driver}, guard: ${runtimeConfig['auth.defaults.guard']})`);
 }
 
+// The CORS paths (config/cors.php): HandleCors adds the CORS headers to the
+// responses of the paths it matches, and answers the preflight with a 204.
+// The compiled worker does not add the CORS headers, so the routes under a
+// CORS path are skipped (a silent answer without the headers would break the
+// browser's CORS - a divergence the build must not ship).
+const corsPaths = (() => {
+  const raw = runtimeConfig['cors.paths'];
+  if (!raw || typeof raw !== 'object') return [];
+  const out = [];
+  for (const value of Object.values(raw)) {
+    if (Array.isArray(value)) {
+      for (const p of value) if (typeof p === 'string') out.push(p);
+    } else if (typeof value === 'string') {
+      out.push(value);
+    }
+  }
+  return out;
+})();
+// Laravel's Str::is(): the pattern may end with '*' (a prefix match).
+const corsPathFor = (uri) => {
+  const clean = (s) => '/' + String(s == null ? '' : s).replace(/^\/+/, '').replace(/\/+$/, '');
+  const path = clean(uri);
+  for (const pattern of corsPaths) {
+    const p = clean(pattern);
+    if (p === '/') return pattern;
+    if (p.endsWith('*')) {
+      if (path.startsWith(p.slice(0, -1))) return pattern;
+    } else if (path === p) {
+      return pattern;
+    }
+  }
+  return null;
+};
+
 // ---------- 3b-bis. the app's schedule -> Cloudflare Cron Triggers ----------
 // The edge cannot run an artisan command, but it can *trigger* it: the schedule
 // becomes a cron trigger (the padanan — Free allows 5 triggers per account) and
@@ -1157,6 +1191,18 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         const missingView = routeViews.find((v) => !compiledViews.has(v));
         if (missingView) {
           console.log(`  controller ${p.route}: skipped — view "${missingView}" did not compile`);
+          continue;
+        }
+        // The CORS paths (HandleCors): the compiled worker does not add the CORS
+        // headers, so a route under a CORS path is skipped (a silent answer
+        // without the headers would break the browser's CORS).
+        const corsPath = corsPathFor(p.route);
+        if (corsPath) {
+          console.log(
+            `  controller ${p.route}: skipped — the app configures CORS for "${corsPath}" and the ` +
+              'compiled worker does not add the CORS headers — remove the CORS config (config/cors.php) ' +
+              'or answer the preflight on the platform'
+          );
           continue;
         }
         const isExtraVerb = extraVerbsFor(p.route).includes(p.verb);

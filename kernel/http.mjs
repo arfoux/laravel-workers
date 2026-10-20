@@ -21,7 +21,7 @@
 // Config is a FLAT dotted map (`config.generated.mjs`), the same shape the compiled
 // AuthManager consumes (`auth.defaults.guard`, `session.driver`, ...).
 
-import { match, dispatch, routeKey } from './router.mjs';
+import { match, dispatch, routeKey, allowedMethods } from './router.mjs';
 import {
   makeCookie,
   parseCookieHeader,
@@ -1246,7 +1246,43 @@ export async function handleHttp(raw, options = {}) {
     headers: request.headersAll(),
   };
   const matched = match(table, matchReq);
-  if (!matched) return null;
+  if (!matched) {
+    // Laravel's router (AbstractRouteCollection): the URI matches a route but
+    // the method does not.
+    //   - an OPTIONS request gets the automatic OPTIONS response: 200, an
+    //     empty body and the Allow header (the methods the URI accepts);
+    //   - any other method raises MethodNotAllowedHttpException: the app
+    //     answers 405 when it has an errors/405 view, else the framework's
+    //     error renderer answers 500 (the Symfony error page).
+    // The router runs BEFORE the route's middleware (the web group: the
+    // session, the CSRF), so these answers carry no session cookie — exactly
+    // like Laravel's.
+    const allowed = allowedMethods(table, matchReq);
+    if (!allowed.length) return null; // no route at all: the platform's 404
+    if (request.realMethod() === 'OPTIONS') {
+      return {
+        status: 200,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          allow: allowed.join(','),
+          'cache-control': 'no-cache, private',
+        },
+        setCookie: [],
+        body: '',
+      };
+    }
+    const has405 = config['errors.405_view'] === true;
+    return {
+      status: has405 ? 405 : 500,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        ...(has405 ? { allow: allowed.join(', ') } : {}),
+        'cache-control': 'no-cache, private',
+      },
+      setCookie: [],
+      body: has405 ? 'Method Not Allowed' : 'Server Error',
+    };
+  }
   request.setRoute(matched.route, matched.params);
 
   // Static / snapshot routes have no compiled handler: the prerendered HTML is

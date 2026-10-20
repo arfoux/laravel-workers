@@ -22,6 +22,26 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(p95 <= 5, `router p95 ${p95}`);
   }
 
+  // The method-not-allowed path (Laravel's automatic OPTIONS response and the
+  // 405): the verbs the URI accepts (the route table scan) + the Allow header.
+  {
+    const { allowedMethods } = await import('../router.mjs');
+    const table2 = norm([
+      { uri: '/posts', methods: ['GET', 'HEAD'] },
+      { uri: '/posts', methods: ['POST'] },
+      { uri: '/posts/{post}', methods: ['GET', 'HEAD', 'PUT', 'DELETE'] },
+    ]);
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      allowedMethods(table2, { method: 'OPTIONS', path: '/posts' });
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `allowedMethods avg ${avg}`);
+    assert.ok(p95 <= 5, `allowedMethods p95 ${p95}`);
+  }
+
   const { table } = await import('../db.mjs');
   const fake = { prepare: () => ({ bind() { return this; }, async all() { return { results: [] }; } }) };
   {

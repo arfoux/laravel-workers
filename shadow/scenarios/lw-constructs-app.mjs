@@ -93,6 +93,27 @@ export default {
       jar: true,
     },
     {
+      // The automatic OPTIONS response: Laravel's router answers 200 with an
+      // empty body and the Allow header (the verbs the URI accepts) when the
+      // method does not match a route. The compiled side answers the same.
+      label: 'OPTIONS /posts (the automatic OPTIONS response)',
+      method: 'OPTIONS',
+      uri: '/posts',
+      expectHeader: { allow: 'GET,HEAD,POST' },
+    },
+    {
+      // The method is not allowed: Laravel raises
+      // MethodNotAllowedHttpException. The app has no errors/405 view, so the
+      // framework's error renderer answers 500 (the Symfony error page) — the
+      // compiled side answers the same status.
+      label: 'POST /posts/1 (the method is not allowed)',
+      method: 'POST',
+      uri: '/posts/1',
+      expect: 'diverges',
+      expectStatus: 500,
+      why: 'the 500 error page is a Laravel framework asset; the compiled side answers a status-only page (the status is the same)',
+    },
+    {
       // The Gate: the policy check (the compiled policies answer it at the
       // edge). The user owns the post, so `update` is allowed and `denies` is
       // false; the class-level `viewAny` is allowed for a signed-in user.
