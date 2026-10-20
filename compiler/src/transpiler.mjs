@@ -138,6 +138,11 @@ function tx(node) {
       return acc;
     }
     case 'offsetlookup': {
+      // `$arr[]` (a read without an offset) is a PHP warning + null; the
+      // compiled side must not read a "null" key.
+      if (!node.offset) {
+        throw mkErr('LW002', 'an array read without an offset ($arr[]) is not compiled', node.loc, PORT_HINT);
+      }
       return tx(node.what) + '[' + txOffsetKey(node.offset) + ']';
     }
     case 'staticlookup': {
@@ -368,14 +373,24 @@ let CLOSURE_DEPTH = 0;
 const MODEL_STATIC_START = new Set(['where', 'whereIn']);
 // Static model calls that are terminal (return a Promise, must be awaited).
 // `create` writes a row (Eloquent::create) — it needs the D1 binding.
-const MODEL_STATIC_TERMINAL = new Set(['find', 'findOrFail', 'all', 'create']);
+const MODEL_STATIC_TERMINAL = new Set(['find', 'findOrFail', 'all', 'create', 'paginate']);
 // Chainable builder methods (kernel db.mjs API). Keep in sync with kernel/db.mjs.
 const MODEL_CHAIN_BUILDER = new Set([
   'where', 'orWhere', 'whereIn', 'whereNotIn', 'whereNull', 'whereNotNull',
   'orderBy', 'orderByDesc', 'latest', 'oldest', 'limit', 'offset', 'select',
 ]);
 // Terminal builder methods (return a Promise).
-const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'pluck', 'value']);
+const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'pluck', 'value', 'paginate']);
+// The paginator's surface (kernel/paginator.mjs - the LengthAwarePaginator).
+// `links()` is NOT here: the pagination view is a Blade file, and a
+// hand-written markup would be a *different* answer - the build stops instead.
+const PAGINATOR_METHODS = new Set([
+  'items', 'getCollection', 'count', 'isEmpty', 'isNotEmpty', 'total', 'perPage',
+  'currentPage', 'lastPage', 'getPageName', 'onEachSide', 'firstItem', 'lastItem',
+  'hasPages', 'hasMorePages', 'onFirstPage', 'onLastPage', 'path', 'query',
+  'fragment', 'appends', 'withQueryString', 'url', 'previousPageUrl',
+  'nextPageUrl', 'getUrlRange', 'elements',
+]);
 // The methods of the compiled model instance (kernel/model.mjs) - keep in
 // sync. A method that is not here (a relation, for example) is not compiled:
 // the build stops instead of answering a 500 at the edge.
@@ -582,7 +597,12 @@ function txModelChain(chain, node) {
       if (i !== segments.length - 1) {
         throw mkErr('LW003', 'cannot chain past ->' + seg.name + '() — ' + PORT_HINT, seg.node.loc, PORT_HINT);
       }
-      expr = txAwait(expr + '.' + seg.name + '(' + at + ')', seg.node);
+      if (seg.name === 'paginate') {
+        // The paginator needs the request (the page, the path, the query).
+        expr = txAwait('rt.paginate(' + expr + ', ' + at + ')', seg.node);
+      } else {
+        expr = txAwait(expr + '.' + seg.name + '(' + at + ')', seg.node);
+      }
     } else {
       throw mkErr('LW003', 'unsupported query method ->' + seg.name + '() — ' + PORT_HINT, seg.node.loc, PORT_HINT);
     }
@@ -1294,6 +1314,15 @@ function txCall(node) {
             PORT_HINT
           );
         }
+      } else if (kind === 'paginator') {
+        if (!PAGINATOR_METHODS.has(meth)) {
+          throw mkErr(
+            'LW003',
+            'the paginator method ->' + meth + '() is not compiled (links() needs the pagination view) - ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
       } else if (kind === 'list' || kind === 'scalar') {
         throw mkErr(
           'LW003',
@@ -1426,10 +1455,12 @@ function modelExprKind(node) {
   const first = chain.segments[0].name;
   const last = chain.segments[chain.segments.length - 1].name;
   if (first === 'all') return 'list';
+  if (first === 'paginate') return 'paginator';
   if (MODEL_STATIC_START.has(first)) {
     if (chain.segments.length > 1 && MODEL_CHAIN_TERMINAL.has(last)) {
       if (last === 'get') return 'list';
       if (last === 'count' || last === 'pluck' || last === 'value') return 'scalar';
+      if (last === 'paginate') return 'paginator';
       return 'model';
     }
     return 'builder';
@@ -1463,6 +1494,14 @@ function txAssignExpr(node) {
     throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
   }
   if (left.kind === 'offsetlookup') {
+    // `$arr[] = $x` — the PHP append (the next free integer key). It used to
+    // compile to `$arr[null] = $x` — a *silent* wrong answer.
+    if (!left.offset) {
+      if (op !== '=') {
+        throw mkErr('LW002', 'unsupported assignment operator ' + op + ' on an array append', node.loc, PORT_HINT);
+      }
+      return '(rt.arrayPush(' + tx(left.what) + ', ' + right + '))';
+    }
     const target = tx(left.what) + '[' + txOffsetKey(left.offset) + ']';
     if (op === '=') return '(' + target + ' = ' + right + ')';
     if (op === '??=') return 'rt.coalesceAssign(() => (' + target + '), (x) => { ' + target + ' = x; }, ' + right + ')';
@@ -1508,6 +1547,13 @@ function txAssignStatement(node) {
     throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
   }
   if (left.kind === 'offsetlookup') {
+    // `$arr[] = $x` — the PHP append (the next free integer key).
+    if (!left.offset) {
+      if (op !== '=') {
+        throw mkErr('LW002', 'unsupported assignment operator ' + op + ' on an array append', node.loc, PORT_HINT);
+      }
+      return 'rt.arrayPush(' + tx(left.what) + ', ' + right + ');';
+    }
     const target = tx(left.what) + '[' + txOffsetKey(left.offset) + ']';
     if (op === '=') return target + ' = ' + right + ';';
     if (op === '??=') return 'if (' + target + ' === null || ' + target + ' === undefined) { ' + target + ' = ' + right + '; }';

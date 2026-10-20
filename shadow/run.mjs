@@ -329,7 +329,10 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
       headers.accept = 'application/json';
     }
 
-    const url = BASE + (step.uri || '/');
+    // The query string is part of the request (the oracle sets it on the
+    // request, the compiled side gets it in the URL - the same request).
+    const stepQuery = step.query ? new URLSearchParams(step.query).toString() : '';
+    const url = BASE + (step.uri || '/') + (stepQuery ? '?' + stepQuery : '');
     let res;
     try {
       res = await handleHttp(

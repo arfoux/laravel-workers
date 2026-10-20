@@ -347,11 +347,14 @@
       "id": "paginate",
       "label": "`Model::paginate()`",
       "php": "$p = \\App\\Models\\Post::paginate(10);",
+      "models": [
+        { "alias": "Post", "fqcn": "App\\Models\\Post" }
+      ],
       "check": "compiler",
-      "expect": "fail",
-      "note": "The query builder has no pagination; D1 has no OFFSET-free paging guarantee.",
+      "expect": "ok",
+      "note": "The LengthAwarePaginator (the items, the total, the pages, the URLs); the pagination links need the pagination view (M40 part 4).",
       "batch": "M40",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "route_model_binding",

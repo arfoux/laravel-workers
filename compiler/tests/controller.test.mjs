@@ -1313,6 +1313,7 @@ writeTree(tmpRoot, {
     .replace("from 'bcryptjs'", `from ${JSON.stringify(bcryptEntryUrl)}`),
   'kernel/validation.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation.mjs'), 'utf8'),
   'kernel/validator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validator.mjs'), 'utf8'),
+  'kernel/paginator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'paginator.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(
     path.join(pkgDir, 'compiler', 'runtime', 'rt-from-context.mjs'),
     'utf8'
@@ -1781,4 +1782,74 @@ test('runtime: redirect()->intended() pulls url.intended; session mutation metho
   );
   assert.equal(res2.status, 302);
   assert.equal(res2.headers.location, '/home');
+});
+
+test('emit+runtime: $arr[] = $x appends (it used to write a "null" key)', async () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function collect()\n' +
+    '    {\n' +
+    '        $titles = [];\n' +
+    "        $titles[] = 'a';\n" +
+    "        $titles[] = 'b';\n" +
+    "        return response(implode(',', $titles));\n" +
+    '    }\n' +
+    '}\n';
+  const handle = await handlerFromSource(src, 'collect', {
+    routeUri: '/collect',
+    routeParams: [],
+    models: [],
+    views: [],
+  });
+  const res = await handle({ params: {}, request: {} }, {});
+  assert.equal(res.status, 200);
+  assert.equal(res.body, 'a,b');
+});
+
+test('emit: Model::paginate() compiles to the paginator (the LengthAwarePaginator)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function paged()\n' +
+    '    {\n' +
+    '        $posts = Post::where("published", true)->paginate(2);\n' +
+    '        return response($posts->total() . "|" . $posts->currentPage());\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'paged', {
+    routeUri: '/paged',
+    routeParams: [],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+  });
+  assert.deepEqual(res.errors, []);
+  // The paginator is built by the runtime (it needs the request: the page, the
+  // path, the query string).
+  assert.match(res.code, /rt\.paginate\(rt\.model\("Post"\)\.where\("published", true\), 2\)/);
+  assert.match(res.code, /v_posts\.total\(\)/);
+  assert.match(res.code, /v_posts\.currentPage\(\)/);
+});
+
+test('emit: a paginator method that is not compiled fails loud (LW003)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function paged()\n' +
+    '    {\n' +
+    '        $posts = Post::where("published", true)->paginate(2);\n' +
+    '        return response($posts->links());\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'paged', {
+    routeUri: '/paged',
+    routeParams: [],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /links\(\)/);
 });

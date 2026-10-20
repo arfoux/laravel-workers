@@ -26,6 +26,18 @@ export default {
         "INSERT INTO posts (id, title, body, published, user_id, created_at, updated_at) " +
         "VALUES (1, 'Hello Edge', 'First body', 1, 1, '2025-06-01 00:00:00', '2025-06-01 00:00:00')",
     },
+    {
+      // Two more posts (older than the seed one): the paginator needs more
+      // than one page to answer the same pages, the URLs and the items.
+      sql:
+        "INSERT INTO posts (id, title, body, published, user_id, created_at, updated_at) " +
+        "VALUES (2, 'Second Post', 'Second body', 1, 1, '2025-05-01 00:00:00', '2025-05-01 00:00:00')",
+    },
+    {
+      sql:
+        "INSERT INTO posts (id, title, body, published, user_id, created_at, updated_at) " +
+        "VALUES (3, 'Third Post', 'Third body', 1, 1, '2025-04-01 00:00:00', '2025-04-01 00:00:00')",
+    },
   ],
   steps: [
     // The first request bootstraps the session (and the CSRF token): it uses the
@@ -112,6 +124,22 @@ export default {
       expect: 'diverges',
       expectStatus: 500,
       why: 'the 500 error page is a Laravel framework asset; the compiled side answers a status-only page (the status is the same)',
+    },
+    {
+      // The paginator (LengthAwarePaginator): the same total, the same pages,
+      // the same items and the same URLs as the real Laravel.
+      label: 'GET /posts-paginated (the paginator)',
+      method: 'GET',
+      uri: '/posts-paginated',
+      jar: true,
+    },
+    {
+      // The second page: the page comes from the request (`?page=2`).
+      label: 'GET /posts-paginated?page=2 (the second page)',
+      method: 'GET',
+      uri: '/posts-paginated',
+      query: { page: '2' },
+      jar: true,
     },
     {
       // The Gate: the policy check (the compiled policies answer it at the

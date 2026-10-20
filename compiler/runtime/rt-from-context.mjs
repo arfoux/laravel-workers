@@ -2,6 +2,7 @@
 import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } from '../../kernel/validation.mjs';
 import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
+import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 
 // env() -> the config key: the build-time config dump is the padanan for env()
 // at the edge (there is no .env there). Keep in sync with tools/config-dump.php.
@@ -504,6 +505,17 @@ export function buildRt(context, opts = {}) {
     for (const a of arrs) if (isObj(a)) for (const k of Object.keys(a)) out[k] = a[k];
     return out;
   };
+  // `$arr[] = $x` — the PHP append (the next free integer key). It used to
+  // compile to `$arr[null] = $x` — a *silent* wrong answer.
+  rt.arrayPush = (arr, value) => {
+    if (!Array.isArray(arr)) {
+      throw new Error(
+        'arrayPush: the target is not a list (PHP $a[] = … on a string-keyed array)'
+      );
+    }
+    arr.push(value);
+    return arr;
+  };
   rt.sprintf = (fmt, ...args) => {
     let i = 0;
     // collapse %% -> % first (PHP: literal percent)
@@ -687,6 +699,10 @@ export function buildRt(context, opts = {}) {
 
   // ---- foreach over PHP arrays/objects ----
   rt.entries = (src) => {
+    // A paginator (and a Collection) iterate their items, not their fields.
+    if (src && typeof src === 'object' && Array.isArray(src.__items)) {
+      return src.__items.map((v, i) => [i, v]);
+    }
     if (src && typeof src === 'object') {
       const keyOf = (k) => (/^\d+$/.test(k) ? Number(k) : k);
       return Object.keys(src).map((k) => [keyOf(k), src[k]]);
@@ -1325,6 +1341,10 @@ export function buildRt(context, opts = {}) {
         await m.save(db);
         return m;
       },
+      // Eloquent::paginate() — the LengthAwarePaginator (the page comes from
+      // the request, the path from the request's URL).
+      paginate: async (perPage, pageName, page) =>
+        rt.paginate(M.query(db), perPage, pageName, page),
     };
     facadeCache.set(M, facade);
     return facade;
@@ -1334,6 +1354,39 @@ export function buildRt(context, opts = {}) {
     const M = modelsMap[key];
     if (!M) throw new Error('rt.model: unknown model ' + JSON.stringify(key));
     return makeFacade(M);
+  };
+
+  // ---- rt.paginate: the LengthAwarePaginator (Illuminate\Pagination) ----
+  // Laravel's PaginationState: the page comes from the request's input (a
+  // valid integer >= 1, else 1), the path from the request's URL (without the
+  // query string) and the query string from the request (withQueryString()).
+  const phpFilterInt = (v) => {
+    if (typeof v === 'number') return Number.isInteger(v) ? v : null;
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (!/^[+-]?\d+$/.test(s)) return null;
+    return parseInt(s, 10);
+  };
+  rt.paginate = async (builder, perPage, pageName, page) => {
+    const name = pageName ? String(pageName) : 'page';
+    const size = Number(perPage) || 15;
+    let current = page ? Number(page) : 1;
+    if (!page && liveRequest && typeof liveRequest.input === 'function') {
+      const fromRequest = phpFilterInt(liveRequest.input(name));
+      if (fromRequest !== null && fromRequest >= 1) current = fromRequest;
+    }
+    const res = await builder.paginate(size, current);
+    const path =
+      liveRequest && typeof liveRequest.url === 'function' ? liveRequest.url() : '/';
+    const query =
+      liveRequest && typeof liveRequest.query === 'function' ? liveRequest.query() : {};
+    const paginator = new LengthAwarePaginator(res.data, res.total, res.per_page, res.current_page, {
+      path,
+      pageName: name,
+    });
+    // withQueryString(): the request's query string (Laravel's resolver).
+    paginator.__requestQuery = query && typeof query === 'object' ? { ...query } : {};
+    return paginator;
   };
 
   // rt.view: render a compiled Blade view with runtime data.

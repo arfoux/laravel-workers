@@ -376,14 +376,14 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too). | M39 |
 | Blade `@extends` (a layout) | ✅ compiles | The sections travel to the layout (the shadow harness proves the bytes). | M40 |
-| `Model::paginate()` | ⛔ fails loud (`LW003`) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M40 |
+| `Model::paginate()` | ✅ compiles | The LengthAwarePaginator (the items, the total, the pages, the URLs); the pagination links need the pagination view (M40 part 4). | M40 |
 | Route-model binding (a typed param) | ✅ compiles | The model comes from the route segment (Laravel's implicit binding); a missing model is a 404. | M40 |
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
 | File upload (`$request->file()`) | ⛔ fails loud (`LW002`) | An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40). | M41 |
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**38 constructs: 24 compile, 13 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**38 constructs: 25 compile, 12 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -408,16 +408,18 @@ or it **fails the build** - there is no third state (no silent degradation).
   for a credit card) and `Cache::tags()` (a taggable store). They stay ports and
   the build keeps failing loud, deliberately, each with its own reason (LW002).
   Effort: large (a class compiler is a milestone of its own). Risk: high.
-- **M40 - the build-level constructs (the layouts, the route-model binding and the
-  method handling are done).** The **Blade layouts** compile now
-  (`@extends`/`@section`/`@yield`: the sections travel to the layout, the build
-  compiles the view closure, and the shadow harness proves the bytes), the
-  **route-model binding** compiles (`show(Post $post)` fetches the model from
-  the segment; a missing model is a 404) and the **method handling** is
-  Laravel's: an `OPTIONS` request gets the automatic OPTIONS response (200, an
-  empty body, the `Allow` header) and a method that does not match answers
-  like Laravel (405 with an `errors/405` view, else the framework's error
-  renderer). What is left: `paginate()` (the paginator + the pagination links)
+- **M40 - the build-level constructs (the layouts, the route-model binding, the
+  method handling and the paginator are done).** The **Blade layouts** compile
+  now (`@extends`/`@section`/`@yield`: the sections travel to the layout, the
+  build compiles the view closure, and the shadow harness proves the bytes),
+  the **route-model binding** compiles (`show(Post $post)` fetches the model
+  from the segment; a missing model is a 404), the **method handling** is
+  Laravel's (an `OPTIONS` request gets the automatic OPTIONS response — 200, an
+  empty body, the `Allow` header; a method that does not match answers 405 with
+  an `errors/405` view, else 500) and the **paginator** compiles
+  (`Post::paginate(10)` → the LengthAwarePaginator: the items, the total, the
+  pages, the URLs and the URL window). What is left: the **pagination links**
+  (the framework's `pagination::tailwind` view must be compiled at build time)
   and the **file uploads** (the edge has no multipart parser yet — the build
   tells the operator to enable R2 or to remove the upload). Effort: large; the
   uploads need the multipart parsing at the edge.
@@ -461,8 +463,24 @@ or it **fails the build** - there is no third state (no silent degradation).
     - the **CORS** config (`config/cors.php`) is *not* compiled: the build
       **skips** the routes under a CORS path (the `Access-Control-*` headers
       would be missing, and a browser's CORS would break) and says what to do.
-  What is left in this batch: `paginate()` (the paginator + the pagination
-  links — the Tailwind markup must match byte-wise) and the **file uploads**
+  - **The paginator** (`Post::paginate(10)`): the query builder had no
+    pagination and the construct failed loud (LW003). Now the compiled side
+    answers Laravel's `LengthAwarePaginator` (`kernel/paginator.mjs`, a
+    line-by-line port of `Illuminate\Pagination\LengthAwarePaginator` +
+    `UrlWindow`): the items, the total, the pages, the first/last item, the
+    previous/next URLs, the URL window (`elements()`) and the query string.
+    Laravel's own rules are kept: the page comes from the request (`?page=N`,
+    a valid integer >= 1), the path from the request's URL, the per page 15 by
+    default. The shadow harness proves it: the same total, the same pages, the
+    same items and the same URLs as the real Laravel (the first page and the
+    second one).
+    A **bug the shadow found**: `$arr[] = $x` (the PHP array append) compiled
+    to `$arr[null] = $x` — a *silent* wrong answer (the array stayed empty).
+    Now it compiles to `rt.arrayPush()` and an array read without an offset
+    fails loud.
+  What is left in this batch: the **pagination links** (the framework's
+  `pagination::tailwind` view must be compiled at build time — the view name
+  has a `::`, which is not a legal Windows file name) and the **file uploads**
   (the edge has no multipart parser yet).
 
 - **M39b - the class-bearing calls, bounded (done).** The Gate (M39a) and the
