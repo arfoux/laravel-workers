@@ -31,11 +31,22 @@ const GLYPH = { ok: '✅ compiles', fail: '⛔ fails loud' };
 
 function probe(c) {
   if (!c.php) return { verdict: 'not probed', code: null, message: 'documented (a build-level construct)' };
+  // A probe may carry a preamble (the context the construct needs), the
+  // method parameters and the models of the route - so the probe is the real
+  // code an app would have, not a fragment.
   const src =
-    '<?php\nnamespace App\\Http\\Controllers;\nclass C {\n    public function demo()\n    {\n' +
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C {\n    public function demo' +
+    (c.sig || '()') +
+    '\n    {\n' +
+    (c.pre ? c.pre + '\n' : '') +
     c.php +
     '\n        return response("ok");\n    }\n}\n';
-  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  const res = emitController(src, 'demo', {
+    routeUri: '/x',
+    routeParams: [],
+    models: c.models || [],
+    views: [],
+  });
   if (!res.errors.length) return { verdict: 'ok', code: null, message: 'compiles' };
   const e = res.errors[0];
   return { verdict: 'fail', code: e.code, message: String(e.message).split('\n')[0] };
@@ -93,7 +104,7 @@ const table = [
     return `| ${r.label} | ${v}${drift} | ${r.note} | ${r.batch} |`;
   }),
   '',
-  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — the only exception is a listed **known gap** (it compiles, but the request answers a 500 instead of the build stopping it).`,
+  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.`,
 ].join('\n');
 
 if (CHECK) {

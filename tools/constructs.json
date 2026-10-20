@@ -178,7 +178,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The listeners are classes - they are not compiled, so the dispatch is a port.",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -188,7 +188,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The policies are classes - they are not compiled, so the check is a port.",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -198,7 +198,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The mailable class is not compiled; the mailer adapter exists (M28).",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -208,7 +208,7 @@
       "expect": "fail",
       "code": "LW003",
       "note": "The job class is not compiled; the queue adapter exists (M28).",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -218,7 +218,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "The disk class is not compiled; the default disk compiles (M30).",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -228,7 +228,7 @@
       "expect": "fail",
       "code": "LW002",
       "note": "Tags need a KV/Redis-shaped store; the D1 `database` store has no tags.",
-      "batch": "M38",
+      "batch": "M39",
       "status": "todo"
     },
     {
@@ -238,7 +238,7 @@
       "check": "build",
       "expect": "fail",
       "note": "A layout compiles to `$__env` - a view-level construct (not the controller compiler).",
-      "batch": "M39",
+      "batch": "M40",
       "status": "todo"
     },
     {
@@ -248,7 +248,7 @@
       "check": "compiler",
       "expect": "fail",
       "note": "The query builder has no pagination; D1 has no OFFSET-free paging guarantee.",
-      "batch": "M39",
+      "batch": "M40",
       "status": "todo"
     },
     {
@@ -258,7 +258,7 @@
       "check": "compiler",
       "expect": "fail",
       "note": "The compiled handler takes the raw segment; the model is fetched explicitly.",
-      "batch": "M39",
+      "batch": "M40",
       "status": "todo"
     },
     {
@@ -266,20 +266,30 @@
       "label": "Eloquent relations (`$post->comments()`)",
       "php": "$c = $post->comments();",
       "check": "compiler",
-      "expect": "ok",
-      "note": "KNOWN GAP: it compiles, but the relation method does not exist on the compiled model - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on a model is open (M41).",
+      "expect": "fail",
+      "note": "A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`).",
       "batch": "M41",
-      "status": "gap"
+      "status": "done",
+      "pre": "$post = Post::findOrFail(1);",
+      "models": [
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post"
+        }
+      ],
+      "code": "LW003"
     },
     {
       "id": "file_upload",
       "label": "File upload (`$request->file()`)",
       "php": "$f = $request->file('avatar');",
       "check": "compiler",
-      "expect": "ok",
-      "note": "KNOWN GAP: it compiles, but the request has no `file()` at the edge - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on the request is open (M41).",
+      "expect": "fail",
+      "note": "An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40).",
       "batch": "M41",
-      "status": "gap"
+      "status": "done",
+      "sig": "(\\Illuminate\\Http\\Request $request)",
+      "code": "LW002"
     },
     {
       "id": "options_route",
@@ -288,7 +298,7 @@
       "check": "build",
       "expect": "fail",
       "note": "The platform answers the CORS preflight, not the app.",
-      "batch": "M39",
+      "batch": "M40",
       "status": "todo"
     }
   ]

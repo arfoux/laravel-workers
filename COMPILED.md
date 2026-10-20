@@ -363,20 +363,20 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `report()` | ✅ compiles | Reports an exception to the platform log (it does not answer it). | M37 |
 | `cache()` (the helper) | ✅ compiles | The helper form of the `Cache` facade (the facade compiles). | M37 |
 | `session([...])` (the array form) | ✅ compiles | The array form writes many keys: `session()->put([...])`. | M37 |
-| `Event::dispatch()` | ⛔ fails loud (`LW003`) | The listeners are classes - they are not compiled, so the dispatch is a port. | M38 |
-| `Gate::allows()` | ⛔ fails loud (`LW003`) | The policies are classes - they are not compiled, so the check is a port. | M38 |
-| `Mail::to()->send()` | ⛔ fails loud (`LW003`) | The mailable class is not compiled; the mailer adapter exists (M28). | M38 |
-| `Queue::push()` | ⛔ fails loud (`LW003`) | The job class is not compiled; the queue adapter exists (M28). | M38 |
-| `Storage::disk()` | ⛔ fails loud (`LW002`) | The disk class is not compiled; the default disk compiles (M30). | M38 |
-| `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags. | M38 |
-| Blade `@extends` (a layout) | — documented (build level) | A layout compiles to `$__env` - a view-level construct (not the controller compiler). | M39 |
-| `Model::paginate()` | ⛔ fails loud (`LW003`) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M39 |
-| Route-model binding (a typed param) | ⛔ fails loud (`LW004`) | The compiled handler takes the raw segment; the model is fetched explicitly. | M39 |
-| Eloquent relations (`$post->comments()`) | ✅ compiles | KNOWN GAP: it compiles, but the relation method does not exist on the compiled model - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on a model is open (M41). | M41 |
-| File upload (`$request->file()`) | ✅ compiles | KNOWN GAP: it compiles, but the request has no `file()` at the edge - the request answers a 500 instead of the build stopping. The fail-loud gate for the method calls on the request is open (M41). | M41 |
-| An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M39 |
+| `Event::dispatch()` | ⛔ fails loud (`LW003`) | The listeners are classes - they are not compiled, so the dispatch is a port. | M39 |
+| `Gate::allows()` | ⛔ fails loud (`LW003`) | The policies are classes - they are not compiled, so the check is a port. | M39 |
+| `Mail::to()->send()` | ⛔ fails loud (`LW003`) | The mailable class is not compiled; the mailer adapter exists (M28). | M39 |
+| `Queue::push()` | ⛔ fails loud (`LW003`) | The job class is not compiled; the queue adapter exists (M28). | M39 |
+| `Storage::disk()` | ⛔ fails loud (`LW002`) | The disk class is not compiled; the default disk compiles (M30). | M39 |
+| `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags. | M39 |
+| Blade `@extends` (a layout) | — documented (build level) | A layout compiles to `$__env` - a view-level construct (not the controller compiler). | M40 |
+| `Model::paginate()` | ⛔ fails loud (`LW003`) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M40 |
+| Route-model binding (a typed param) | ⛔ fails loud (`LW004`) | The compiled handler takes the raw segment; the model is fetched explicitly. | M40 |
+| Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
+| File upload (`$request->file()`) | ⛔ fails loud (`LW002`) | An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40). | M41 |
+| An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M40 |
 
-**31 constructs: 21 compile, 8 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — the only exception is a listed **known gap** (it compiles, but the request answers a 500 instead of the build stopping it).
+**31 constructs: 19 compile, 10 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -391,17 +391,24 @@ or it **fails the build** - there is no third state (no silent degradation).
   needs its PHP-parity rule (the `Str` family is the big one: slug/limit/upper/lower/
   head/studly/...). Effort: medium. Risk: medium - the parity rules are exactly where
   the divergences hide.
-- **M38 - the class-bearing calls.** `Event::dispatch()`, `Gate::allows()`,
+- **M39 - the class-bearing calls.** `Event::dispatch()`, `Gate::allows()`,
   `Mail::to()->send()`, `Queue::push(SomeJob::class)`, `Storage::disk()`,
   `Cache::tags()`. These need the **class compiler** (the listeners, policies,
   mailables, jobs and disks are classes). Until that exists they stay ports and the
   build keeps failing loud - deliberately. Effort: large (a class compiler is a
   milestone of its own). Risk: high.
-- **M39 - the build-level constructs.** The Blade layouts (`@extends`), `paginate`,
+- **M40 - the build-level constructs.** The Blade layouts (`@extends`), `paginate`,
   route-model binding, the Eloquent relations, the file uploads and the `OPTIONS`
   route. Effort: large; the uploads need R2 (multipart parsing at the edge).
 
 ## 8. Definition of done (per item)
+- **M41 - the method-call gate (done).** A method call on a model, on a query
+  builder or on an unknown variable compiled and answered a 500 at the edge
+  (a relation, an upload). The build stops instead: LW003 for a model or a
+  query, LW002 for an unknown variable and for a view. The allowed model
+  methods are the ones the compiled model really has (kernel/model.mjs), so
+  `fill()`, `get()` and `toJSON()` keep working. Effort: small. Risk: low -
+  the gate is a list, not a guess.
 
 - corpus and/or shadow test vs PHP 8.3 exists and is green
 - fits the Free-plan budget (CPU / D1 queries / D1 writes) or is explicitly flagged Paid-tier in `report` and docs

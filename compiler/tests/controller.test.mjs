@@ -719,6 +719,65 @@ test('emit: the helper surface compiles (away, back, env, data_get, tap, report,
   assert.match(res.code, /rt\.session\(\)\.put\(/);
 });
 
+test('emit: a relation call on a model fails loud (LW003)', () => {
+  const src = String.raw`<?php
+namespace App\Http\Controllers;
+use App\Models\Post;
+class C {
+    public function show($id)
+    {
+        $post = Post::findOrFail($id);
+        $comments = $post->comments();
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'show', {
+    ...META_BASE,
+    routeUri: '/posts/{id}',
+    routeParams: ['id'],
+  });
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /model method comments\(\)/);
+});
+
+test('emit: a method call on an unknown variable fails loud (LW002)', () => {
+  const src = String.raw`<?php
+namespace App\Http\Controllers;
+class C {
+    public function demo()
+    {
+        $comments = $post->comments();
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'demo', { ...META_BASE, routeUri: '/x', routeParams: [] });
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /\$post->comments\(\)/);
+});
+
+test('emit: the query builder methods still compile', () => {
+  const src = String.raw`<?php
+namespace App\Http\Controllers;
+use App\Models\Post;
+class C {
+    public function demo()
+    {
+        $q = Post::where('published', true);
+        $posts = $q->get();
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'demo', { ...META_BASE, routeUri: '/x', routeParams: [] });
+  assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
+  assert.match(res.code, /rt\.model\("Post"\)\.where\(/);
+  assert.match(res.code, /v_posts = v_q\.get\(\)/);
+});
+
 test('emit: an unsupported Storage method fails loud (LW002)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

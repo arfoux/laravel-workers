@@ -339,6 +339,15 @@ const MODEL_CHAIN_BUILDER = new Set([
 ]);
 // Terminal builder methods (return a Promise).
 const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'pluck', 'value']);
+// The methods of the compiled model instance (kernel/model.mjs) - keep in
+// sync. A method that is not here (a relation, for example) is not compiled:
+// the build stops instead of answering a 500 at the edge.
+const MODEL_INSTANCE_METHODS = new Set([
+  'get', 'set', 'fill', 'forceFill', 'toJSON', 'trashed', 'increment',
+  'save', 'delete', 'forceDelete', 'restore', 'refresh',
+  'related', 'load', 'loadCount', 'loadAggregate',
+  'setRelation', 'getRelation', 'relationLoaded',
+]);
 
 const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
@@ -882,6 +891,60 @@ function txCall(node) {
     if (CTX && CTX.controller && SESSION_STORE_RE.test(obj) && SESSION_ASYNC.has(meth)) {
       return txAwait(expr, node, 'session()->' + meth + '()');
     }
+    // A method call on a variable the compiled rung does not know. It used to
+    // compile and answer a 500 at the edge (a silent gap); the build stops.
+    if (what.what && what.what.kind === 'variable') {
+      const v = vname(what.what.name);
+      const phpVar = String(what.what.name || '').replace(/^v_/, '');
+      const inController = !!(CTX && CTX.controller);
+      if (!inController) {
+        // A view: the ViewErrorBag is the only object with methods there (the
+        // __env / __data variables are the Blade internals).
+        if (phpVar !== 'errors' && !phpVar.startsWith('__')) {
+          throw mkErr(
+            'LW002',
+            'the method call $' + phpVar + '->' + meth + '() is not compiled in a view (the error bag is the only one with methods) - ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return expr;
+      }
+      const kind = CTX.modelVars ? CTX.modelVars.get(v) : null;
+      if (kind === 'builder') {
+        if (!MODEL_CHAIN_BUILDER.has(meth) && !MODEL_CHAIN_TERMINAL.has(meth)) {
+          throw mkErr(
+            'LW003',
+            'the query method ->' + meth + '() is not supported - ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+      } else if (kind === 'model') {
+        if (!MODEL_INSTANCE_METHODS.has(meth)) {
+          throw mkErr(
+            'LW003',
+            'the model method ' + meth + '() is not compiled (an Eloquent relation?) - the compiled rung has the instance writes only (save, delete, ...); ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+      } else if (kind === 'list' || kind === 'scalar') {
+        throw mkErr(
+          'LW003',
+          'the method ->' + meth + '() on a query result is not compiled (a collection method?) - ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      } else {
+        throw mkErr(
+          'LW002',
+          'the method call $' + phpVar + '->' + meth + '() is not compiled - ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+    }
     return expr;
   }
   if (what.kind === 'variable') {
@@ -986,10 +1049,38 @@ function txArrowFunc(node){
 }
 
 
+// The kind of a model expression:
+//   builder - Post::where(...)          (the query builder)
+//   model   - Post::find(...)/first()   (a model instance)
+//   list    - Post::all()/get()         (a list of models)
+//   scalar  - count()/pluck()/value()   (a value)
+function modelExprKind(node) {
+  if (!CTX || !CTX.models) return null;
+  const chain = modelChain(node);
+  if (!chain) return null;
+  const first = chain.segments[0].name;
+  const last = chain.segments[chain.segments.length - 1].name;
+  if (first === 'all') return 'list';
+  if (MODEL_STATIC_START.has(first)) {
+    if (chain.segments.length > 1 && MODEL_CHAIN_TERMINAL.has(last)) {
+      if (last === 'get') return 'list';
+      if (last === 'count' || last === 'pluck' || last === 'value') return 'scalar';
+      return 'model';
+    }
+    return 'builder';
+  }
+  return 'model';
+}
+
 function txAssignExpr(node) {
   const op = node.operator || '=';
   const left = node.left;
   const right = tx(node.right);
+  // A model assignment: the variable holds a model (or a query builder).
+  if (left.kind === 'variable' && CTX && CTX.modelVars) {
+    const kind = modelExprKind(node.right);
+    if (kind) CTX.modelVars.set(vname(left.name), kind);
+  }
   if (left.kind === 'variable') {
     const v = vname(left.name);
     if (op === '=') return '(' + v + ' = ' + right + ')';
@@ -1019,6 +1110,11 @@ function txAssignStatement(node) {
   const op = node.operator || '=';
   const left = node.left;
   const right = tx(node.right);
+  // A model assignment: the variable holds a model (or a query builder).
+  if (left.kind === 'variable' && CTX && CTX.modelVars) {
+    const kind = modelExprKind(node.right);
+    if (kind) CTX.modelVars.set(vname(left.name), kind);
+  }
   if (left.kind === 'variable') {
     const v = vname(left.name);
     if (op === '=') return v + ' = ' + right + ';';
@@ -1280,6 +1376,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     views: opts.views || new Set(),
     controller: true,
     requestVars: opts.requestVars || new Set(),
+    // The variables that hold a model (or a query builder): a method call on
+    // them is gated, so the build stops instead of answering a 500 at the edge.
+    modelVars: new Map(),
     // class constants dumped at build time: { FQCN: { NAME: value } }
     constants: opts.constants || {},
     // FormRequest rules per request variable: Map<varName, { rules, messages, attributes }>
