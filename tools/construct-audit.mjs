@@ -135,10 +135,15 @@ for (const c of DATA.constructs) {
   const actual = p.verdict;
   // A build-level construct (a Blade layout, an OPTIONS route) is documented
   // here: the compiler cannot judge it, so it is not probed.
+  // A row may also name the REASON the construct must fail loud for (a
+  // substring of the message): a construct that fails loud for another reason
+  // is drift too (the M45/M46 family: the verdict was right, the reason was
+  // wrong).
+  const reasonOk = expected === 'fail' && c.reason ? p.message.includes(c.reason) : true;
   const ok =
     c.check === 'build'
       ? true
-      : actual === expected && (expected === 'fail' ? (c.code ? p.code === c.code : true) : true);
+      : actual === expected && (expected === 'fail' ? (c.code ? p.code === c.code : true) : true) && reasonOk;
   if (!ok) drift++;
   rows.push({
     id: c.id,
@@ -151,10 +156,19 @@ for (const c of DATA.constructs) {
     note: c.note,
     batch: c.batch,
     status: c.status,
+    reason: c.reason || null,
     message: p.message,
   });
 }
 
+// --dump: print every probed construct (the verdict + the message) so the
+// reasons can be recorded in tools/constructs.json.
+if (process.argv.includes('--dump')) {
+  for (const r of rows) {
+    console.log([r.id, r.verdict, r.code || '-', JSON.stringify(r.message)].join('	'));
+  }
+  process.exit(0);
+}
 const counts = {
   ok: rows.filter((r) => r.verdict === 'ok').length,
   fail: rows.filter((r) => r.verdict === 'fail').length,
@@ -187,6 +201,11 @@ if (CHECK) {
     console.error(
       `construct-audit FAIL: ${r.label} - expected ${r.expected}${r.expected === 'fail' ? ` (${r.code})` : ''}, got ${r.verdict}${r.code ? ` (${r.code})` : ''}`
     );
+    if (r.reason && !r.message.includes(r.reason)) {
+      console.error(
+        `construct-audit FAIL: ${r.label} - it fails loud, but not for the recorded reason: ${JSON.stringify(r.reason)}`
+      );
+    }
   }
   // 2. the document must match the code
   const docPath = join(ROOT, 'COMPILED.md');

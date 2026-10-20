@@ -862,7 +862,8 @@ const MAILABLE_REASON =
 const queueRefusal = (m) =>
   'Queue::' + m + '() is not supported — the job would never run at the edge: the worker has no queue handler, so ' +
   'nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a ' +
-  'Cloudflare Queues binding with a consumer you write, or a D1 table the cron trigger reads (a port handler ' +
+  'Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid ' +
+  'plan charges per operation), or a D1 table the cron trigger reads (a port handler ' +
   'writes the row — the edge has no producer for it) — ' + PORT_HINT;
 // The facades whose work the edge cannot do with the same result. The message
 // says WHY (the structural reason), not "unknown class".
@@ -1122,8 +1123,8 @@ function txCall(node) {
       if (!fqcn) {
         throw mkErr(
           'LW002',
-          'Event::dispatch() needs an instance of a compiled event class — the edge has no listener runtime, so a ' +
-            'dispatch of an unknown event would be a silent no-op — ' + PORT_HINT,
+          'Event::dispatch() needs an instance of a compiled event class — the edge dispatches the compiled listeners, so a ' +
+            'dispatch of an event the build did not compile would be a silent no-op — ' + PORT_HINT,
           node.loc,
           PORT_HINT
         );

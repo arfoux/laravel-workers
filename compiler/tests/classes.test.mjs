@@ -355,8 +355,86 @@ test('classes: the runtime dispatches to the compiled listener (Laravel: synchro
   });
   const event = rt.newClass('App\\Events\\PostPublished', [7]);
   assert.equal(event.postId, 7);
+  // Laravel's Dispatcher::dispatch() returns the ARRAY of the responses (one
+  // per listener, a listener that returns nothing answers null).
   const answer = await rt.event.dispatch(event);
-  assert.equal(answer, null);
+  assert.deepEqual(answer, [null]);
+});
+
+test('classes: the dispatch runs every listener (Laravel: only a false answer stops the chain)', async () => {
+  // Laravel: dispatch() runs EVERY listener; only dispatchUntil() (the halt
+  // flag) stops at the first non-null answer; a listener that answers false
+  // breaks the chain and its answer is discarded.
+  const seen = [];
+  const rt = buildRt({}, {
+    http: {},
+    classes: {
+      'App\\Events\\PostPublished': { ctor: (args) => ({ postId: args[0] }), methods: {} },
+      'App\\Listeners\\First': {
+        ctor: () => ({}),
+        methods: { handle: async function () { seen.push('first'); return 'an answer'; } },
+      },
+      'App\\Listeners\\Second': {
+        ctor: () => ({}),
+        methods: { handle: async function () { seen.push('second'); return null; } },
+      },
+      'App\\Listeners\\Third': {
+        ctor: () => ({}),
+        methods: { handle: async function () { seen.push('third'); return null; } },
+      },
+    },
+    eventListeners: {
+      'App\\Events\\PostPublished': ['App\\Listeners\\First', 'App\\Listeners\\Second', 'App\\Listeners\\Third'],
+    },
+  });
+  const event = rt.newClass('App\\Events\\PostPublished', [1]);
+  const answer = await rt.event.dispatch(event);
+  // The first listener answers - the second and the third still run.
+  assert.deepEqual(seen, ['first', 'second', 'third']);
+  assert.deepEqual(answer, ['an answer', null, null]);
+});
+
+test('classes: a listener that answers false stops the chain (Laravel)', async () => {
+  const seen = [];
+  const rt = buildRt({}, {
+    http: {},
+    classes: {
+      'App\\Events\\PostPublished': { ctor: (args) => ({ postId: args[0] }), methods: {} },
+      'App\\Listeners\\Stops': {
+        ctor: () => ({}),
+        methods: { handle: async function () { seen.push('stops'); return false; } },
+      },
+      'App\\Listeners\\Never': {
+        ctor: () => ({}),
+        methods: { handle: async function () { seen.push('never'); return null; } },
+      },
+    },
+    eventListeners: {
+      'App\\Events\\PostPublished': ['App\\Listeners\\Stops', 'App\\Listeners\\Never'],
+    },
+  });
+  const event = rt.newClass('App\\Events\\PostPublished', [1]);
+  const answer = await rt.event.dispatch(event);
+  // The false answer stops the chain and is discarded (Laravel breaks before
+  // pushing it).
+  assert.deepEqual(seen, ['stops']);
+  assert.deepEqual(answer, []);
+});
+
+test('classes: the runtime names a circular service dependency (Laravel: circular dependency detected)', async () => {
+  // A service that needs a service that needs it back: the edge would recurse
+  // forever (a stack overflow with no cause). Laravel names the cycle.
+  const rt = buildRt({}, {
+    http: {},
+    classes: {
+      'App\\Services\\A': { ctor: () => ({}), methods: {}, deps: [{ param: 'b', kind: 'class', type: 'App\\Services\\B' }] },
+      'App\\Services\\B': { ctor: () => ({}), methods: {}, deps: [{ param: 'a', kind: 'class', type: 'App\\Services\\A' }] },
+    },
+  });
+  assert.throws(
+    () => rt.newClass('App\\Services\\A', []),
+    /circular dependency detected \[App\\Services\\A -> App\\Services\\B -> App\\Services\\A\]/
+  );
 });
 
 test('classes: the runtime fails loud on an event without a compiled class', async () => {

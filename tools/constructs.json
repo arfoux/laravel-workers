@@ -196,7 +196,8 @@
       "code": "LW002",
       "note": "An event *name* has no class: the edge cannot know which listener answers, so the dispatch would be a silent no-op - dispatch the event object instead.",
       "batch": "M39c",
-      "status": "done"
+      "status": "done",
+      "reason": "needs an instance of a compiled event class"
     },
     {
       "id": "gate",
@@ -304,7 +305,8 @@
       "code": "LW002",
       "note": "It throws an AuthorizationException (a 403) - the edge has no such error view yet.",
       "batch": "M39",
-      "status": "todo"
+      "status": "todo",
+      "reason": "it throws an AuthorizationException"
     },
     {
       "id": "gate_any",
@@ -321,7 +323,8 @@
       "code": "LW002",
       "note": "Only `allows()` and `denies()` compile.",
       "batch": "M39",
-      "status": "todo"
+      "status": "todo",
+      "reason": "allowed: allows, denies"
     },
     {
       "id": "gate_define",
@@ -331,7 +334,8 @@
       "code": "LW002",
       "note": "A closure is not compiled - the global Gate registrations stay a port.",
       "batch": "M39",
-      "status": "todo"
+      "status": "todo",
+      "reason": "the global Gate registrations are not compiled"
     },
     {
       "id": "gate_before",
@@ -341,7 +345,8 @@
       "code": "LW002",
       "note": "The global Gate callbacks are not compiled (the policies are).",
       "batch": "M39",
-      "status": "todo"
+      "status": "todo",
+      "reason": "the global Gate registrations are not compiled"
     },
     {
       "id": "mail_fluent",
@@ -351,7 +356,8 @@
       "code": "LW002",
       "note": "A mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view and produce the very same payload - and the shadow harness would have to compare the mail payload byte for byte (it cannot today: the log format differs). **Not mapped yet** (a milestone of its own).",
       "batch": "M39",
-      "status": "todo"
+      "status": "todo",
+      "reason": "a mailable renders its own Blade view"
     },
     {
       "id": "queue_push",
@@ -359,9 +365,10 @@
       "php": "\\Illuminate\\Support\\Facades\\Queue::push(\\App\\Jobs\\SendMail::class);",
       "expect": "fail",
       "code": "LW002",
-      "note": "The job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a Cloudflare Queues binding with a consumer you write, or a D1 table the cron trigger reads (a port handler writes the row - the edge has no producer for it). The job class is not compiled either: the class compiler compiles the events, the listeners and the injected services - a job is none of them. In Laravel the job is queued (or run inline by the sync driver) and the route answers 200.",
+      "note": "The job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads (a port handler writes the row - the edge has no producer for it). The job class is not compiled either: the class compiler compiles the events, the listeners and the injected services - a job is none of them. In Laravel the job is queued (or run inline by the sync driver) and the route answers 200.",
       "batch": "M39",
-      "status": "done"
+      "status": "done",
+      "reason": "the job would never run at the edge"
     },
     {
       "id": "storage_disk",
@@ -380,7 +387,8 @@
       "code": "LW002",
       "note": "A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store.",
       "batch": "M39",
-      "status": "done"
+      "status": "done",
+      "reason": "has ONE object store"
     },
     {
       "id": "cache_tags",
@@ -390,7 +398,8 @@
       "code": "LW002",
       "note": "The compiled cache store is the D1 `database` store, which has no tags: in Laravel this route 500s with BadMethodCallException(\"This cache store does not support tagging.\"); the build refuses the route before it ships (stricter than Laravel, not a parity), and a taggable store (redis/memcached) is not compiled.",
       "batch": "M39",
-      "status": "done"
+      "status": "done",
+      "reason": "the compiled cache store is the D1 `database` store"
     },
     {
       "id": "blade_layout",
@@ -479,7 +488,8 @@
           "fqcn": "App\\Models\\Post"
         }
       ],
-      "code": "LW003"
+      "code": "LW003",
+      "reason": "is not compiled (an Eloquent relation?)"
     },
     {
       "id": "file_upload",
@@ -527,7 +537,8 @@
       "batch": "M40",
       "status": "done",
       "sig": "(\\Illuminate\\Http\\Request $request)",
-      "code": "LW003"
+      "code": "LW003",
+      "reason": "it reads the file's content type (finfo)"
     },
     {
       "id": "file_rule_mimes",
@@ -539,7 +550,8 @@
       "batch": "M40",
       "status": "done",
       "sig": "(\\Illuminate\\Http\\Request $request)",
-      "code": "LW002"
+      "code": "LW002",
+      "reason": "it reads the file's *content* type (finfo)"
     },
     {
       "id": "request_files_property",
@@ -551,7 +563,8 @@
       "batch": "M40",
       "status": "done",
       "sig": "(\\Illuminate\\Http\\Request $request)",
-      "code": "LW002"
+      "code": "LW002",
+      "reason": "in Laravel it is a property (Symfony's FileBag), not a method"
     },
     {
       "id": "options_route",
@@ -582,7 +595,8 @@
       "code": "LW003",
       "note": "A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently.",
       "batch": "M42",
-      "status": "done"
+      "status": "done",
+      "reason": "is not compiled (a relation or an accessor?)"
     },
     {
       "id": "rule_object",
@@ -594,7 +608,8 @@
       "code": "LW002",
       "note": "A rule object is a class: the compiled validator evaluates the string rules only, so the rule would be silently ignored and the validation would differ. The build stops and names what it would take: the kernel validator must evaluate the rule object, the FormRequest must be compiled and its prepared input merged into the validated data.",
       "batch": "M43",
-      "status": "todo"
+      "status": "todo",
+      "reason": "a rule object"
     },
     {
       "id": "form_request_rule_object",
@@ -624,7 +639,8 @@
       "expect": "fail",
       "note": "A service the build does not compile: the edge has no container and no file for it, so the constructor dependency is a build error (the build names the class). A service the build DOES compile is injected (the edge builds it) and a framework service is adapted (the worker hands the live one down).",
       "batch": "M43",
-      "status": "done"
+      "status": "done",
+      "reason": "the build does not compile it"
     },
     {
       "id": "listener_queued",
@@ -635,7 +651,8 @@
       "expect": "fail",
       "note": "Laravel pushes a queued listener to the queue (it runs later); the edge has no queue consumer, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason.",
       "batch": "M43",
-      "status": "done"
+      "status": "done",
+      "reason": "is queued (ShouldQueue)"
     },
     {
       "id": "listener_service_compiled",
@@ -668,7 +685,8 @@
       "note": "The refusal holds in a compiled class too: the job would never run at the edge (the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job).",
       "batch": "M45",
       "status": "done",
-      "code": "LW002"
+      "code": "LW002",
+      "reason": "Queue::push() is not supported"
     },
     {
       "id": "listener_cache_tags",
@@ -679,7 +697,8 @@
       "note": "The D1 `database` store has no tags: in Laravel this route 500s with BadMethodCallException(\"This cache store does not support tagging.\"); the build refuses the route before it ships (stricter than Laravel, not a parity).",
       "batch": "M45",
       "status": "done",
-      "code": "LW002"
+      "code": "LW002",
+      "reason": "Cache::tags() is not supported"
     }
   ]
 }

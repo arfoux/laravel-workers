@@ -332,6 +332,37 @@ Everything else in Laravel's web surface: **compilable** — this document is th
 6. **Runtime completeness (1.4)** — continuous, corpus-driven, never "done"
 7. **Auth flows + Fortify-shaped controllers (2)** — just compiled controllers once 3/4/5 exist
 
+## 8b. The sweep plan — every Laravel 13 page to a verdict (M47+)
+
+The sweep is **measured, not guessed**: Appendix C (MAP.md) holds one verdict for each of the
+**105 pages** of the Laravel 13.x docs — 15 ✅ (it fits), 46 🟡 (it fits with a documented
+trade), 26 ⛔ (N/A at the edge), 13 planned (🟡 ph2 / ph3) and 5 🔴 (a padanan is required). A
+page without a verdict is a gap, and the docs gate fails on a gap (`tools/docs-check.mjs`).
+
+The milestones below close the sweep. Each one is a commit of its own (code + test + docs) and
+each one answers **apa** (the parity) → **kenapa** (the Laravel semantics, probed against the
+real framework) → **bukti** (the numbers) → **yang tetap fail loud** (the constructs that must
+stay refused, with the reason).
+
+| # | Milestone | The pages | What lands | The proof | What stays fail loud | Effort | Risk |
+|---|---|---|---|---|---|---|---|
+| M47 | the audit + the honesty fixes | — (cross-cutting) | the dispatch is Laravel's, a circular service dependency is named, the arithmetic is PHP 8's, the construct audit checks the *reason* (not only the verdict), every test file actually runs | the unit tests + the construct audit (55 constructs) | — | done | — |
+| M48 | the mail construct | mail, notifications | the mailable class compiles (its Blade view + the data), the kernel renders the payload, the mail leaves the edge | the shadow: the Laravel `MessageSent` payload vs the kernel outbox, byte for byte | `Mail::raw()`, `Mail::queue()`, the `cc`/`bcc` variants (not implemented) | large | high |
+| M49 | the validation: the rule objects + the FormRequest hooks | validation, requests | the `Rule::` objects are normalized at build time (Laravel's own `getRules()`), the three FormRequest hooks run (`prepareForValidation` → `withValidator` → `passedValidation`), the prepared input is merged into the request bag | the shadow: the 422 body byte for byte (the rule message included) | a rule that carries a closure (`Rule::unique()->where(fn …)`, `Rule::forEach`) — a closure cannot run at the edge | large | high |
+| M50 | the queue | queues, scheduling | the job class compiles, the producer writes the row, the D1 + cron consumer path, the build checks `triggers.crons` (a queue with no cron = the job never runs) | the shadow: the pushed payload (Laravel `Queue::fake()` vs the D1 row) | the async *execution* (a documented divergence: the job runs later, not during the request) | large | high |
+| M51 | the Eloquent relations + the accessors | eloquent-relationships, eloquent-mutators | the relations compile (the eager loading is the defense against the N+1), the accessors + the mutators | the shadow: the JSON body byte for byte | the lazy relations (a collection that grows in memory) | large | high |
+| M52 | the Gate's global registrations | authorization (ph2) | `Gate::define()`, `before()`, `after()`, `any()`, `none()`, `authorize()` (the 403 shape) | the shadow: the allowed/denied answers + the 403 | the policy classes the app writes by hand (the compiled policy wins) | medium | medium |
+| M53 | the API resources | eloquent-resources | `JsonResource` + `ResourceCollection` compile (the wrapping, `whenLoaded`, the pagination meta) | the shadow: the JSON body byte for byte | the `with()`/`additional` meta | medium | medium |
+| M54 | the collections | collections | the Laravel Collections API (the higher-order messages, the `conditionable`/`tappable` traits) | the unit tests against the real `Collection` | the lazy collections (PHP memory does not exist at the edge) | medium | medium |
+| M55 | the integrations (ph3) | passport, sanctum, socialite, cashier-paddle, billing, mcp, ai-sdk, pulse | each page gets its verdict + the port that answers it (or the explicit refusal) | the docs gate (a page without a verdict is a gap) | the parts that need a PHP process (the socialite callback) | medium | low |
+| M56 | the hard pages (🔴) | broadcasting, images, processes, redis, reverb | each page gets its padanan (SSE/polling for the broadcasting, the D1 blob store for the images) or the explicit refusal | the docs gate + the construct audit | the parts that need a long-lived connection | medium | low |
+
+**The rule of the sweep**: a page's trade (🟡) is only closed when the construct behind it
+**compiles and is proven** — never by writing a nicer sentence. A construct that cannot be
+answered like PHP at the edge **stays fail loud**, with the reason the operator needs (what
+Laravel does, what the edge does instead, and what the working path is: a port handler, a
+product, or a documented divergence).
+
 ## 9. The construct audit and the plan (generated)
 
 Every construct an app can meet is listed in `tools/constructs.json` and probed against
@@ -372,7 +403,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Gate::define()` | ⛔ fails loud (`LW002`) | A closure is not compiled - the global Gate registrations stay a port. | M39 |
 | `Gate::before()` | ⛔ fails loud (`LW002`) | The global Gate callbacks are not compiled (the policies are). | M39 |
 | `Mail::to()->send()` | ⛔ fails loud (`LW002`) | A mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view and produce the very same payload - and the shadow harness would have to compare the mail payload byte for byte (it cannot today: the log format differs). **Not mapped yet** (a milestone of its own). | M39 |
-| `Queue::push()` | ⛔ fails loud (`LW002`) | The job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a Cloudflare Queues binding with a consumer you write, or a D1 table the cron trigger reads (a port handler writes the row - the edge has no producer for it). The job class is not compiled either: the class compiler compiles the events, the listeners and the injected services - a job is none of them. In Laravel the job is queued (or run inline by the sync driver) and the route answers 200. | M39 |
+| `Queue::push()` | ⛔ fails loud (`LW002`) | The job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads (a port handler writes the row - the edge has no producer for it). The job class is not compiled either: the class compiler compiles the events, the listeners and the injected services - a job is none of them. In Laravel the job is queued (or run inline by the sync driver) and the route answers 200. | M39 |
 | `Storage::disk()` (the default disk) | ✅ compiles | The default disk is the compiled object store (the D1 blob store, or R2 when bound). | M39 |
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | The compiled cache store is the D1 `database` store, which has no tags: in Laravel this route 500s with BadMethodCallException("This cache store does not support tagging."); the build refuses the route before it ships (stricter than Laravel, not a parity), and a taggable store (redis/memcached) is not compiled. | M39 |

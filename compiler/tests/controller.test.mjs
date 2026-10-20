@@ -2072,6 +2072,9 @@ test('emit: Queue::push() fails loud with the structural reason', () => {
   assert.match(res.errors[0].message, /the worker has no queue handler/);
   assert.match(res.errors[0].message, /carries a JSON body, not a PHP job/);
   assert.match(res.errors[0].message, /a Cloudflare Queues binding with a consumer you write/);
+  // The tier fact: a limited version of Queues is on the Workers free plan (the
+  // paid plan charges per operation) - "paid" is not the same as "needs a card".
+  assert.match(res.errors[0].message, /a limited version is on the Workers free plan/);
   assert.match(res.errors[0].message, /a D1 table the cron trigger reads/);
 });
 

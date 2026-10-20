@@ -141,14 +141,44 @@ export function buildRt(context, opts = {}) {
   };
 
   // ---- rt.add (PHP arithmetic +) ----
-  const phpToNum = (v) => {
+  // PHP 8's arithmetic: a numeric string is a number; a string with a leading
+  // numeric part is that part (PHP raises a warning); a non-numeric string (or
+  // an array) in an arithmetic operation is a TypeError; a division by zero is
+  // a DivisionByZeroError; the modulo truncates its operands to int. The
+  // compiled side must not answer something else (a silent wrong answer).
+  const phpNum = (v) => {
     if (v === null || v === undefined) return 0;
     if (typeof v === 'boolean') return v ? 1 : 0;
     if (typeof v === 'number') return v;
-    const n = Number(String(v).trim());
-    return isNaN(n) ? 0 : n;
+    if (typeof v === 'string') {
+      if (isNumericStr(v)) return Number(v.trim());
+      const lead = /^\s*[+-]?\d+(\.\d*)?([eE][+-]?\d+)?/.exec(v);
+      return lead ? Number(lead[0].trim()) : NaN;
+    }
+    return NaN;
   };
-  rt.add = (a, b) => phpToNum(a) + phpToNum(b);
+  const phpTypeName = (v) => {
+    if (v === null || v === undefined) return 'null';
+    if (typeof v === 'boolean') return 'bool';
+    if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
+    if (typeof v === 'string') return 'string';
+    if (Array.isArray(v)) return 'array';
+    return 'object';
+  };
+  const arithOperands = (op, a, b) => {
+    const na = phpNum(a);
+    const nb = phpNum(b);
+    if (Number.isNaN(na) || Number.isNaN(nb)) {
+      throw new TypeError(
+        'Unsupported operand types: ' + phpTypeName(a) + ' ' + op + ' ' + phpTypeName(b)
+      );
+    }
+    return [na, nb];
+  };
+  rt.add = (a, b) => {
+    const p = arithOperands('+', a, b);
+    return p[0] + p[1];
+  };
 
   // ---- rt.concat (PHP string cast + concat) ----
   const phpToStr = (v) => {
@@ -252,7 +282,7 @@ export function buildRt(context, opts = {}) {
       throw new Error(
         'Queue::' + method + '(): the job would never run at the edge — the worker has no queue handler, so ' +
           'nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that ' +
-          'work: a Cloudflare Queues binding with a consumer you write, or a D1 table the cron trigger reads.'
+          'work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads.'
       );
     };
     return {
@@ -477,14 +507,19 @@ export function buildRt(context, opts = {}) {
   // The classes are compiled at build time (dist/src/classes.generated.mjs):
   // the constructor (the promoted properties) and the public methods. Laravel
   // dispatches an event synchronously, so the edge calls the listeners in the
-  // registration order — and a listener that answers stops the chain (Laravel's
-  // Dispatcher::dispatch()).
+  // registration order. Laravel's Dispatcher::dispatch(): every listener runs, only
+  // an answer of false stops the chain, and the dispatch answers the array of the
+  // responses.
   const classesMap = (opts && opts.classes && typeof opts.classes === 'object') ? opts.classes : {};
   const eventListenersMap =
     (opts && opts.eventListeners && typeof opts.eventListeners === 'object') ? opts.eventListeners : {};
   // The dependencies of a constructor: the framework service the edge adapts
   // (the mailer, the logger, the queue) or the app service the edge builds
   // (the compiled class).
+  // The classes whose dependencies are being resolved right now: a service A
+  // that needs B that needs A would recurse forever (a stack overflow with no
+  // cause), so the cycle is named (Laravel: 'Circular dependency detected').
+  const resolving = new Set();
   const resolveDeps = (deps, fqcn) => {
     const out = {};
     for (const d of deps || []) {
@@ -508,10 +543,21 @@ export function buildRt(context, opts = {}) {
     if (!entry) {
       throw new Error('newClass: the class ' + fqcn + ' is not compiled — the build did not dump it');
     }
+    if (resolving.has(String(fqcn))) {
+      throw new Error(
+        'newClass: circular dependency detected [' + [...resolving, String(fqcn)].join(' -> ') + ']'
+      );
+    }
     // The dependencies of the constructor: the framework service the edge
     // adapts (the mailer, the logger, the queue) or the app service the edge
     // builds (the compiled class).
-    const deps = resolveDeps(entry.deps || [], fqcn);
+    resolving.add(String(fqcn));
+    let deps;
+    try {
+      deps = resolveDeps(entry.deps || [], fqcn);
+    } finally {
+      resolving.delete(String(fqcn));
+    }
     const obj = entry.ctor(Array.isArray(args) ? args : [], deps);
     // The class of the instance (the dispatch needs it) — not enumerable, so a
     // JSON answer does not show it.
@@ -528,7 +574,11 @@ export function buildRt(context, opts = {}) {
         throw new Error('event.dispatch: the event is not an instance of a compiled event class');
       }
       const listeners = eventListenersMap[fqcn] || [];
-      let result = null;
+      // Laravel's Dispatcher::dispatch(): every listener runs, a listener that answers
+      // false stops the chain (and its answer is discarded), and the return value is
+      // the ARRAY of the responses (not the first answer). Only dispatchUntil() (the
+      // halt flag) stops at the first non-null answer.
+      const responses = [];
       for (const listenerFqcn of listeners) {
         const entry = classesMap[listenerFqcn];
         if (!entry) {
@@ -540,13 +590,10 @@ export function buildRt(context, opts = {}) {
         }
         const listener = rt.newClass(listenerFqcn, []);
         const answer = await handle.call(listener, rt, event);
-        // Laravel stops the chain when a listener answers (a non-null value).
-        if (answer !== null && answer !== undefined) {
-          result = answer;
-          break;
-        }
+        if (answer === false) break;
+        responses.push(answer === undefined ? null : answer);
       }
-      return result;
+      return responses;
     },
   };
 
@@ -852,11 +899,28 @@ export function buildRt(context, opts = {}) {
   rt.gte = (a, b) => { const p = relPair(a, b); return p[0] >= p[1]; };
 
   // ---- PHP arithmetic ----
-  rt.sub = (a, b) => phpToNum(a) - phpToNum(b);
-  rt.mul = (a, b) => phpToNum(a) * phpToNum(b);
-  rt.div = (a, b) => phpToNum(a) / phpToNum(b);
-  rt.mod = (a, b) => phpToNum(a) % phpToNum(b);
-  rt.pow = (a, b) => Math.pow(phpToNum(a), phpToNum(b));
+  rt.sub = (a, b) => {
+    const p = arithOperands('-', a, b);
+    return p[0] - p[1];
+  };
+  rt.mul = (a, b) => {
+    const p = arithOperands('*', a, b);
+    return p[0] * p[1];
+  };
+  rt.div = (a, b) => {
+    const p = arithOperands('/', a, b);
+    if (p[1] === 0) throw new Error('Division by zero');
+    return p[0] / p[1];
+  };
+  rt.mod = (a, b) => {
+    const p = arithOperands('%', a, b);
+    if (p[1] === 0) throw new Error('Modulo by zero');
+    return Math.trunc(p[0]) % Math.trunc(p[1]);
+  };
+  rt.pow = (a, b) => {
+    const p = arithOperands('**', a, b);
+    return Math.pow(p[0], p[1]);
+  };
 
   // ---- null coalescing ----
   rt.coalesce = (a, b) => (a === null || a === undefined ? b : a);
