@@ -120,6 +120,74 @@ class WithService
   assert.match(res.errors[0].message, /cannot inject a service/);
 });
 
+test('classes: a listener that injects a service in its constructor fails loud', () => {
+  // The edge instantiates the listener itself: it cannot inject a service. It
+  // used to compile - the property stayed undefined and the request died at
+  // runtime (a 500 the build said nothing about).
+  const file = classFile('WithService', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+use App\\Services\\Mailer;
+class WithService
+{
+    public function __construct(private Mailer $mailer)
+    {
+    }
+    public function handle(PostPublished $event): void
+    {
+        $this->mailer->send($event);
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\WithService'],
+        },
+      },
+      classes: { 'App\\Listeners\\WithService': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1);
+  assert.match(res.errors[0].message, /cannot instantiate a service/);
+  assert.match(res.errors[0].message, /Mailer/);
+  // The class is not compiled: the dispatch would be a silent no-op.
+  assert.equal(Object.keys(res.meta).length, 0);
+});
+
+test('classes: a listener whose constructor needs an argument fails loud', () => {
+  const file = classFile('NeedsArg', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+class NeedsArg
+{
+    public function __construct(int $tries)
+    {
+    }
+    public function handle(PostPublished $event): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\NeedsArg'],
+        },
+      },
+      classes: { 'App\\Listeners\\NeedsArg': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1);
+  assert.match(res.errors[0].message, /instantiates a listener without arguments/);
+});
+
 test('classes: the event dispatch compiles (and the handler imports the classes)', () => {
   const src = `<?php
 namespace App\\Http\\Controllers;

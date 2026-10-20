@@ -2026,3 +2026,58 @@ test('emit: a paginator method that is not compiled fails loud (LW003)', () => {
   assert.equal(res.errors[0].code, 'LW003');
   assert.match(res.errors[0].message, /toQueryString\(\)/);
 });
+
+test('emit: a rule object fails loud (the validator cannot evaluate it)', () => {
+  // A rule object is a class: the compiled validator evaluates the string rules
+  // only, so the rule would be silently ignored and the validation would
+  // differ from Laravel's. The build stops and names what it would take.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function demo(Request $request)\n' +
+    '    {\n' +
+    '        $v = $request->validate([\'avatar\' => [\\Illuminate\\Validation\\Rule::file()->max(1024)]]);\n' +
+    '        return response("ok");\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /rule object/);
+  assert.match(res.errors[0].message, /kernel validator must evaluate the rule object/);
+});
+
+test('emit: Queue::push() fails loud with the structural reason', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    '        \\Illuminate\\Support\\Facades\\Queue::push(\\App\\Jobs\\SendMail::class);\n' +
+    '        return response("ok");\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /has no consumer/);
+  assert.match(res.errors[0].message, /byte parity with Laravel is impossible/);
+});
+
+test('emit: a mailable fails loud with the structural reason', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    '        \\Illuminate\\Support\\Facades\\Mail::to(\'a@b.co\')->send(new \\App\\Mail\\OrderMail());\n' +
+    '        return response("ok");\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /renders its own Blade view/);
+  assert.match(res.errors[0].message, /compare the mail payload byte for byte/);
+});
