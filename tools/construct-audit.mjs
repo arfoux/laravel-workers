@@ -66,9 +66,18 @@ function probeClasses(c) {
       [listener]: { file: listenerFile },
     },
   };
+  // The extra class of the construct (the service the listener injects): the
+  // build compiles it too, so the edge can build it.
+  const compiled = [event, listener];
+  if (c.class_extra && c.class_extra_php) {
+    const extraFile = join(dir, c.class_extra.split('\\').pop() + '.php');
+    writeFileSync(extraFile, c.class_extra_php, 'utf8');
+    dump.classes[c.class_extra] = { file: extraFile };
+    compiled.push(c.class_extra);
+  }
   const res = compileClasses(dump, {
     modelClassFqcns: {},
-    classes: new Set([event, listener]),
+    classes: new Set(compiled),
     constants: {},
   });
   if (!res.errors.length) return { verdict: 'ok', code: null, message: 'compiles' };

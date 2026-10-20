@@ -10,7 +10,12 @@
 //
 // The output (stdout):
 //   {"events":{"App\\Events\\PostPublished":{"file":"...","listeners":["App\\Listeners\\MarkPostNotified"]}},
-//    "classes":{"App\\Events\\PostPublished":{"file":"..."}, ...}}
+//    "classes":{"App\\Events\\PostPublished":{"file":"...","kind":"event","ctor":[{"name":"postId","kind":"builtin","type":"int"}]}, ...}}
+//
+// The `ctor` of a class is its constructor's parameters: the kind of each one
+// tells the build how to provide it at the edge (a plain value, an injected
+// service, a framework service the edge has an adapter for, or a dependency
+// the edge cannot resolve — it fails loud).
 //
 // The map comes from Laravel's own resolution (EventServiceProvider::getEvents():
 // the explicit `$listen` + the auto-discovery), so the compiled listeners are
@@ -28,9 +33,108 @@ $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 $events = [];
 $classes = [];
 
-$addClass = function (string $fqcn) use (&$classes): void {
+// The classes the edge can build: the app's own classes (not the vendor's).
+// A class outside the app root (a framework class) has no file the build can
+// compile — the edge adapter of that service is used instead.
+$appRootReal = realpath($appRoot);
+$isAppClass = function (string $fqcn) use ($appRootReal): bool {
+    if ($fqcn === '' || !class_exists($fqcn)) return false;
+    try {
+        $rc = new ReflectionClass($fqcn);
+    } catch (Throwable $e) {
+        return false;
+    }
+    $file = $rc->getFileName();
+    if (!$file) return false;
+    $real = realpath($file);
+    if (!$real) return false;
+    if (!str_starts_with($real, $appRootReal . DIRECTORY_SEPARATOR)) return false;
+    if (str_contains($real, DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR)) return false;
+    return true;
+};
+
+// The constructor of a class: the parameters the edge has to provide. A
+// parameter with a class type is a dependency (the build resolves it); a
+// builtin one is a plain value; an untyped one Laravel resolves by name
+// (through the container) — the edge cannot.
+$ctorDump = function (string $fqcn) use ($app, $isAppClass): array {
+    $out = [];
+    try {
+        $rc = new ReflectionClass($fqcn);
+    } catch (Throwable $e) {
+        return $out;
+    }
+    $ctor = $rc->getConstructor();
+    if (!$ctor) return $out;
+    foreach ($ctor->getParameters() as $p) {
+        $entry = ['name' => $p->getName()];
+        $type = $p->getType();
+        if (!$type instanceof ReflectionNamedType) {
+            // No type (or a union): Laravel resolves it by the parameter's
+            // name (the container). The dump resolves it the same way, so the
+            // build knows what the edge would have to provide.
+            $entry['kind'] = 'untyped';
+            try {
+                $resolved = $app->make($p->getName());
+                $entry['kind'] = 'external';
+                $entry['type'] = get_class($resolved);
+            } catch (Throwable $e) {
+                if ($p->isDefaultValueAvailable()) {
+                    $d = $p->getDefaultValue();
+                    if (is_scalar($d) || $d === null) {
+                        $entry['kind'] = 'builtin';
+                        $entry['type'] = 'mixed';
+                        $entry['default'] = $d;
+                    }
+                }
+            }
+            $out[] = $entry;
+            continue;
+        }
+        if ($type->isBuiltin()) {
+            $entry['kind'] = 'builtin';
+            $entry['type'] = $type->getName();
+            if ($p->isDefaultValueAvailable()) {
+                $d = $p->getDefaultValue();
+                if (is_scalar($d) || $d === null) $entry['default'] = $d;
+            }
+            $out[] = $entry;
+            continue;
+        }
+        $name = ltrim($type->getName(), '\\');
+        $entry['type'] = $name;
+        if (!$isAppClass($name)) {
+            // A framework class: the edge has an adapter for it (or not).
+            $entry['kind'] = 'external';
+            $out[] = $entry;
+            continue;
+        }
+        $rc2 = new ReflectionClass($name);
+        if ($rc2->isInterface() || $rc2->isAbstract()) {
+            // An interface: the container binds it to a concrete class.
+            $bindings = method_exists($app, 'getBindings') ? $app->getBindings() : [];
+            $binding = $bindings[$name] ?? null;
+            $concrete = is_array($binding) && is_string($binding[0] ?? null) ? ltrim($binding[0], '\\') : null;
+            if ($concrete && class_exists($concrete) && $isAppClass($concrete)) {
+                $entry['kind'] = 'class';
+                $entry['impl'] = $concrete;
+            } else {
+                $entry['kind'] = 'abstract';
+            }
+            $out[] = $entry;
+            continue;
+        }
+        $entry['kind'] = 'class';
+        $out[] = $entry;
+    }
+    return $out;
+};
+
+// The classes the build compiles: the events, the listeners and the services
+// they depend on (the dependency graph).
+$addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$addClass, $ctorDump, $isAppClass): void {
     if ($fqcn === '' || isset($classes[$fqcn])) return;
-    if (!class_exists($fqcn)) return;
+    if (!$isAppClass($fqcn)) return;
     try {
         $rc = new ReflectionClass($fqcn);
     } catch (Throwable $e) {
@@ -38,7 +142,12 @@ $addClass = function (string $fqcn) use (&$classes): void {
     }
     $file = $rc->getFileName();
     if (!$file) return;
-    $classes[$fqcn] = ['file' => $file];
+    $classes[$fqcn] = ['file' => $file, 'kind' => $kind, 'ctor' => $ctorDump($fqcn)];
+    // The dependencies: the edge builds them too.
+    foreach ($classes[$fqcn]['ctor'] as $p) {
+        if (($p['kind'] ?? '') !== 'class') continue;
+        $addClass($p['impl'] ?? $p['type'], 'service');
+    }
 };
 
 // The provider instances: the app keeps them in `serviceProviders` (the
@@ -60,14 +169,14 @@ foreach ($providers as $provider) {
     foreach ($map as $event => $listeners) {
         $eventClass = ltrim((string) $event, '\\');
         if ($eventClass === '' || !class_exists($eventClass)) continue;
-        $addClass($eventClass);
+        $addClass($eventClass, 'event');
         foreach ((array) $listeners as $listener) {
             if (!is_string($listener)) continue;
             // The discovery gives `Class@method`; the explicit `$listen` gives
             // the class name.
             $listenerClass = ltrim(explode('@', $listener)[0], '\\');
             if (!class_exists($listenerClass)) continue;
-            $addClass($listenerClass);
+            $addClass($listenerClass, 'listener');
             $events[$eventClass]['listeners'][] = $listenerClass;
             // A queued listener (ShouldQueue): Laravel pushes it to the queue
             // (it runs later); the edge has no consumer, so it must not run it

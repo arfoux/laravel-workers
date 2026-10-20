@@ -1,6 +1,7 @@
 // compiler/src/transpiler.mjs
 import parser from 'php-parser';
 import { STR_METHODS } from '../../kernel/str.mjs';
+import { ADAPTER_ASYNC } from '../../kernel/service-adapters.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -44,6 +45,13 @@ const NEW_CLASSES = new Set([
 ]);
 // The Log facade levels that compile (the padanan is the platform log).
 const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
+// The Mail facade methods that compile (the padanan is the mailer: log/noop/resend).
+// The methods that deliver are async at the edge — the compiled code awaits them.
+const MAIL_SYNC = new Set(['to', 'cc', 'bcc']);
+const MAIL_ASYNC = new Set(['send', 'sendNow', 'raw', 'html', 'queue', 'later']);
+// The Queue facade methods that compile. They fail loud at the edge (nothing
+// consumes the queue binding), but the build has to know them by name.
+const QUEUE_ASYNC = new Set(['push', 'pushOn', 'later', 'bulk']);
 
 function mkErr(code, message, loc, hint) {
   const e = new Error(message);
@@ -473,6 +481,9 @@ const HASH_FACADE = new Set(['make', 'check', 'needsRehash', 'isHashed']);
 const STORAGE_ASYNC = { put: 'put', get: 'getText', exists: 'exists', delete: 'delete' };
 // `Storage::disk('x')` compiles to the store itself — the fluent form.
 const STORAGE_FACADE_RE = /^rt\.storage\(\)$/;
+// The fluent mail form: `Mail::to($u)->send($m)` compiles to
+// `rt.mail().to($u).send($m)` — the send is async at the edge.
+const MAIL_FACADE_RE = /^rt\.mail\(\)/;
 // Eloquent instance writes — they need the D1 binding and are async.
 const INSTANCE_DB_METHODS = new Set(['save', 'delete', 'forceDelete', 'restore', 'push', 'refresh']);
 // Session store mutation methods that touch the handler and are therefore async
@@ -1325,6 +1336,37 @@ function txCall(node) {
       }
       return 'rt.log(' + JSON.stringify(meth) + (args ? ', ' + args : '') + ')';
     }
+    // Illuminate\Support\Facades\Mail — the mailer (log/noop/resend). The
+    // fluent form (Mail::to($u)->send($m)) compiles too: the pending's send
+    // is async at the edge, so the compiled code awaits it.
+    if ((cls === 'Mail' || cls === 'Illuminate\\Support\\Facades\\Mail') && CTX && CTX.controller) {
+      if (MAIL_SYNC.has(meth)) {
+        return 'rt.mail().' + meth + '(' + args + ')';
+      }
+      if (MAIL_ASYNC.has(meth)) {
+        return txAwait('rt.mail().' + meth + '(' + args + ')', node, 'Mail::' + meth + '()');
+      }
+      throw mkErr(
+        'LW002',
+        'Mail::' + meth + '() is not supported — allowed: ' +
+          [...MAIL_SYNC, ...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    // Illuminate\Support\Facades\Queue — it fails loud at the edge (nothing
+    // consumes the queue binding: the job would never run).
+    if ((cls === 'Queue' || cls === 'Illuminate\\Support\\Facades\\Queue') && CTX && CTX.controller) {
+      if (QUEUE_ASYNC.has(meth)) {
+        return txAwait('rt.queue().' + meth + '(' + args + ')', node, 'Queue::' + meth + '()');
+      }
+      throw mkErr(
+        'LW002',
+        'Queue::' + meth + '() is not supported — allowed: ' + [...QUEUE_ASYNC].join(', ') + '; ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
     // Illuminate\Support\Str - the string helpers (the PHP-exact subset).
     if ((cls === 'Str' || cls === 'Illuminate\\Support\\Str') && CTX && CTX.controller) {
       if (!STR_METHODS.has(meth)) {
@@ -1460,6 +1502,29 @@ function txCall(node) {
     }
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
+    // The service the constructor injected (`$this->mailer->send(...)`): its
+    // methods are async in the compiled world, so the call is awaited (a
+    // promise must never leak into the response — the mail would never be
+    // sent, and a rejection would be swallowed).
+    if (CTX && CTX.injectedDeps instanceof Map && CTX.injectedDeps.size) {
+      const inner = what.what;
+      const prop =
+        inner && inner.kind === 'propertylookup' && inner.what && inner.what.kind === 'variable' && inner.what.name === 'this'
+          ? inner.offset && inner.offset.name
+          : null;
+      const dep = prop ? CTX.injectedDeps.get(prop) : null;
+      const isAsync = dep
+        ? dep.kind === 'class' || (dep.adapter && ADAPTER_ASYNC[dep.adapter] && ADAPTER_ASYNC[dep.adapter].has(meth))
+        : false;
+      if (isAsync) {
+        // A compiled class takes the runtime as its first argument (the
+        // compiled methods are `async function (rt, ...)`); a framework
+        // service takes only its own arguments.
+        const callArgs = dep.kind === 'class' ? (args ? 'rt, ' + args : 'rt') : args;
+        return txAwait(obj + '.' + meth + '(' + callArgs + ')', node, '$this->' + prop + '->' + meth + '()');
+      }
+    }
+    if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
     // The uploaded file: `$request->file('x')->store('avatars')` (the chained
     // form) and `$file->store('avatars')` (the variable holds a file). The
     // methods that write to the object store are awaited.
@@ -1482,6 +1547,19 @@ function txCall(node) {
         );
       }
       return txAwait(obj + '.' + STORAGE_ASYNC[meth] + '(' + args + ')', node, 'Storage::disk()->' + meth + '()');
+    }
+    // `Mail::to($u)->send($m)` — the fluent form. The send is async at the
+    // edge, so the compiled code awaits it (a promise must never leak).
+    if (CTX && CTX.controller && MAIL_FACADE_RE.test(obj)) {
+      if (!MAIL_ASYNC.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'the pending mail method ' + meth + '() is not supported — allowed: ' + [...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return txAwait(obj + '.' + meth + '(' + args + ')', node, 'Mail::' + meth + '()');
     }
     // Eloquent instance writes ($model->save(), ->delete(), ...) need the D1
     // binding and are async at the edge.
@@ -2076,6 +2154,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     classes: opts.classes instanceof Set ? opts.classes : new Set(opts.classes || []),
     // The alias of each compiled class (the FQCN): `new PostPublished($id)`.
     classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(Object.entries(opts.classFqcns || {})),
+    // The services the constructor injected (`$this->mailer`): their async
+    // methods are awaited in the compiled body.
+    injectedDeps: opts.injectedDeps instanceof Map ? opts.injectedDeps : new Map(),
     // The event classes that did NOT compile, with the reason (the listener is
     // queued, the listener injects a service, ...): a dispatch of one of them
     // would be a silent no-op, so the build stops and names the reason.

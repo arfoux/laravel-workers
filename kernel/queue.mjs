@@ -20,7 +20,8 @@ export function createQueue({ binding } = {}) {
         await binding.send(body);
         return body;
       },
-      async pop() { return null; }, // CF Queues consumes via queue() handler, not pop
+      hasBinding: true,
+    async pop() { return null; }, // CF Queues consumes via queue() handler, not pop
       async fail() { return null; },
       async failed() { return []; },
       async retryFailed() { return []; },
@@ -31,6 +32,7 @@ export function createQueue({ binding } = {}) {
   function failedArr(q) { const k = q + ':failed'; if (!store.has(k)) store.set(k, []); return store.get(k); }
   return {
     _store: store,
+    hasBinding: false,
     async push(queue, payload, opts = {}) {
       const o = opts || {};
       const delayMs = o.delayMs || 0;

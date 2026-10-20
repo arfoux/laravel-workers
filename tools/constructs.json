@@ -180,8 +180,12 @@
       "batch": "M39c",
       "status": "done",
       "classes": {
-        "fqcns": ["App\\Events\\PostPublished"],
-        "aliases": { "PostPublished": "App\\Events\\PostPublished" }
+        "fqcns": [
+          "App\\Events\\PostPublished"
+        ],
+        "aliases": {
+          "PostPublished": "App\\Events\\PostPublished"
+        }
       }
     },
     {
@@ -199,7 +203,12 @@
       "label": "`Gate::allows()`",
       "pre": "$post = Post::find(1);",
       "php": "$ok = \\Illuminate\\Support\\Facades\\Gate::allows('update', $post);",
-      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
+      "models": [
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post"
+        }
+      ],
       "policies": {
         "App\\Models\\Post": {
           "policy": "App\\Policies\\PostPolicy",
@@ -210,12 +219,26 @@
           "definedAbilities": [],
           "before": null,
           "methods": {
-            "viewAny": { "guest": true, "params": [{ "name": "user", "type": "App\\Models\\User" }] },
+            "viewAny": {
+              "guest": true,
+              "params": [
+                {
+                  "name": "user",
+                  "type": "App\\Models\\User"
+                }
+              ]
+            },
             "update": {
               "guest": false,
               "params": [
-                { "name": "user", "type": "App\\Models\\User" },
-                { "name": "post", "type": "App\\Models\\Post" }
+                {
+                  "name": "user",
+                  "type": "App\\Models\\User"
+                },
+                {
+                  "name": "post",
+                  "type": "App\\Models\\Post"
+                }
               ]
             }
           },
@@ -232,7 +255,12 @@
       "label": "`Gate::allows()` (the class-level check)",
       "pre": "$post = Post::find(1);",
       "php": "$ok = \\Illuminate\\Support\\Facades\\Gate::allows('viewAny', Post::class);",
-      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
+      "models": [
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post"
+        }
+      ],
       "policies": {
         "App\\Models\\Post": {
           "policy": "App\\Policies\\PostPolicy",
@@ -243,7 +271,15 @@
           "definedAbilities": [],
           "before": null,
           "methods": {
-            "viewAny": { "guest": true, "params": [{ "name": "user", "type": "App\\Models\\User" }] }
+            "viewAny": {
+              "guest": true,
+              "params": [
+                {
+                  "name": "user",
+                  "type": "App\\Models\\User"
+                }
+              ]
+            }
           },
           "compileError": null
         }
@@ -258,7 +294,12 @@
       "label": "`Gate::authorize()`",
       "pre": "$post = Post::find(1);",
       "php": "\\Illuminate\\Support\\Facades\\Gate::authorize('update', $post);",
-      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
+      "models": [
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post"
+        }
+      ],
       "expect": "fail",
       "code": "LW002",
       "note": "It throws an AuthorizationException (a 403) - the edge has no such error view yet.",
@@ -270,7 +311,12 @@
       "label": "`Gate::any()`",
       "pre": "$post = Post::find(1);",
       "php": "$ok = \\Illuminate\\Support\\Facades\\Gate::any(['update'], $post);",
-      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
+      "models": [
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post"
+        }
+      ],
       "expect": "fail",
       "code": "LW002",
       "note": "Only `allows()` and `denies()` compile.",
@@ -361,7 +407,10 @@
       "label": "`Model::paginate()`",
       "php": "$p = \\App\\Models\\Post::paginate(10);",
       "models": [
-        { "alias": "Post", "fqcn": "App\\Models\\Post" }
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post"
+        }
       ],
       "check": "compiler",
       "expect": "ok",
@@ -394,10 +443,19 @@
       "label": "Route-model binding (a typed param)",
       "sig": "(Post $post)",
       "php": "$title = $post->title;",
-      "uses": ["App\\Models\\Post"],
-      "routeParams": ["post"],
+      "uses": [
+        "App\\Models\\Post"
+      ],
+      "routeParams": [
+        "post"
+      ],
       "models": [
-        { "alias": "Post", "fqcn": "App\\Models\\Post", "routeKey": "id", "primaryKey": "id" }
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post",
+          "routeKey": "id",
+          "primaryKey": "id"
+        }
       ],
       "check": "compiler",
       "expect": "ok",
@@ -564,7 +622,7 @@
       "check": "classes",
       "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Events\\PostPublished;\nuse App\\Services\\Mailer;\n\nclass L\n{\n    public function __construct(private Mailer $mailer)\n    {\n    }\n\n    public function handle(PostPublished $event): void\n    {\n        $this->mailer->send($event);\n    }\n}\n",
       "expect": "fail",
-      "note": "The edge instantiates the listener itself: it cannot inject a service, so the constructor dependency is a build error. It used to compile - the property stayed undefined and the request died at runtime (a 500 the build said nothing about).",
+      "note": "A service the build does not compile: the edge has no container and no file for it, so the constructor dependency is a build error (the build names the class). A service the build DOES compile is injected (the edge builds it) and a framework service is adapted (the worker hands the live one down).",
       "batch": "M43",
       "status": "done"
     },
@@ -577,6 +635,28 @@
       "expect": "fail",
       "note": "Laravel pushes a queued listener to the queue (it runs later); the edge has no queue consumer, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason.",
       "batch": "M43",
+      "status": "done"
+    },
+    {
+      "id": "listener_service_compiled",
+      "label": "A listener that injects an app service the build compiles",
+      "check": "classes",
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Services\\Mailer;\n\nclass L\n{\n    public function __construct(private Mailer $mailer)\n    {\n    }\n\n    public function handle(PostPublished $event): void\n    {\n        $this->mailer->send($event);\n    }\n}\n",
+      "class_extra": "App\\Services\\Mailer",
+      "class_extra_php": "<?php\nnamespace App\\Services;\n\nclass Mailer\n{\n    public function send($event): void\n    {\n    }\n}\n",
+      "expect": "ok",
+      "note": "The edge builds the service itself: the build compiles it (the class + the services it injects) and the runtime hands it to the listener. The dependency is recorded in the compiled class, so the edge never guesses.",
+      "batch": "M44",
+      "status": "done"
+    },
+    {
+      "id": "listener_framework_service",
+      "label": "A listener that injects a framework service (the mailer)",
+      "check": "classes",
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse Illuminate\\Contracts\\Mail\\Mailer;\n\nclass L\n{\n    public function __construct(private Mailer $mailer)\n    {\n    }\n\n    public function handle(PostPublished $event): void\n    {\n        $this->mailer->send($event);\n    }\n}\n",
+      "expect": "ok",
+      "note": "The edge has no container: the worker hands the live service down (the mailer) and the compiled listener gets it. Its async methods are awaited in the compiled body (a promise must never leak into the response).",
+      "batch": "M44",
       "status": "done"
     }
   ]

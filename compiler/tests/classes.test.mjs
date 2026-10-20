@@ -92,11 +92,11 @@ class WithBody
 }
 `);
   const res = compileClasses(
-    { events: {}, classes: { 'App\\Events\\WithBody': { file } } },
+    { events: {}, classes: { 'App\\Events\\WithBody': { file, kind: 'event' } } },
     OPTIONS
   );
   assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
-  assert.match(res.code, /ctor: function \(args\)/);
+  assert.match(res.code, /ctor: function \(args, deps\)/);
   assert.match(res.code, /const __self = \{/);
   assert.match(res.code, /rt\.propSet\(__self, "doubled"/);
   assert.match(res.code, /return __self;/);
@@ -120,10 +120,10 @@ class WithService
   assert.match(res.errors[0].message, /cannot inject a service/);
 });
 
-test('classes: a listener that injects a service in its constructor fails loud', () => {
-  // The edge instantiates the listener itself: it cannot inject a service. It
-  // used to compile - the property stayed undefined and the request died at
-  // runtime (a 500 the build said nothing about).
+test('classes: a listener that injects a service the build does not compile fails loud', () => {
+  // The service is not in the dump: the edge cannot build it, so the build
+  // stops and names it. It used to compile - the property stayed undefined and
+  // the request died at runtime (a 500 the build said nothing about).
   const file = classFile('WithService', `<?php
 namespace App\\Listeners;
 use App\\Events\\PostPublished;
@@ -152,10 +152,87 @@ class WithService
     OPTIONS
   );
   assert.equal(res.errors.length, 1);
-  assert.match(res.errors[0].message, /cannot instantiate a service/);
   assert.match(res.errors[0].message, /Mailer/);
   // The class is not compiled: the dispatch would be a silent no-op.
   assert.equal(Object.keys(res.meta).length, 0);
+});
+test('classes: a listener that injects a compiled service compiles (the edge builds it)', () => {
+  const serviceFile = classFile('Mailer', `<?php
+namespace App\\Services;
+class Mailer
+{
+    public function send(string $to): void
+    {
+    }
+}
+`);
+  const file = classFile('WithService', `<?php
+namespace App\\Listeners;
+use App\\Services\\Mailer;
+class WithService
+{
+    public function __construct(private Mailer $mailer)
+    {
+    }
+    public function handle(\\App\\Events\\PostPublished $event): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\WithService'],
+        },
+      },
+      classes: {
+        'App\\Listeners\\WithService': { file },
+        'App\\Services\\Mailer': { file: serviceFile },
+      },
+    },
+    {
+      ...OPTIONS,
+      classes: new Set(['App\\Events\\PostPublished', 'App\\Listeners\\WithService', 'App\\Services\\Mailer']),
+    }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The dependency is recorded: the edge builds the service and hands it over.
+  assert.match(res.code, /"param":"mailer"/);
+  assert.match(res.code, /"kind":"class"/);
+  assert.match(res.code, /"type":"App\\\\Services\\\\Mailer"/);
+  assert.match(res.code, /deps\["mailer"\]/);
+});
+test('classes: a listener that injects a framework service compiles (the edge adapter of it)', () => {
+  const file = classFile('WithMailer', `<?php
+namespace App\\Listeners;
+class WithMailer
+{
+    public function __construct(private \\Illuminate\\Contracts\\Mail\\Mailer $mailer)
+    {
+    }
+    public function handle(\\App\\Events\\PostPublished $event): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\WithMailer'],
+        },
+      },
+      classes: { 'App\\Listeners\\WithMailer': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The mailer is adapted: the edge hands the live one over.
+  assert.match(res.code, /"adapter":"mail"/);
+  assert.match(res.code, /"type":"Illuminate\\\\Contracts\\\\Mail\\\\Mailer"/);
 });
 
 test('classes: a listener whose constructor needs an argument fails loud', () => {
@@ -285,4 +362,134 @@ test('classes: the runtime dispatches to the compiled listener (Laravel: synchro
 test('classes: the runtime fails loud on an event without a compiled class', async () => {
   const rt = buildRt({}, { http: {}, classes: {}, eventListeners: {} });
   await assert.rejects(() => rt.event.dispatch({ postId: 1 }), /not an instance of a compiled event class/);
+});
+
+
+test('classes: the runtime hands the live service over (the mailer)', () => {
+  // The edge has no container: the worker hands the live service down and the
+  // compiled listener gets it.
+  const mailer = { send: async () => ({ id: 'x' }) };
+  const rt = buildRt({}, {
+    http: { mail: mailer },
+    classes: {
+      'App\\Listeners\\WithMailer': {
+        ctor: (args, deps) => ({ mailer: deps.mailer }),
+        deps: [{ param: 'mailer', kind: 'adapter', type: 'Illuminate\\Contracts\\Mail\\Mailer', adapter: 'mail' }],
+        methods: {},
+      },
+    },
+  });
+  const obj = rt.newClass('App\\Listeners\\WithMailer', []);
+  assert.equal(obj.mailer, mailer);
+});
+test('classes: the runtime fails loud when the worker hands down no service', () => {
+  const rt = buildRt({}, {
+    http: {},
+    classes: {
+      'App\\Listeners\\WithMailer': {
+        ctor: (args, deps) => ({ mailer: deps.mailer }),
+        deps: [{ param: 'mailer', kind: 'adapter', type: 'Illuminate\\Contracts\\Mail\\Mailer', adapter: 'mail' }],
+        methods: {},
+      },
+    },
+  });
+  assert.throws(() => rt.newClass('App\\Listeners\\WithMailer', []), /is not available at the edge/);
+});
+test('classes: the runtime builds the app service the listener injects', () => {
+  const rt = buildRt({}, {
+    http: {},
+    classes: {
+      'App\\Services\\Mailer': { ctor: () => ({ sent: [] }), deps: [], methods: {} },
+      'App\\Listeners\\WithService': {
+        ctor: (args, deps) => ({ mailer: deps.mailer }),
+        deps: [{ param: 'mailer', kind: 'class', type: 'App\\Services\\Mailer' }],
+        methods: {},
+      },
+    },
+  });
+  const obj = rt.newClass('App\\Listeners\\WithService', []);
+  assert.ok(Array.isArray(obj.mailer.sent));
+});
+test('classes: the queue fails loud at the edge (nothing consumes the binding)', () => {
+  const rt = buildRt({}, { http: { queue: { push: async () => ({}) } } });
+  assert.throws(() => rt.queue().push('App\\Jobs\\SendInvoice', []), /would never run at the edge/);
+});
+
+test('classes: the injected mailer is awaited in the compiled body (a promise must not leak)', () => {
+  const file = classFile('WithMailer', `<?php
+namespace App\\Listeners;
+class WithMailer
+{
+    public function __construct(private \\Illuminate\\Contracts\\Mail\\Mailer $mailer)
+    {
+    }
+    public function handle(\\App\\Events\\PostPublished $event): void
+    {
+        $this->mailer->send($event);
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\WithMailer'],
+        },
+      },
+      classes: { 'App\\Listeners\\WithMailer': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(/);
+});
+
+test('classes: the injected app service is awaited in the compiled body (the runtime is passed)', () => {
+  const serviceFile = classFile('Mailer', `<?php
+namespace App\\Services;
+class Mailer
+{
+    public function send($event): void
+    {
+    }
+}
+`);
+  const file = classFile('WithService', `<?php
+namespace App\\Listeners;
+use App\\Services\\Mailer;
+class WithService
+{
+    public function __construct(private Mailer $mailer)
+    {
+    }
+    public function handle(\\App\\Events\\PostPublished $event): void
+    {
+        $this->mailer->send($event);
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\WithService'],
+        },
+      },
+      classes: {
+        'App\\Listeners\\WithService': { file },
+        'App\\Services\\Mailer': { file: serviceFile },
+      },
+    },
+    {
+      ...OPTIONS,
+      classes: new Set(['App\\Events\\PostPublished', 'App\\Listeners\\WithService', 'App\\Services\\Mailer']),
+    }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The compiled methods take the runtime as their first argument, so the
+  // call passes it; and the call is awaited (a rejection must not be
+  // swallowed).
+  assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(rt, /);
 });

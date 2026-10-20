@@ -222,6 +222,54 @@ export function buildRt(context, opts = {}) {
   const liveMail = (opts && opts.http && opts.http.mail) ? opts.http.mail : null;
   const liveQueue = (opts && opts.http && opts.http.queue) ? opts.http.queue : null;
 
+  // ---- the service adapters: the framework services a class can inject ----
+  // The edge hands the live service over (the worker: the platform log, the
+  // mailer, the queue). The shape is Laravel's, so the compiled class calls
+  // it the way the app does.
+  const logAdapter = () => {
+    if (!liveLog) return null;
+    const write = (level) => (message, context) => liveLog(level, message, context);
+    return {
+      log: (level, message, context) => liveLog(level, message, context),
+      debug: write('debug'),
+      info: write('info'),
+      notice: write('notice'),
+      warning: write('warning'),
+      warn: write('warning'),
+      error: write('error'),
+      critical: write('critical'),
+      alert: write('alert'),
+      emergency: write('emergency'),
+    };
+  };
+  // The queue: Laravel's Queue facade. The edge has no consumer for the
+  // binding (the worker exports no queue handler), and the binding carries a
+  // JSON body, not a PHP job — so a queued job would never run. It fails loud
+  // instead of vanishing.
+  const queueAdapter = () => {
+    if (!liveQueue) return null;
+    const fail = (method) => {
+      throw new Error(
+        'Queue::' + method + '(): the job would never run at the edge — the worker has no queue handler, so ' +
+          'nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that ' +
+          'work: a Cloudflare Queues binding (paid) with a consumer you write, or a D1 table the cron trigger reads.'
+      );
+    };
+    return {
+      push: () => fail('push'),
+      pushOn: () => fail('pushOn'),
+      later: () => fail('later'),
+      bulk: () => fail('bulk'),
+    };
+  };
+  // The service an injected dependency asks for.
+  const liveAdapter = (kind) => {
+    if (kind === 'mail') return liveMail || null;
+    if (kind === 'log') return logAdapter();
+    if (kind === 'queue') return queueAdapter();
+    return null;
+  };
+
   const noHttp = (fn) => {
     throw new Error(fn + '(): no HTTP context (static snapshot / build-time evaluation)');
   };
@@ -373,9 +421,10 @@ export function buildRt(context, opts = {}) {
     if (opts && opts.http) throw new Error('mail(): no mailer configured');
     return noHttp('mail');
   };
-  // Queue:: — the queue (CF Queues or the in-memory fallback).
+  // Queue:: — the queue facade (it fails loud: nothing consumes the binding).
   rt.queue = () => {
-    if (liveQueue) return liveQueue;
+    const adapter = queueAdapter();
+    if (adapter) return adapter;
     if (opts && opts.http) throw new Error('queue(): no queue binding configured');
     return noHttp('queue');
   };
@@ -433,12 +482,37 @@ export function buildRt(context, opts = {}) {
   const classesMap = (opts && opts.classes && typeof opts.classes === 'object') ? opts.classes : {};
   const eventListenersMap =
     (opts && opts.eventListeners && typeof opts.eventListeners === 'object') ? opts.eventListeners : {};
+  // The dependencies of a constructor: the framework service the edge adapts
+  // (the mailer, the logger, the queue) or the app service the edge builds
+  // (the compiled class).
+  const resolveDeps = (deps, fqcn) => {
+    const out = {};
+    for (const d of deps || []) {
+      if (d.kind === 'adapter') {
+        const live = liveAdapter(d.adapter);
+        if (!live) {
+          throw new Error(
+            'newClass: the service ' + d.type + ' is not available at the edge — the request context has no ' +
+              d.adapter + ' (the worker hands it down)'
+          );
+        }
+        out[d.param] = live;
+        continue;
+      }
+      out[d.param] = rt.newClass(d.type, []);
+    }
+    return out;
+  };
   rt.newClass = (fqcn, args) => {
     const entry = classesMap[String(fqcn)];
     if (!entry) {
       throw new Error('newClass: the class ' + fqcn + ' is not compiled — the build did not dump it');
     }
-    const obj = entry.ctor(Array.isArray(args) ? args : []);
+    // The dependencies of the constructor: the framework service the edge
+    // adapts (the mailer, the logger, the queue) or the app service the edge
+    // builds (the compiled class).
+    const deps = resolveDeps(entry.deps || [], fqcn);
+    const obj = entry.ctor(Array.isArray(args) ? args : [], deps);
     // The class of the instance (the dispatch needs it) — not enumerable, so a
     // JSON answer does not show it.
     Object.defineProperty(obj, '__lwClass', { value: String(fqcn), enumerable: false });
