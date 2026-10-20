@@ -1,5 +1,6 @@
 // compiler/src/transpiler.mjs
 import parser from 'php-parser';
+import { STR_METHODS } from '../../kernel/str.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -791,6 +792,18 @@ function txCall(node) {
         );
       }
       return 'rt.log(' + JSON.stringify(meth) + (args ? ', ' + args : '') + ')';
+    }
+    // Illuminate\Support\Str - the string helpers (the PHP-exact subset).
+    if ((cls === 'Str' || cls === 'Illuminate\\Support\\Str') && CTX && CTX.controller) {
+      if (!STR_METHODS.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Str::' + meth + '() is not supported - allowed: ' + [...STR_METHODS].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.Str.' + meth + '(' + args + ')';
     }
     // Illuminate\Support\Facades\Cache — the D1-backed `database` cache store.
     if ((cls === 'Cache' || cls === 'Illuminate\\Support\\Facades\\Cache') && CTX && CTX.controller) {

@@ -112,11 +112,10 @@
       "id": "str",
       "label": "`Str::slug()`",
       "php": "$s = \\Illuminate\\Support\\Str::slug('A B');",
-      "expect": "fail",
-      "code": "LW003",
-      "note": "A family (slug/limit/upper/lower/head/studly/...). Each one needs its PHP-parity rule.",
-      "batch": "M37",
-      "status": "todo"
+      "expect": "ok",
+      "note": "The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii) - every value is verified against the real Laravel.",
+      "batch": "M38",
+      "status": "done"
     },
     {
       "id": "env",

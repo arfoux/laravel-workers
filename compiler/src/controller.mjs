@@ -43,6 +43,8 @@ const NON_MODEL_STATICS = new Set([
   'Illuminate\\Support\\Facades\\Storage',
   'Log',
   'Illuminate\\Support\\Facades\\Log',
+  'Str',
+  'Illuminate\\Support\\Str',
   'Hash',
   'Illuminate\\Support\\Facades\\Hash',
 ]);

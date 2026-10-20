@@ -1,6 +1,7 @@
 // compiler/runtime/rt-from-context.mjs — Runtime helpers (context → rt)
 import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } from '../../kernel/validation.mjs';
 import * as hashMod from '../../kernel/hash.mjs';
+import { str as strHelpers } from '../../kernel/str.mjs';
 
 // env() -> the config key: the build-time config dump is the padanan for env()
 // at the edge (there is no .env there). Keep in sync with tools/config-dump.php.
@@ -216,6 +217,9 @@ export function buildRt(context, opts = {}) {
   };
   rt.request = () => (liveRequest || noHttp('request'));
   rt.session = () => (liveSession || noHttp('session'));
+  // Illuminate\Support\Str - the string helpers (PHP-exact, kernel/str.mjs).
+  // (`rt.str` is the PHP (string) cast, so the facade goes to rt.Str.)
+  rt.Str = strHelpers;
   // back(): the session's url.previous, else the Referer, else the fallback.
   rt.back = (fallback = '/') => {
     const previous =

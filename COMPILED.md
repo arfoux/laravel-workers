@@ -356,7 +356,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `redirect()->withErrors()` | ✅ compiles | Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow writes the same shape). | M36 |
 | `redirect()->away()` | ✅ compiles | An absolute external URL (the compiled redirect keeps it absolute). | M37 |
 | `back()` | ✅ compiles | The Referer, or the session's `url.previous`, or `/`. | M37 |
-| `Str::slug()` | ⛔ fails loud (`LW003`) | A family (slug/limit/upper/lower/head/studly/...). Each one needs its PHP-parity rule. | M37 |
+| `Str::slug()` | ✅ compiles | The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii) - every value is verified against the real Laravel. | M38 |
 | `env()` | ✅ compiles | The build-time config dump is the padanan (the edge has no .env); only the app.* keys are mapped. | M37 |
 | `data_get()` | ✅ compiles | Dot/array access on an array or an object (the `*` wildcard is not ported). | M37 |
 | `tap()` | ✅ compiles | Passes the value through a closure (the closure support exists). | M37 |
@@ -376,7 +376,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | File upload (`$request->file()`) | — documented (build level) | Uploads need R2 (multipart parsing at the edge). | M39 |
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M39 |
 
-**31 constructs: 18 compile, 7 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**31 constructs: 19 compile, 6 fail loud, 6 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 

@@ -182,6 +182,16 @@ export default {
       expectBody: 'local|2|v|yes|cached',
     },
     {
+      // The Str family: the values are PHP-exact (slug/studly/title/ascii/
+      // squish) - the oracle is the real Laravel.
+      label: 'POST /str-demo (the Str family)',
+      method: 'POST',
+      uri: '/str-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'hello-world|HelloWorld|Hello World|Hello World|Hello World',
+    },
+    {
       // A thrown exception: both sides answer 500. The bodies differ -
       // Laravel's error page is a framework asset, the compiled side answers
       // a status-only HTML page (the same documented divergence as the 401).
