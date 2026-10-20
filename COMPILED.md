@@ -376,7 +376,8 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too). | M39 |
 | Blade `@extends` (a layout) | ✅ compiles | The sections travel to the layout (the shadow harness proves the bytes). | M40 |
-| `Model::paginate()` | ✅ compiles | The LengthAwarePaginator (the items, the total, the pages, the URLs); the pagination links need the pagination view (M40 part 4). | M40 |
+| `Model::paginate()` | ✅ compiles | The LengthAwarePaginator (the items, the total, the pages, the URLs) + the pagination links (the framework's `pagination::tailwind` view is compiled at build time). | M40 |
+| The translation helper (`__()`) | ✅ compiles | The strings are dumped at build time (the app's lang/ files + the framework's fallback); the place-holders are replaced like Laravel does. | M40 |
 | A PHP cast (`(string) $x`) | ✅ compiles | The scalar casts with PHP's own semantics: (string), (int), (bool), (float). | M40 |
 | Route-model binding (a typed param) | ✅ compiles | The model comes from the route segment (Laravel's implicit binding); a missing model is a 404. | M40 |
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
@@ -384,7 +385,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**39 constructs: 26 compile, 12 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**40 constructs: 27 compile, 12 fail loud, 1 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -410,23 +411,24 @@ or it **fails the build** - there is no third state (no silent degradation).
   the build keeps failing loud, deliberately, each with its own reason (LW002).
   Effort: large (a class compiler is a milestone of its own). Risk: high.
 - **M40 - the build-level constructs (the layouts, the route-model binding, the
-  method handling and the paginator are done).** The **Blade layouts** compile
-  now (`@extends`/`@section`/`@yield`: the sections travel to the layout, the
-  build compiles the view closure, and the shadow harness proves the bytes),
-  the **route-model binding** compiles (`show(Post $post)` fetches the model
-  from the segment; a missing model is a 404), the **method handling** is
-  Laravel's (an `OPTIONS` request gets the automatic OPTIONS response — 200, an
-  empty body, the `Allow` header; a method that does not match answers 405 with
-  an `errors/405` view, else 500) and the **paginator** compiles
-  (`Post::paginate(10)` → the LengthAwarePaginator: the items, the total, the
-  pages, the URLs and the URL window). What is left: the **pagination links**
-  (the framework's `pagination::tailwind` view must be compiled at build time)
-  and the **file uploads** (the edge has no multipart parser yet — the build
-  tells the operator to enable R2 or to remove the upload). Effort: large; the
-  uploads need the multipart parsing at the edge.
+  method handling, the paginator and the translations are done).** The **Blade
+  layouts** compile now (`@extends`/`@section`/`@yield`: the sections travel to
+  the layout, the build compiles the view closure, and the shadow harness proves
+  the bytes), the **route-model binding** compiles (`show(Post $post)` fetches
+  the model from the segment; a missing model is a 404), the **method handling**
+  is Laravel's (an `OPTIONS` request gets the automatic OPTIONS response — 200,
+  an empty body, the `Allow` header; a method that does not match answers 405
+  with an `errors/405` view, else 500), the **paginator** compiles
+  (`Post::paginate(10)` → the LengthAwarePaginator) **with its pagination
+  links** (the framework's `pagination::tailwind` view is compiled at build
+  time — the same markup as Laravel) and the **translation helper** (`__()`)
+  compiles (the strings are dumped at build time). What is left: the **file
+  uploads** (the edge has no multipart parser yet — the build tells the
+  operator to enable R2 or to remove the upload). Effort: large; the uploads
+  need the multipart parsing at the edge.
 
 ## 8. Definition of done (per item)
-- **M40 - the build-level constructs, part 1 (done).** Three of the five are
+- **M40 - the build-level constructs, part 1 (done).** Four of the five are
   closed, all proven by the shadow harness (the same bytes as the real
   Laravel):
   - **The Blade layouts** (`@extends` / `@section` / `@yield`): a layout used
@@ -479,15 +481,27 @@ or it **fails the build** - there is no third state (no silent degradation).
     to `$arr[null] = $x` — a *silent* wrong answer (the array stayed empty).
     Now it compiles to `rt.arrayPush()` and an array read without an offset
     fails loud.
+  - **The pagination links** (`$paginator->links()`): the links are the
+    framework's `pagination::tailwind` view — a Blade file, so the build
+    compiles it like any other view (the view name has a `::`, which is not a
+    legal Windows file name → the compiled modules use a sanitized name, the
+    views map keeps the real one). A view carries no type information, so the
+    build tells the compiler what the view receives (the *data kinds*: the
+    `paginator` and the `elements`) and the transpiler allows the paginator's
+    methods there (a method outside the port's surface still fails loud).
+    The **translations** (`__()`) are dumped at build time (the app's `lang/`
+    files + the framework's fallback, the app's win) and the place-holders are
+    replaced like Laravel does (also on the key, when the line is missing).
+    The shadow proves it: the pagination markup is **byte-identical** to the
+    real Laravel's.
   - **The PHP casts** (`(string) $x`, `(int) $x`, `(bool) $x`, `(float) $x`):
     they failed the build (LW002 — "unsupported expression kind cast"). Now
     they compile with PHP's own semantics (`rt.str` / `rt.intval` /
     `rt.truthy` / `rt.floatval`); the other casts (`(array)`, `(object)`) still
     fail loud.
-  What is left in this batch: the **pagination links** (the framework's
-  `pagination::tailwind` view must be compiled at build time — the view name
-  has a `::`, which is not a legal Windows file name) and the **file uploads**
-  (the edge has no multipart parser yet).
+  What is left in this batch: the **file uploads** (the edge has no multipart
+  parser yet — the build tells the operator to enable R2 or to remove the
+  upload).
 
 - **M39b - the class-bearing calls, bounded (done).** The Gate (M39a) and the
   **default disk** now compile; the rest fail loud with their own reason, and

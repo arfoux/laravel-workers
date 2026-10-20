@@ -11,6 +11,7 @@
 //   emitController(source, method, meta) -> the final handler module source.
 import parser from 'php-parser';
 import { transpileControllerMethod } from './transpiler.mjs';
+import { viewFileName } from './view-name.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -317,6 +318,13 @@ export function extractController(source, methodName) {
     .map((alias) => ({ alias, fqcn: uses[alias] || (nsName ? nsName + '\\' + alias : alias) }))
     .sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
 
+  // The kinds of the data the views receive: a Blade view carries no type
+  // information, so the build tells the compiler (the pagination view receives
+  // a paginator: `$paginator->links()`).
+  const paginatorVars = new Set();
+  const viewDataKinds = {};
+  collectViewDataKinds(method.body, paginatorVars, viewDataKinds);
+
   return {
     ok: true,
     fqcn,
@@ -328,8 +336,77 @@ export function extractController(source, methodName) {
     classes,
     constants: constantClasses,
     views: [...viewSet].sort(),
+    // A paginator in the method (Model::paginate()): the handler then renders
+    // the pagination view (the compiled `pagination::tailwind`).
+    usesPaginator: bodyHasCall(method.body, 'paginate'),
+    viewDataKinds,
     methodNode: method,
   };
+}
+
+// Does the body call the named method? (`Post::paginate()`, `$q->paginate()`)
+function bodyHasCall(node, name) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) {
+    for (const n of node) if (bodyHasCall(n, name)) return true;
+    return false;
+  }
+  if (node.kind === 'call') {
+    const w = node.what;
+    if (w && (w.kind === 'propertylookup' || w.kind === 'staticlookup')) {
+      if (w.offset && w.offset.name === name) return true;
+    }
+  }
+  for (const k of Object.keys(node)) {
+    if (k === 'loc') continue;
+    if (bodyHasCall(node[k], name)) return true;
+  }
+  return false;
+}
+
+// The kinds of the data each view receives: the variables that hold a
+// paginator (the method calls `paginate()`), by view name.
+function collectViewDataKinds(node, paginatorVars, out) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const n of node) collectViewDataKinds(n, paginatorVars, out);
+    return;
+  }
+  if (node.kind === 'assign' && node.left && node.left.kind === 'variable') {
+    const name = String(node.left.name || '');
+    if (name && isPaginateCall(node.right)) paginatorVars.add(name);
+  }
+  if (node.kind === 'call' && node.what && node.what.kind === 'name' && node.what.name === 'view') {
+    const args = node.arguments || [];
+    const viewName = args[0] && args[0].kind === 'string' ? args[0].value : null;
+    const data = args[1];
+    if (viewName && data && data.kind === 'array') {
+      const kinds = {};
+      for (const it of data.items || []) {
+        if (!it.key || it.key.kind !== 'string') continue;
+        const value = it.value;
+        if (value && value.kind === 'variable' && paginatorVars.has(String(value.name || ''))) {
+          kinds[it.key.value] = 'paginator';
+        }
+      }
+      if (Object.keys(kinds).length) out[viewName] = kinds;
+    }
+  }
+  for (const k of Object.keys(node)) {
+    if (k === 'loc') continue;
+    collectViewDataKinds(node[k], paginatorVars, out);
+  }
+}
+
+// Is the expression a `paginate()` call? (`Post::paginate()`, `$q->paginate()`)
+function isPaginateCall(node) {
+  if (!node || node.kind !== 'call') return false;
+  const w = node.what;
+  if (!w) return false;
+  if (w.kind === 'propertylookup' || w.kind === 'staticlookup') {
+    return !!(w.offset && w.offset.name === 'paginate');
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -525,11 +602,15 @@ export function emitController(source, methodName, meta = {}) {
   const importLines = [];
   const viewEntries = [];
   // The views the handler imports: the ones the method renders + the ones
-  // they depend on (a layout: `@extends('layouts.app')`).
-  const viewNames = Array.isArray(meta.views) && meta.views.length ? meta.views : info.views;
+  // they depend on (a layout: `@extends('layouts.app')`) + the pagination view
+  // (when the method uses a paginator: `$paginator->links()` renders it).
+  const viewNames = [...(Array.isArray(meta.views) && meta.views.length ? meta.views : info.views)];
+  if (emitted.usedPaginator && meta.paginationView && !viewNames.includes(meta.paginationView)) {
+    viewNames.push(meta.paginationView);
+  }
   viewNames.forEach((v, i) => {
-    importLines.push(`import V${i} from '../views/${v}.mjs';`);
-    importLines.push(`import VC${i} from '../contexts/${v}.mjs';`);
+    importLines.push(`import V${i} from '../views/${viewFileName(v)}.mjs';`);
+    importLines.push(`import VC${i} from '../contexts/${viewFileName(v)}.mjs';`);
     viewEntries.push(`  ${JSON.stringify(v)}: { main: V${i}, context: VC${i} }`);
   });
 

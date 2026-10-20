@@ -81,6 +81,9 @@ export function buildRt(context, opts = {}) {
   // lives on the HTTP context the kernel hands down (the flat dotted map).
   let configCtx = has('config') ? ctx.config : null;
   if (!configCtx && opts && opts.http && opts.http.config) configCtx = opts.http.config;
+  // The parent runtime hands its config down (a view renders with the app's
+  // config — the translations, the pagination view).
+  if (opts && opts.config) configCtx = { ...(configCtx || {}), ...opts.config };
   if (!configCtx) configCtx = {};
 
   // ---- phpNumStr (PHP-style float formatting) ----
@@ -275,6 +278,54 @@ export function buildRt(context, opts = {}) {
     }
     const value = rt.config(cfgKey);
     return value === undefined || value === null ? def : value;
+  };
+  // ---- rt.__ : the translation helper (Illuminate\Translation) ----
+  // The strings are dumped at build time (the app's lang/ files + the
+  // framework's fallback). Laravel returns the key itself when a string is
+  // missing.
+  const translations = configCtx.translations && typeof configCtx.translations === 'object'
+    ? configCtx.translations
+    : {};
+  const translateLine = (key, locale) => {
+    const locales = [locale];
+    const fallback = configCtx['app.fallback_locale'];
+    if (fallback && locales.indexOf(fallback) === -1) locales.push(fallback);
+    for (const loc of locales) {
+      const groups = translations[loc];
+      if (!groups) continue;
+      const dot = String(key).indexOf('.');
+      const group = dot === -1 ? '*' : String(key).slice(0, dot);
+      const item = dot === -1 ? String(key) : String(key).slice(dot + 1);
+      const groupStrings = group === '*' ? groups : groups[group];
+      if (!groupStrings) continue;
+      const line = rt.dataGet(groupStrings, item, null);
+      if (line !== null && line !== undefined) return String(line);
+    }
+    return null;
+  };
+  // Illuminate\Translation\Translator::makeReplacements(): `:key`, `:KEY`,
+  // `:Key` (the longest keys first).
+  const makeReplacements = (line, replace) => {
+    if (!replace || typeof replace !== 'object') return line;
+    const keys = Object.keys(replace).sort((a, b) => b.length - a.length);
+    let out = line;
+    for (const key of keys) {
+      const value = replace[key] === null || replace[key] === undefined ? '' : String(replace[key]);
+      const upper = key.toUpperCase();
+      const ucfirst = upper.charAt(0) + key.slice(1);
+      out = out
+        .split(':' + key).join(value)
+        .split(':' + upper).join(value.toUpperCase())
+        .split(':' + ucfirst).join(value.charAt(0).toUpperCase() + value.slice(1));
+    }
+    return out;
+  };
+  rt.__ = (key, replace) => {
+    const locale = configCtx['app.locale'] || 'en';
+    const line = translateLine(String(key), locale);
+    // Laravel applies the replacements to the key too, when the line is
+    // missing (`makeReplacements($line ?: $key, $replace)`).
+    return makeReplacements(line === null ? String(key) : line, replace);
   };
   rt.cache = () => {
     if (liveCache) return liveCache;
@@ -1386,6 +1437,15 @@ export function buildRt(context, opts = {}) {
     });
     // withQueryString(): the request's query string (Laravel's resolver).
     paginator.__requestQuery = query && typeof query === 'object' ? { ...query } : {};
+    // links(): the pagination view (the compiled `pagination::tailwind`).
+    const paginationView = configCtx['pagination.view'] || 'pagination::tailwind';
+    paginator.links = () => {
+      const rendered = rt.view(paginationView, {
+        paginator,
+        elements: paginator.elements(),
+      });
+      return rendered && rendered.body != null ? String(rendered.body) : '';
+    };
     return paginator;
   };
 
@@ -1411,6 +1471,9 @@ export function buildRt(context, opts = {}) {
       views: viewsMap,
       origin: origin,
       routeMap: routeMap,
+      // The app's config (the translations, the pagination view): the view
+      // renders with the same config as the controller.
+      config: configCtx,
       // The same env: a layout yields the sections of the view that extends it.
       env: bladeEnv,
     });

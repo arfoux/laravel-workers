@@ -87,7 +87,11 @@ $stringLiteral = function (string $code): ?string {
     return $value;
 };
 
-$finder = $app->make('view.finder');
+// The view factory first: the namespaced views (the framework's
+// `pagination::tailwind`) are registered when the 'view' service is resolved
+// (the providers hook into it), so the factory has to be built before its
+// finder can find them.
+$finder = $app->make('view')->getFinder();
 $path = $finder->find($name);
 
 $compiler = $app->make('blade.compiler');

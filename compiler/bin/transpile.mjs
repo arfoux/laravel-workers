@@ -28,12 +28,18 @@ if (!input) {
 
 const inputPath = path.resolve(process.cwd(), input);
 let compiled;
+let viewDataKinds = null;
 try {
   const raw = fs.readFileSync(inputPath, 'utf8');
   if (jsonMode) {
     const data = JSON.parse(raw);
     compiled = data.compiled;
     if (typeof compiled !== 'string') throw new Error('no .compiled string in JSON');
+    // The kinds of the view data (the build knows them: the pagination view
+    // receives a paginator).
+    if (data.viewDataKinds && typeof data.viewDataKinds === 'object') {
+      viewDataKinds = data.viewDataKinds;
+    }
   } else {
     compiled = raw;
   }
@@ -42,7 +48,7 @@ try {
   process.exit(1);
 }
 
-const { code, errors } = transpile(compiled);
+const { code, errors } = transpile(compiled, { viewDataKinds });
 
 if (errors && errors.length) {
   console.error(JSON.stringify(errors));

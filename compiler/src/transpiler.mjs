@@ -385,6 +385,10 @@ let LOCAL_VARS = [];
 // view()/abort()/compact(), and await-based async codegen for D1 queries.
 let CTX = null;
 let CLOSURE_DEPTH = 0;
+// The kinds of the view data: a Blade view carries no type information, so the
+// build tells the compiler what the view receives ({ paginator: 'paginator' }
+// for the pagination view).
+let VIEW_DATA_KINDS = null;
 
 // Static model calls that START a chain (return a query builder, no await).
 const MODEL_STATIC_START = new Set(['where', 'whereIn']);
@@ -399,14 +403,13 @@ const MODEL_CHAIN_BUILDER = new Set([
 // Terminal builder methods (return a Promise).
 const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'pluck', 'value', 'paginate']);
 // The paginator's surface (kernel/paginator.mjs - the LengthAwarePaginator).
-// `links()` is NOT here: the pagination view is a Blade file, and a
-// hand-written markup would be a *different* answer - the build stops instead.
+// `links()` renders the pagination view (the compiled `pagination::tailwind`).
 const PAGINATOR_METHODS = new Set([
   'items', 'getCollection', 'count', 'isEmpty', 'isNotEmpty', 'total', 'perPage',
   'currentPage', 'lastPage', 'getPageName', 'onEachSide', 'firstItem', 'lastItem',
   'hasPages', 'hasMorePages', 'onFirstPage', 'onLastPage', 'path', 'query',
   'fragment', 'appends', 'withQueryString', 'url', 'previousPageUrl',
-  'nextPageUrl', 'getUrlRange', 'elements',
+  'nextPageUrl', 'getUrlRange', 'elements', 'links',
 ]);
 // The methods of the compiled model instance (kernel/model.mjs) - keep in
 // sync. A method that is not here (a relation, for example) is not compiled:
@@ -973,6 +976,23 @@ function txCall(node) {
       if ((node.arguments || []).length === 0) return 'rt.app()';
       return 'rt.app(' + args + ')';
     }
+    if (name === '__') {
+      // The translation helper: __($key, $replace = []). The strings are
+      // dumped at build time (the app's lang/ + the framework's fallback), so
+      // the key must be a literal. It is used in a view too (the pagination
+      // view), so it is handled outside the controller-only block.
+      const a = node.arguments || [];
+      if (a.length > 2) throw mkErr('LW002', '__() takes at most 2 arguments', node.loc, PORT_HINT);
+      if (!a.length || a[0].kind !== 'string') {
+        throw mkErr(
+          'LW002',
+          '__() needs a literal key at the edge (the translations are dumped at build time)',
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.__(' + args + ')';
+    }
     const argNodes = node.arguments || [];
     const cbRef = (n) => (n && n.kind === 'string' && FUNCS.has(n.value) ? fname(n.value) : null);
     if (name === 'array_map') {
@@ -1300,8 +1320,12 @@ function txCall(node) {
       const phpVar = String(what.what.name || '').replace(/^v_/, '');
       const inController = !!(CTX && CTX.controller);
       if (!inController) {
-        // A view: the ViewErrorBag is the only object with methods there (the
-        // __env / __data variables are the Blade internals).
+        // A view: the ViewErrorBag and the paginator (the pagination view)
+        // are the only objects with methods there.
+        const viewKind = VIEW_DATA_KINDS ? VIEW_DATA_KINDS.get(phpVar) : null;
+        if (viewKind === 'paginator' && PAGINATOR_METHODS.has(meth)) {
+          return expr;
+        }
         if (phpVar !== 'errors' && !phpVar.startsWith('__')) {
           throw mkErr(
             'LW002',
@@ -1494,6 +1518,9 @@ function txAssignExpr(node) {
     const kind = modelExprKind(node.right);
     if (kind) {
       CTX.modelVars.set(vname(left.name), kind);
+      // The paginator: the handler renders the pagination view (the compiled
+      // `pagination::tailwind`).
+      if (kind === 'paginator') CTX.usedPaginator = true;
       const chain = modelChain(node.right);
       if (chain && chain.root) {
         CTX.modelAlias.set(vname(left.name), chain.root);
@@ -1543,6 +1570,9 @@ function txAssignStatement(node) {
     const kind = modelExprKind(node.right);
     if (kind) {
       CTX.modelVars.set(vname(left.name), kind);
+      // The paginator: the handler renders the pagination view (the compiled
+      // `pagination::tailwind`).
+      if (kind === 'paginator') CTX.usedPaginator = true;
       const chain = modelChain(node.right);
       if (chain && chain.root) {
         CTX.modelAlias.set(vname(left.name), chain.root);
@@ -1764,7 +1794,7 @@ function collect(node, funcs, vars) {
   }
 }
 
-export function transpile(compiledSource) {
+export function transpile(compiledSource, opts = {}) {
   let ast;
   try {
     ast = phpParser.parseCode(compiledSource);
@@ -1787,6 +1817,11 @@ export function transpile(compiledSource) {
   collect(ast.children || [], funcs, vars);
   FUNCS = funcs;
   LOCAL_VARS = [];
+  // The kinds of the view data (the build knows them: the pagination view
+  // receives a paginator).
+  VIEW_DATA_KINDS = opts.viewDataKinds
+    ? new Map(Object.entries(opts.viewDataKinds))
+    : null;
 
   const lines = [];
   lines.push('export default function main(rt) {');
@@ -1848,6 +1883,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     formRequests: opts.formRequests || new Map(),
     // Did this method use the Gate? (the handler then imports the policies)
     usedGate: false,
+    // Did this method use a paginator? (the handler then imports the
+    // pagination view).
+    usedPaginator: false,
   };
   // The seeded model variables (a policy parameter: the user, the subject).
   for (const seed of opts.modelVarSeeds || []) {
@@ -1863,9 +1901,11 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   const lines = [];
   if (declared.length) lines.push(indent + 'let ' + declared.join(', ') + ';');
   let usedGate = false;
+  let usedPaginator = false;
   try {
     walkChildren(bodyChildren || [], lines, indent, {});
     usedGate = !!CTX.usedGate;
+    usedPaginator = !!CTX.usedPaginator;
   } catch (e) {
     const lw = e.lw || { code: 'LW002', message: e.message, line: 0, column: 0, hint: '' };
     return { code: null, errors: [lw] };
@@ -1873,7 +1913,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     CTX = null;
     CLOSURE_DEPTH = 0;
   }
-  return { code: lines.join('\n'), errors: [], usedGate };
+  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator };
 }
 
 export default transpile;

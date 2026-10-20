@@ -19,6 +19,7 @@ import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import { compilePolicies } from './compiler/src/policy.mjs';
+import { viewFileName } from './compiler/src/view-name.mjs';
 import {
   cpSync,
   existsSync,
@@ -965,6 +966,26 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // the build compiles the whole closure and the handler imports it.
       const neededViews = new Set();
       for (const p of prepared) for (const v of p.meta.views || []) neededViews.add(v);
+      // The pagination view (the framework's `pagination::tailwind`): a route
+      // with a paginator renders it (`$paginator->links()`).
+      const paginationView = runtimeConfig['pagination.view'] || 'pagination::tailwind';
+      const usesPagination = prepared.some((p) => p.meta.usesPaginator);
+      if (usesPagination) neededViews.add(paginationView);
+      // The kinds of the data the views receive (a view carries no type
+      // information, so the build tells the compiler).
+      const viewDataKinds = {};
+      for (const p of prepared) {
+        for (const [v, kinds] of Object.entries(p.meta.viewDataKinds || {})) {
+          viewDataKinds[v] = { ...(viewDataKinds[v] || {}), ...kinds };
+        }
+      }
+      if (usesPagination) {
+        viewDataKinds[paginationView] = {
+          ...(viewDataKinds[paginationView] || {}),
+          paginator: 'paginator',
+          elements: 'array',
+        };
+      }
       const compiledViews = new Set();
       const failedViews = new Set();
       const viewDeps = new Map();
@@ -982,8 +1003,8 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       while (viewQueue.length) {
         const view = viewQueue.shift();
         if (compiledViews.has(view) || failedViews.has(view)) continue;
-        const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
-        const dumpPath = join(cacheDir, view + '.compiled.json');
+        const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
+        const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
         if (existsSync(viewModulePath) && existsSync(dumpPath)) {
           // Already compiled (another route used it): read the dump for the
           // views it depends on.
@@ -1006,10 +1027,16 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           });
           const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
           if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
+          // The kinds of the view data (the pagination view receives a
+          // paginator): the transpiler needs them to allow the method calls.
+          if (viewDataKinds[view]) {
+            dump.viewDataKinds = viewDataKinds[view];
+            writeFileSync(dumpPath, JSON.stringify(dump));
+          }
           execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], {
             cwd: appDir,
           });
-          writeFileSync(join(dist, 'src', 'contexts', view + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
+          writeFileSync(join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
           compiledViews.add(view);
           for (const d of scanViewDeps(view, dump.compiled)) {
             if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
@@ -1187,7 +1214,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           continue;
         }
         // The views the route renders + the ones they depend on (the layout).
-        const routeViews = viewsFor(p.meta.views || []);
+        // The route's views + the pagination view (when the route has a
+        // paginator: `$paginator->links()` renders it).
+        const routeViewNames = [...(p.meta.views || [])];
+        if (p.meta.usesPaginator) routeViewNames.push(paginationView);
+        const routeViews = viewsFor(routeViewNames);
         const missingView = routeViews.find((v) => !compiledViews.has(v));
         if (missingView) {
           console.log(`  controller ${p.route}: skipped — view "${missingView}" did not compile`);
@@ -1213,6 +1244,12 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           : slugifyRoute(p.route);
         const meta = {
           routeUri: p.route,
+          // The pagination view (the framework's `pagination::tailwind`): the
+          // handler imports it when the route has a paginator.
+          paginationView,
+          // A paginator in the method + the kinds of the data the views get.
+          usesPaginator: !!p.meta.usesPaginator,
+          viewDataKinds: p.meta.viewDataKinds || {},
           routeParams: (p.route.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1).replace(/[?*]$/, '')),
           models: (() => {
             // The models this route uses: the classes in the body + the

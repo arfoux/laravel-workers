@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { extractController, emitController } from '../src/controller.mjs';
+import { transpile } from '../src/transpiler.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const pkgDir = path.resolve(testsDir, '..', '..');
@@ -1880,6 +1881,47 @@ test('emit: Model::paginate() compiles to the paginator (the LengthAwarePaginato
   assert.match(res.code, /v_posts\.currentPage\(\)/);
 });
 
+test('emit+runtime: __() reads the dumped translations (with the replacements)', async () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function t()\n' +
+    '    {\n' +
+    '        $a = __("pagination.previous");\n' +
+    '        $b = __("Go to page :page", ["page" => 2]);\n' +
+    '        $c = __("missing.key");\n' +
+    '        return response($a . "|" . $b . "|" . $c);\n' +
+    '    }\n' +
+    '}\n';
+  const handle = await handlerFromSource(src, 't', {
+    routeUri: '/t',
+    routeParams: [],
+    models: [],
+    views: [],
+  });
+  const config = {
+    'app.locale': 'en',
+    'app.fallback_locale': 'en',
+    translations: { en: { pagination: { previous: '&laquo; Previous' } } },
+  };
+  const res = await handle({ params: {}, request: {}, config }, {});
+  assert.equal(res.status, 200);
+  // The line, the replacement (Laravel applies it to the key too when the line
+  // is missing) and the missing key.
+  assert.equal(res.body, '&laquo; Previous|Go to page 2|missing.key');
+});
+
+test('transpile: a view that receives a paginator may call its methods', () => {
+  const res = transpile('<?php echo $paginator->total(); ?>', {
+    viewDataKinds: { paginator: 'paginator' },
+  });
+  assert.deepEqual(res.errors, []);
+  assert.match(res.code, /v_paginator\.total\(\)/);
+  // Without the kinds, a method call on a view variable fails loud.
+  const bare = transpile('<?php echo $paginator->total(); ?>');
+  assert.equal(bare.errors[0].code, 'LW002');
+});
+
 test('emit: a paginator method that is not compiled fails loud (LW003)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
@@ -1888,7 +1930,7 @@ test('emit: a paginator method that is not compiled fails loud (LW003)', () => {
     '    public function paged()\n' +
     '    {\n' +
     '        $posts = Post::where("published", true)->paginate(2);\n' +
-    '        return response($posts->links());\n' +
+    '        return response($posts->toQueryString());\n' +
     '    }\n' +
     '}\n';
   const res = emitController(src, 'paged', {
@@ -1899,5 +1941,5 @@ test('emit: a paginator method that is not compiled fails loud (LW003)', () => {
   });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW003');
-  assert.match(res.errors[0].message, /links\(\)/);
+  assert.match(res.errors[0].message, /toQueryString\(\)/);
 });

@@ -142,6 +142,14 @@ export default {
       jar: true,
     },
     {
+      // The pagination links: the view renders the paginator (the compiled
+      // `pagination::tailwind` - the same markup as the real Laravel).
+      label: 'GET /posts-paginated-view (the pagination links)',
+      method: 'GET',
+      uri: '/posts-paginated-view',
+      jar: true,
+    },
+    {
       // The Gate: the policy check (the compiled policies answer it at the
       // edge). The user owns the post, so `update` is allowed and `denies` is
       // false; the class-level `viewAny` is allowed for a signed-in user.

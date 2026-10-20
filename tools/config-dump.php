@@ -53,6 +53,41 @@ $put('app.cipher', $config->get('app.cipher'));
 $put('app.env', $config->get('app.env'));
 $put('app.debug', $config->get('app.debug'));
 
+// ---------- pagination ----------
+// The pagination view the paginator renders (Laravel's default:
+// `pagination::tailwind`; an app can change it with Paginator::defaultView()).
+$put('pagination.view', Illuminate\Pagination\AbstractPaginator::$defaultView);
+
+// ---------- translations ----------
+// The strings the views use (__()). The framework's fallback first, then the
+// app's lang/ files (the app's win), per locale and per group.
+$langPaths = [];
+$frameworkLang = $root . '/vendor/laravel/framework/src/Illuminate/Translation/lang';
+if (is_dir($frameworkLang)) {
+    $langPaths[] = $frameworkLang;
+}
+if (function_exists('lang_path') && is_dir(lang_path())) {
+    $langPaths[] = lang_path();
+}
+$translations = [];
+foreach ($langPaths as $langPath) {
+    foreach (glob($langPath . '/*', GLOB_ONLYDIR) ?: [] as $localeDir) {
+        $locale = basename($localeDir);
+        foreach (glob($localeDir . '/*.php') ?: [] as $file) {
+            $group = basename($file, '.php');
+            $values = require $file;
+            if (!is_array($values)) {
+                continue;
+            }
+            $translations[$locale][$group] = array_replace_recursive(
+                $translations[$locale][$group] ?? [],
+                $values
+            );
+        }
+    }
+}
+$put('translations', $translations);
+
 // ---------- errors ----------
 // The method-not-allowed answer: Laravel renders the errors/405 view when the
 // app has one (resources/views/errors/405.blade.php); without it the

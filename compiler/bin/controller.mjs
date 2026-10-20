@@ -60,6 +60,9 @@ if (cmd === 'extract') {
     classes: info.classes,
     constants: info.constants,
     views: info.views,
+    // A paginator in the method + the kinds of the data the views receive.
+    usesPaginator: info.usesPaginator,
+    viewDataKinds: info.viewDataKinds,
   };
   const text = JSON.stringify(out);
   if (outPath) fs.writeFileSync(path.resolve(process.cwd(), outPath), text);
