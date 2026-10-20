@@ -406,7 +406,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | installation | ✅ | toolchain (§7) |
 | license | ⛔ | meta |
 | lifecycle | ✅ | §3 execution model |
-| localization | 🟡 | frozen JSON; pluralization subset |
+| localization | 🟡 | frozen JSON; pluralization subset; **the compiled rung answers the dates in UTC** (the Workers' timezone) while Laravel uses `config('app.timezone')` — an app with a non-UTC timezone gets different dates at the edge (a documented divergence; the plan: M57) |
 | logging | 🟡 | the `Log::` facade compiles (M33) → the platform log (the Workers console); no Log module (a local file sink) |
 | mail | 🟡 | **wired** (M28): the worker builds the mailer from the app config (`mail.default` -> log/noop/resend) and hands it to the handler; the fluent `Mail::to()->send()` facade fails loud (a mailable renders its own Blade view; the payload cannot be proven byte-for-byte yet) → port; padanan = HTTP provider (SMTP impossible, hard) |
 | mcp | 🟡 ph3 | HTTP/SSE servers compile; stdio (N/A at edge) (padanan) |

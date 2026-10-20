@@ -297,6 +297,10 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 10. Runtime `WebAssembly.compile()` — codegen disallowed by the embedder (static `.wasm` imports
     only); WASM-native crypto libs (hash-wasm etc.) are out — pure-JS equivalents stand in
     (bcryptjs measured above)
+10. **The app's timezone** — the compiled rung answers the dates in **UTC** (the Workers' timezone): the model's
+    `created_at`/`updated_at`, the date casts, the validator's `today`/`tomorrow` and the Carbon stub. Laravel uses
+    `config('app.timezone')` — an app that sets a non-UTC timezone gets different dates at the edge (a documented
+    divergence, planned in §8b / M57).
 
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
@@ -356,6 +360,7 @@ stay refused, with the reason).
 | M54 | the collections | collections | the Laravel Collections API (the higher-order messages, the `conditionable`/`tappable` traits) | the unit tests against the real `Collection` | the lazy collections (PHP memory does not exist at the edge) | medium | medium |
 | M55 | the integrations (ph3) | passport, sanctum, socialite, cashier-paddle, billing, mcp, ai-sdk, pulse | each page gets its verdict + the port that answers it (or the explicit refusal) | the docs gate (a page without a verdict is a gap) | the parts that need a PHP process (the socialite callback) | medium | low |
 | M56 | the hard pages (🔴) | broadcasting, images, processes, redis, reverb | each page gets its padanan (SSE/polling for the broadcasting, the D1 blob store for the images) or the explicit refusal | the docs gate + the construct audit | the parts that need a long-lived connection | medium | low |
+| M57 | the app timezone | localization, helpers, eloquent | the app's `app.timezone` reaches the edge: the model's timestamps, the date casts, the validator's `today`/`tomorrow` and the Carbon stub answer in the app's timezone — **today the compiled rung answers in UTC** (a documented divergence, the code says so) | the shadow: a route that renders a date, against the real app's timezone | the `Carbon` methods the stub does not implement (`diffForHumans`, `isoFormat`, the `CarbonImmutable` API) | medium | medium |
 
 **The rule of the sweep**: a page's trade (🟡) is only closed when the construct behind it
 **compiles and is proven** — never by writing a nicer sentence. A construct that cannot be
