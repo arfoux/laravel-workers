@@ -3,6 +3,7 @@ import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } 
 import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
+import { phpJsonEncode } from '../../kernel/php-json.mjs';
 
 // env() -> the config key: the build-time config dump is the padanan for env()
 // at the edge (there is no .env there). Keep in sync with tools/config-dump.php.
@@ -1043,7 +1044,7 @@ export function buildRt(context, opts = {}) {
   rt.htmlspecialchars = (s) => (s == null ? '' : rt.e(s));
 
   // ---- json ----
-  rt.json_encode = (v) => JSON.stringify(v == null ? null : v).replace(/\//g, '\\/');
+  rt.json_encode = (v) => phpJsonEncode(v == null ? null : v);
   rt.json_decode = (s, assoc) => JSON.parse(String(s));
 
   // ---- more array helpers ----
@@ -1460,7 +1461,10 @@ export function buildRt(context, opts = {}) {
   rt.json = (value, status) => ({
     status: Number(status) || 200,
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(value == null ? null : value),
+    // PHP's json_encode bytes: the slashes are escaped ("a\/b"), the non-ASCII
+    // as \uXXXX (the surrogate pairs too). A plain JSON.stringify would answer
+    // a different body (Laravel's bytes are the parity).
+    body: phpJsonEncode(value == null ? null : value),
   });
   // The redirect, with Laravel's flash modifiers. The flash lives in the
   // session (it is read by the *next* request), exactly like Laravel's

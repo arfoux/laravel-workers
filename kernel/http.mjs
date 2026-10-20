@@ -67,7 +67,7 @@ import {
   acceptsAnyContentType,
   applyAuthenticatable,
 } from './auth.mjs';
-import { phpJsonDecode } from './php-json.mjs';
+import { phpJsonDecode, phpJsonEncode } from './php-json.mjs';
 import { parseMultipart } from './multipart.mjs';
 import {
   ValidationException,
@@ -1239,7 +1239,7 @@ async function renderException(error, request, ctx) {
       return new HttpResponse({
         status: error.status,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: error.message, errors: error.errors() }),
+        body: phpJsonEncode({ message: error.message, errors: error.errors() }),
       });
     }
     // json sessions store the bag via Store::prepareErrorBagForSerialization();
@@ -1296,7 +1296,7 @@ async function renderException(error, request, ctx) {
       return new HttpResponse({
         status: 419,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: error.message }),
+        body: phpJsonEncode({ message: error.message }),
       });
     }
     return new HttpResponse({
