@@ -908,6 +908,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           modelLines.push(`${varName}.softDeletes = ${d.softDeletes ? 'true' : 'false'};`);
           modelLines.push(`${varName}.hidden = ${JSON.stringify(d.hidden || [])};`);
           modelLines.push(`${varName}.appends = ${JSON.stringify(d.appends || [])};`);
+          modelLines.push(`${varName}.notCompiled = ${JSON.stringify(d.notCompiled || [])};`);
           modelLines.push('');
         }
       }
@@ -1009,7 +1010,14 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           routeParams: (p.route.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1).replace(/[?*]$/, '')),
           models: (p.meta.classes || [])
             .filter((c) => !formRequestFqcns.has(c.fqcn))
-            .map((c) => ({ alias: c.alias, fqcn: c.fqcn })),
+            .map((c) => ({
+              alias: c.alias,
+              fqcn: c.fqcn,
+              // The methods the app declares on the model (the relations, the
+              // accessors): the compiler rejects them (a relation read as a
+              // property used to answer null - a wrong answer, silently).
+              notCompiled: (modelDump.get(c.fqcn) || {}).notCompiled || [],
+            })),
           views: p.meta.views || [],
           constants,
           formRequests,

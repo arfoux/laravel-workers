@@ -37,6 +37,10 @@ foreach (array_slice($argv, 1) as $fqcn) {
         'hidden' => [],
         'appends' => [],
         'error' => null,
+        // The methods the app declares on the model (the relations, the
+        // custom methods) + the accessor attribute names. The compiled rung
+        // has none of them: reading one must stop the build, not answer null.
+        'notCompiled' => [],
     ];
 
     try {
@@ -81,6 +85,23 @@ foreach (array_slice($argv, 1) as $fqcn) {
         );
         $entry['hidden'] = array_values($instance->getHidden());
         $entry['appends'] = array_values($instance->getAppends());
+
+    // The methods the model declares itself (the relations + the custom
+    // methods) and the accessor attribute names (getFooAttribute -> foo).
+    // The compiled model has none of them, so the build must know them.
+    $notCompiled = [];
+    foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
+        if ($m->getDeclaringClass()->getName() !== $fqcn) {
+            continue; // inherited from Eloquent: the compiled rung has it
+        }
+        $mname = $m->getName();
+        if (preg_match('/^get(.+)Attribute$/', $mname, $mm)) {
+            $notCompiled[] = lcfirst($mm[1]); // an accessor: not compiled
+            continue;
+        }
+        $notCompiled[] = $mname;
+    }
+    $entry['notCompiled'] = array_values(array_unique($notCompiled));
     } catch (Throwable $e) {
         $entry['error'] = get_class($e) . ': ' . $e->getMessage();
     }

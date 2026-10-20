@@ -778,6 +778,30 @@ class C {
   assert.match(res.code, /v_posts = v_q\.get\(\)/);
 });
 
+test('emit: a relation read as a property fails loud (LW003)', () => {
+  const src = String.raw`<?php
+namespace App\\Http\\Controllers;
+use App\\Models\\Post;
+class C {
+    public function show($id)
+    {
+        $post = Post::findOrFail($id);
+        $comments = $post->comments;
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'show', {
+    ...META_BASE,
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post', notCompiled: ['comments'] }],
+    routeUri: '/posts/{id}',
+    routeParams: ['id'],
+  });
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /"comments" is not compiled/);
+});
+
 test('emit: an unsupported Storage method fails loud (LW002)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +

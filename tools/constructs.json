@@ -300,6 +300,27 @@
       "note": "The platform answers the CORS preflight, not the app.",
       "batch": "M40",
       "status": "todo"
+    },
+    {
+      "id": "relation_property",
+      "label": "A relation read as a property (`$post->comments`)",
+      "pre": "$post = Post::findOrFail(1);",
+      "models": [
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post",
+          "notCompiled": [
+            "comments"
+          ]
+        }
+      ],
+      "php": "$c = $post->comments;",
+      "check": "compiler",
+      "expect": "fail",
+      "code": "LW003",
+      "note": "A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently.",
+      "batch": "M42",
+      "status": "done"
     }
   ]
 }

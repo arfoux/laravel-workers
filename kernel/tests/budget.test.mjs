@@ -41,6 +41,26 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(p95 <= 5, `validator p95 ${p95}`);
   }
 
+  // The model attribute read (with the not-compiled guard: a relation or an
+  // accessor is rejected instead of answering null).
+  {
+    const { Model } = await import('../model.mjs');
+    class M extends Model {}
+    M.notCompiled = ['comments', 'notifications'];
+    M.table = 'posts';
+    const m = new M({ id: 1, title: 'x', body: 'y' });
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      m.get('title');
+      m.get('body');
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `model get avg ${avg}`);
+    assert.ok(p95 <= 5, `model get p95 ${p95}`);
+  }
+
   const { defineSchedule } = await import('../scheduler.mjs');
   const s = defineSchedule(api => { api.call('a', '*/15 * * * *', async () => {}); });
   const d = new Date('2026-10-18T09:15:00Z');

@@ -172,6 +172,24 @@ function tx(node) {
           throw mkErr('LW002', '$request->' + _m + '() result cannot be chained - ' + PORT_HINT, node.loc, PORT_HINT);
         }
       }
+      // A relation / an accessor read as a property ($post->comments). It
+      // used to answer null - a wrong answer, silently. The build stops.
+      if (CTX && CTX.modelVars && node.what && node.what.kind === 'variable') {
+        const mv = vname(node.what.name);
+        const kind = CTX.modelVars.get(mv);
+        if (kind === 'model' || kind === 'list') {
+          const alias = CTX.modelAlias ? CTX.modelAlias.get(mv) : null;
+          const names = alias && CTX.modelNotCompiled ? CTX.modelNotCompiled.get(alias) : null;
+          if (names && names.includes(name)) {
+            throw mkErr(
+              'LW003',
+              'the model attribute "' + name + '" is not compiled (a relation or an accessor?) - the compiled rung has no relations; ' + PORT_HINT,
+              node.loc,
+              PORT_HINT
+            );
+          }
+        }
+      }
       return 'rt.prop(' + tx(node.what) + ', ' + JSON.stringify(name) + ')';
     }
     case 'nullsafeproperty':
@@ -1079,7 +1097,11 @@ function txAssignExpr(node) {
   // A model assignment: the variable holds a model (or a query builder).
   if (left.kind === 'variable' && CTX && CTX.modelVars) {
     const kind = modelExprKind(node.right);
-    if (kind) CTX.modelVars.set(vname(left.name), kind);
+    if (kind) {
+      CTX.modelVars.set(vname(left.name), kind);
+      const chain = modelChain(node.right);
+      if (chain && chain.root) CTX.modelAlias.set(vname(left.name), chain.root);
+    }
   }
   if (left.kind === 'variable') {
     const v = vname(left.name);
@@ -1113,7 +1135,11 @@ function txAssignStatement(node) {
   // A model assignment: the variable holds a model (or a query builder).
   if (left.kind === 'variable' && CTX && CTX.modelVars) {
     const kind = modelExprKind(node.right);
-    if (kind) CTX.modelVars.set(vname(left.name), kind);
+    if (kind) {
+      CTX.modelVars.set(vname(left.name), kind);
+      const chain = modelChain(node.right);
+      if (chain && chain.root) CTX.modelAlias.set(vname(left.name), chain.root);
+    }
   }
   if (left.kind === 'variable') {
     const v = vname(left.name);
@@ -1379,6 +1405,11 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     // The variables that hold a model (or a query builder): a method call on
     // them is gated, so the build stops instead of answering a 500 at the edge.
     modelVars: new Map(),
+    // The model alias of each model variable (var -> alias/fqcn).
+    modelAlias: new Map(),
+    // The model methods the app declares (alias -> [names]): a relation or an
+    // accessor read as a property is not compiled.
+    modelNotCompiled: opts.modelNotCompiled || new Map(),
     // class constants dumped at build time: { FQCN: { NAME: value } }
     constants: opts.constants || {},
     // FormRequest rules per request variable: Map<varName, { rules, messages, attributes }>

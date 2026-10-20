@@ -374,9 +374,16 @@ export function emitController(source, methodName, meta = {}) {
   // A model may be called by its alias (`Post::find()`) or fully qualified
   // (`\App\Models\Post::find()`); the runtime map knows both keys.
   const modelAliases = new Set();
+  // The model methods the app declares (the relations, the accessors): a
+  // read of one is not compiled (it used to answer null - silently wrong).
+  const modelNotCompiled = new Map();
   for (const m of meta.models || []) {
     modelAliases.add(m.alias);
     if (m.fqcn) modelAliases.add(m.fqcn);
+    if (Array.isArray(m.notCompiled) && m.notCompiled.length) {
+      modelNotCompiled.set(m.alias, m.notCompiled);
+      if (m.fqcn) modelNotCompiled.set(m.fqcn, m.notCompiled);
+    }
   }
   for (const c of info.classes) {
     if (!modelAliases.has(c.alias)) {
@@ -419,6 +426,7 @@ export function emitController(source, methodName, meta = {}) {
   const requestVars = new Set(params.filter((p) => p.inject === 'request').map((p) => vname(p.name)));
   const emitted = transpileControllerMethod((info.methodNode.body && info.methodNode.body.children) || [], {
     models: modelAliases,
+    modelNotCompiled,
     views: new Set(info.views),
     indent: '    ',
     paramVars,

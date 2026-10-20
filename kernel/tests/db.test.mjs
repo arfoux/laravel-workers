@@ -804,3 +804,11 @@ test('union throws on non-QueryBuilder', () => {
   assert.throws(() => table(mockDb(), 't').union('nope'), /expects a QueryBuilder/);
   assert.throws(() => table(mockDb(), 't').unionAll(123), /expects a QueryBuilder/);
 });
+
+test('the model shim fails loud on a relation attribute (a relation is not compiled)', () => {
+  class M extends Model {}
+  M.notCompiled = ['comments'];
+  const m = new M({ id: 1, title: 'x' });
+  assert.throws(() => m.get('comments'), /not compiled/);
+  assert.equal(m.get('title'), 'x');
+});

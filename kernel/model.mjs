@@ -79,6 +79,10 @@ export class Model {
   // Declared relations, used by `with()` / `related()` (Laravel's `$with`):
   //   static relations = { comments: { type: 'hasMany', model: Comment } };
   static relations = {};
+  // The methods the app declares on the model (the relations, the accessors).
+  // The compiled rung has none of them: reading one fails loud (the view
+  // path has no type info, so only the runtime can catch it there).
+  static notCompiled = [];
 
   constructor(attributes = {}) {
     this.attributes = { ...attributes };
@@ -88,6 +92,12 @@ export class Model {
   }
 
   get(key) {
+    if (this.constructor.notCompiled && this.constructor.notCompiled.includes(key)) {
+      throw new Error(
+        'the model attribute "' + key + '" is not compiled (a relation or an accessor) - ' +
+          'write a port handler for this route'
+      );
+    }
     let value = this.attributes[key];
     const cast = this.constructor.casts[key];
     if (cast != null) value = applyCast(value, cast);

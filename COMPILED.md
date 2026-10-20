@@ -375,8 +375,9 @@ or it **fails the build** - there is no third state (no silent degradation).
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The compiled way to read a relation is the eager-loaded subset (`with()`). | M41 |
 | File upload (`$request->file()`) | ⛔ fails loud (`LW002`) | An uploaded file is not compiled: the build stops (LW002). The uploads need the R2 binding (M40). | M41 |
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M40 |
+| A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**31 constructs: 19 compile, 10 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**32 constructs: 19 compile, 11 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -409,6 +410,17 @@ or it **fails the build** - there is no third state (no silent degradation).
   methods are the ones the compiled model really has (kernel/model.mjs), so
   `fill()`, `get()` and `toJSON()` keep working. Effort: small. Risk: low -
   the gate is a list, not a guess.
+
+- **M42 - the relation as a property (done).** A relation (or an accessor) read
+  as a property (`$post->comments`) compiled and answered `null` - a wrong
+  answer, silently (worse than a 500: the route answers 200 with an empty
+  relation). The model dump now lists the methods the app declares on the
+  model (the relations, the accessors) and the compiler rejects a property
+  read on a model variable (LW003). The runtime model shim guards the same
+  names, because a Blade view carries no type information - there the
+  request fails loud instead of rendering an empty relation. Effort: small.
+  Risk: low - the list comes from the app itself (the reflection), not a
+  guess.
 
 - corpus and/or shadow test vs PHP 8.3 exists and is green
 - fits the Free-plan budget (CPU / D1 queries / D1 writes) or is explicitly flagged Paid-tier in `report` and docs
