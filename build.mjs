@@ -18,6 +18,7 @@ import { buildRoutesJson } from './tools/routes-json.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
+import { compilePolicies } from './compiler/src/policy.mjs';
 import {
   cpSync,
   existsSync,
@@ -812,6 +813,63 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         }
       }
 
+      // The Gate/policy metadata: which policy answers for a model, which
+      // abilities it has, whether a guest may call them, and whether the app
+      // registers global Gate callbacks (before/after/define).
+      let policyDump = { globals: { before: 0, after: 0, abilities: [] }, models: [] };
+      if (allFqcns.length) {
+        console.log(`• dumping the Gate policies (${allFqcns.length})`);
+        try {
+          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'policy-dump.php'), ...allFqcns], {
+            cwd: appDir,
+            env: { ...process.env, LW_APP_ROOT: appDir },
+          }).toString('utf8');
+          policyDump = JSON.parse(raw);
+        } catch (e) {
+          console.log(
+            `  policy dump failed — the routes that check the Gate stay blocked: ${String(e.stderr || e.message || '')
+              .trim()
+              .slice(0, 200)}`
+          );
+        }
+      }
+
+      // The models the policies mention (the user, the subject) need their
+      // metadata too: a relation read inside a policy must fail loud.
+      const policyModelFqcns = new Set();
+      for (const pm of policyDump.models || []) {
+        const paramLists = Object.values(pm.methods || {}).map((x) => x.params || []);
+        if (pm.before) paramLists.push(pm.before.params || []);
+        for (const params of paramLists) {
+          for (const p of params) {
+            if (p.type && !p.builtin && !policyModelFqcns.has(p.type)) policyModelFqcns.add(p.type);
+          }
+        }
+      }
+      const extraModelFqcns = [...policyModelFqcns].filter((fqcn) => !modelDump.has(fqcn));
+      if (extraModelFqcns.length) {
+        console.log(`• dumping the policy models (${extraModelFqcns.length}): ${extraModelFqcns.join(', ')}`);
+        try {
+          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...extraModelFqcns], {
+            cwd: appDir,
+            env: { ...process.env, LW_APP_ROOT: appDir },
+          }).toString('utf8');
+          for (const d of JSON.parse(raw)) modelDump.set(d.fqcn, d);
+        } catch (e) {
+          console.log(
+            `  policy model dump failed — the policies that use those models stay blocked: ${String(e.stderr || e.message || '')
+              .trim()
+              .slice(0, 200)}`
+          );
+        }
+      }
+      // The policy models join the generated registry (a policy may read them).
+      for (const fqcn of policyModelFqcns) {
+        const short = fqcn.split('\\').pop();
+        if (!aliasToFqcns.has(short)) aliasToFqcns.set(short, new Set());
+        aliasToFqcns.get(short).add(fqcn);
+      }
+
       // FormRequest rules (rules/messages/attributes) — dumped at build time.
       const formRequestDump = new Map();
       if (formRequestFqcns.size) {
@@ -930,6 +988,42 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       modelLines.push('');
       writeFileSync(join(dist, 'src', 'models.generated.mjs'), modelLines.join('\n'));
 
+      // The compiled policies (the Gate checks). The policies become plain
+      // async functions; the guest rules and the before() hook are baked in.
+      const knownModelFqcnSet = new Set();
+      const modelNotCompiled = new Map();
+      const modelClassFqcns = {};
+      for (const [alias, fqcns] of aliasToFqcns) {
+        for (const fqcn of fqcns) {
+          const d = modelDump.get(fqcn);
+          if (!d || !d.model) continue;
+          knownModelFqcnSet.add(fqcn);
+          modelClassFqcns[alias] = fqcn;
+          modelClassFqcns[fqcn] = fqcn;
+          if (Array.isArray(d.notCompiled) && d.notCompiled.length) {
+            modelNotCompiled.set(alias, d.notCompiled);
+            modelNotCompiled.set(fqcn, d.notCompiled);
+          }
+        }
+      }
+      const policyCompile = compilePolicies(policyDump, {
+        models: knownModelFqcnSet,
+        modelNotCompiled,
+        modelClassFqcns,
+        // The user of a policy: the app's auth provider model.
+        userModel: authProviderFqcns[0] || null,
+      });
+      writeFileSync(join(dist, 'src', 'policies.generated.mjs'), policyCompile.code);
+      const policiesMeta = policyCompile.meta;
+      console.log(
+        `  -> dist/src/policies.generated.mjs (${Object.keys(policiesMeta).length} model(s)${
+          policyCompile.errors.length ? `, ${policyCompile.errors.length} policy/policies did not compile` : ''
+        })`
+      );
+      for (const e of policyCompile.errors) {
+        console.log(`     ! ${e.model}: ${e.message}`);
+      }
+
       // phase C: emit one handler module per transpilable route
       let emittedCount = 0;
       for (const p of prepared) {
@@ -1021,6 +1115,8 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           views: p.meta.views || [],
           constants,
           formRequests,
+          // The Gate metadata (the policies, their abilities, the guest rules).
+          policies: policiesMeta,
           // Hash::make() must use the app's configured bcrypt rounds.
           hashRounds: Number(runtimeConfig['hashing.bcrypt.rounds'] ?? 12) || 12,
         };

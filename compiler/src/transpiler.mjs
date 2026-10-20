@@ -149,6 +149,21 @@ function tx(node) {
       if (typeof cls !== 'string' || typeof name !== 'string') {
         throw mkErr('LW002', 'unsupported class constant access', node.loc);
       }
+      // `Model::class` — the class name as a string. Only a model the build knows
+      // can be named at the edge (the Gate check uses it as its subject).
+      if (name === 'class') {
+        const alias = String(cls).replace(/^\\/, '');
+        const fqcn = CTX && CTX.modelClassFqcns ? CTX.modelClassFqcns.get(alias) : null;
+        if (!fqcn) {
+          throw mkErr(
+            'LW002',
+            'the class name ' + alias + '::class is not available at the edge — only a registered Eloquent model can be named — ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return JSON.stringify(fqcn);
+      }
       const constants = CTX && CTX.constants ? CTX.constants : null;
       const value = constants ? constants[cls] : null;
       if (value && Object.prototype.hasOwnProperty.call(value, name)) {
@@ -487,6 +502,14 @@ function txAwait(expr, node, label = 'database query') {
   return '(await ' + expr + ')';
 }
 
+// The FQCN of a model class as it is written in the source ('Post' ->
+// 'App\Models\Post'): the build knows both keys.
+function modelFqcnOf(root) {
+  if (!CTX || !CTX.modelClassFqcns) return null;
+  const key = String(root).replace(/^\\/, '');
+  return CTX.modelClassFqcns.get(key) || null;
+}
+
 // Detects a model query chain starting at a model class static call.
 // Returns { root, segments } or null. segments[0] is the static call; the rest are ->method() calls.
 function modelChain(node) {
@@ -643,9 +666,236 @@ function txRedirectChain(node) {
   return null;
 }
 
+// The facades whose work needs a class the build cannot compile: the message
+// says why (the listeners / the mailable / the job), not "unknown class".
+const UNSUPPORTED_FACADES = {
+  Event: (m) =>
+    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled, so the dispatch is a port; ' + PORT_HINT,
+  'Illuminate\\Support\\Facades\\Event': (m) =>
+    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled, so the dispatch is a port; ' + PORT_HINT,
+  Mail: (m) =>
+    'Mail::' + m + '() is not supported — the mailable class is not compiled (the mailer adapter sends a payload, it does not render a mailable); ' +
+    PORT_HINT,
+  'Illuminate\\Support\\Facades\\Mail': (m) =>
+    'Mail::' + m + '() is not supported — the mailable class is not compiled (the mailer adapter sends a payload, it does not render a mailable); ' +
+    PORT_HINT,
+  Queue: (m) =>
+    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run; ' +
+    PORT_HINT,
+  'Illuminate\\Support\\Facades\\Queue': (m) =>
+    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run; ' +
+    PORT_HINT,
+};
+
+// The Gate checks the compiled rung answers: Gate::allows() / Gate::denies().
+// The ability must be a literal and the subject must be a model (or Model::class).
+const GATE_CALLS = new Set(['allows', 'denies']);
+
+function txGate(node, meth) {
+  const argNodes = node.arguments || [];
+  if (!GATE_CALLS.has(meth)) {
+    if (meth === 'authorize') {
+      throw mkErr(
+        'LW002',
+        'Gate::authorize() is not supported — it throws an AuthorizationException (a 403); use Gate::allows() and abort(403) — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    if (meth === 'any' || meth === 'none') {
+      throw mkErr(
+        'LW002',
+        'Gate::' + meth + '() is not supported — allowed: allows, denies — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    if (meth === 'define' || meth === 'before' || meth === 'after' || meth === 'policy' || meth === 'resource') {
+      throw mkErr(
+        'LW002',
+        'Gate::' + meth + '() is not supported — the global Gate registrations are not compiled (the policies are) — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    throw mkErr(
+      'LW002',
+      'Gate::' + meth + '() is not supported — allowed: allows, denies — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if (argNodes.length !== 2) {
+    throw mkErr(
+      'LW002',
+      'Gate::' + meth + '() takes an ability and a subject — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  const abilityNode = argNodes[0];
+  if (!abilityNode || abilityNode.kind !== 'string') {
+    throw mkErr(
+      'LW002',
+      'the Gate ability must be a string literal so it can be compiled — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  const ability = String(abilityNode.value);
+  if (ability.indexOf('-') !== -1) {
+    throw mkErr(
+      'LW002',
+      'the Gate ability "' + ability + '" is not supported — Laravel camelizes a dashed ability (Str::camel); use the camel name — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  // The subject: a model instance (a variable that holds one) or Model::class.
+  const subjectNode = argNodes[1];
+  let subjectExpr = null;
+  let subjectFqcn = null;
+  if (subjectNode && subjectNode.kind === 'variable') {
+    const v = vname(subjectNode.name);
+    const kind = CTX && CTX.modelVars ? CTX.modelVars.get(v) : null;
+    if (kind !== 'model') {
+      throw mkErr(
+        'LW002',
+        'the Gate subject must be a model — $' + subjectNode.name + ' does not hold one — ' + PORT_HINT,
+        subjectNode.loc,
+        PORT_HINT
+      );
+    }
+    subjectFqcn = CTX && CTX.modelVarFqcns ? CTX.modelVarFqcns.get(v) : null;
+    if (!subjectFqcn) {
+      throw mkErr(
+        'LW002',
+        'the model of the Gate subject ($' + subjectNode.name + ') is not known at build time — ' + PORT_HINT,
+        subjectNode.loc,
+        PORT_HINT
+      );
+    }
+    subjectExpr = v;
+  } else if (
+    subjectNode &&
+    subjectNode.kind === 'staticlookup' &&
+    subjectNode.offset &&
+    subjectNode.offset.name === 'class'
+  ) {
+    const alias = String((subjectNode.what && subjectNode.what.name) || '').replace(/^\\/, '');
+    subjectFqcn = CTX && CTX.modelClassFqcns ? CTX.modelClassFqcns.get(alias) : null;
+    if (!subjectFqcn) {
+      throw mkErr(
+        'LW002',
+        'the Gate subject ' + alias + '::class is not a registered Eloquent model — ' + PORT_HINT,
+        subjectNode.loc,
+        PORT_HINT
+      );
+    }
+  } else {
+    throw mkErr(
+      'LW002',
+      'the Gate subject must be a model or Model::class — ' + PORT_HINT,
+      subjectNode ? subjectNode.loc : node.loc,
+      PORT_HINT
+    );
+  }
+  // The policy metadata (the build dumped it: the policy, its abilities, the
+  // guest rules, the global Gate callbacks).
+  const policies = CTX && CTX.policies ? CTX.policies : new Map();
+  const pol = policies.get(subjectFqcn);
+  if (!pol) {
+    throw mkErr(
+      'LW003',
+      'the policy for ' + subjectFqcn + ' was not dumped at build time — the Gate check cannot be answered at the edge — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if (pol.compileError) {
+    throw mkErr(
+      'LW003',
+      'the policy for ' + subjectFqcn + ' did not compile: ' + pol.compileError + ' — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if (pol.error && pol.error !== 'no policy') {
+    throw mkErr(
+      'LW003',
+      'the policy for ' + subjectFqcn + ' could not be read (' + pol.error + ') — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if (pol.globalBefore) {
+    throw mkErr(
+      'LW002',
+      'the app registers a global Gate::before() callback — the compiled rung cannot run it — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if (pol.globalAfter) {
+    throw mkErr(
+      'LW002',
+      'the app registers a global Gate::after() callback — the compiled rung cannot run it — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if ((pol.definedAbilities || []).indexOf(ability) !== -1) {
+    throw mkErr(
+      'LW002',
+      'the ability "' + ability + '" is defined with Gate::define() — the compiled rung compiles the policy methods only — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  if (pol.hasMagicCall) {
+    throw mkErr(
+      'LW002',
+      'the policy ' + (pol.policy || subjectFqcn) + ' has a __call() — the compiled rung cannot know which ability it answers — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  const m = (pol.methods || {})[ability];
+  if (m && subjectExpr === null && (m.params || []).length > 1) {
+    throw mkErr(
+      'LW003',
+      'the ability "' + ability + '" needs a subject — a class-level check (' + subjectFqcn + '::class) cannot call it — ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
+  CTX.usedGate = true;
+  const deny = meth === 'denies';
+  const args =
+    JSON.stringify(ability) +
+    ', ' +
+    (subjectExpr === null ? 'null' : subjectExpr) +
+    ', ' +
+    JSON.stringify(subjectFqcn) +
+    ', ' +
+    (deny ? 'true' : 'false');
+  return txAwait('rt.gate(' + args + ')', node, 'Gate::' + meth + '()');
+}
+
 function txCall(node) {
-  const args = (node.arguments || []).map(tx).join(', ');
   const what = node.what;
+  // A facade that needs a class the build cannot compile fails loud with its
+  // own reason — before the arguments are translated (an argument may be a
+  // class name the edge does not know).
+  if (what && what.kind === 'staticlookup' && CTX && CTX.controller) {
+    const cls0 = what.what && what.what.name ? String(what.what.name).replace(/^\\/, '') : '';
+    const meth0 = what.offset && what.offset.name;
+    const tailor = UNSUPPORTED_FACADES[cls0];
+    if (tailor && typeof meth0 === 'string') {
+      throw mkErr('LW002', tailor(meth0), node.loc, PORT_HINT);
+    }
+  }
+  const args = (node.arguments || []).map(tx).join(', ');
   if (CTX) {
     const redir = txRedirectChain(node);
     if (redir) return redir;
@@ -883,6 +1133,13 @@ function txCall(node) {
       }
       return txAwait('rt.auth().' + meth + '(' + args + ')', node, 'Auth::' + meth + '()');
     }
+    // Illuminate\\Support\\Facades\\Gate — the policy check (the policies are
+    // compiled at build time; the global Gate callbacks are not).
+    if ((cls === 'Gate' || cls === 'Illuminate\\Support\\Facades\\Gate') && CTX && CTX.controller) {
+      return txGate(node, meth);
+    }
+    // The facades whose work is a class the build cannot compile: the message
+    // says why (the listeners / the mailable / the job), not "unknown class".
     throw mkErr('LW003', 'unknown class/static ' + cls + '::' + meth, node.loc);
   }
   if (what.kind === 'propertylookup') {
@@ -1100,7 +1357,10 @@ function txAssignExpr(node) {
     if (kind) {
       CTX.modelVars.set(vname(left.name), kind);
       const chain = modelChain(node.right);
-      if (chain && chain.root) CTX.modelAlias.set(vname(left.name), chain.root);
+      if (chain && chain.root) {
+        CTX.modelAlias.set(vname(left.name), chain.root);
+        CTX.modelVarFqcns.set(vname(left.name), modelFqcnOf(chain.root));
+      }
     }
   }
   if (left.kind === 'variable') {
@@ -1138,7 +1398,10 @@ function txAssignStatement(node) {
     if (kind) {
       CTX.modelVars.set(vname(left.name), kind);
       const chain = modelChain(node.right);
-      if (chain && chain.root) CTX.modelAlias.set(vname(left.name), chain.root);
+      if (chain && chain.root) {
+        CTX.modelAlias.set(vname(left.name), chain.root);
+        CTX.modelVarFqcns.set(vname(left.name), modelFqcnOf(chain.root));
+      }
     }
   }
   if (left.kind === 'variable') {
@@ -1407,6 +1670,13 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     modelVars: new Map(),
     // The model alias of each model variable (var -> alias/fqcn).
     modelAlias: new Map(),
+    // The FQCN of each model variable (var -> FQCN): the Gate check needs it
+    // to find the policy of the subject.
+    modelVarFqcns: new Map(),
+    // The model classes the build knows: alias -> FQCN (and FQCN -> FQCN).
+    modelClassFqcns: new Map(Object.entries(opts.modelClassFqcns || {})),
+    // The dumped policies: FQCN -> { policy, methods, before, globalBefore, ... }
+    policies: new Map(Object.entries(opts.policies || {})),
     // The model methods the app declares (alias -> [names]): a relation or an
     // accessor read as a property is not compiled.
     modelNotCompiled: opts.modelNotCompiled || new Map(),
@@ -1414,15 +1684,26 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     constants: opts.constants || {},
     // FormRequest rules per request variable: Map<varName, { rules, messages, attributes }>
     formRequests: opts.formRequests || new Map(),
+    // Did this method use the Gate? (the handler then imports the policies)
+    usedGate: false,
   };
+  // The seeded model variables (a policy parameter: the user, the subject).
+  for (const seed of opts.modelVarSeeds || []) {
+    if (!seed || !seed.var) continue;
+    CTX.modelVars.set(seed.var, seed.kind || 'model');
+    if (seed.alias) CTX.modelAlias.set(seed.var, seed.alias);
+    if (seed.fqcn) CTX.modelVarFqcns.set(seed.var, seed.fqcn);
+  }
   CLOSURE_DEPTH = 0;
   const indent = opts.indent || '';
   const paramVars = opts.paramVars || new Set();
   const declared = Array.from(vars).filter((v) => !paramVars.has(v));
   const lines = [];
   if (declared.length) lines.push(indent + 'let ' + declared.join(', ') + ';');
+  let usedGate = false;
   try {
     walkChildren(bodyChildren || [], lines, indent, {});
+    usedGate = !!CTX.usedGate;
   } catch (e) {
     const lw = e.lw || { code: 'LW002', message: e.message, line: 0, column: 0, hint: '' };
     return { code: null, errors: [lw] };
@@ -1430,7 +1711,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     CTX = null;
     CLOSURE_DEPTH = 0;
   }
-  return { code: lines.join('\n'), errors: [] };
+  return { code: lines.join('\n'), errors: [], usedGate };
 }
 
 export default transpile;

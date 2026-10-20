@@ -90,9 +90,29 @@ class PostController extends Controller
 
     public function badClass()
     {
-        // Gate is not a mapped facade: it must still fail loud with LW003.
-        $x = Gate::allows('update', $post);
+        // A class that is not a model must still fail loud with LW003.
+        $x = Dingus::bar();
         return redirect('/');
+    }
+
+    public function gateCheck(string $id)
+    {
+        $post = Post::findOrFail($id);
+        $ok = Gate::allows('update', $post);
+        return response($ok ? 'yes' : 'no');
+    }
+
+    public function gateDeny(string $id)
+    {
+        $post = Post::findOrFail($id);
+        $no = Gate::denies('update', $post);
+        return response($no ? 'no' : 'yes');
+    }
+
+    public function gateClassLevel()
+    {
+        $ok = Gate::allows('viewAny', Post::class);
+        return response($ok ? 'yes' : 'no');
     }
 }
 `;
@@ -102,6 +122,31 @@ const META_BASE = {
   routeParams: ['post'],
   models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
   views: ['posts.index', 'posts.show'],
+};
+
+// The dumped Gate metadata (tools/policy-dump.php): the policy of the model,
+// its abilities and the guest rules.
+const META_POLICIES = {
+  'App\\Models\\Post': {
+    policy: 'App\\Policies\\PostPolicy',
+    error: null,
+    hasMagicCall: false,
+    globalBefore: 0,
+    globalAfter: 0,
+    definedAbilities: [],
+    before: null,
+    methods: {
+      viewAny: { guest: true, params: [{ name: 'user', type: 'App\\Models\\User' }] },
+      update: {
+        guest: false,
+        params: [
+          { name: 'user', type: 'App\\Models\\User' },
+          { name: 'post', type: 'App\\Models\\Post' },
+        ],
+      },
+    },
+    compileError: null,
+  },
 };
 
 function emitOk(method, meta = META_BASE) {
@@ -214,11 +259,133 @@ test('emit: a database query inside a closure fails with LW002', () => {
   assert.match(res.errors[0].message, /closure/);
 });
 
-test('emit: a non-model class (Gate) fails with LW003', () => {
+test('emit: a non-model class fails with LW003', () => {
   const res = emitController(SAMPLE, 'badClass', META_BASE);
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW003');
-  assert.match(res.errors[0].message, /App\\Http\\Controllers\\Gate|Gate/);
+  assert.match(res.errors[0].message, /Dingus/);
+});
+
+// ---------------------------------------------------------------------------
+// emit — the Gate (the policies are compiled at build time)
+// ---------------------------------------------------------------------------
+
+test('emit: Gate::allows() compiles to an awaited rt.gate() call', () => {
+  const code = emitOk('gateCheck', {
+    ...META_BASE,
+    routeUri: '/gate/{id}',
+    routeParams: ['id'],
+    policies: META_POLICIES,
+  });
+  assert.match(code, /\(await rt\.gate\("update", v_post, "App\\\\Models\\\\Post", false\)\)/);
+  // The handler imports the compiled policies.
+  assert.match(code, /import \{ policies as LW_POLICIES \} from '\.\.\/policies\.generated\.mjs';/);
+  assert.match(code, /policies: LW_POLICIES,/);
+});
+
+test('emit: Gate::denies() negates the check', () => {
+  const code = emitOk('gateDeny', {
+    ...META_BASE,
+    routeUri: '/gate/{id}',
+    routeParams: ['id'],
+    policies: META_POLICIES,
+  });
+  assert.match(code, /\(await rt\.gate\("update", v_post, "App\\\\Models\\\\Post", true\)\)/);
+});
+
+test('emit: a class-level Gate check (Model::class) compiles with a null subject', () => {
+  const code = emitOk('gateClassLevel', {
+    ...META_BASE,
+    routeUri: '/gate',
+    routeParams: [],
+    policies: META_POLICIES,
+  });
+  assert.match(code, /\(await rt\.gate\("viewAny", null, "App\\\\Models\\\\Post", false\)\)/);
+});
+
+test('emit: a Gate check without the dumped policy fails loud (LW003)', () => {
+  const res = emitController(SAMPLE, 'gateCheck', {
+    ...META_BASE,
+    routeUri: '/gate/{id}',
+    routeParams: ['id'],
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /policy for App\\Models\\Post was not dumped/);
+});
+
+test('emit: a global Gate::before() callback fails loud (LW002)', () => {
+  const policies = JSON.parse(JSON.stringify(META_POLICIES));
+  policies['App\\Models\\Post'].globalBefore = 1;
+  const res = emitController(SAMPLE, 'gateCheck', {
+    ...META_BASE,
+    routeUri: '/gate/{id}',
+    routeParams: ['id'],
+    policies,
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /global Gate::before\(\)/);
+});
+
+test('emit: an ability defined with Gate::define() fails loud (LW002)', () => {
+  const policies = JSON.parse(JSON.stringify(META_POLICIES));
+  policies['App\\Models\\Post'].definedAbilities = ['update'];
+  const res = emitController(SAMPLE, 'gateCheck', {
+    ...META_BASE,
+    routeUri: '/gate/{id}',
+    routeParams: ['id'],
+    policies,
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /Gate::define\(\)/);
+});
+
+test('emit: a class-level check of an ability that needs a subject fails loud (LW003)', () => {
+  const res = emitController(SAMPLE, 'gateClassLevel', {
+    ...META_BASE,
+    routeUri: '/gate',
+    routeParams: [],
+    policies: META_POLICIES,
+  });
+  // viewAny takes the user only -> a class-level check is fine.
+  assert.deepEqual(res.errors, []);
+});
+
+test('emit: Gate::authorize() / Gate::any() fail loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        $post = Post::find(1);\n" +
+    "        Gate::authorize('update', $post);\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '    public function many()\n' +
+    '    {\n' +
+    "        $post = Post::find(1);\n" +
+    "        $ok = Gate::any(['update'], $post);\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const meta = {
+    routeUri: '/x',
+    routeParams: [],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+    policies: META_POLICIES,
+  };
+  const a = emitController(src, 'store', meta);
+  assert.equal(a.code, null);
+  assert.equal(a.errors[0].code, 'LW002');
+  assert.match(a.errors[0].message, /Gate::authorize\(\)/);
+  const b = emitController(src, 'many', meta);
+  assert.equal(b.code, null);
+  assert.equal(b.errors[0].code, 'LW002');
+  assert.match(b.errors[0].message, /Gate::any\(\)/);
 });
 
 test('emit: Request $request is injected (other services still fail loud)', () => {
@@ -965,6 +1132,21 @@ writeTree(tmpRoot, {
   ].join('\n'),
   'src/contexts/posts.show.mjs': 'export default {};\n',
   'src/contexts/posts.index.mjs': 'export default {};\n',
+  // The compiled policies (what build.mjs writes from the policy dump).
+  'src/policies.generated.mjs': [
+    'export const policies = {',
+    '  "App\\\\Models\\\\Post": {',
+    '    policy: "App\\\\Policies\\\\PostPolicy",',
+    '    before: null,',
+    '    methods: {',
+    '      viewAny: { guest: true, fn: async (rt, v_user) => { return rt.strictNe(v_user, null, false, false); } },',
+    '      update: { guest: false, fn: async (rt, v_user, v_post) => { return rt.strictEq(rt.prop(v_user, "id"), rt.prop(v_post, "user_id"), false, false); } },',
+    '    },',
+    '  },',
+    '};',
+    'export default policies;',
+    '',
+  ].join('\n'),
 });
 
 const ROW = { id: 1, title: 'Hello Edge', published: 1 };
@@ -998,11 +1180,17 @@ const dbWithRow = mockDb({
   all: () => ({ results: [{ ...ROW }] }),
 });
 const dbEmpty = mockDb({ first: () => null, all: () => ({ results: [] }) });
+// The row the policy checks (the owner of the post).
+const dbWithPolicyRow = mockDb({
+  first: () => ({ ...ROW, user_id: 1 }),
+  all: () => ({ results: [{ ...ROW, user_id: 1 }] }),
+});
 
-function ctxFor(params, host = 'example.com') {
+function ctxFor(params, host = 'example.com', auth = null) {
   return {
     params,
     request: { method: 'GET', path: '/', headers: {}, host },
+    ...(auth ? { auth } : {}),
   };
 }
 
@@ -1080,6 +1268,57 @@ test('runtime: typed default params apply when the segment is absent', async () 
   const res = await handle(ctxFor({ slug: 'news' }), { DB: dbWithRow });
   assert.equal(res.status, 200);
   assert.match(res.body, /count=1/);
+});
+
+test('runtime: the Gate check answers with the compiled policy (the guest rules included)', async () => {
+  const handle = await handlerFor('gateCheck', {
+    ...META_BASE,
+    routeUri: '/gate/{id}',
+    routeParams: ['id'],
+    policies: META_POLICIES,
+  });
+  const asUser = (id) => ctxFor({ id: '1' }, 'example.com', { user: async () => ({ id }) });
+  // the owner of the post: allowed
+  const allowed = await handle(asUser(1), { DB: dbWithPolicyRow });
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.body, 'yes');
+  // another user: denied
+  const denied = await handle(asUser(2), { DB: dbWithPolicyRow });
+  assert.equal(denied.body, 'no');
+  // a guest: the policy does not allow guests -> denied (the method is not called)
+  const guest = await handle(ctxFor({ id: '1' }, 'example.com', { user: async () => null }), {
+    DB: dbWithPolicyRow,
+  });
+  assert.equal(guest.body, 'no');
+});
+
+test('runtime: Gate::denies() is the negation of the same check', async () => {
+  const handle = await handlerFor('gateDeny', {
+    ...META_BASE,
+    routeUri: '/gate/{id}',
+    routeParams: ['id'],
+    policies: META_POLICIES,
+  });
+  const asUser = (id) => ctxFor({ id: '1' }, 'example.com', { user: async () => ({ id }) });
+  const owner = await handle(asUser(1), { DB: dbWithPolicyRow });
+  assert.equal(owner.body, 'yes'); // allowed -> denies is false
+  const other = await handle(asUser(2), { DB: dbWithPolicyRow });
+  assert.equal(other.body, 'no'); // denied -> denies is true
+});
+
+test('runtime: a class-level Gate check calls the policy without a subject', async () => {
+  const handle = await handlerFor('gateClassLevel', {
+    ...META_BASE,
+    routeUri: '/gate',
+    routeParams: [],
+    policies: META_POLICIES,
+  });
+  // viewAny(?User $user): a guest is allowed by the policy, but the policy
+  // itself answers false for a guest ($user !== null).
+  const guest = await handle(ctxFor({}, 'example.com', { user: async () => null }), { DB: dbWithRow });
+  assert.equal(guest.body, 'no');
+  const user = await handle(ctxFor({}, 'example.com', { user: async () => ({ id: 1 }) }), { DB: dbWithRow });
+  assert.equal(user.body, 'yes');
 });
 
 test('runtime: unresolved promise in view data fails loud at request time', async () => {

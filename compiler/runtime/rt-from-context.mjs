@@ -366,6 +366,46 @@ export function buildRt(context, opts = {}) {
     };
   };
 
+  // ---- rt.gate: the compiled policy check (Illuminate\Auth\Access\Gate) ----
+  // The policies are compiled at build time (dist/src/policies.generated.mjs):
+  // the abilities, the guest rules and the policy `before()` hook. The guest
+  // rules are Laravel's own: a guest the policy does not allow is denied — the
+  // method is not called at all (Gate::canBeCalledWithUser).
+  const policiesMap = (opts && opts.policies && typeof opts.policies === 'object') ? opts.policies : {};
+  rt.gate = async (ability, subject, modelFqcn, deny) => {
+    const key = String(modelFqcn);
+    const entry = policiesMap[key];
+    if (!entry) {
+      throw new Error('gate: no compiled policy for ' + key + ' — the build did not dump it');
+    }
+    const user = (await rt.auth().user()) ?? null;
+    const m = (entry.methods || {})[String(ability)];
+    let result;
+    if (!m) {
+      // Laravel skips the whole policy callback when the ability method is not
+      // callable — the check is denied and the policy's before() does not run.
+      result = false;
+    } else {
+      if (entry.before && (user !== null || entry.before.guest)) {
+        // Laravel hands before() the raw arguments: the ability and the
+        // subject (a class-level check passes the class name).
+        const beforeArgs =
+          subject === null || subject === undefined ? [ability, key] : [ability, subject];
+        const r = await entry.before.fn(rt, user, ...beforeArgs);
+        if (r !== null && r !== undefined) result = r;
+      }
+      if (result === undefined) {
+        if (user === null && !m.guest) {
+          result = false; // a guest the policy does not allow: denied
+        } else {
+          result = await m.fn(rt, user, ...(subject === null || subject === undefined ? [] : [subject]));
+        }
+      }
+    }
+    const allowed = rt.truthy(result);
+    return deny ? !allowed : allowed;
+  };
+
   // ---- rt.url / rt.route ----
   const runtime = !!(opts && opts.runtime);
   const origin = (opts && typeof opts.origin === 'string' && opts.origin) ? String(opts.origin).replace(/\/+$/, '') : '';

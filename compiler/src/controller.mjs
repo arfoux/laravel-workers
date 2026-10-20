@@ -47,6 +47,14 @@ const NON_MODEL_STATICS = new Set([
   'Illuminate\\Support\\Str',
   'Hash',
   'Illuminate\\Support\\Facades\\Hash',
+  'Gate',
+  'Illuminate\\Support\\Facades\\Gate',
+  'Event',
+  'Illuminate\\Support\\Facades\\Event',
+  'Mail',
+  'Illuminate\\Support\\Facades\\Mail',
+  'Queue',
+  'Illuminate\\Support\\Facades\\Queue',
 ]);
 
 function lwErr(code, message, loc, hint) {
@@ -225,12 +233,34 @@ function scanBody(node, classes, views, constants) {
       const alias = what.what && what.what.name;
       if (typeof alias === 'string') classes.add(alias);
       skipTarget = true;
+      // The Gate check names its subject: `Gate::allows('update', Post::class)`.
+      // That subject is a model the build must dump (its policy lives there).
+      const meth = what.offset && what.offset.name;
+      const cls = String(alias || '').replace(/^\\/, '');
+      if (
+        (meth === 'allows' || meth === 'denies') &&
+        (cls === 'Gate' || cls === 'Illuminate\\Support\\Facades\\Gate')
+      ) {
+        const subject = (node.arguments || [])[1];
+        if (
+          subject &&
+          subject.kind === 'staticlookup' &&
+          subject.offset &&
+          subject.offset.name === 'class'
+        ) {
+          const subjectAlias = subject.what && subject.what.name;
+          if (typeof subjectAlias === 'string') classes.add(subjectAlias);
+        }
+      }
     }
     if (what && what.kind === 'name' && what.name === 'view') {
       const a0 = (node.arguments || [])[0];
       if (a0 && a0.kind === 'string') views.add(String(a0.value));
     }
   } else if (node.kind === 'staticlookup') {
+    // `Model::class` — the class name as a string. It is not a constant read;
+    // the compiler resolves it (the Gate subject) or fails loud.
+    if (node.offset && node.offset.name === 'class') return;
     // A class *constant* read (e.g. RouteServiceProvider::HOME) — the value is
     // dumped at build time. (A static call is handled by the `call` branch.)
     const alias = node.what && node.what.name;
@@ -374,12 +404,19 @@ export function emitController(source, methodName, meta = {}) {
   // A model may be called by its alias (`Post::find()`) or fully qualified
   // (`\App\Models\Post::find()`); the runtime map knows both keys.
   const modelAliases = new Set();
+  // alias -> FQCN (and FQCN -> FQCN): the compiler needs the FQCN to find the
+  // policy of a Gate subject and to resolve `Model::class`.
+  const modelClassFqcns = {};
   // The model methods the app declares (the relations, the accessors): a
   // read of one is not compiled (it used to answer null - silently wrong).
   const modelNotCompiled = new Map();
   for (const m of meta.models || []) {
     modelAliases.add(m.alias);
-    if (m.fqcn) modelAliases.add(m.fqcn);
+    if (m.fqcn) {
+      modelAliases.add(m.fqcn);
+      modelClassFqcns[m.alias] = m.fqcn;
+      modelClassFqcns[m.fqcn] = m.fqcn;
+    }
     if (Array.isArray(m.notCompiled) && m.notCompiled.length) {
       modelNotCompiled.set(m.alias, m.notCompiled);
       if (m.fqcn) modelNotCompiled.set(m.fqcn, m.notCompiled);
@@ -427,6 +464,10 @@ export function emitController(source, methodName, meta = {}) {
   const emitted = transpileControllerMethod((info.methodNode.body && info.methodNode.body.children) || [], {
     models: modelAliases,
     modelNotCompiled,
+    modelClassFqcns,
+    // The dumped policies (the Gate check reads them: the abilities, the guest
+    // rules, the global Gate callbacks).
+    policies: meta.policies && typeof meta.policies === 'object' ? meta.policies : {},
     views: new Set(info.views),
     indent: '    ',
     paramVars,
@@ -479,6 +520,10 @@ export function emitController(source, methodName, meta = {}) {
   lines.push("import { buildRt } from '../runtime/rt-from-context.mjs';");
   for (const l of importLines) lines.push(l);
   lines.push("import { models as LW_MODELS, routeMap as LW_ROUTE_MAP } from '../models.generated.mjs';");
+  // The Gate check reads the compiled policies (the abilities, the guest rules).
+  if (emitted.usedGate) {
+    lines.push("import { policies as LW_POLICIES } from '../policies.generated.mjs';");
+  }
   lines.push('');
   lines.push('const VIEWS = {');
   for (const e of viewEntries) lines.push(e + ',');
@@ -491,6 +536,9 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    db: env && env.DB ? env.DB : null,');
   lines.push('    models: LW_MODELS,');
   lines.push('    views: VIEWS,');
+  if (emitted.usedGate) {
+    lines.push('    policies: LW_POLICIES,');
+  }
   lines.push("    origin: (function () { var r = ctx && ctx.request; if (!r) return null; var h = (typeof r.host === 'function') ? r.host() : r.host; if (!h) return null; if (typeof r.schemeAndHttpHost === 'function') return r.schemeAndHttpHost(); var s = (typeof r.scheme === 'function') ? r.scheme() : 'https'; return s + '://' + h; })(),");
   lines.push('    routeMap: LW_ROUTE_MAP,');
   // The app's bcrypt rounds (hashing.bcrypt.rounds) — Hash::make() parity.

@@ -271,6 +271,36 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     assert.ok(p95 <= 5, `helper surface p95 ${p95}`);
   }
 
+  // The Gate check (rt.gate): the local cost of a policy decision (the
+  // registry lookup, the guest rule, the compiled policy call). The policy
+  // itself is compiled - there is no PHP at the edge.
+  {
+    const policies = {
+      'App\\Models\\Post': {
+        policy: 'App\\Policies\\PostPolicy',
+        before: null,
+        methods: {
+          update: {
+            guest: false,
+            fn: async (rt, v_user, v_post) =>
+              rt.strictEq(rt.prop(v_user, 'id'), rt.prop(v_post, 'user_id'), false, false),
+          },
+        },
+      },
+    };
+    const rt3 = buildRt({}, { http: { auth: { user: async () => ({ id: 1 }) } }, policies });
+    const post = { user_id: 1 };
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      await rt3.gate('update', post, 'App\\Models\\Post', false);
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `rt.gate avg ${avg}`);
+    assert.ok(p95 <= 5, `rt.gate p95 ${p95}`);
+  }
+
   // The D1 blob store (the Storage facade on D1 - no R2, no card): the local
   // part of one put + one get (the SQL text, the size check, the row shape).
   // The D1 round trip itself is not measurable here; on the free plan a blob

@@ -176,7 +176,7 @@
       "label": "`Event::dispatch()`",
       "php": "\\Illuminate\\Support\\Facades\\Event::dispatch('post.created');",
       "expect": "fail",
-      "code": "LW003",
+      "code": "LW002",
       "note": "The listeners are classes - they are not compiled, so the dispatch is a port.",
       "batch": "M39",
       "status": "todo"
@@ -184,10 +184,103 @@
     {
       "id": "gate",
       "label": "`Gate::allows()`",
+      "pre": "$post = Post::find(1);",
       "php": "$ok = \\Illuminate\\Support\\Facades\\Gate::allows('update', $post);",
+      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
+      "policies": {
+        "App\\Models\\Post": {
+          "policy": "App\\Policies\\PostPolicy",
+          "error": null,
+          "hasMagicCall": false,
+          "globalBefore": 0,
+          "globalAfter": 0,
+          "definedAbilities": [],
+          "before": null,
+          "methods": {
+            "viewAny": { "guest": true, "params": [{ "name": "user", "type": "App\\Models\\User" }] },
+            "update": {
+              "guest": false,
+              "params": [
+                { "name": "user", "type": "App\\Models\\User" },
+                { "name": "post", "type": "App\\Models\\Post" }
+              ]
+            }
+          },
+          "compileError": null
+        }
+      },
+      "expect": "ok",
+      "note": "The policy is compiled at build time: the abilities, the guest rules, the before() hook.",
+      "batch": "M39",
+      "status": "done"
+    },
+    {
+      "id": "gate_class_level",
+      "label": "`Gate::allows()` (the class-level check)",
+      "pre": "$post = Post::find(1);",
+      "php": "$ok = \\Illuminate\\Support\\Facades\\Gate::allows('viewAny', Post::class);",
+      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
+      "policies": {
+        "App\\Models\\Post": {
+          "policy": "App\\Policies\\PostPolicy",
+          "error": null,
+          "hasMagicCall": false,
+          "globalBefore": 0,
+          "globalAfter": 0,
+          "definedAbilities": [],
+          "before": null,
+          "methods": {
+            "viewAny": { "guest": true, "params": [{ "name": "user", "type": "App\\Models\\User" }] }
+          },
+          "compileError": null
+        }
+      },
+      "expect": "ok",
+      "note": "Laravel shifts the class name away before the ability is called.",
+      "batch": "M39",
+      "status": "done"
+    },
+    {
+      "id": "gate_authorize",
+      "label": "`Gate::authorize()`",
+      "pre": "$post = Post::find(1);",
+      "php": "\\Illuminate\\Support\\Facades\\Gate::authorize('update', $post);",
+      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
       "expect": "fail",
-      "code": "LW003",
-      "note": "The policies are classes - they are not compiled, so the check is a port.",
+      "code": "LW002",
+      "note": "It throws an AuthorizationException (a 403) - the edge has no such error view yet.",
+      "batch": "M39",
+      "status": "todo"
+    },
+    {
+      "id": "gate_any",
+      "label": "`Gate::any()`",
+      "pre": "$post = Post::find(1);",
+      "php": "$ok = \\Illuminate\\Support\\Facades\\Gate::any(['update'], $post);",
+      "models": [{ "alias": "Post", "fqcn": "App\\Models\\Post" }],
+      "expect": "fail",
+      "code": "LW002",
+      "note": "Only `allows()` and `denies()` compile.",
+      "batch": "M39",
+      "status": "todo"
+    },
+    {
+      "id": "gate_define",
+      "label": "`Gate::define()`",
+      "php": "\\Illuminate\\Support\\Facades\\Gate::define('update', fn ($user) => true);",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "A closure is not compiled - the global Gate registrations stay a port.",
+      "batch": "M39",
+      "status": "todo"
+    },
+    {
+      "id": "gate_before",
+      "label": "`Gate::before()`",
+      "php": "\\Illuminate\\Support\\Facades\\Gate::before(fn ($user, $ability) => null);",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "The global Gate callbacks are not compiled (the policies are).",
       "batch": "M39",
       "status": "todo"
     },
@@ -196,7 +289,7 @@
       "label": "`Mail::to()->send()`",
       "php": "\\Illuminate\\Support\\Facades\\Mail::to('a@b.co')->send(new \\App\\Mail\\OrderMail());",
       "expect": "fail",
-      "code": "LW003",
+      "code": "LW002",
       "note": "The mailable class is not compiled; the mailer adapter exists (M28).",
       "batch": "M39",
       "status": "todo"
@@ -206,7 +299,7 @@
       "label": "`Queue::push()`",
       "php": "\\Illuminate\\Support\\Facades\\Queue::push(\\App\\Jobs\\SendMail::class);",
       "expect": "fail",
-      "code": "LW003",
+      "code": "LW002",
       "note": "The job class is not compiled; the queue adapter exists (M28).",
       "batch": "M39",
       "status": "todo"

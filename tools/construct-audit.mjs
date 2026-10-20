@@ -46,6 +46,8 @@ function probe(c) {
     routeParams: [],
     models: c.models || [],
     views: [],
+    // The dumped Gate metadata (the policies the check reads).
+    policies: c.policies || {},
   });
   if (!res.errors.length) return { verdict: 'ok', code: null, message: 'compiles' };
   const e = res.errors[0];

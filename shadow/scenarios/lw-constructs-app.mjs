@@ -20,10 +20,11 @@ export default {
     {
       // The seed post is *older* than the frozen clock, so the
       // `orderByDesc('created_at')` order is deterministic on both sides (a tie
-      // would leave the order to the database).
+      // would leave the order to the database). It belongs to the shadow user
+      // (id 1), so the policy answers "allowed" for it.
       sql:
-        "INSERT INTO posts (id, title, body, published, created_at, updated_at) " +
-        "VALUES (1, 'Hello Edge', 'First body', 1, '2025-06-01 00:00:00', '2025-06-01 00:00:00')",
+        "INSERT INTO posts (id, title, body, published, user_id, created_at, updated_at) " +
+        "VALUES (1, 'Hello Edge', 'First body', 1, 1, '2025-06-01 00:00:00', '2025-06-01 00:00:00')",
     },
   ],
   steps: [
@@ -65,6 +66,25 @@ export default {
     },
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
+    {
+      // The Gate: the policy check (the compiled policies answer it at the
+      // edge). The user owns the post, so `update` is allowed and `denies` is
+      // false; the class-level `viewAny` is allowed for a signed-in user.
+      label: 'GET /gate-demo/1 (the policy check)',
+      method: 'GET',
+      uri: '/gate-demo/1',
+      jar: true,
+      expectBody: 'yes|no|yes',
+    },
+    {
+      // The same check as a guest (no session): the policy does not allow
+      // guests for `update`, so the answer is "no" (the method is not called),
+      // and `viewAny` answers "no" too (the policy asks for a user).
+      label: 'GET /gate-demo/1 (the policy check, guest)',
+      method: 'GET',
+      uri: '/gate-demo/1',
+      expectBody: 'no|yes|no',
+    },
     {
       label: 'POST /posts (FormRequest create)',
       method: 'POST',

@@ -346,7 +346,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | ai-sdk | 🟡 ph3 | HTTP + streaming via fetch fits |
 | artisan | ⛔ | local-only; edge CLI equivalents |
 | authentication | 🟡 | kernel SessionGuard oracle-verified (M14); wired M15–M20 (auth.test 4/4, login-flow E2E) |
-| authorization | 🟡 ph2 | no Gate facade; build fails loud on `can:`/`authorize()`; KERJA (Gate/Policy compile) |
+| authorization | 🟡 ph2 | the Gate facade compiles: `Gate::allows()`/`denies()` answer from the compiled policy (the guest rules included); `authorize()`/`any()`/`define()`/`before()` fail loud |
 | billing | 🟡 ph3 | Cashier via fetch; webhooks = HMAC routes (padanan) |
 | blade | 🟡 | views compile (echo/if/loops/expr); layouts (`$__env`) via port |
 | boost | ⛔ | dev tooling only |

@@ -363,10 +363,15 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `report()` | ✅ compiles | Reports an exception to the platform log (it does not answer it). | M37 |
 | `cache()` (the helper) | ✅ compiles | The helper form of the `Cache` facade (the facade compiles). | M37 |
 | `session([...])` (the array form) | ✅ compiles | The array form writes many keys: `session()->put([...])`. | M37 |
-| `Event::dispatch()` | ⛔ fails loud (`LW003`) | The listeners are classes - they are not compiled, so the dispatch is a port. | M39 |
-| `Gate::allows()` | ⛔ fails loud (`LW003`) | The policies are classes - they are not compiled, so the check is a port. | M39 |
-| `Mail::to()->send()` | ⛔ fails loud (`LW003`) | The mailable class is not compiled; the mailer adapter exists (M28). | M39 |
-| `Queue::push()` | ⛔ fails loud (`LW003`) | The job class is not compiled; the queue adapter exists (M28). | M39 |
+| `Event::dispatch()` | ⛔ fails loud (`LW002`) | The listeners are classes - they are not compiled, so the dispatch is a port. | M39 |
+| `Gate::allows()` | ✅ compiles | The policy is compiled at build time: the abilities, the guest rules, the before() hook. | M39 |
+| `Gate::allows()` (the class-level check) | ✅ compiles | Laravel shifts the class name away before the ability is called. | M39 |
+| `Gate::authorize()` | ⛔ fails loud (`LW002`) | It throws an AuthorizationException (a 403) - the edge has no such error view yet. | M39 |
+| `Gate::any()` | ⛔ fails loud (`LW002`) | Only `allows()` and `denies()` compile. | M39 |
+| `Gate::define()` | ⛔ fails loud (`LW002`) | A closure is not compiled - the global Gate registrations stay a port. | M39 |
+| `Gate::before()` | ⛔ fails loud (`LW002`) | The global Gate callbacks are not compiled (the policies are). | M39 |
+| `Mail::to()->send()` | ⛔ fails loud (`LW002`) | The mailable class is not compiled; the mailer adapter exists (M28). | M39 |
+| `Queue::push()` | ⛔ fails loud (`LW002`) | The job class is not compiled; the queue adapter exists (M28). | M39 |
 | `Storage::disk()` | ⛔ fails loud (`LW002`) | The disk class is not compiled; the default disk compiles (M30). | M39 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags. | M39 |
 | Blade `@extends` (a layout) | — documented (build level) | A layout compiles to `$__env` - a view-level construct (not the controller compiler). | M40 |
@@ -377,7 +382,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**32 constructs: 19 compile, 11 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**37 constructs: 21 compile, 14 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -392,17 +397,40 @@ or it **fails the build** - there is no third state (no silent degradation).
   needs its PHP-parity rule (the `Str` family is the big one: slug/limit/upper/lower/
   head/studly/...). Effort: medium. Risk: medium - the parity rules are exactly where
   the divergences hide.
-- **M39 - the class-bearing calls.** `Event::dispatch()`, `Gate::allows()`,
-  `Mail::to()->send()`, `Queue::push(SomeJob::class)`, `Storage::disk()`,
-  `Cache::tags()`. These need the **class compiler** (the listeners, policies,
-  mailables, jobs and disks are classes). Until that exists they stay ports and the
-  build keeps failing loud - deliberately. Effort: large (a class compiler is a
-  milestone of its own). Risk: high.
+- **M39 - the class-bearing calls (partly done: the Gate).** `Gate::allows()` /
+  `Gate::denies()` now compile (M39a: the policies are compiled at build time).
+  `Event::dispatch()`, `Mail::to()->send()`, `Queue::push(SomeJob::class)`,
+  `Storage::disk()` and `Cache::tags()` still need the **class compiler** (the
+  listeners, mailables, jobs and disks are classes) - they stay ports and the
+  build keeps failing loud, deliberately, each with its own reason (LW002).
+  Effort: large (a class compiler is a milestone of its own). Risk: high.
 - **M40 - the build-level constructs.** The Blade layouts (`@extends`), `paginate`,
   route-model binding, the Eloquent relations, the file uploads and the `OPTIONS`
   route. Effort: large; the uploads need R2 (multipart parsing at the edge).
 
 ## 8. Definition of done (per item)
+- **M39a - the Gate (done).** `Gate::allows()` / `Gate::denies()` compiled into
+  `unknown class/static Illuminate\Support\Facades\Gate::allows` - the policy
+  is a class, so the check never compiled and the route needed a port. Now the
+  **policy is compiled at build time**: `tools/policy-dump.php` boots the real
+  app, asks the Gate which policy answers for a model (the guessed, the
+  registered or the subclass one) and dumps the abilities, their parameters and
+  Laravel's own guest rules (`parameterAllowsGuests()`); `compiler/src/policy.mjs`
+  compiles the ability methods and the `before()` hook into async functions
+  (`dist/src/policies.generated.mjs`) and the runtime answers the check with
+  Laravel's order: the policy `before()` first (a non-null answer wins), then
+  the ability, and a guest the policy does not allow is **denied without the
+  method being called**. A missing ability is Laravel's `false`, not an error.
+  The global Gate registrations are not compiled and fail loud with their own
+  reason: `Gate::before()`/`Gate::after()` (LW002), a `Gate::define()` ability
+  (LW002), a policy with a `__call()` (LW002 - the build cannot know what it
+  would answer), a policy that did not compile (LW003), a `Gate::authorize()`
+  (LW002 - it throws a 403) and `Gate::any()`/`Gate::none()` (LW002). The proof
+  is the shadow harness: the same policy answers the same bytes as the real
+  Laravel, for a signed-in user and for a guest. Effort: medium. Risk: medium -
+  the guest rules and the `before()` order are where the divergences hide, so
+  both are mirrored from the framework, not guessed.
+
 - **M41 - the method-call gate (done).** A method call on a model, on a query
   builder or on an unknown variable compiled and answered a 500 at the edge
   (a relation, an upload). The build stops instead: LW003 for a model or a
