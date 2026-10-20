@@ -405,6 +405,11 @@ const CACHE_ASYNC = new Set([
 ]);
 // Hash facade methods (bcrypt).
 const HASH_FACADE = new Set(['make', 'check', 'needsRehash', 'isHashed']);
+// The Storage facade: the compiled store's surface (the same methods, the same
+// return values as Laravel's FilesystemAdapter).
+const STORAGE_ASYNC = { put: 'put', get: 'getText', exists: 'exists', delete: 'delete' };
+// `Storage::disk('x')` compiles to the store itself — the fluent form.
+const STORAGE_FACADE_RE = /^rt\.storage\(\)$/;
 // Eloquent instance writes — they need the D1 binding and are async.
 const INSTANCE_DB_METHODS = new Set(['save', 'delete', 'forceDelete', 'restore', 'push', 'refresh']);
 // Session store mutation methods that touch the handler and are therefore async
@@ -451,9 +456,14 @@ function txRequestCall(node, args) {
     throw mkErr('LW002', 'unsupported $request property access', node.loc, PORT_HINT);
   }
   if (REQUEST_DENY.has(meth)) {
+    // The upload: the edge has no multipart parser. The free path is the D1
+    // blob store (1.5 MB per object, no card); R2 (a bucket of its own) asks
+    // for a credit card. The build tells the user which one to enable — or to
+    // remove/disable the upload.
     throw mkErr(
       'LW002',
-      '$request->' + meth + '() (uploaded files) is not supported by the compiled rung yet — ' + PORT_HINT,
+      '$request->' + meth + '() (an uploaded file) is not compiled — the edge has no multipart parser: the upload needs an object store (the free path is the D1 blob store: 1.5 MB per object, no card; R2 asks for a credit card) — enable it in wrangler.jsonc ("r2_buckets": [{"binding":"R2","bucket_name":"<bucket>"}]) or remove/disable the upload in this route; ' +
+        PORT_HINT,
       node.loc,
       PORT_HINT
     );
@@ -670,21 +680,19 @@ function txRedirectChain(node) {
 // says why (the listeners / the mailable / the job), not "unknown class".
 const UNSUPPORTED_FACADES = {
   Event: (m) =>
-    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled, so the dispatch is a port; ' + PORT_HINT,
+    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled; at the edge there is no listener runtime, so the dispatch would be a silent no-op — ' + PORT_HINT,
   'Illuminate\\Support\\Facades\\Event': (m) =>
-    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled, so the dispatch is a port; ' + PORT_HINT,
+    'Event::' + m + '() is not supported — the listeners are classes and they are not compiled; at the edge there is no listener runtime, so the dispatch would be a silent no-op — ' + PORT_HINT,
   Mail: (m) =>
-    'Mail::' + m + '() is not supported — the mailable class is not compiled (the mailer adapter sends a payload, it does not render a mailable); ' +
+    'Mail::' + m + '() is not supported — the fluent mail API needs a mailable class, which is not compiled (the mailer adapter sends a payload; it does not render a mailable\'s Blade) — ' +
     PORT_HINT,
   'Illuminate\\Support\\Facades\\Mail': (m) =>
-    'Mail::' + m + '() is not supported — the mailable class is not compiled (the mailer adapter sends a payload, it does not render a mailable); ' +
+    'Mail::' + m + '() is not supported — the fluent mail API needs a mailable class, which is not compiled (the mailer adapter sends a payload; it does not render a mailable\'s Blade) — ' +
     PORT_HINT,
   Queue: (m) =>
-    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run; ' +
-    PORT_HINT,
+    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run (a silent no-op) — ' + PORT_HINT,
   'Illuminate\\Support\\Facades\\Queue': (m) =>
-    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run; ' +
-    PORT_HINT,
+    'Queue::' + m + '() is not supported — the job class is not compiled and the edge has no queue consumer, so the job would never run (a silent no-op) — ' + PORT_HINT,
 };
 
 // The Gate checks the compiled rung answers: Gate::allows() / Gate::denies().
@@ -1084,6 +1092,15 @@ function txCall(node) {
     }
     // Illuminate\Support\Facades\Cache — the D1-backed `database` cache store.
     if ((cls === 'Cache' || cls === 'Illuminate\\Support\\Facades\\Cache') && CTX && CTX.controller) {
+      if (meth === 'tags') {
+        throw mkErr(
+          'LW002',
+          'Cache::tags() is not supported — the compiled cache store is the D1 `database` store, which has no tags (Laravel throws "This cache store does not support tagging." on the same store); a taggable store (redis/memcached) is not compiled — ' +
+            PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
       if (!CACHE_ASYNC.has(meth)) {
         throw mkErr(
           'LW002',
@@ -1095,10 +1112,54 @@ function txCall(node) {
       return txAwait('rt.cache().' + meth + '(' + args + ')', node, 'Cache::' + meth + '()');
     }
     // Illuminate\Support\Facades\Storage — the R2-backed store (the padanan for
-    // the app's local disk). Only the flat static calls are compiled; the fluent
-    // disk API (`Storage::disk('local')`) fails loud.
+    // the app's default disk). The flat static calls and the fluent disk form
+    // of the DEFAULT disk compile; a named disk needs a bucket of its own and
+    // fails loud.
     if ((cls === 'Storage' || cls === 'Illuminate\\Support\\Facades\\Storage') && CTX && CTX.controller) {
-      const STORAGE_ASYNC = { put: 'put', get: 'getText', exists: 'exists', delete: 'delete' };
+      if (meth === 'disk') {
+        const diskArgs = node.arguments || [];
+        if (diskArgs.length !== 1 || !diskArgs[0] || diskArgs[0].kind !== 'string') {
+          throw mkErr(
+            'LW002',
+            'the disk name must be a string literal so the build can check it (the compiled rung has one object store: the app\'s default disk) — ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        const name = String(diskArgs[0].value);
+        const storage = CTX.storage || {};
+        const def = storage.defaultDisk;
+        if (!def) {
+          throw mkErr(
+            'LW002',
+            'the build does not know the app\'s default disk (config/filesystems.php) — the compiled rung has ONE object store, so the disk name cannot be resolved — ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        if (name !== def) {
+          const known = Array.isArray(storage.disks) ? storage.disks : [];
+          if (known.length && known.indexOf(name) === -1) {
+            throw mkErr(
+              'LW002',
+              'the disk \'' + name + '\' is not configured (the app\'s disks are: ' + known.join(', ') + ') — ' + PORT_HINT,
+              node.loc,
+              PORT_HINT
+            );
+          }
+          const where = known.length
+            ? "the app's disks are: " + known.join(', ') + " (the default is '" + def + "')"
+            : "the app's default disk is '" + def + "'";
+          throw mkErr(
+            'LW002',
+            'Storage::disk(\'' + name + '\') is not supported — the compiled rung has ONE object store (the padanan for the app\'s default disk); a named disk needs a bucket of its own (R2 asks for a credit card) — ' +
+              where + ' — ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return 'rt.storage()';
+      }
       if (!STORAGE_ASYNC[meth]) {
         throw mkErr(
           'LW002',
@@ -1152,6 +1213,21 @@ function txCall(node) {
     }
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
+    // `Storage::disk('x')->put(...)` — the fluent disk form. The compiled store
+    // has the same surface (and the same return values) as the flat facade
+    // calls; a method outside it fails loud (a promise must never leak into a
+    // response).
+    if (CTX && CTX.controller && STORAGE_FACADE_RE.test(obj)) {
+      if (!STORAGE_ASYNC[meth]) {
+        throw mkErr(
+          'LW002',
+          'Storage::disk()->' + meth + '() is not supported — allowed: ' + Object.keys(STORAGE_ASYNC).join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return txAwait(obj + '.' + STORAGE_ASYNC[meth] + '(' + args + ')', node, 'Storage::disk()->' + meth + '()');
+    }
     // Eloquent instance writes ($model->save(), ->delete(), ...) need the D1
     // binding and are async at the edge.
     if (CTX && CTX.controller && INSTANCE_DB_METHODS.has(meth)) {
@@ -1677,6 +1753,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     modelClassFqcns: new Map(Object.entries(opts.modelClassFqcns || {})),
     // The dumped policies: FQCN -> { policy, methods, before, globalBefore, ... }
     policies: new Map(Object.entries(opts.policies || {})),
+    // The app's object store: the default disk's name + the configured disks
+    // (the Storage facade: only the default disk compiles).
+    storage: opts.storage || {},
     // The model methods the app declares (alias -> [names]): a relation or an
     // accessor read as a property is not compiled.
     modelNotCompiled: opts.modelNotCompiled || new Map(),

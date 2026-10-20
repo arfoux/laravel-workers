@@ -306,13 +306,22 @@
     },
     {
       "id": "storage_disk",
-      "label": "`Storage::disk()`",
+      "label": "`Storage::disk()` (the default disk)",
       "php": "\\Illuminate\\Support\\Facades\\Storage::disk('local')->put('a.txt', 'x');",
+      "expect": "ok",
+      "note": "The default disk is the compiled object store (the D1 blob store, or R2 when bound).",
+      "batch": "M39",
+      "status": "done"
+    },
+    {
+      "id": "storage_disk_named",
+      "label": "`Storage::disk()` (a named disk)",
+      "php": "\\Illuminate\\Support\\Facades\\Storage::disk('public')->put('a.txt', 'x');",
       "expect": "fail",
       "code": "LW002",
-      "note": "The disk class is not compiled; the default disk compiles (M30).",
+      "note": "A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store.",
       "batch": "M39",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "cache_tags",
@@ -320,7 +329,7 @@
       "php": "\\Illuminate\\Support\\Facades\\Cache::tags('a')->put('k', 'v');",
       "expect": "fail",
       "code": "LW002",
-      "note": "Tags need a KV/Redis-shaped store; the D1 `database` store has no tags.",
+      "note": "Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too).",
       "batch": "M39",
       "status": "todo"
     },

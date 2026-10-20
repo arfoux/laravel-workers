@@ -113,4 +113,16 @@ $put('cache.serializable_classes', $config->get('cache.serializable_classes') ??
 $put('mail.driver', $config->get('mail.default'));
 $put('mail.from.address', $config->get('mail.from.address'));
 
+// ---------- filesystems (the object store) ----------
+// The compiled rung has ONE object store: the padanan for the app's default
+// disk (R2 when the app binds it, else the D1 blob store). The build needs the
+// default disk's name to compile `Storage::disk('x')` exactly (and to fail
+// loud for a disk that would need a bucket of its own).
+$defaultDisk = $config->get('filesystems.default');
+$put('filesystems.default', $defaultDisk);
+$put('filesystems.disks', array_values(array_keys((array) ($config->get('filesystems.disks') ?: []))));
+foreach ((array) ($config->get('filesystems.disks') ?: []) as $name => $disk) {
+    $put('filesystems.disks.' . $name . '.driver', is_array($disk) ? ($disk['driver'] ?? null) : null);
+}
+
 echo json_encode($dump, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";

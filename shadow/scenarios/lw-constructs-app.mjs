@@ -152,7 +152,8 @@ export default {
       // The object store (the padanan for the app's local disk): the compiled
       // side writes to the D1 blob store (one row per object), the real app to
       // the local disk. Both sides read the object back, so the step proves the
-      // put/get/exists round trip, not just the status.
+      // put/get/exists round trip, not just the status. The fluent disk form
+      // (`Storage::disk('local')`) is the same store - the default disk.
       label: 'POST /storage-demo (the object store)',
       method: 'POST',
       uri: '/storage-demo',
@@ -161,7 +162,7 @@ export default {
       // The body must carry the round trip: the value that was written and read
       // back, plus the `exists` answer. It also keeps the step from passing
       // vacuously (a route that does not exist would answer 404 on both sides).
-      expectBody: 'hello-shadow|yes|yes|yes|no',
+      expectBody: 'hello-shadow|yes|yes|yes|no|hello-disk|yes|yes|yes|no',
     },
     {
       // The helper verbs: `today()` follows the request clock (the oracle

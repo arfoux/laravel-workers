@@ -149,6 +149,10 @@ const META_POLICIES = {
   },
 };
 
+// The app's object store (the config dump): the default disk is the compiled
+// store; a named disk needs a bucket of its own.
+const META_STORAGE = { defaultDisk: 'local', disks: ['local', 'public', 's3'] };
+
 function emitOk(method, meta = META_BASE) {
   const res = emitController(SAMPLE, method, meta);
   assert.deepEqual(res.errors, [], `expected ${method} to transpile cleanly`);
@@ -976,14 +980,174 @@ test('emit: an unsupported Storage method fails loud (LW002)', () => {
     'class C {\n' +
     '    public function store()\n' +
     '    {\n' +
-    "        Storage::disk('local');\n" +
+    "        $files = Storage::files('a');\n" +
     "        return response('ok');\n" +
     '    }\n' +
     '}\n';
   const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
-  assert.match(res.errors[0].message, /Storage::disk/);
+  assert.match(res.errors[0].message, /Storage::files/);
+});
+
+// ---------------------------------------------------------------------------
+// emit — the object store (the default disk compiles; a named disk does not)
+// ---------------------------------------------------------------------------
+
+test('emit: Storage::disk() of the app\'s default disk compiles to the store', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Storage;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        $put = Storage::disk('local')->put('a.txt', 'x');\n" +
+    "        $v = Storage::disk('local')->get('a.txt');\n" +
+    "        $e = Storage::disk('local')->exists('a.txt');\n" +
+    "        $d = Storage::disk('local')->delete('a.txt');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/x',
+    routeParams: [],
+    models: [],
+    views: [],
+    storage: META_STORAGE,
+  });
+  assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
+  assert.match(res.code, /\(await rt\.storage\(\)\.put\("a\.txt", "x"\)\)/);
+  assert.match(res.code, /\(await rt\.storage\(\)\.getText\("a\.txt"\)\)/);
+  assert.match(res.code, /\(await rt\.storage\(\)\.exists\("a\.txt"\)\)/);
+  assert.match(res.code, /\(await rt\.storage\(\)\.delete\("a\.txt"\)\)/);
+});
+
+test('emit: Storage::disk() of a named disk fails loud (LW002) - it needs a bucket of its own', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Storage;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Storage::disk('public')->put('a.txt', 'x');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/x',
+    routeParams: [],
+    models: [],
+    views: [],
+    storage: META_STORAGE,
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /Storage::disk\('public'\) is not supported/);
+  // the message says what it would take (R2 asks for a credit card).
+  assert.match(res.errors[0].message, /credit card/);
+});
+
+test('emit: a disk name that is not a literal fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Storage;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        $name = 'local';\n" +
+    "        Storage::disk($name)->put('a.txt', 'x');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/x',
+    routeParams: [],
+    models: [],
+    views: [],
+    storage: META_STORAGE,
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /string literal/);
+});
+
+test('emit: a disk check without the app\'s default disk fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Storage;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Storage::disk('local')->put('a.txt', 'x');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  // no `storage` in the meta: the build does not know the app's default disk.
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /does not know the app's default disk/);
+});
+
+test('emit: a method outside the compiled store surface fails loud (no promise leaks)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Storage;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        $files = Storage::disk('local')->files('a');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', {
+    routeUri: '/x',
+    routeParams: [],
+    models: [],
+    views: [],
+    storage: META_STORAGE,
+  });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /Storage::disk\(\)->files\(\)/);
+});
+
+test('emit: Cache::tags() fails loud with the store reason (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Support\\Facades\\Cache;\n' +
+    'class C {\n' +
+    '    public function store()\n' +
+    '    {\n' +
+    "        Cache::tags('a')->put('k', 'v');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /does not support tagging/);
+});
+
+test('emit: an uploaded file fails loud with the object-store instructions (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function store(Request $request)\n' +
+    '    {\n' +
+    "        $file = $request->file('avatar');\n" +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  // the message says what to do: the object store (R2 asks for a credit card,
+  // the free path is the D1 blob store) or remove/disable the upload.
+  assert.match(res.errors[0].message, /credit card/);
+  assert.match(res.errors[0].message, /r2_buckets/);
+  assert.match(res.errors[0].message, /remove\/disable the upload/);
 });
 
 test('emit: a fully-qualified static call resolves to the global class', () => {

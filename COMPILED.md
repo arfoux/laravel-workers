@@ -372,8 +372,9 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Gate::before()` | ⛔ fails loud (`LW002`) | The global Gate callbacks are not compiled (the policies are). | M39 |
 | `Mail::to()->send()` | ⛔ fails loud (`LW002`) | The mailable class is not compiled; the mailer adapter exists (M28). | M39 |
 | `Queue::push()` | ⛔ fails loud (`LW002`) | The job class is not compiled; the queue adapter exists (M28). | M39 |
-| `Storage::disk()` | ⛔ fails loud (`LW002`) | The disk class is not compiled; the default disk compiles (M30). | M39 |
-| `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags. | M39 |
+| `Storage::disk()` (the default disk) | ✅ compiles | The default disk is the compiled object store (the D1 blob store, or R2 when bound). | M39 |
+| `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
+| `Cache::tags()` | ⛔ fails loud (`LW002`) | Tags need a KV/Redis-shaped store; the D1 `database` store has no tags (Laravel throws there too). | M39 |
 | Blade `@extends` (a layout) | — documented (build level) | A layout compiles to `$__env` - a view-level construct (not the controller compiler). | M40 |
 | `Model::paginate()` | ⛔ fails loud (`LW003`) | The query builder has no pagination; D1 has no OFFSET-free paging guarantee. | M40 |
 | Route-model binding (a typed param) | ⛔ fails loud (`LW004`) | The compiled handler takes the raw segment; the model is fetched explicitly. | M40 |
@@ -382,7 +383,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | An `OPTIONS` route | — documented (build level) | The platform answers the CORS preflight, not the app. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
 
-**37 constructs: 21 compile, 14 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**38 constructs: 22 compile, 14 fail loud, 2 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
 
 <!-- construct-audit:end -->
 
@@ -397,18 +398,55 @@ or it **fails the build** - there is no third state (no silent degradation).
   needs its PHP-parity rule (the `Str` family is the big one: slug/limit/upper/lower/
   head/studly/...). Effort: medium. Risk: medium - the parity rules are exactly where
   the divergences hide.
-- **M39 - the class-bearing calls (partly done: the Gate).** `Gate::allows()` /
-  `Gate::denies()` now compile (M39a: the policies are compiled at build time).
-  `Event::dispatch()`, `Mail::to()->send()`, `Queue::push(SomeJob::class)`,
-  `Storage::disk()` and `Cache::tags()` still need the **class compiler** (the
-  listeners, mailables, jobs and disks are classes) - they stay ports and the
-  build keeps failing loud, deliberately, each with its own reason (LW002).
+- **M39 - the class-bearing calls (the Gate and the default disk are done).**
+  `Gate::allows()`/`denies()` compile (M39a: the policy is compiled at build time)
+  and `Storage::disk('<the default disk>')` compiles to the compiled object store
+  (M39b). What is left needs the **class compiler** (the listeners, the
+  mailables, the jobs are classes): `Event::dispatch()`, `Mail::to()->send()`,
+  `Queue::push(SomeJob::class)` — plus the two constructs that need a product
+  or a store the edge does not have: a **named disk** (its own bucket — R2 asks
+  for a credit card) and `Cache::tags()` (a taggable store). They stay ports and
+  the build keeps failing loud, deliberately, each with its own reason (LW002).
   Effort: large (a class compiler is a milestone of its own). Risk: high.
 - **M40 - the build-level constructs.** The Blade layouts (`@extends`), `paginate`,
   route-model binding, the Eloquent relations, the file uploads and the `OPTIONS`
   route. Effort: large; the uploads need R2 (multipart parsing at the edge).
 
 ## 8. Definition of done (per item)
+- **M39b - the class-bearing calls, bounded (done).** The Gate (M39a) and the
+  **default disk** now compile; the rest fail loud with their own reason, and
+  the build *validates* the two places where the compiled side would read or
+  write the **wrong store**:
+  - `Storage::disk('<the app\'s default disk>')` compiles to the compiled
+    object store (the D1 blob store, or R2 when the app binds it) — the same
+    store as the flat `Storage::put()/get()/exists()/delete()`, with the same
+    return values. The fluent form (`->put()`, `->get()`, `->exists()`,
+    `->delete()`) compiles too; a method outside that surface fails loud (a
+    promise must never leak into a response).
+  - A **named** disk (`Storage::disk('public')`) fails loud (LW002): it would
+    need a bucket of its own — R2 asks for a **credit card** (the free path is
+    the D1 blob store: 1.5 MB per object, no card). A disk name that is not a
+    literal fails loud too (the build cannot resolve it).
+  - `Cache::tags()` fails loud with Laravel's own reason: the D1 `database`
+    store has no tags ("This cache store does not support tagging." — Laravel
+    throws the same on that store). A taggable store (redis/memcached) is not
+    compiled.
+  - The build now **fails the build** when a compiled route uses the cache and
+    the app's cache store is not `database`: the compiled store would read and
+    write a different store — a silent divergence.
+  - `Event::dispatch()`, `Mail::to()->send()` and `Queue::push(SomeJob::class)`
+    fail loud with their reason: the listeners / the mailable / the job are
+    classes, and at the edge there is no listener runtime and no queue
+    consumer — a dispatch or a push would be a **silent no-op**.
+  - The **file upload** (`$request->file()`) fails loud with the instructions:
+    the edge has no multipart parser, so the upload needs an object store
+    (R2 — credit card; the free path is the D1 blob store) or the upload has to
+    be removed/disabled in that route. The build prints the `wrangler.jsonc`
+    snippet next to the skipped route.
+  Effort: medium. Risk: low — the compiled store is the one the build already
+  proves; the rest is a message (and a validation) that keeps a divergence from
+  reaching the edge.
+
 - **M39a - the Gate (done).** `Gate::allows()` / `Gate::denies()` compiled into
   `unknown class/static Illuminate\Support\Facades\Gate::allows` - the policy
   is a class, so the check never compiled and the route needed a port. Now the

@@ -48,6 +48,8 @@ function probe(c) {
     views: [],
     // The dumped Gate metadata (the policies the check reads).
     policies: c.policies || {},
+    // The app's object store: the default disk + the configured disk names.
+    storage: c.storage || { defaultDisk: 'local', disks: ['local', 'public'] },
   });
   if (!res.errors.length) return { verdict: 'ok', code: null, message: 'compiles' };
   const e = res.errors[0];

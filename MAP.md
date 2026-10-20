@@ -351,7 +351,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | blade | 🟡 | views compile (echo/if/loops/expr); layouts (`$__env`) via port |
 | boost | ⛔ | dev tooling only |
 | broadcasting | 🔴 | SSE/polling padanan; WS via DO/external |
-| cache | 🟡 | D1 store wired (throttle/session); KV driver + tags + facade pending (T4) |
+| cache | 🟡 | the `Cache` facade + the `cache()` helper compile to the D1 `database` store; the tags need a taggable store (LW002 — the D1 store has none, Laravel throws there too); a non-`database` driver fails the build (it would read and write a different store) |
 | cashier-paddle | 🟡 ph3 | same as billing (padanan) |
 | collections | 🟡 | kernel shim subset; fail loud per method |
 | concurrency | 🟡 | Promise.all; 6-conn limit → batch |
@@ -378,9 +378,9 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | encryption | 🟡 | AES-CBC+HMAC WebCrypto; serialize subset |
 | envoy | ⛔ | local (SSH deploys) |
 | errors | 🟡 | build-time compiled error views when present; status-only stubs otherwise; `new <PHP exception>` + `throw_if`/`throw_unless` compile (M34) |
-| events | 🟡 | AuthEvents objects exist; `Event::dispatch` not mapped → port; queued → queue (dead) |
-| facades | 🟡 | kernel shims; the `Cache`/`Hash`/`Storage` facades compile (M23/M28/M30); mail/queue/gate/notification/password still unmapped → port |
-| filesystem | 🟡 | wired (M28/M30): `Storage::` → R2 when bound, else the D1 blob store (`lw_blobs`); `file_exists`/`public_path` stay build-only (no local FS) |
+| events | 🟡 | AuthEvents objects exist; `Event::dispatch` fails loud (M39b: the listeners are classes and the edge has no listener runtime — a dispatch would be a silent no-op) → port; queued → queue (dead) |
+| facades | 🟡 | kernel shims; the `Cache`/`Hash`/`Storage` facades compile (M23/M28/M30); the `Gate` facade compiles (M39a: the policy is compiled at build time); mail/queue/notification/password still unmapped → port |
+| filesystem | 🟡 | wired (M28/M30): `Storage::` → R2 when bound, else the D1 blob store (`lw_blobs`); the **default disk** compiles (`Storage::disk('local')` is that same store — M39b), a named disk needs a bucket of its own (LW002: R2 asks for a credit card); `file_exists`/`public_path` stay build-only (no local FS) |
 | folio | ⛔ | NOT ported (0 code); Laravel Folio page routing unsupported |
 | fortify | 🟡 ph2 | compile routes/actions, or manual auth (padanan) |
 | frontend | ✅ | Vite unchanged; proven |

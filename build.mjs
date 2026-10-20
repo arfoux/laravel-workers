@@ -1117,6 +1117,14 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           formRequests,
           // The Gate metadata (the policies, their abilities, the guest rules).
           policies: policiesMeta,
+          // The object store: the app's default disk (the compiled rung has ONE
+          // store — the padanan for it) + the configured disk names.
+          storage: {
+            defaultDisk: runtimeConfig['filesystems.default'] || null,
+            disks: Array.isArray(runtimeConfig['filesystems.disks'])
+              ? runtimeConfig['filesystems.disks']
+              : [],
+          },
           // Hash::make() must use the app's configured bcrypt rounds.
           hashRounds: Number(runtimeConfig['hashing.bcrypt.rounds'] ?? 12) || 12,
         };
@@ -1145,7 +1153,20 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
           emittedCount++;
         } catch (e) {
-          console.log(`  controller ${p.route}: skipped — ${formatControllerError(e)}`);
+          const detail = formatControllerError(e);
+          console.log(`  controller ${p.route}: skipped — ${detail}`);
+          // The upload: the operator needs to know that the edge has no
+          // multipart parser and what to do about it (an object store — R2
+          // asks for a credit card; the free path is the D1 blob store — or
+          // remove/disable the upload).
+          if (/an uploaded file/.test(detail)) {
+            console.log(
+              '     ! this route uploads a file: the edge has no multipart parser. Bind R2\n' +
+                '       ("r2_buckets": [{"binding":"R2","bucket_name":"<bucket>"}] in wrangler.jsonc - R2 asks for a\n' +
+                '       credit card; the free path is the D1 blob store, 1.5 MB per object) or remove/disable\n' +
+                '       the upload in this route.'
+            );
+          }
         }
       }
       if (emittedCount) {
@@ -1163,16 +1184,17 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // tell the operator what to add.
       if (emittedCount) {
         const controllerDir = join(dist, 'src', 'controllers');
-        usesStorage = readdirSync(controllerDir)
+        const controllerSources = readdirSync(controllerDir)
           .filter((f) => f.endsWith('.mjs'))
-          .some((f) => readFileSync(join(controllerDir, f), 'utf8').includes('rt.storage()'));
+          .map((f) => readFileSync(join(controllerDir, f), 'utf8'));
+        usesStorage = controllerSources.some((s) => s.includes('rt.storage()'));
         if (usesStorage) {
           if (hasBinding(appDir, 'r2_buckets', 'R2')) {
             console.log('• Storage:: -> R2 (the R2 binding)');
           } else if (hasBinding(appDir, 'd1_databases', 'DB')) {
             console.log('• Storage:: -> the D1 blob store (no R2 binding): one row per object in lw_blobs.');
             console.log('  Free-plan limits apply: 100k row writes/day, 5M row reads/day, 500 MB per database, 1.5 MB per object.');
-            console.log('  Bind an R2 bucket ("r2_buckets": [{"binding":"R2",...}]) for real object storage.');
+            console.log('  Bind an R2 bucket ("r2_buckets": [{"binding":"R2",...}]) for real object storage (it asks for a credit card).');
           } else {
             fail(
               'a compiled controller uses the Storage facade, but the app binds neither R2 nor D1.\n' +
@@ -1181,6 +1203,23 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
                 '  extra Cloudflare product - or an R2 bucket ({"r2_buckets":[{"binding":"R2",...}]}).'
             );
           }
+        }
+        // The compiled cache store is the D1-backed `database` store (the
+        // Laravel DatabaseCacheStore, oracle-verified). A compiled route that
+        // uses the cache on another driver (redis, memcached, file, ...) would
+        // read and write a DIFFERENT store - a silent divergence. The build
+        // stops instead.
+        const usesCache = controllerSources.some((s) => s.includes('rt.cache()'));
+        if (usesCache && runtimeConfig['cache.driver'] !== 'database') {
+          fail(
+            'a compiled controller uses the cache, but the app\'s cache store is `' +
+              runtimeConfig['cache.driver'] +
+              '`.\n' +
+              '  The compiled rung has exactly one cache store: the D1-backed `database` store (the Laravel\n' +
+              '  DatabaseCacheStore, oracle-verified). Another driver would read and write a different store -\n' +
+              '  a silent divergence.\n' +
+              '  Set CACHE_STORE=database (with the cache + cache_locks tables) or write a port for the route.'
+          );
         }
       }
     }

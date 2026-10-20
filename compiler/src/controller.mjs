@@ -468,6 +468,9 @@ export function emitController(source, methodName, meta = {}) {
     // The dumped policies (the Gate check reads them: the abilities, the guest
     // rules, the global Gate callbacks).
     policies: meta.policies && typeof meta.policies === 'object' ? meta.policies : {},
+    // The app's object store (the default disk's name + the configured disks):
+    // only the default disk compiles.
+    storage: meta.storage && typeof meta.storage === 'object' ? meta.storage : {},
     views: new Set(info.views),
     indent: '    ',
     paramVars,
