@@ -249,7 +249,24 @@ export function compileClasses(dump, opts = {}) {
   const entries = [];
   const errors = [];
 
+  // The queued listeners (ShouldQueue): Laravel pushes them to the queue (they
+  // run later, in a worker); the edge has no consumer, so running them inline
+  // would be a different behaviour — they are not compiled.
+  const queued = new Set();
+  for (const info of Object.values(events)) {
+    for (const q of info.queued || []) queued.add(q);
+  }
+
   for (const [fqcn, info] of Object.entries(classMap)) {
+    if (queued.has(fqcn)) {
+      errors.push({
+        class: fqcn,
+        message:
+          'the listener ' + fqcn + ' is queued (ShouldQueue) — Laravel pushes it to the queue and it runs later; ' +
+          'the edge has no queue consumer, so the compiled rung does not run it inline',
+      });
+      continue;
+    }
     const parsed = parseClassFile(info.file);
     if (parsed.error) {
       errors.push({ class: fqcn, message: parsed.error });

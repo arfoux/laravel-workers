@@ -162,6 +162,27 @@ class C {
   assert.match(res.errors[0].message, /compiled event class/);
 });
 
+test('classes: a queued listener (ShouldQueue) is not compiled', () => {
+  // Laravel pushes a queued listener to the queue (it runs later); the edge has
+  // no consumer, so running it inline would be a different behaviour.
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: 'x.php',
+          listeners: ['App\\Listeners\\Queued'],
+          queued: ['App\\Listeners\\Queued'],
+        },
+      },
+      classes: { 'App\\Listeners\\Queued': { file: 'x.php' } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1);
+  assert.match(res.errors[0].message, /ShouldQueue/);
+  assert.equal(Object.keys(res.meta).length, 0);
+});
+
 test('classes: the runtime dispatches to the compiled listener (Laravel: synchronous)', async () => {
   const rt = buildRt({}, {
     http: {},

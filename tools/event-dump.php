@@ -69,6 +69,13 @@ foreach ($providers as $provider) {
             if (!class_exists($listenerClass)) continue;
             $addClass($listenerClass);
             $events[$eventClass]['listeners'][] = $listenerClass;
+            // A queued listener (ShouldQueue): Laravel pushes it to the queue
+            // (it runs later); the edge has no consumer, so it must not run it
+            // inline - the compiled rung fails loud on it.
+            $implements = class_implements($listenerClass);
+            if (is_array($implements) && in_array('Illuminate\\Contracts\\Queue\\ShouldQueue', $implements, true)) {
+                $events[$eventClass]['queued'][] = $listenerClass;
+            }
         }
     }
 }
