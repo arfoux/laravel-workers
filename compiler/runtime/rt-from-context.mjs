@@ -6,6 +6,12 @@ import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
 
+// The Collection marker: the runtime's Collection class is created per rt (a
+// view renders with its OWN rt - buildRt() runs again for it), so an
+// `instanceof` check cannot see a Collection that came from another rt (the
+// controller's). The marker travels with the instance.
+const IS_COLLECTION = Symbol('lw.collection');
+
 // env() -> the config key: the build-time config dump is the padanan for env()
 // at the edge (there is no .env there). Keep in sync with tools/config-dump.php.
 const ENV_CONFIG_KEYS = {
@@ -1080,6 +1086,9 @@ export function buildRt(context, opts = {}) {
   };
 
   // ---- foreach over PHP arrays/objects ----
+  // A Collection (Illuminate\Collections\Collection): the items live in
+  // `items` and the iteration yields them (Collection::getIterator()).
+  const isCollection = (v) => v !== null && typeof v === 'object' && v[IS_COLLECTION] === true;
   // The spread (`[...$a]`): the VALUES of the array, in order (PHP drops the
   // keys - the spread builds a list).
   rt.spread = (src) => {
@@ -1087,6 +1096,9 @@ export function buildRt(context, opts = {}) {
     if (Array.isArray(src)) return src.slice();
     if (typeof src === 'object') {
       if (Array.isArray(src.__items)) return src.__items.slice();
+      // A Collection spreads its ITEMS (PHP: [...collect([1,2])] => [1,2] -
+      // Illuminate\Collections\Collection::getIterator()).
+      if (isCollection(src)) return src.items.slice();
       return Object.keys(src).map((k) => src[k]);
     }
     return [src];
@@ -1104,6 +1116,11 @@ export function buildRt(context, opts = {}) {
     // A paginator (and a Collection) iterate their items, not their fields.
     if (src && typeof src === 'object' && Array.isArray(src.__items)) {
       return src.__items.map((v, i) => [i, v]);
+    }
+    // A Collection (Illuminate\Collections\Collection::getIterator()): the
+    // ITEMS, keyed by their position - not the fields of the wrapper.
+    if (isCollection(src)) {
+      return src.items.map((v, i) => [i, v]);
     }
     if (src && typeof src === 'object') {
       const keyOf = (k) => (/^\d+$/.test(k) ? Number(k) : k);
@@ -1204,7 +1221,119 @@ export function buildRt(context, opts = {}) {
   rt.htmlspecialchars = (s) => (s == null ? '' : rt.e(s));
 
   // ---- json ----
-  rt.json_encode = (v) => phpJsonEncode(v == null ? null : v);
+  // Illuminate\View\Compilers\Concerns\CompilesJson:12 - Blade's `@json($x)`
+  // compiles to `json_encode($x, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT, 512)`
+  // (CompilesJson:28): the four HEX flags escape `<`, `>`, `&`, `'` and `"` as
+  // \uXXXX (PHP writes the hex in upper case) and the depth bounds the nesting
+  // (PHP's json_encode() returns false past it).
+  // The kernel's encoder (kernel/php-json.mjs) writes the DEFAULT flags, so the
+  // runtime applies the HEX ones here. The other flags are not ported: they
+  // would answer a different body, so they fail loud.
+  const JSON_HEX_TAG = 1;
+  const JSON_HEX_AMP = 2;
+  const JSON_HEX_APOS = 4;
+  const JSON_HEX_QUOT = 8;
+  const JSON_HEX_FLAGS = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+  // The HEX flags rewrite the characters INSIDE the encoded JSON: `<`, `>`,
+  // `&` and `'` are not JSON syntax, so a literal one in the output can only
+  // come from a string. The `"` is the ESCAPED one (`\"` inside a string) -
+  // the string delimiters are bare quotes.
+  const jsonHexEncode = (json, flags) => {
+    if (!flags) return json;
+    let out = '';
+    let i = 0;
+    while (i < json.length) {
+      const c = json[i];
+      if (c !== '"') {
+        out += c;
+        i++;
+        continue;
+      }
+      out += '"';
+      i++;
+      while (i < json.length) {
+        const ch = json[i];
+        if (ch === '\\') {
+          const next = json[i + 1];
+          if (next === '"' && flags & JSON_HEX_QUOT) {
+            out += '\\u0022';
+            i += 2;
+            continue;
+          }
+          // \\ \/ \b \t \n \f \r \u - the hex digits of a \u escape are copied
+          // as they are (they are never one of the flagged characters).
+          out += ch + next;
+          i += 2;
+          continue;
+        }
+        if (ch === '"') {
+          out += '"';
+          i++;
+          break;
+        }
+        if (flags & JSON_HEX_TAG) {
+          if (ch === '<') {
+            out += '\\u003C';
+            i++;
+            continue;
+          }
+          if (ch === '>') {
+            out += '\\u003E';
+            i++;
+            continue;
+          }
+        }
+        if (flags & JSON_HEX_AMP && ch === '&') {
+          out += '\\u0026';
+          i++;
+          continue;
+        }
+        if (flags & JSON_HEX_APOS && ch === "'") {
+          out += '\\u0027';
+          i++;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+    }
+    return out;
+  };
+  // PHP's json_encode() depth: the nesting of the arrays/objects (a scalar is
+  // no level). PHP returns false past it ("Maximum stack depth exceeded").
+  const jsonDepth = (v) => {
+    if (Array.isArray(v)) {
+      let deepest = 0;
+      for (const item of v) {
+        const d = jsonDepth(item);
+        if (d > deepest) deepest = d;
+      }
+      return 1 + deepest;
+    }
+    if (isPhpArray(v)) {
+      let deepest = 0;
+      for (const k of Object.keys(v)) {
+        const d = jsonDepth(v[k]);
+        if (d > deepest) deepest = d;
+      }
+      return 1 + deepest;
+    }
+    return 0;
+  };
+  rt.json_encode = (v, flags, depth) => {
+    const f = flags == null ? 0 : Number(flags) | 0;
+    const d = depth == null ? 512 : Number(depth) | 0;
+    if (f & ~JSON_HEX_FLAGS) {
+      throw new Error(
+        'json_encode() flags ' + f + ' are not supported at the edge — PHP would write a different ' +
+          'body with them (the ported ones are JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) — ' +
+          'drop the flags or write a port'
+      );
+    }
+    const value = v == null ? null : v;
+    if (jsonDepth(value) > d) return false;
+    return jsonHexEncode(phpJsonEncode(value), f);
+  };
   rt.json_decode = (s, assoc) => JSON.parse(String(s));
 
   // ---- more array helpers ----
@@ -1268,6 +1397,9 @@ export function buildRt(context, opts = {}) {
   class Collection {
     constructor(items) {
       this.items = Array.isArray(items) ? items.slice() : [];
+      // The marker (see IS_COLLECTION): a view renders with its OWN rt, so a
+      // Collection that came from the controller's rt must still be seen.
+      this[IS_COLLECTION] = true;
     }
     count() { return this.items.length; }
     isEmpty() { return this.items.length === 0; }
@@ -1449,6 +1581,9 @@ export function buildRt(context, opts = {}) {
       let length = null;
       if (Array.isArray(dataSrc)) length = dataSrc.length;
       else if (dataSrc instanceof Map) length = dataSrc.size;
+      // A Collection is countable (Illuminate\View\Concerns\ManagesLoops:25 -
+      // count($collection) is the number of the items).
+      else if (isCollection(dataSrc)) length = dataSrc.items.length;
       else if (dataSrc && typeof dataSrc === 'object') {
         length = typeof dataSrc.length === 'number' ? dataSrc.length : Object.keys(dataSrc).length;
       }
@@ -1495,7 +1630,10 @@ export function buildRt(context, opts = {}) {
     startSection(name, content) {
       const key = String(name);
       if (content !== null && content !== undefined) {
-        sections[key] = String(content);
+        // Illuminate\View\Concerns\ManagesLayouts:53 - the inline content is
+        // escaped (e($content)). The captured block (@section ... @endsection)
+        // is raw (stopSection() keeps the output as it is).
+        sections[key] = rt.e(content);
         return;
       }
       sectionStack.push({ name: key, buffer: '' });
@@ -1507,7 +1645,9 @@ export function buildRt(context, opts = {}) {
     yieldContent(name, fallback) {
       const key = String(name);
       if (Object.prototype.hasOwnProperty.call(sections, key)) return sections[key];
-      return fallback === null || fallback === undefined ? '' : String(fallback);
+      // Illuminate\View\Concerns\ManagesLayouts:157 - the default is escaped
+      // (e($default)).
+      return fallback === null || fallback === undefined ? '' : rt.e(fallback);
     },
     hasSection(name) {
       return Object.prototype.hasOwnProperty.call(sections, String(name));
