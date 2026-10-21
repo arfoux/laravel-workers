@@ -1166,6 +1166,10 @@ test('request: merge() follows Laravel (the input source, replace not deep merge
   assert.deepEqual(req.input('nested'), { y: '9' }, 'the value is replaced, not deep-merged');
   assert.equal(req.input('b'), '3', 'a new key is added');
   assert.deepEqual(req.input('deep'), { k: 'v' });
+  // The dot notation is honoured (Arr::set): merge(['deep.k' => 'v']) sets the
+  // NESTED value (probed against Laravel 13).
+  req.merge({ 'deep.k2': 'w' });
+  assert.deepEqual(req.input('deep'), { k: 'v', k2: 'w' });
   // The input Laravel reads is the input source UNION the query bag
   // (InteractsWithInput::input(): `$this->getInputSource()->all() +
   // $this->query->all()`) - the source's keys win.

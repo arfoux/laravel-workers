@@ -554,22 +554,6 @@ export function buildRequest(raw, options = {}) {
     || String(headers.get('x-forwarded-for') || '').split(',')[0].trim()
     || '127.0.0.1';
 
-  // Illuminate\Support\Arr::set: the dot notation sets a NESTED value and
-  // replaces it (a deep merge would keep the old sub-keys).
-  const dataSet = (target, path, value) => {
-    const keys = String(path).split('.');
-    let cur = target;
-    for (let i = 0; i < keys.length - 1; i++) {
-      const key = keys[i];
-      if (cur[key] === null || typeof cur[key] !== 'object' || Array.isArray(cur[key])) {
-        cur[key] = {};
-      }
-      cur = cur[key];
-    }
-    cur[keys[keys.length - 1]] = value;
-    return target;
-  };
-
   const inputSource = () => {
     if (isJson && json !== null) return json;
     if (rawMethod === 'GET' || rawMethod === 'HEAD') return query;
@@ -720,7 +704,8 @@ export function buildRequest(raw, options = {}) {
     merge(input) {
       const source = inputSource();
       for (const [key, value] of Object.entries(input || {})) {
-        dataSet(source, key, value);
+        // Arr::set: the dot notation sets a NESTED value and replaces it.
+        arrSetRef(source, key, value, false);
       }
       return request;
     },
