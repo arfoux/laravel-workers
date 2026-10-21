@@ -291,6 +291,11 @@ function compileConstructor(fqcn, classNode, opts) {
     modelVarSeeds: [],
     classes: opts.classes,
     classMethod: true,
+    // The class's own methods: a method call on $this (or on a variable that
+    // holds the instance) is one of them.
+    classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
+    // A mailable: the fluent surface of Laravel's Mailable.
+    mailable: !!opts.mailable,
     // The constructor builds its own object.
     thisVar: '__self',
     // The services the constructor injected (`$this->mailer`): their async
@@ -493,6 +498,10 @@ function compileMethod(fqcn, methodNode, opts) {
     // The classes the build compiled: `new X(...)` and the event dispatch.
     classes: opts.classes,
     classMethod: true,
+    // The class's own methods (a method call on $this).
+    classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
+    // A mailable: the fluent surface of Laravel's Mailable.
+    mailable: !!opts.mailable,
     // The injected services of the constructor (`$this->mailer`): their async
     // methods are awaited.
     injectedDeps: opts.injectedDeps instanceof Map ? opts.injectedDeps : new Map(),
@@ -656,7 +665,10 @@ export function compileClasses(dump, opts = {}) {
       });
       continue;
     }
-    if (classNode.extends) {
+    // A mailable extends Laravel's Mailable: the compiled class extends the
+    // kernel's base (the fluent surface + the payload).
+    const isMailable = info.kind === 'mailable';
+    if (classNode.extends && !isMailable) {
       errors.push({
         class: fqcn,
         message:
@@ -686,6 +698,15 @@ export function compileClasses(dump, opts = {}) {
     // through them).
     options.namespace = parsed.namespace || '';
     options.imports = parsed.imports instanceof Map ? parsed.imports : new Map();
+    // The class's own methods (a method call on $this is one of them) and the
+    // mailable flag (the fluent surface of Laravel's Mailable).
+    options.classMethods = new Set(
+      classMembers(classNode)
+        .filter((m) => m && m.kind === 'method' && !m.isStatic)
+        .map((m) => nodeName(m.name))
+        .filter(Boolean)
+    );
+    options.mailable = info.kind === 'mailable';
     const ctor = compileConstructor(fqcn, classNode, options);
     if (ctor.error) {
       errors.push({ class: fqcn, message: ctor.error, code: ctor.code });
@@ -720,7 +741,14 @@ export function compileClasses(dump, opts = {}) {
       continue;
     }
     meta[fqcn] = { file: info.file, methods: Object.keys(methods) };
-    entries.push({ fqcn, ctor: ctor.js, methods, deps: ctor.deps || [] });
+    entries.push({
+      fqcn,
+      ctor: ctor.js,
+      methods,
+      deps: ctor.deps || [],
+      // A mailable extends the kernel's Mailable base.
+      base: info.kind === 'mailable' ? 'mailable' : null,
+    });
   }
 
   // The circular service dependencies (A needs B that needs A): the edge
@@ -780,6 +808,7 @@ function emitRegistry(entries, listeners) {
   for (const e of entries) {
     lines.push('  ' + JSON.stringify(e.fqcn) + ': {');
     lines.push('    ctor: ' + e.ctor + ',');
+    if (e.base) lines.push('    base: ' + JSON.stringify(e.base) + ',');
     // The dependencies of the constructor: the edge hands them over (an app
     // service it builds, a framework service it adapts).
     lines.push('    deps: ' + JSON.stringify(e.deps || []) + ',');

@@ -47,8 +47,16 @@ const NEW_CLASSES = new Set([
 const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
 // The Mail facade methods that compile (the padanan is the mailer: log/noop/resend).
 // The methods that deliver are async at the edge — the compiled code awaits them.
+// The mailer's surface: the kernel's PendingMail implements to/cc/bcc/replyTo and
+// send() - the other methods (raw, html, queue, later) are NOT implemented, so
+// they must fail loud (a mail without its cc is a wrong answer).
 const MAIL_SYNC = new Set(['to', 'cc', 'bcc']);
-const MAIL_ASYNC = new Set(['send', 'sendNow', 'raw', 'html', 'queue', 'later']);
+// The Mailable's fluent surface (Laravel's Illuminate\Mail\Mailable): the
+// compiled mailable extends the kernel's base, so these methods exist there.
+const MAILABLE_METHODS = new Set([
+  'subject', 'view', 'with', 'from', 'to', 'cc', 'bcc', 'replyTo', 'text', 'html', 'build', 'envelope', 'content',
+]);
+const MAIL_ASYNC = new Set(['send']);
 function mkErr(code, message, loc, hint) {
   const e = new Error(message);
   e.lw = { code, message, line: loc?.start?.line ?? 0, column: loc?.start?.column ?? 0, hint: hint || '' };
@@ -907,8 +915,6 @@ const UNSUPPORTED_FACADES = {
   'Illuminate\\Support\\Facades\\Event': (m) =>
     'Event::' + m + '() is not supported — the compiled rung dispatches the event objects it compiled (the listeners ' +
     'are compiled too); a registration like this has no compiled counterpart, so it would be a silent no-op — ' + PORT_HINT,
-  Mail: (m) => 'Mail::' + m + '() is not supported — ' + MAILABLE_REASON + PORT_HINT,
-  'Illuminate\\Support\\Facades\\Mail': (m) => 'Mail::' + m + '() is not supported — ' + MAILABLE_REASON + PORT_HINT,
   Queue: (m) => queueRefusal(m),
   'Illuminate\\Support\\Facades\\Queue': (m) => queueRefusal(m),
 };
@@ -1401,8 +1407,9 @@ function txCall(node) {
       }
       throw mkErr(
         'LW002',
-        'Mail::' + meth + '() is not supported — allowed: ' +
-          [...MAIL_SYNC, ...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
+        'Mail::' + meth + '() is not supported — the compiled mailer sends a compiled mailable ' +
+          '(the kernel mailer implements to/cc/bcc and send(); raw, html, queue and later are not implemented, so a mail ' +
+          'would lose them) — allowed: ' + [...MAIL_SYNC, ...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
         node.loc,
         PORT_HINT
       );
@@ -1675,6 +1682,13 @@ function txCall(node) {
           node.loc,
           PORT_HINT
         );
+      } else if (CTX && CTX.classMethods && CTX.classMethods.has(meth)) {
+        // A method of the class being compiled (its own methods).
+        return expr;
+      } else if (CTX && CTX.mailable && MAILABLE_METHODS.has(meth)) {
+        // A mailable's fluent surface (Laravel's Mailable): subject(), view(),
+        // with(), from(), to(), cc(), bcc(), replyTo(), text(), html().
+        return expr;
       } else {
         throw mkErr(
           'LW002',
@@ -2242,6 +2256,10 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     classBlocked: opts.classBlocked instanceof Map ? opts.classBlocked : new Map(Object.entries(opts.classBlocked || {})),
     // Inside a compiled class method, `$this` is the instance.
     classMethod: !!opts.classMethod,
+    // The class's own methods (a method call on $this is one of them).
+    classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
+    // A mailable: the fluent surface of Laravel's Mailable.
+    mailable: !!opts.mailable,
     // The name `$this` compiles to (a constructor builds its own object).
     thisVar: opts.thisVar || null,
     // The model alias of each model variable (var -> alias/fqcn).

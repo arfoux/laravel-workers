@@ -407,7 +407,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | `Gate::any()` | ⛔ fails loud (`LW002`) | Only `allows()` and `denies()` compile. | M39 |
 | `Gate::define()` | ⛔ fails loud (`LW002`) | A closure is not compiled - the global Gate registrations stay a port. | M39 |
 | `Gate::before()` | ⛔ fails loud (`LW002`) | The global Gate callbacks are not compiled (the policies are). | M39 |
-| `Mail::to()->send()` | ⛔ fails loud (`LW002`) | A mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view and produce the very same payload - and the shadow harness would have to compare the mail payload byte for byte (it cannot today: the log format differs). **Not mapped yet** (a milestone of its own). | M39 |
+| `Mail::to()->send()` | ✅ compiles | A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The methods the kernel mailer does not implement (raw, html, queue, later) fail loud. | M57 |
 | `Queue::push()` | ⛔ fails loud (`LW002`) | The job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads (a port handler writes the row - the edge has no producer for it). The job class is not compiled either: the class compiler compiles the events, the listeners and the injected services - a job is none of them. In Laravel the job is queued (or run inline by the sync driver) and the route answers 200. | M39 |
 | `Storage::disk()` (the default disk) | ✅ compiles | The default disk is the compiled object store (the D1 blob store, or R2 when bound). | M39 |
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
@@ -463,7 +463,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | The `Image` facade | ⛔ fails loud (`LW002`) | The Image facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Lang` facade | ⛔ fails loud (`LW002`) | The Lang facade is not compiled at the edge (Laravel 13 lists 30 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Log` facade | ✅ compiles | The Log facade has a compiled surface (Laravel 13 lists 31 methods; the probe uses a method that compiles). | M49 |
-| The `Mail` facade | ⛔ fails loud (`LW002`) | The Mail facade is not compiled at the edge (Laravel 13 lists 56 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Mail` facade | ✅ compiles | The Mail facade is compiled: the kernel's mailer implements Laravel's PendingMail (to/cc/bcc/replyTo + send()), so the fluent form compiles. The methods it does not implement (raw, html, queue, later) fail loud - a mail that silently lost its cc would be a wrong answer. | M57 |
 | The `MaintenanceMode` facade | ⛔ fails loud (`LW002`) | The MaintenanceMode facade is not compiled at the edge (Laravel 13 lists 7 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Notification` facade | ⛔ fails loud (`LW002`) | The Notification facade is not compiled at the edge (Laravel 13 lists 34 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `ParallelTesting` facade | ⛔ fails loud (`LW002`) | The ParallelTesting facade is not compiled at the edge (Laravel 13 lists 16 methods): the build refuses it with that reason - a port handler answers it. | M49 |
@@ -486,7 +486,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | The `View` facade | ⛔ fails loud (`LW002`) | The View facade is not compiled at the edge (Laravel 13 lists 79 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Vite` facade | ⛔ fails loud (`LW002`) | The Vite facade is not compiled at the edge (Laravel 13 lists 32 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 
-**105 constructs: 38 compile, 64 fail loud, 3 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state. The Laravel 13 facades: **47 of 47 classified (5 compile, 42 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
+**105 constructs: 40 compile, 62 fail loud, 3 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state. The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
 
 <!-- construct-audit:end -->
 
@@ -507,7 +507,7 @@ or it **fails the build** - there is no third state (no silent degradation).
   `Storage::disk('<the default disk>')` compiles to the compiled object store
   (M39b) and the **event listeners** compile (M39c: the build compiles the class
   and the edge dispatches it). What is left needs the **class compiler** for the
-  mailables and the jobs: `Mail::to()->send()` — plus the constructs that need a
+  mailables and the jobs: `Mail::to()->send()` (the mailable compiles since M57) — plus the constructs that need a
   product, a store or a consumer the edge does not have: a **named disk** (its
   own bucket — R2 asks for a credit card), `Cache::tags()` (a taggable store) and
   `Queue::push(SomeJob::class)` (the job would never run at the edge: the
@@ -634,9 +634,14 @@ or it **fails the build** - there is no third state (no silent degradation).
     listener class and the edge dispatches it, synchronously, like Laravel). The
     event **name** form (`Event::dispatch('post.created')`) fails loud: without
     a class the edge cannot know which listener answers.
-  - `Mail::to()->send()` fails loud for its own reason: a mailable renders its
-    own Blade view, so the compiled rung would have to compile the mailable and
-    render that view — the payload could not be proven byte for byte.
+  - `Mail::to()->send()` **compiles** (M57): a mailable is a class, so the build
+    compiles it (the dump takes the app's `Mail` classes, the class compiler
+    emits the class and the kernel's `Mailable` base carries Laravel's fluent
+    surface — `subject()`, `view()`, `with()`, `from()`, `to()`, `cc()`) and the
+    mailer sends the payload Laravel sends: the recipients, the subject and
+    the rendered view (the mailable's data goes into the view). The methods the
+    kernel mailer does not implement (`raw`, `html`, `queue`, `later`) fail
+    loud — a mail that silently lost its `cc` would be a wrong answer.
   - `Queue::push(SomeJob::class)` fails loud for a different reason: the job
     would never run at the edge — the worker has no queue handler, so nothing
     consumes the queue binding, and the binding carries a JSON body, not a PHP

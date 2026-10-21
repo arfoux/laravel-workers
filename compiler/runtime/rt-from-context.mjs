@@ -4,6 +4,7 @@ import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
+import { Mailable } from '../../kernel/mailable.mjs';
 
 // env() -> the config key: the build-time config dump is the padanan for env()
 // at the edge (there is no .env there). Keep in sync with tools/config-dump.php.
@@ -576,7 +577,12 @@ export function buildRt(context, opts = {}) {
     } finally {
       resolving.delete(String(fqcn));
     }
-    const obj = entry.ctor(Array.isArray(args) ? args : [], deps);
+    // A mailable extends Laravel's Mailable: the compiled class gets the
+    // kernel's base (the fluent surface + the payload).
+    const built = entry.ctor(Array.isArray(args) ? args : [], deps);
+    const obj = entry.base === 'mailable' ? Object.assign(new Mailable(), built) : built;
+    // The runtime: a mailable renders its view through it (`__lwMail`).
+    Object.defineProperty(obj, '__rt', { value: rt, enumerable: false, configurable: true });
     // The class of the instance (the dispatch needs it) — not enumerable, so a
     // JSON answer does not show it.
     Object.defineProperty(obj, '__lwClass', { value: String(fqcn), enumerable: false });

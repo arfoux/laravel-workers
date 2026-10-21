@@ -58,7 +58,16 @@ $isAppClass = function (string $fqcn) use ($appRootReal): bool {
 // builtin one is a plain value; an untyped one Laravel resolves by name
 // (through the container) — the edge cannot.
 $ctorDump = function (string $fqcn) use ($app, $isAppClass): array {
-    $out = [];
+    // The mailables (app/Mail): the classes the build compiles, so the
+// `Mail::to($u)->send(new OrderMail())` call can be compiled (the mailable
+// renders its own view).
+foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
+    $fqcn = 'App\\Mail\\' . basename($mailFile, '.php');
+    if (!class_exists($fqcn)) continue;
+    $addClass($fqcn, 'mailable');
+}
+
+$out = [];
     try {
         $rc = new ReflectionClass($fqcn);
     } catch (Throwable $e) {

@@ -24,8 +24,11 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
     }
     throw new Error('mail(): the recipient is not an address (a string, an array of them, or a model with an email)');
   };
-  // Laravel's message: one address is a string, more are an array.
+  // Laravel's message: one address is a string, more are an array; no address
+  // at all is null.
   const flat = (list) => (list.length === 1 ? list[0].address : list.map((a) => a.address));
+  const oneOrMany = (list) => (list && list.length ? flat(list) : null);
+  const many = (list) => (list && list.length ? list.map((a) => a.address) : []);
 
   // The transport: the payload goes out (the log, the noop, the resend API).
   const deliver = async (payload) => {
@@ -62,62 +65,86 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
   };
 
   // The payload of a mailable (the compiled one) or of a plain object.
-  const payloadOf = (message) => {
-    if (message && typeof message.__lwMail === 'function') return message.__lwMail();
-    if (message && typeof message === 'object' && !Array.isArray(message)) return message;
-    throw new Error('mail(): the message is not a payload (a compiled Mailable or an object with to/subject/html)');
+  // Laravel's message shape: `to` is a string for one address and an array for
+  // more; `cc`/`bcc`/`replyTo` are always arrays.
+  const normalizeTo = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'string') return v;
+    if (!Array.isArray(v)) return null;
+    return v.length === 1 ? v[0].address : v.map((a) => (typeof a === 'string' ? a : a.address));
+  };
+  const normalizeMany = (v) => {
+    if (v === null || v === undefined) return [];
+    if (typeof v === 'string') return [v];
+    if (!Array.isArray(v)) return [];
+    return v.map((a) => (typeof a === 'string' ? a : a.address));
+  };
+  const payloadOf = async (message) => {
+    let base;
+    if (message && typeof message.__lwMail === 'function') base = await message.__lwMail();
+    else if (message && typeof message === 'object' && !Array.isArray(message)) base = message;
+    else throw new Error('mail(): the message is not a payload (a compiled Mailable or an object with to/subject/html)');
+    return {
+      ...base,
+      to: normalizeTo(base.to),
+      cc: normalizeMany(base.cc),
+      bcc: normalizeMany(base.bcc),
+      replyTo: normalizeMany(base.replyTo),
+    };
   };
 
   // Laravel's PendingMail: the recipients + the envelope, then send().
   const pending = () => {
+    // The values live in their own fields: the Laravel-named members are the
+    // fluent setters (so `p.to` is a function, not the list).
     const p = {
-      to: [],
-      cc: [],
-      bcc: [],
-      replyTo: [],
+      __to: [],
+      __cc: [],
+      __bcc: [],
+      __replyTo: [],
+      __subject: null,
+      __locale: null,
       from: null,
-      subject: null,
-      locale: null,
     };
     p.to = (value) => {
-      p.to = addresses(value);
+      p.__to = addresses(value);
       return p;
     };
     p.cc = (value) => {
-      p.cc = addresses(value);
+      p.__cc = addresses(value);
       return p;
     };
     p.bcc = (value) => {
-      p.bcc = addresses(value);
+      p.__bcc = addresses(value);
       return p;
     };
     p.replyTo = (value) => {
-      p.replyTo = addresses(value);
+      p.__replyTo = addresses(value);
       return p;
     };
     p.subject = (value) => {
-      p.subject = value;
+      p.__subject = value;
       return p;
     };
     p.locale = (value) => {
-      p.locale = value;
+      p.__locale = value;
       return p;
     };
     // The message: the pending recipients win over the mailable's own.
-    const build = (message) => {
-      const base = payloadOf(message);
+    const build = async (message) => {
+      const base = await payloadOf(message);
       return {
         from: p.from || base.from || defaultFrom || 'noreply@example.com',
-        to: p.to.length ? flat(p.to) : base.to === undefined ? null : base.to,
-        cc: p.cc.length ? flat(p.cc) : base.cc === undefined ? null : base.cc,
-        bcc: p.bcc.length ? flat(p.bcc) : base.bcc === undefined ? null : base.bcc,
-        replyTo: p.replyTo.length ? flat(p.replyTo) : base.replyTo === undefined ? null : base.replyTo,
-        subject: p.subject || base.subject || null,
+        to: p.__to.length ? oneOrMany(p.__to) : oneOrMany(base.to),
+        cc: p.__cc.length ? many(p.__cc) : many(base.cc),
+        bcc: p.__bcc.length ? many(p.__bcc) : many(base.bcc),
+        replyTo: p.__replyTo.length ? many(p.__replyTo) : many(base.replyTo),
+        subject: p.__subject || base.subject || null,
         html: base.html === undefined ? null : base.html,
         text: base.text === undefined ? null : base.text,
       };
     };
-    p.send = async (message) => deliver(build(message));
+    p.send = async (message) => deliver(await build(message));
     p.sendNow = p.send;
     // A queued mail: the edge pushes it to the queue, but nothing consumes
     // the queue (the worker has no queue consumer) — the mail would never go
@@ -138,28 +165,25 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
     // Laravel: Mail::to($user) — the recipients + the envelope, then send().
     to(address, name) {
       const p = pending();
-      if (name) p.to = [{ address: String(address), name }];
-      else p.to(address);
+      p.__to = name ? [{ address: String(address), name }] : addresses(address);
       return p;
     },
     cc(address, name) {
       const p = pending();
-      if (name) p.cc = [{ address: String(address), name }];
-      else p.cc(address);
+      p.__cc = name ? [{ address: String(address), name }] : addresses(address);
       return p;
     },
     bcc(address, name) {
       const p = pending();
-      if (name) p.bcc = [{ address: String(address), name }];
-      else p.bcc(address);
+      p.__bcc = name ? [{ address: String(address), name }] : addresses(address);
       return p;
     },
     // Laravel: Mail::send($mailable) — the mailable's own envelope.
     async send(message) {
-      return deliver(payloadOf(message));
+      return deliver(await payloadOf(message));
     },
     async sendNow(message) {
-      return deliver(payloadOf(message));
+      return deliver(await payloadOf(message));
     },
     // Laravel: Mail::raw($text, $callback) — the callback fills the message.
     async raw(text, callback) {

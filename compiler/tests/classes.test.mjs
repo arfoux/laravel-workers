@@ -563,6 +563,36 @@ class WithMailer
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(/);
 });
 
+test('classes: a mailable compiles (the Mailable base + the payload)', () => {
+  // The mailable extends Laravel's Mailable: the compiled class gets the
+  // kernel's base (the fluent surface + the payload the mailer sends).
+  const file = classFile('OrderMail', `<?php
+namespace App\\Mail;
+class OrderMail
+{
+    public function build(): self
+    {
+        $this->subject('Order shipped');
+        $this->view('mail.order');
+        $this->with(['id' => 7]);
+        return $this;
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {},
+      classes: { 'App\\Mail\\OrderMail': { file, kind: 'mailable' } },
+    },
+    { ...OPTIONS, classes: new Set(['App\\Mail\\OrderMail']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The registry says the class has the mailable base.
+  assert.match(res.code, /base: "mailable"/);
+  // The fluent setters and the payload method are the base's.
+  assert.match(res.code, /"build":/);
+});
+
 test('classes: a listener that uses a trait fails loud (the trait members are not compiled)', () => {
   const file = classFile('UsesTrait', `<?php
 namespace App\\Listeners;

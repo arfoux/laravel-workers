@@ -352,12 +352,18 @@
       "id": "mail_fluent",
       "label": "`Mail::to()->send()`",
       "php": "\\Illuminate\\Support\\Facades\\Mail::to('a@b.co')->send(new \\App\\Mail\\OrderMail());",
-      "expect": "fail",
-      "code": "LW002",
-      "note": "A mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view and produce the very same payload - and the shadow harness would have to compare the mail payload byte for byte (it cannot today: the log format differs). **Not mapped yet** (a milestone of its own).",
-      "batch": "M39",
-      "status": "todo",
-      "reason": "a mailable renders its own Blade view"
+      "expect": "ok",
+      "note": "A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The methods the kernel mailer does not implement (raw, html, queue, later) fail loud.",
+      "batch": "M57",
+      "status": "done",
+      "classes": {
+        "fqcns": [
+          "App\\Mail\\OrderMail"
+        ],
+        "aliases": {
+          "OrderMail": "App\\Mail\\OrderMail"
+        }
+      }
     },
     {
       "id": "queue_push",
@@ -1082,13 +1088,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\Mail"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\Mail::mailer();",
-      "expect": "fail",
-      "note": "The Mail facade is not compiled at the edge (Laravel 13 lists 56 methods): the build refuses it with that reason - a port handler answers it.",
-      "batch": "M49",
-      "status": "done",
-      "code": "LW002",
-      "reason": "Mail::mailer() is not supported"
+      "php": "        \\Illuminate\\Support\\Facades\\Mail::to('a@b.co');",
+      "expect": "ok",
+      "note": "The Mail facade is compiled: the kernel's mailer implements Laravel's PendingMail (to/cc/bcc/replyTo + send()), so the fluent form compiles. The methods it does not implement (raw, html, queue, later) fail loud - a mail that silently lost its cc would be a wrong answer.",
+      "batch": "M57",
+      "status": "done"
     },
     {
       "id": "facade_maintenancemode",
