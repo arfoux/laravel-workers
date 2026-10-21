@@ -633,9 +633,59 @@
       "php": null,
       "check": "build",
       "expect": "fail",
-      "note": "The FormRequest dump sees the overridden hook: \"prepareForValidation() is overridden - the compiled rung does not run it (the validated input would differ)\". The build stops and the reason reaches the operator.",
+      "note": "The FormRequest dump sees the overridden hook and refuses the class: \"LW003 prepareForValidation() is overridden - Laravel runs the hook before the validation (Illuminate/Validation/ValidatesWhenResolvedTrait.php:19), so the app can change the input that is validated; the compiled rung validates the dumped rules against the raw input and never runs it (the validated input would differ)\". The build stops and the reason reaches the operator.",
       "batch": "M43",
       "status": "todo"
+    },
+    {
+      "id": "form_request_with_validator",
+      "label": "A FormRequest that overrides `withValidator()`",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled rung validates the dumped rules against the raw input and never runs the hook - the dump refuses the class with that reason (LW003).",
+      "batch": "M61g",
+      "status": "done"
+    },
+    {
+      "id": "form_request_after",
+      "label": "A FormRequest that overrides `after()`",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "Laravel registers the hook's closure on the validator (`Foundation/Http/FormRequest.php:114`), so the callback runs after the rules pass and can add errors. The compiled rung runs no after-hook - the dump refuses the class with that reason (LW003).",
+      "batch": "M61g",
+      "status": "done"
+    },
+    {
+      "id": "form_request_validator",
+      "label": "A FormRequest that overrides `validator()`",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "Laravel asks the app for the validator instead of `createDefaultValidator()` (`Foundation/Http/FormRequest.php:104`), so the app builds its own. The compiled rung always uses the default validator - the dump refuses the class with that reason (LW003).",
+      "batch": "M61g",
+      "status": "done"
+    },
+    {
+      "id": "form_request_validation_data",
+      "label": "A FormRequest that overrides `validationData()`",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "Laravel validates what the hook returns (the default is `all()`; `Foundation/Http/FormRequest.php:197`), so the app chooses the data that is validated. The compiled rung validates the raw input - the dump refuses the class with that reason (LW003).",
+      "batch": "M61g",
+      "status": "done"
+    },
+    {
+      "id": "form_request_passed_validation",
+      "label": "A FormRequest that overrides `passedValidation()`",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "Laravel runs the hook at the end of `validateResolved()` (`Validation/ValidatesWhenResolvedTrait.php:35`) - the work that follows a successful validation. The compiled rung never runs it - the dump refuses the class with that reason (LW003).",
+      "batch": "M61g",
+      "status": "done"
     },
     {
       "id": "listener_service",
