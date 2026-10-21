@@ -427,8 +427,10 @@ test('Model refresh / increment', async () => {
   const m = new RelModel({ id: 1, name: 'Stale', score: 4 });
   await m.refresh(db);
   assert.equal(m.get('name'), 'Fresh');
-  const next = await m.increment(db, 'score', 2);
-  assert.equal(next, 7);
+  // Laravel's increment() answers the affected-row count (not the new value)
+  // and writes ONE atomic statement - it does not touch updated_at.
+  const changed = await m.increment(db, 'score', 2);
+  assert.equal(changed, 1);
   assert.equal(m.get('score'), 7);
 });
 

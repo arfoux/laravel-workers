@@ -96,7 +96,12 @@ export class Model {
   // (a frozen clock in the parity tests) so a write carries the same
   // `created_at`/`updated_at` as the PHP side.
   static clock = null;
-  static now = () => phpDateString(this.clock ? new Date(this.clock() * 1000) : new Date());
+  // A static METHOD, not an arrow field: an arrow would capture the base
+  // class, so the clock the kernel injects on the compiled model class (a
+  // subclass) was ignored and the timestamps carried the wall clock.
+  static now() {
+    return phpDateString(this.clock ? new Date(this.clock() * 1000) : new Date());
+  }
   // Declared relations, used by `with()` / `related()` (Laravel's `$with`):
   //   static relations = { comments: { type: 'hasMany', model: Comment } };
   static relations = {};
@@ -553,10 +558,26 @@ export class Model {
   }
 
   async increment(db, column, amount = 1) {
+    const ctor = this.constructor;
+    // Laravel's incrementOrDecrement() (Model.php:1134-1163): the in-memory
+    // attribute is bumped and ONE atomic statement writes it
+    // (`set counter = counter + N`) - the row's other columns, and
+    // updated_at, are NOT touched (the old save() rewrote the whole row and
+    // bumped the timestamp). The answer is the affected-row count, not the
+    // new value.
     const next = (Number(this.attributes[column]) || 0) + amount;
     this.attributes[column] = next;
-    await this.save(db);
-    return next;
+    let res;
+    if (!this.exists) {
+      // Laravel: a model that does not exist increments the whole table
+      // (`newQueryWithoutRelationships()->increment(...)`).
+      res = await ctor.query(db).increment(column, amount);
+    } else {
+      const pk = ctor.primaryKey;
+      res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).increment(column, amount);
+    }
+    this.syncOriginalAttributes([column]);
+    return res && typeof res.changes === 'number' ? res.changes : 0;
   }
 
   static async firstOrCreate(db, where = {}, extra = {}) {
