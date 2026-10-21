@@ -67,6 +67,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M52** The **elvis operator and ?? evaluate once** (2026-10-21) - the audit found two operators that ran a side effect Laravel never runs: the elvis emitted the test expression twice (`$i=1; $x = $i++ ?: 5` => PHP 2,1, the compiled side 3,2) and `??` evaluated both sides eagerly. Both follow PHP now. npm test **499/499**.
 - **M53** The **shadow proves the dispatch runs every listener** (2026-10-21) - the fixture app has two listeners on the same event now, so the answer carries both effects: the shadow proves that every listener ran (38/44 byte-identical, 0 unexplained).
 - **M54** The **class path** (2026-10-21) - a listener that uses a **trait**, one that **extends** a class and a class with a **magic accessor** compiled "OK" and were wrong at request time; all three fail loud now, and every class-path refusal carries a **code** like the controller path. npm test **502/502**.
+- **M56** The **continue in a switch + the increment** (2026-10-21) - a `continue` inside a switch continued the LOOP (PHP leaves the switch), an increment on a property was not a valid JS assignment target (a 500 at request time while the build said OK - it fails loud now) and the increment on a string answered NaN where PHP bumps the last byte ("a" -> "b", "z" -> "aa"). npm test **507/507**.
 
 ## Supported vs unsupported
 

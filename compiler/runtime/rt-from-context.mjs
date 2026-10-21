@@ -855,6 +855,72 @@ export function buildRt(context, opts = {}) {
     const v = test();
     return rt.truthy(v) ? v : other();
   };
+  // PHP 8's increment/decrement: a number grows, a numeric string becomes a
+  // number ("19"++ => 20, "19"-- => 18), an alnum string bumps its last byte
+  // ("a" -> "b", "z" -> "aa") - and a decrement on a non-numeric string has
+  // NO effect (PHP 8 deprecated it).
+  rt.inc = (v) => {
+    if (typeof v === 'number') return v + 1;
+    if (typeof v === 'boolean') return v ? 2 : 1;
+    if (v === null || v === undefined) return 1;
+    if (typeof v === 'string') {
+      if (isNumericStr(v)) return Number(v.trim()) + 1;
+      const chars = [...v];
+      const last = chars[chars.length - 1];
+      const isDigit = last >= '0' && last <= '9';
+      const isLower = last >= 'a' && last <= 'z';
+      const isUpper = last >= 'A' && last <= 'Z';
+      if (!isDigit && !isLower && !isUpper) return v;
+      if (isDigit) {
+        if (last === '9') {
+          let carry = true;
+          const out = [...v];
+          for (let i = out.length - 1; i >= 0 && carry; i--) {
+            const c = out[i];
+            if (c >= '0' && c <= '8') { out[i] = String(Number(c) + 1); carry = false; }
+            else if (c === '9') { out[i] = '0'; }
+            else { return v; }
+          }
+          return (carry ? '1' : '') + out.join('');
+        }
+        chars[chars.length - 1] = String(Number(last) + 1);
+        return chars.join('');
+      }
+      if (isLower) {
+        if (last === 'z') {
+          let i = chars.length - 1;
+          while (i >= 0 && chars[i] === 'z') { chars[i] = 'a'; i--; }
+          if (i < 0) return 'a'.repeat(chars.length + 1);
+          chars[i] = String.fromCharCode(chars[i].charCodeAt(0) + 1);
+          return chars.join('');
+        }
+        chars[chars.length - 1] = String.fromCharCode(last.charCodeAt(0) + 1);
+        return chars.join('');
+      }
+      if (last === 'Z') {
+        let i = chars.length - 1;
+        while (i >= 0 && chars[i] === 'Z') { chars[i] = 'A'; i--; }
+        if (i < 0) return 'A'.repeat(chars.length + 1);
+        chars[i] = String.fromCharCode(chars[i].charCodeAt(0) + 1);
+        return chars.join('');
+      }
+      chars[chars.length - 1] = String.fromCharCode(last.charCodeAt(0) + 1);
+      return chars.join('');
+    }
+    return v;
+  };
+  rt.dec = (v) => {
+    if (typeof v === 'number') return v - 1;
+    if (typeof v === 'boolean') return v ? 0 : -1;
+    if (v === null || v === undefined) return -1;
+    if (typeof v === 'string') {
+      // A numeric string becomes a number ("19"-- => 18); a non-numeric one
+      // has NO effect (PHP 8 deprecated the decrement on it).
+      if (isNumericStr(v)) return Number(v.trim()) - 1;
+      return v;
+    }
+    return v;
+  };
   rt.truthy = (v) => {
     if (v === null || v === undefined) return false;
     if (typeof v === 'boolean') return v;

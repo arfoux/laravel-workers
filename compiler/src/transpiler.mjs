@@ -236,13 +236,22 @@ function tx(node) {
       if (t === '+') return '(+' + tx(expr) + ')';
       throw mkErr('LW002', 'unsupported unary ' + t, node.loc);
     }
-    case 'post': {
-      const op = node.type === '+' ? '++' : '--';
-      return tx(node.what) + op;
-    }
+    case 'post':
     case 'pre': {
       const op = node.type === '+' ? '++' : '--';
-      return op + tx(node.what);
+      // An increment on a property (`$post->views++`) is not a valid JS
+      // assignment target - it would throw a ReferenceError at request time
+      // (the build stays green, the route 500s).
+      if (node.what && node.what.kind === 'propertylookup') {
+        throw mkErr(
+          'LW002',
+          'an increment on a property (' + tx(node.what) + ') is not compiled — PHP increments the attribute, and the ' +
+            'compiled side would throw at request time — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return node.kind === 'post' ? tx(node.what) + op : op + tx(node.what);
     }
     case 'retif': {
       // The elvis operator (`$a ?: $b`): the test is evaluated ONCE (PHP
@@ -1945,10 +1954,20 @@ function walkStatement(node, lines, indent, ctx) {
     case 'block':
       walkChildren(node.children || [], lines, indent, ctx);
       break;
-    case 'expressionstatement':
-      if (node.expression && node.expression.kind === 'assign') lines.push(indent + txAssignStatement(node.expression));
-      else lines.push(indent + tx(node.expression || node) + ';');
+    case 'expressionstatement': {
+      const expr = node.expression || node;
+      // The increment as a statement: PHP's `++` on a string bumps the last
+      // byte ("a" -> "b", "z" -> "aa") - a plain JS `++` would answer NaN.
+      if (expr && (expr.kind === 'post' || expr.kind === 'pre') && expr.what && expr.what.kind === 'variable') {
+        const target = tx(expr.what);
+        const helper = expr.type === '+' ? 'rt.inc' : 'rt.dec';
+        lines.push(indent + target + ' = ' + helper + '(' + target + ');');
+        break;
+      }
+      if (expr && expr.kind === 'assign') lines.push(indent + txAssignStatement(expr));
+      else lines.push(indent + tx(expr) + ';');
       break;
+    }
     case 'if':
       lines.push(indent + 'if (rt.truthy(' + tx(node.test) + ')) {');
       walkChildren(childStatements(node.body), lines, indent + '  ', ctx);
@@ -2054,7 +2073,7 @@ function walkStatement(node, lines, indent, ctx) {
       for (const c of realCases) {
         lines.push(indent + '  if (rt.looseEq(' + label + '_v, ' + tx(c.test) + ')) ' + label + '_hit = true;');
       }
-      const inner = { ...(ctx || {}), breakLabel: label };
+      const inner = { ...(ctx || {}), breakLabel: label, switchLabel: label };
       for (const c of cases) {
         if (c.kind !== 'case') continue;
         const cond = c.test ? 'rt.looseEq(' + label + '_v, ' + tx(c.test) + ')' : ('!' + label + '_hit');
@@ -2071,6 +2090,13 @@ function walkStatement(node, lines, indent, ctx) {
       else lines.push(indent + 'break;');
       break;
     case 'continue':
+      // PHP 8: a `continue` inside a switch is a warning and behaves like a
+      // `break` (it leaves the switch, the loop continues) - a bare JS
+      // `continue` would continue the LOOP and skip the rest of the switch.
+      if (ctx && ctx.switchLabel) {
+        lines.push(indent + 'break ' + ctx.switchLabel + ';');
+        break;
+      }
       lines.push(indent + 'continue;');
       break;
     case 'return':
