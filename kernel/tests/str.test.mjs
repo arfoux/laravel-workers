@@ -42,3 +42,42 @@ test('Str: the values match PHP 8.3 / Laravel 13.37', () => {
   assert.equal(str.ucwords('hello world'), 'Hello World');
   assert.equal(str.ascii('H\u00e9llo W\u00f6rld'), 'Hello World');
 });
+
+test('Str: the family answers like Laravel 13.37 (the probed values)', () => {
+  // title: mb_convert_case(MB_CASE_TITLE) - a word is a run of CASED letters;
+  // a case-ignorable character does not end it ('a.b' -> 'A.b'), any other
+  // character does ('a1b2' -> 'A1B2').
+  assert.equal(str.title('hello-world'), 'Hello-World');
+  assert.equal(str.title('HELLO WORLD'), 'Hello World');
+  assert.equal(str.title('a1b2'), 'A1B2');
+  assert.equal(str.title('hello.world'), 'Hello.world');
+  assert.equal(str.title("o'brien"), "O'brien");
+  assert.equal(str.title('\u00fcn\u00efcode stra\u00dfe'), '\u00dcn\u00efcode Stra\u00dfe');
+  assert.equal(str.title('\u01c6ungla'), '\u01c5ungla');
+  assert.equal(str.title('\u00df'), 'Ss');
+  // ucwords: only a LOWERCASE letter right after a separator is uppercased.
+  assert.equal(str.ucwords('foo_bar'), 'Foo_bar');
+  assert.equal(str.ucwords('\u00e9cole'), '\u00c9cole');
+  assert.equal(str.ucwords('HELLO WORLD'), 'HELLO WORLD');
+  assert.equal(str.ucwords('hello-world'), 'Hello-world');
+  // snake / kebab: ctype_lower is true only for a lowercase ASCII string.
+  assert.equal(str.snake('hello world'), 'hello_world');
+  assert.equal(str.snake('HELLO WORLD'), 'h_e_l_l_o_w_o_r_l_d');
+  assert.equal(str.snake('hello-world'), 'hello-world');
+  assert.equal(str.kebab('HelloWorld'), 'hello-world');
+  // slug: Laravel's dictionary ('@' -> 'at').
+  assert.equal(str.slug('a@b'), 'a-at-b');
+  assert.equal(str.slug('a@b c'), 'a-at-b-c');
+  // contains / startsWith / endsWith: an empty needle is false.
+  assert.equal(str.contains('hello', ''), false);
+  assert.equal(str.startsWith('hello', ''), false);
+  assert.equal(str.endsWith('hello', ''), false);
+  // limit: the limit is a DISPLAY width (a CJK glyph is two columns).
+  assert.equal(str.limit('\u65e5\u672c\u8a9e\u30c6\u30ad\u30b9\u30c8', 10), '\u65e5\u672c\u8a9e\u30c6\u30ad...');
+  assert.equal(str.limit('\u65e5\u672c\u8a9e\u30c6\u30ad\u30b9\u30c8', 4), '\u65e5\u672c...');
+  // ucfirst / camel: mb_ucfirst / mb_lcfirst (the first CHARACTER).
+  assert.equal(str.ucfirst('\u01c6ungla'), '\u01c5ungla');
+  assert.equal(str.ucfirst('\u00df'), 'Ss');
+  assert.equal(str.camel('\u00e9t\u00e9'), '\u00e9t\u00e9');
+  assert.equal(str.camel('\u00df'), 'ss');
+});
