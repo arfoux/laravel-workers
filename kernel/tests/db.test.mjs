@@ -981,3 +981,17 @@ test('the model JSON serialises the date attributes like Carbon (ISO-8601)', () 
   assert.equal(json.published_at, '2024-01-03T00:00:00.000000Z');
   assert.equal(json.title, 'A');
 });
+
+test('the model flags a fresh insert (Laravel\'s wasRecentlyCreated)', async () => {
+  // Laravel sets $wasRecentlyCreated in the insert paths (performInsert /
+  // insertAndSetId), so a controller that returns a model it just saved
+  // answers 201 (Router::toResponse).
+  const db = mockDb({ run: () => ({ success: true, meta: { changes: 1, last_row_id: 7 } }) });
+  const fresh = new RelModel({ title: 'A' });
+  assert.equal(fresh.wasRecentlyCreated, false);
+  await fresh.save(db);
+  assert.equal(fresh.wasRecentlyCreated, true);
+  const existing = new RelModel({ id: 1, title: 'A' });
+  await existing.save(db);
+  assert.equal(existing.wasRecentlyCreated, false, 'an update is not a fresh insert');
+});

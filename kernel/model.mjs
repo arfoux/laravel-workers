@@ -182,6 +182,9 @@ export class Model {
   // The clock the model timestamps use. The kernel injects the request clock
   // (a frozen clock in the parity tests) so a write carries the same
   // `created_at`/`updated_at` as the PHP side.
+  // Laravel's `$wasRecentlyCreated` (Model.php:143): the model was created by
+  // this instance, so a controller that returns it answers 201.
+  wasRecentlyCreated = false;
   static clock = null;
   // A static METHOD, not an arrow field: an arrow would capture the base
   // class, so the clock the kernel injects on the compiled model class (a
@@ -341,7 +344,12 @@ export class Model {
       // Laravel serialises the date attributes through Carbon::toJSON().
       out[key] = isDateAttribute(ctor, key) ? isoDateString(value) : value;
     }
-    for (const key of ctor.appends || []) out[key] = this.get(key);
+    for (const key of ctor.appends || []) {
+      // Laravel's attributesToArray() runs the appended attributes through
+      // mutateAttributeForArray() too - the date serialisation included.
+      const value = this.get(key);
+      out[key] = isDateAttribute(ctor, key) ? isoDateString(value) : value;
+    }
     for (const key of Object.keys(this._relations || {})) {
       const rel = this._relations[key];
       if (Array.isArray(rel)) out[key] = rel.map((r) => (r && r.toJSON ? r.toJSON() : r));
@@ -450,9 +458,6 @@ export class Model {
     const instance = new this();
     instance.fill(attributes);
     await instance.save(db);
-    // Laravel's `wasRecentlyCreated` (Model.php:1893): the model was created
-    // by this call, so a controller that returns it answers 201.
-    instance.wasRecentlyCreated = true;
     return instance;
   }
 
@@ -499,6 +504,10 @@ export class Model {
       const { lastInsertRowid } = await ctor.withTrashed(db).insert(data);
       if (lastInsertRowid != null) this.attributes[ctor.primaryKey] = lastInsertRowid;
       this.exists = true;
+      // Laravel sets the flag in the insert paths (performInsert /
+      // insertAndSetId, Model.php:1649/1700), so `new Post; $post->save();` is
+      // a 201 too.
+      this.wasRecentlyCreated = true;
       this._dirty.clear();
       // Eloquent's `finishSave()` syncs the original after a successful write
       // (`Model.php:1512`), so the model is clean again.
