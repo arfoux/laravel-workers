@@ -442,4 +442,26 @@ test('storage temporaryUrl missing secret throws', async () => {
   await assert.rejects(() => s.temporaryUrl('k', 1000), Error);
 });
 
-
+test('scheduler: the cron expressions answer like the cron library', () => {
+  // Probed against dragonmantank/cron-expression (the library Laravel uses):
+  // the day-of-month and the day-of-week are ORed when both are restricted,
+  // '?' is "no specific value", 'L' is the last day of the month, '<dow>L' is
+  // the last <weekday> of the month and '<dow>#<n>' is the n-th <weekday>.
+  const m = (expr, date) => defineSchedule(() => {})._match(new Date(date + 'T00:00:00Z'), expr);
+  // '0 0 1 * 1' fires on the 1st AND on every Monday (2026-10-01 is a
+  // Thursday, 2026-10-05 a Monday).
+  assert.equal(m('0 0 1 * 1', '2026-10-01'), true);
+  assert.equal(m('0 0 1 * 1', '2026-10-05'), true);
+  assert.equal(m('0 0 1 * 1', '2026-10-06'), false);
+  // 'L' is the last day of the month.
+  assert.equal(m('0 0 L * *', '2026-10-31'), true);
+  assert.equal(m('0 0 L * *', '2026-10-30'), false);
+  // '5L' is the last Friday (2026-10-30), '5#2' the second one (2026-10-09).
+  assert.equal(m('0 0 * * 5L', '2026-10-30'), true);
+  assert.equal(m('0 0 * * 5L', '2026-10-23'), false);
+  assert.equal(m('0 0 * * 5#2', '2026-10-09'), true);
+  assert.equal(m('0 0 * * 5#2', '2026-10-02'), false);
+  // '?' is "no specific value": the day-of-week decides.
+  assert.equal(m('0 0 ? * 1', '2026-10-05'), true);
+  assert.equal(m('0 0 ? * 1', '2026-10-06'), false);
+});
