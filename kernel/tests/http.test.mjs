@@ -1147,3 +1147,32 @@ test('request: the method override follows Symfony (the header wins, A-Z only)',
     /Invalid HTTP method override/,
   );
 });
+
+test('request: merge() follows Laravel (the input source, replace not deep merge)', () => {
+  // Laravel's Request::merge() (Request.php:389-401), probed:
+  //   the new input goes into the request's INPUT SOURCE (the JSON bag, the
+  //   query bag for GET/HEAD, the post bag otherwise);
+  //   every key REPLACES the value (it is NOT a deep merge: the old sub-keys
+  //   are gone) and the dot notation is honoured (Arr::set);
+  //   the other keys are kept.
+  const req = buildRequest({
+    method: 'POST',
+    url: 'http://localhost/x?keep=1',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'a=1&nested[x]=1&nested[y]=2',
+  });
+  req.merge({ a: '2', nested: { y: '9' }, b: '3', deep: { k: 'v' } });
+  assert.equal(req.input('a'), '2', 'the key is replaced');
+  assert.deepEqual(req.input('nested'), { y: '9' }, 'the value is replaced, not deep-merged');
+  assert.equal(req.input('b'), '3', 'a new key is added');
+  assert.deepEqual(req.input('deep'), { k: 'v' });
+  // The input Laravel reads is the input source UNION the query bag
+  // (InteractsWithInput::input(): `$this->getInputSource()->all() +
+  // $this->query->all()`) - the source's keys win.
+  assert.equal(req.query('keep'), '1', 'the query bag is untouched');
+  assert.equal(req.input('keep'), '1', 'the query bag is part of the input');
+  // A GET merges into the query bag.
+  const get = buildRequest({ method: 'GET', url: 'http://localhost/x?q=1' });
+  get.merge({ q: '2' });
+  assert.equal(get.input('q'), '2');
+});

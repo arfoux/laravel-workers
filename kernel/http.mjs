@@ -554,6 +554,22 @@ export function buildRequest(raw, options = {}) {
     || String(headers.get('x-forwarded-for') || '').split(',')[0].trim()
     || '127.0.0.1';
 
+  // Illuminate\Support\Arr::set: the dot notation sets a NESTED value and
+  // replaces it (a deep merge would keep the old sub-keys).
+  const dataSet = (target, path, value) => {
+    const keys = String(path).split('.');
+    let cur = target;
+    for (let i = 0; i < keys.length - 1; i++) {
+      const key = keys[i];
+      if (cur[key] === null || typeof cur[key] !== 'object' || Array.isArray(cur[key])) {
+        cur[key] = {};
+      }
+      cur = cur[key];
+    }
+    cur[keys[keys.length - 1]] = value;
+    return target;
+  };
+
   const inputSource = () => {
     if (isJson && json !== null) return json;
     if (rawMethod === 'GET' || rawMethod === 'HEAD') return query;
@@ -581,6 +597,10 @@ export function buildRequest(raw, options = {}) {
 
   // InteractsWithData support (see phpKeyList/phpFilterVarBoolean above).
   const inputSourceSafe = () => inputSource();
+  // Illuminate\Http\Concerns\InteractsWithInput::input(): the input source
+  // UNION the query bag (`$this->getInputSource()->all() + $this->query->all()`)
+  // - the source's keys win (the `+` keeps the left operand's keys).
+  const inputUnion = () => Object.assign({}, query, inputSource());
   const inputHas = (key) => dataGet(inputSourceSafe(), key, ARR_MISSING) !== ARR_MISSING;
   const inputMissing = (key) => dataGet(inputSourceSafe(), key, ARR_MISSING) === ARR_MISSING;
   const isEmptyString = (key) => {
@@ -689,9 +709,20 @@ export function buildRequest(raw, options = {}) {
       return Object.prototype.hasOwnProperty.call(cookies, name) && cookies[name] !== null;
     },
     input(key = null, def = null) {
+      const union = inputUnion();
+      if (key === null) return union;
+      return dataGet(union, key, def);
+    },
+    // Illuminate\Http\Request::merge() (Request.php:389-401): the new input
+    // goes into the request's INPUT SOURCE (the JSON bag, the query bag for
+    // GET/HEAD, the post bag otherwise). Every key REPLACES the value (it is
+    // not a deep merge) and the dot notation is honoured (Arr::set).
+    merge(input) {
       const source = inputSource();
-      if (key === null) return source;
-      return dataGet(source, key, def);
+      for (const [key, value] of Object.entries(input || {})) {
+        dataSet(source, key, value);
+      }
+      return request;
     },
     query(key = null, def = null) {
       if (key === null) return query;
@@ -762,10 +793,10 @@ export function buildRequest(raw, options = {}) {
       return u && typeof u.getAuthIdentifier === 'function' ? u.getAuthIdentifier() : null;
     },
     all() {
-      // Illuminate\Http\Request::all(): the input + the uploaded files (the
-      // input wins on a key that is in both).
+      // Illuminate\Http\Request::all(): the input (the source UNION the query
+      // bag) + the uploaded files (the input wins on a key that is in both).
       const out = Object.assign({}, fileObjects());
-      return Object.assign(out, inputSource());
+      return Object.assign(out, inputUnion());
     },
     // --- InteractsWithData (Illuminate\Support\Traits\InteractsWithData) ----
     // `has`/`all` above predate this block; the accessors below mirror the trait
