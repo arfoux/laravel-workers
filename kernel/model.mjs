@@ -443,10 +443,24 @@ export class Model {
   }
 
   static find(db, id) {
+    // Laravel's find() (Eloquent/Builder.php:607-616): an array of ids
+    // returns a COLLECTION of the found models (findMany) - the edge bound the
+    // array as ONE value (a broken query that matched nothing).
+    if (Array.isArray(id)) {
+      return this.query(db).whereIn(this.primaryKey, id).get();
+    }
     return this.query(db).where(this.primaryKey, id).first();
   }
 
   static async findOrFail(db, id) {
+    if (Array.isArray(id)) {
+      const found = await this.find(db, id);
+      // Every id must exist (Laravel names the missing ones).
+      const ids = (found || []).map((m) => m.get(this.primaryKey));
+      const missing = id.filter((i) => !ids.includes(i));
+      if (missing.length) throw new Error(this.name + ' not found: ' + missing.join(', '));
+      return found;
+    }
     const found = await this.find(db, id);
     if (!found) throw new Error(this.name + ' not found: ' + id);
     return found;

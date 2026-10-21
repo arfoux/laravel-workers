@@ -112,6 +112,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **A58e** **A Date is bound with the grammar's date format** (2026-10-21) - Laravel binds a DateTimeInterface as `Y-m-d H:i:s`; the edge bound an ISO string, so `where('created_at', $date)` never matched the stored column.
 - **A58f** **The multipart delimiter needs its CRLF** (2026-10-21) - PHP's parser looks for CRLF + `--boundary`; the edge looked for the bare bytes, so a file whose content contains the boundary truncated the upload.
 - **A58g** **`response()->json($model)` answers the model's JSON** (2026-10-21) - Laravel's Model is JsonSerializable, so json_encode answers its toArray(); the edge threw "unsupported value (Model)" and answered a 500.
+- **A58h** **`find([1, 2])` returns the collection** (2026-10-21) - Laravel's find() with an array of ids returns a collection of the found models; the edge bound the array as one value, so the query matched nothing.
 
 ## Supported vs unsupported
 

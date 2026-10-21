@@ -1051,3 +1051,18 @@ test('a Date is bound with the grammar date format (Laravel: Y-m-d H:i:s)', asyn
   await table(db, 'posts').where('created_at', new Date('2024-01-02T03:04:05Z')).get();
   assert.deepEqual(calls[0].params, ['2024-01-02 03:04:05']);
 });
+
+test('find() with an array of ids returns the rows (Laravel: findMany)', async () => {
+  // Laravel's find() (Eloquent/Builder.php:607-616): an array of ids returns a
+  // COLLECTION of the found models; the edge bound the array as ONE value (a
+  // query that matched nothing).
+  const db = mockDb({ all: () => ({ results: [{ id: 1 }, { id: 3 }] }) });
+  class M extends Model {}
+  M.table = 'posts';
+  M.primaryKey = 'id';
+  const found = await M.find(db, [1, 3]);
+  assert.equal(Array.isArray(found), true, 'an array of ids returns a list');
+  assert.deepEqual(found.map((m) => m.get('id')), [1, 3]);
+  // findOrFail with an array names the missing ids.
+  await assert.rejects(() => M.findOrFail(db, [1, 9]), /not found: 9/);
+});
