@@ -231,12 +231,12 @@ const FIXTURE_BODIES = {
 `,
 };
 
-// The hooks the compiled rung does not run: the hook, the class that declares
-// it and the line of Laravel 13 that runs it.
-const HOOKS = [
+// The hooks the compiled lifecycle RUNS: the hook, the class that declares it
+// and the line of Laravel 13 that runs it. The dump REPORTS them (the build
+// compiles the FormRequest class, the runtime runs the hooks in this order).
+const RUN_HOOKS = [
   { hook: 'withValidator', cls: 'WithValidatorRequest', laravel: 'Illuminate/Foundation/Http/FormRequest.php:110' },
   { hook: 'after', cls: 'AfterRequest', laravel: 'Illuminate/Foundation/Http/FormRequest.php:114' },
-  { hook: 'validator', cls: 'ValidatorRequest', laravel: 'Illuminate/Foundation/Http/FormRequest.php:104' },
   { hook: 'validationData', cls: 'ValidationDataRequest', laravel: 'Illuminate/Foundation/Http/FormRequest.php:197' },
   {
     hook: 'passedValidation',
@@ -244,6 +244,15 @@ const HOOKS = [
     laravel: 'Illuminate/Validation/ValidatesWhenResolvedTrait.php:35',
   },
 ];
+
+// The hook the compiled rung does NOT run: the app's OWN validator (its
+// factory, its extensions). The edge has one validator factory (the kernel's),
+// so that class is refused.
+const REFUSED_HOOK = {
+  hook: 'validator',
+  cls: 'ValidatorRequest',
+  laravel: 'Illuminate/Foundation/Http/FormRequest.php:104',
+};
 
 const NS = APP ? rootNamespace(APP) : 'App\\';
 const FIXTURE_DIR = APP ? path.join(APP, 'app', 'LwDumpFixtures') : null;
@@ -290,26 +299,37 @@ function runDump(fqcns) {
 
 const fqcnOf = (cls) => `${NS}LwDumpFixtures\\${cls}`;
 
-test('the dump refuses every FormRequest hook the compiled rung does not run', { skip }, () => {
-  const entries = runDump([...HOOKS.map((h) => fqcnOf(h.cls)), fqcnOf('PlainRequest')]);
+test('the dump REPORTS the hooks the compiled lifecycle runs', { skip }, () => {
+  const entries = runDump(RUN_HOOKS.map((h) => fqcnOf(h.cls)));
 
-  for (const h of HOOKS) {
+  for (const h of RUN_HOOKS) {
     const entry = entries.get(fqcnOf(h.cls));
     assert.ok(entry, `the dump answered for ${h.cls}`);
-    assert.equal(typeof entry.error, 'string', `${h.cls}: the dump must refuse the class`);
-    // The reason says what Laravel does with the hook, what the edge does
-    // instead, and the path that works.
-    assert.match(entry.error, new RegExp(`^LW003 ${h.hook}\\(\\) is overridden`), `${h.cls}: the reason names the hook`);
-    assert.ok(entry.error.includes(h.laravel), `${h.cls}: the reason cites ${h.laravel}`);
-    assert.match(
-      entry.error,
-      /the compiled rung validates the dumped rules against the raw input and never runs it/,
-      `${h.cls}: the reason says what the edge does instead`
-    );
-    assert.match(entry.error, /the working path: /, `${h.cls}: the reason names the path that works`);
-    // The refusal is the whole answer: no rules are handed to the compiler.
-    assert.deepEqual(entry.rules, [], `${h.cls}: a refused class carries no rules`);
+    assert.equal(entry.error, null, `${h.cls}: the hook is compiled, not refused`);
+    // The hook is in the list the runtime runs (Laravel's order lives in
+    // compiler/runtime/rt-from-context.mjs:rt.formRequest).
+    assert.ok(entry.hooks.includes(h.hook), `${h.cls}: the dump reports ${h.hook}() (${h.laravel})`);
+    // The rules still reach the compiler: the class validates.
+    assert.ok(Object.keys(entry.rules).length > 0, `${h.cls}: the class still carries its rules`);
   }
+});
+
+test("the dump REFUSES the app's own validator() hook (the edge has one factory)", { skip }, () => {
+  // Illuminate/Foundation/Http/FormRequest.php:104 - Laravel asks the app for
+  // the validator instead of building the default one, so the app's factory
+  // (its extensions, its custom rules) is what validates. The edge has no
+  // second factory: it would answer with the default validator.
+  const entries = runDump([fqcnOf(REFUSED_HOOK.cls)]);
+  const entry = entries.get(fqcnOf(REFUSED_HOOK.cls));
+  assert.ok(entry, `the dump answered for ${REFUSED_HOOK.cls}`);
+  assert.equal(typeof entry.error, 'string', 'the dump must refuse the class');
+  // The reason says what Laravel does with the hook, what the edge does
+  // instead, and the path that works.
+  assert.match(entry.error, /^LW003 validator\(\) is overridden/, 'the reason names the hook');
+  assert.ok(entry.error.includes(REFUSED_HOOK.laravel), `the reason cites ${REFUSED_HOOK.laravel}`);
+  assert.match(entry.error, /the working path: /, 'the reason names the path that works');
+  // The refusal is the whole answer: no rules are handed to the compiler.
+  assert.deepEqual(entry.rules, [], 'a refused class carries no rules');
 });
 
 test('the dump REPORTS an overridden prepareForValidation() (the hook is compiled now)', { skip }, () => {
@@ -320,7 +340,10 @@ test('the dump REPORTS an overridden prepareForValidation() (the hook is compile
   const entry = entries.get(fqcnOf('PrepareRequest'));
   assert.ok(entry, 'the dump answered for PrepareRequest');
   assert.equal(entry.error, null, 'the hook is compiled, not refused');
-  assert.deepEqual(entry.hooks, ['prepareForValidation'], 'the dump reports the hook');
+  // The fixture declares authorize() too: the runtime calls it as well
+  // (Laravel's order - ValidatesWhenResolvedTrait::validateResolved), and its
+  // false is the 403.
+  assert.deepEqual(entry.hooks, ['prepareForValidation', 'authorize'], 'the dump reports the hooks');
 });
 
 test('the dump normalizes a rule object to Laravel\'s string form', { skip }, () => {
@@ -359,11 +382,11 @@ test('the refusal reaches the operator (the build prints the dump error)', { ski
   // (build.mjs: `formRequestError = dumped.error ? "$<param> (<type>): " +
   // dumped.error : ...` and then `controller <route>: skipped - <reason>`),
   // so the fail-loud code and the reason travel together.
-  const entries = runDump([fqcnOf('AfterRequest')]);
-  const error = entries.get(fqcnOf('AfterRequest')).error;
-  const line = `  controller POST /posts: skipped — $request (${NS}LwDumpFixtures\\AfterRequest): ${error}`;
+  const entries = runDump([fqcnOf('ValidatorRequest')]);
+  const error = entries.get(fqcnOf('ValidatorRequest')).error;
+  const line = `  controller POST /posts: skipped — $request (${NS}LwDumpFixtures\\ValidatorRequest): ${error}`;
   assert.match(line, /skipped/);
-  assert.match(line, /LW003 after\(\) is overridden/);
-  assert.match(line, /Illuminate\/Foundation\/Http\/FormRequest\.php:114/);
+  assert.match(line, /LW003 validator\(\) is overridden/);
+  assert.match(line, /Illuminate\/Foundation\/Http\/FormRequest\.php:104/);
   assert.match(line, /the working path: /);
 });

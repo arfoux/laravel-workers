@@ -724,8 +724,12 @@ test('emit: a FormRequest parameter is injected and validated before the body', 
     },
   });
   assert.equal(res.errors.length, 0);
-  // The rules are compiled in and the request is validated before the body.
-  assert.match(res.code, /await rt\.request\(\)\.validate\(\{"title":\["required","string"\]\}/);
+  // The rules are compiled in and the runtime runs Laravel's lifecycle on the
+  // compiled FormRequest class before the body.
+  assert.match(
+    res.code,
+    /await rt\.formRequest\("App\\\\Http\\\\Requests\\\\StorePostRequest", \{ rules: \{"title":\["required","string"\]\}/
+  );
   assert.match(res.code, /let v_request = rt\.request\(\);/);
   assert.match(res.code, /v_request\.validated\(\)/);
 });

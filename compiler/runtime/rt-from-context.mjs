@@ -1,5 +1,6 @@
 // compiler/runtime/rt-from-context.mjs — Runtime helpers (context → rt)
 import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } from '../../kernel/validation.mjs';
+import { Validator } from '../../kernel/validator.mjs';
 import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
@@ -331,6 +332,79 @@ export function buildRt(context, opts = {}) {
   };
   rt.request = () => (liveRequest || noHttp('request'));
   rt.session = () => (liveSession || noHttp('session'));
+  // The app's validation messages (the app's own lang file wins over the
+  // framework's copy, exactly like Laravel's translator - the same helper the
+  // request's validate() uses, kernel/http.mjs:validationMessagesOf).
+  const defaultValidationMessages = () => {
+    const locale = String(configCtx['app.locale'] || 'en');
+    const base = translations.en && translations.en.validation;
+    const local = translations[locale] && translations[locale].validation;
+    if (!base && !local) return null;
+    return Object.assign({}, base || {}, local || {});
+  };
+  // The FormRequest lifecycle (Illuminate/Validation/ValidatesWhenResolvedTrait
+  // ::validateResolved + Illuminate/Foundation/Http/FormRequest
+  // ::getValidatorInstance). The order is Laravel's:
+  //   1. prepareForValidation()  - the input it prepares is validated
+  //   2. authorize()              - false raises the 403
+  //      (failedAuthorization -> UnauthorizedException)
+  //   3. the validator over validationData() with the app's rules
+  //   4. withValidator($validator) - the app registers on the validator
+  //   5. after()                 - the callback it RETURNS is registered
+  //   6. the rules run; a failure raises the 422 (failedValidation)
+  //   7. passedValidation()      - the work after the rules passed
+  //
+  // The hooks are the COMPILED class's own methods (the class compiler emits
+  // them), so the lifecycle calls them on the instance. The validator is the
+  // kernel's (the edge has one factory).
+  rt.formRequest = async (fqcn, opts = {}) => {
+    const hooks = Array.isArray(opts.hooks) ? opts.hooks : [];
+    const instance = rt.newClass(fqcn, []);
+    if (hooks.includes('prepareForValidation')) {
+      await instance.prepareForValidation(rt);
+    }
+    if (hooks.includes('authorize')) {
+      const allowed = await instance.authorize(rt);
+      if (!allowed) {
+        // Illuminate\Validation\ValidatesWhenResolvedTrait::failedAuthorization
+        // throws the UnauthorizedException, and Laravel's Handler turns it into
+        // the 403 (AccessDeniedHttpException - "This action is unauthorized.").
+        // The error carries the status, so the compiled handler renders it
+        // (an expectsJson request gets Laravel's pretty JSON body).
+        throw rt.statusErr(403, 'This action is unauthorized.');
+      }
+    }
+    // The data the rules see: the app's validationData() hook, or the whole
+    // request (Laravel's default - FormRequest.php:197).
+    const data = hooks.includes('validationData')
+      ? await instance.validationData(rt)
+      : instance.all();
+    const validator = new Validator(data, opts.rules || {}, opts.messages || {}, {
+      db: rt.db(),
+      attributes: opts.attributes || {},
+      defaultMessages: defaultValidationMessages(),
+    });
+    if (hooks.includes('withValidator')) {
+      await instance.withValidator(rt, validator);
+    }
+    if (hooks.includes('after')) {
+      // Laravel registers the hook's RETURN VALUE on the validator
+      // (FormRequest.php:114): `$validator->after($this->after(...))`.
+      const callback = await instance.after(rt);
+      if (callback) validator.after(callback);
+    }
+    instance.setValidator(validator);
+    // The rules run (and the after callbacks - the validator runs them at the
+    // end of the pass, Validator.php:509-511).
+    const ok = await validator.passes();
+    if (!ok) {
+      instance.failedValidation(validator);
+    }
+    if (hooks.includes('passedValidation')) {
+      await instance.passedValidation(rt);
+    }
+    return validator.validated();
+  };
   // Illuminate\Support\Str - the string helpers (PHP-exact, kernel/str.mjs).
   // (`rt.str` is the PHP (string) cast, so the facade goes to rt.Str.)
   rt.Str = strHelpers;
@@ -1759,11 +1833,27 @@ export function buildRt(context, opts = {}) {
     if (!condition) rt.abort(code, message);
     return null;
   };
-  rt.errorResponse = (e) => ({
-    status: (e && e.status) || 500,
-    headers: { 'content-type': 'text/plain; charset=utf-8' },
-    body: (e && e.message) ? String(e.message) : ('HTTP ' + (((e && e.status) || 500))),
-  });
+  rt.errorResponse = (e) => {
+    const status = (e && e.status) || 500;
+    const message = e && e.message ? String(e.message) : 'HTTP ' + status;
+    // Illuminate\Foundation\Exceptions\Handler::prepareJsonResponse(): an
+    // expectsJson request gets the exception as JSON, and Laravel encodes it
+    // with JSON_PRETTY_PRINT (4 spaces) - convertExceptionToArray() answers
+    // `['message' => $e->getMessage()]` for an HTTP exception. The bytes are
+    // PHP's (the slashes escaped), so the encoder is the kernel's.
+    if (liveRequest && typeof liveRequest.expectsJson === 'function' && liveRequest.expectsJson()) {
+      return {
+        status,
+        headers: { 'content-type': 'application/json' },
+        body: '{\n    "message": ' + phpJsonEncode(message) + '\n}',
+      };
+    }
+    return {
+      status,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+      body: message,
+    };
+  };
   rt.json = (value, status) => ({
     status: Number(status) || 200,
     headers: { 'content-type': 'application/json' },

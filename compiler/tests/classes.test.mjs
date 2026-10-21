@@ -1189,13 +1189,22 @@ class C
     },
   });
   assert.deepEqual(code.errors, [], 'the controller compiles');
+  // The runtime runs the whole lifecycle on the compiled class's hooks, in
+  // Laravel's order (prepareForValidation -> authorize -> withValidator ->
+  // after -> the rules -> passedValidation).
   assert.match(
     code.code,
-    /await rt\.newClass\("App\\\\Http\\\\Requests\\\\StorePostRequest", \[\]\)\.prepareForValidation\(rt\);/,
-    'the hook is awaited and gets the runtime'
+    /await rt\.formRequest\("App\\\\Http\\\\Requests\\\\StorePostRequest", \{[\s\S]*?hooks: \["prepareForValidation"\] \}\);/,
+    'the lifecycle runs with the compiled hooks'
   );
-  const hookAt = code.code.indexOf('prepareForValidation(rt)');
-  const validateAt = code.code.indexOf('rt.request().validate(');
-  assert.ok(validateAt > -1, 'the validation is emitted');
-  assert.ok(hookAt > -1 && hookAt < validateAt, 'the hook runs BEFORE the validation');
+  assert.match(
+    code.code,
+    /rt\.request\(\)\._validatedData = v_validatedData;/,
+    'the validated data reaches $request->validated()'
+  );
+  assert.doesNotMatch(
+    code.code,
+    /prepareForValidation\(rt\);/,
+    'the handler does not call the hook itself - the lifecycle does'
+  );
 });

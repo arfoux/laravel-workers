@@ -871,9 +871,11 @@ export function emitController(source, methodName, meta = {}) {
 
   // A FormRequest validates *before* the controller method runs (the container
   // resolves the FormRequest, which validates and authorizes it). The compiled
-  // handler does the same: validate first, then run the method body.
+  // handler does the same: the runtime runs Laravel's lifecycle
+  // (ValidatesWhenResolvedTrait::validateResolved ->
+  // FormRequest::getValidatorInstance) and the method body runs after it.
   const formRequestLines = [];
-  // The FormRequest's hook needs the compiled class: the handler imports the
+  // The FormRequest's hooks need the compiled class: the handler imports the
   // classes module (the class registry) and hands it to the runtime.
   let usesFormRequestClass = false;
   for (const p of params) {
@@ -881,21 +883,23 @@ export function emitController(source, methodName, meta = {}) {
     if (!p.typeFqcn || p.typeFqcn === REQUEST_FQCN) continue;
     const dumped = formRequestMap[p.typeFqcn];
     if (!dumped) continue;
-    // Laravel runs the FormRequest's prepareForValidation() BEFORE the
-    // validation (ValidatesWhenResolvedTrait::validateResolved), so the input
-    // the hook prepares is what the rules see.
-    if (Array.isArray(dumped.hooks) && dumped.hooks.includes('prepareForValidation')) {
-      usesFormRequestClass = true;
-      // The compiled class methods take the runtime as their first argument
-      // (`async function (rt, ...)`) - the caller passes it.
-      formRequestLines.push(
-        `    await rt.newClass(${JSON.stringify(p.typeFqcn)}, []).prepareForValidation(rt);`
-      );
-    }
+    // The whole lifecycle runs on the compiled class's hooks, in Laravel's
+    // order: prepareForValidation -> authorize (the 403) -> the validator over
+    // validationData() -> withValidator -> after -> the rules (the 422) ->
+    // passedValidation. The hooks are the class's own methods, so the instance
+    // is always built.
+    usesFormRequestClass = true;
     formRequestLines.push(
-      `    await rt.request().validate(${JSON.stringify(dumped.rules || {})}, ` +
-        `${JSON.stringify(dumped.messages || {})}, ${JSON.stringify(dumped.attributes || {})});`
+      `    const v_validatedData = await rt.formRequest(${JSON.stringify(p.typeFqcn)}, {` +
+        ` rules: ${JSON.stringify(dumped.rules || {})},` +
+        ` messages: ${JSON.stringify(dumped.messages || {})},` +
+        ` attributes: ${JSON.stringify(dumped.attributes || {})},` +
+        ` hooks: ${JSON.stringify(Array.isArray(dumped.hooks) ? dumped.hooks : [])} });`
     );
+    // `$request->validated()` reads the data the rules passed
+    // (Illuminate\Http\Request::validated via the FormRequest): the kernel's
+    // request keeps it in `_validatedData` (kernel/validation.mjs:95).
+    formRequestLines.push(`    rt.request()._validatedData = v_validatedData;`);
   }
 
   const lines = [];

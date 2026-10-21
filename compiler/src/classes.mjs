@@ -19,7 +19,7 @@
 // is not compiled and the routes that use it stay blocked.
 import parser from 'php-parser';
 import { readFileSync } from 'node:fs';
-import { transpileControllerMethod } from './transpiler.mjs';
+import { transpileControllerMethod, VALIDATOR_TYPES } from './transpiler.mjs';
 import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapters.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
@@ -490,7 +490,17 @@ function compileMethod(fqcn, methodNode, opts) {
       (opts.eventClasses.has(ptype) ||
         opts.eventShortNames.has(ptype) ||
         (opts.eventKinds && opts.eventKinds.has(ptype)));
-    if (ptype && !isEventType) {
+    // The VALIDATOR a FormRequest hook takes (`withValidator(Validator
+    // $validator)` - Illuminate/Foundation/Http/FormRequest.php:110). The edge
+    // has no container to inject it (Laravel calls the hook with the
+    // validator IT built), but the compiled lifecycle hands the kernel's
+    // validator to the hook - so the type is allowed and the compiled body
+    // may call the validator's surface.
+    const resolvedType = ptype
+      ? (opts.imports instanceof Map && opts.imports.get(ptype)) || ptype
+      : null;
+    const isValidatorType = resolvedType && VALIDATOR_TYPES.has(resolvedType);
+    if (ptype && !isEventType && !isValidatorType) {
       return {
         error:
           'the method ' + fqcn + '::' + name + '() takes a ' + p.type + ' — the edge cannot inject a service ' +
@@ -499,6 +509,20 @@ function compileMethod(fqcn, methodNode, opts) {
     }
   }
   const paramVars = new Set(params.map((p) => vname(p.name)));
+  // The type of each parameter (the variable -> the FQCN of the type). The
+  // FormRequest hooks take the validator (`withValidator(Validator
+  // $validator)` - Illuminate/Foundation/Http/FormRequest.php:110), so the
+  // compiled body must know the variable holds the kernel's validator.
+  const paramTypes = new Map();
+  for (const p of params) {
+    // The type as the file writes it: the file's own `use` statements resolve
+    // it (the class compiler's options carry them).
+    const written = p.type ? String(p.type).replace(/^\\/, '') : null;
+    if (!written) continue;
+    const resolved =
+      (opts.imports instanceof Map && opts.imports.get(written)) || written;
+    paramTypes.set(vname(p.name), resolved);
+  }
   const emitted = transpileControllerMethod((methodNode.body && methodNode.body.children) || [], {
     models: opts.modelAliases,
     modelNotCompiled: opts.modelNotCompiled,
@@ -524,6 +548,12 @@ function compileMethod(fqcn, methodNode, opts) {
     mailable: !!opts.mailable,
     // A FormRequest: the request surface of the kernel's base.
     formRequest: !!opts.formRequest,
+    // The type of each parameter (the variable -> the FQCN of the type): the
+    // FormRequest hooks take the validator, so the compiled body must know it.
+    paramTypes,
+    // The file's own `use` statements (the alias -> the FQCN): a type written
+    // short (`Validator`) resolves through them.
+    imports: opts.imports instanceof Map ? opts.imports : new Map(),
     // The injected services of the constructor (`$this->mailer`): their async
     // methods are awaited.
     injectedDeps: opts.injectedDeps instanceof Map ? opts.injectedDeps : new Map(),

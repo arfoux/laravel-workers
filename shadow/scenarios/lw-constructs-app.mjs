@@ -319,6 +319,56 @@ export default {
       expectStatus: 422,
     },
     {
+      // The FormRequest hooks: the compiled lifecycle runs them in Laravel's
+      // order (prepareForValidation -> authorize -> the validator over
+      // validationData() -> withValidator -> after -> the rules ->
+      // passedValidation). The JSON answer shows what the hooks produced:
+      // `extra` is NULL (validationData() narrowed the data, so the field
+      // never reached the rules or `validated()`) and `passedValidation` is
+      // "ran" (the hook merged it in after the rules passed).
+      label: 'POST /hooked-request-demo (the FormRequest hooks run)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', flag: 'ok', extra: 'not-validated' },
+      expectStatus: 200,
+    },
+    {
+      // withValidator() registered an after() callback on the validator: the
+      // callback runs after the rules pass and the message it adds is the
+      // 422 body.
+      label: 'POST /hooked-request-demo (withValidator refuses the flag)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', flag: 'with-validator' },
+      expectStatus: 422,
+    },
+    {
+      // after() RETURNED the callback Laravel registers on the validator.
+      label: 'POST /hooked-request-demo (after refuses the flag)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', flag: 'after' },
+      expectStatus: 422,
+    },
+    {
+      // authorize() returns false -> Laravel raises the 403
+      // (ValidatesWhenResolvedTrait::failedAuthorization), NOT a skipped route
+      // and NOT a 422.
+      label: 'POST /hooked-request-demo (authorize() denies)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', deny: 'yes' },
+      expectStatus: 403,
+    },
+    {
       // The size rule's message is Laravel 13's own ("... must not be greater
       // than 255 characters."): the compiled side uses the same texts (the
       // app's lang file wins - the build dumps it with the translations).

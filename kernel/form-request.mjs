@@ -49,6 +49,16 @@ export class FormRequest {
     return this.__request.input(key, def);
   }
 
+  // Illuminate\Http\Request::user() - the authenticated user (null when there
+  // is none). The `authorize()` hook reads it ("return $this->user()->isAdmin()"),
+  // so the base forwards it to the request. The request's own user() is
+  // ASYNC at the edge (the guard reads D1), so the compiled body awaits it -
+  // the base returns the promise the request gives.
+  user() {
+    if (!this.__request || typeof this.__request.user !== 'function') return null;
+    return this.__request.user();
+  }
+
   // Illuminate\Foundation\Http\FormRequest::validationData() (FormRequest.php:197)
   // - the data the rules see. Laravel's default is the whole request.
   validationData() {

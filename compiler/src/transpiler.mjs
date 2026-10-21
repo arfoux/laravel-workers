@@ -61,7 +61,7 @@ const MAIL_ASYNC = new Set(['send']);
 // IS a request): the compiled FormRequest extends the kernel's base, so these
 // methods exist there. The rest of the request surface is NOT compiled - it
 // fails loud.
-const FORM_REQUEST_METHODS = new Set(['merge', 'input', 'all']);
+const FORM_REQUEST_METHODS = new Set(['merge', 'input', 'all', 'user']);
 function mkErr(code, message, loc, hint) {
   const e = new Error(message);
   e.lw = { code, message, line: loc?.start?.line ?? 0, column: loc?.start?.column ?? 0, hint: hint || '' };
@@ -994,6 +994,35 @@ const UNSUPPORTED_FACADES = {
 // The ability must be a literal and the subject must be a model (or Model::class).
 const GATE_CALLS = new Set(['allows', 'denies']);
 
+// The kernel's validator public surface - the methods the app can call on the
+// validator it receives in a FormRequest hook (`withValidator($validator)`,
+// `after()`). The value: true when the method is ASYNC at the edge (the
+// compiled body must await it, or a promise leaks into the answer).
+//
+// Illuminate\Validation\Validator: after() (Validator.php:447), errors()
+// (:1145), messages()/getMessages() (MessageBag), fails()/passes()
+// (:1408/:1416), validated() (:1429).
+const VALIDATOR_METHODS = new Map([
+  ['after', false],
+  ['errors', false],
+  ['messages', false],
+  ['getMessages', false],
+  ['toArray', false],
+  ['isEmpty', false],
+  ['isNotEmpty', false],
+  ['fails', true],
+  ['passes', true],
+  ['validated', false],
+]);
+
+// The Validator type as the app writes it (Illuminate\Validation\Validator or
+// Illuminate\Contracts\Validation\Validator - the contract is what the
+// framework type-hints).
+const VALIDATOR_TYPES = new Set([
+  'Illuminate\\Validation\\Validator',
+  'Illuminate\\Contracts\\Validation\\Validator',
+]);
+
 function txGate(node, meth) {
   const argNodes = node.arguments || [];
   if (!GATE_CALLS.has(meth)) {
@@ -1803,6 +1832,38 @@ function txCall(node) {
       const v = vname(what.what.name);
       const phpVar = String(what.what.name || '').replace(/^v_/, '');
       const inController = !!(CTX && CTX.controller);
+      // The VALIDATOR a FormRequest hook receives (`withValidator(Validator
+      // $validator)` - Illuminate/Foundation/Http/FormRequest.php:110). The
+      // edge's validator is the kernel's, so the call is a plain call on it.
+      const paramType = CTX && CTX.paramTypes ? CTX.paramTypes.get(v) : null;
+      if (paramType && VALIDATOR_TYPES.has(paramType)) {
+        const isAsync = VALIDATOR_METHODS.get(meth);
+        if (isAsync === undefined) {
+          throw mkErr(
+            'LW002',
+            'the validator method ' + meth + '() is not compiled - the compiled validator has: ' +
+              [...VALIDATOR_METHODS.keys()].join(', ') + '; ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return isAsync ? txAwait(obj + '.' + meth + '(' + args + ')', node, '$validator->' + meth + '()') : expr;
+      }
+      // A FormRequest's request surface (the kernel's base): merge(), input(),
+      // all(), user() - the hooks read the request and write into the input
+      // bag. It is the class's OWN base (the compiled class extends the
+      // kernel's FormRequest), so it works in a class method too.
+      //
+      // `user()` is ASYNC at the edge (the guard reads D1 - kernel/http.mjs
+      // resolves the user through the resolver), so the call is awaited: a
+      // promise would answer TRUTHY where Laravel answers the user (or
+      // null) - the `authorize()` hook would then always pass.
+      if (CTX && CTX.formRequest && FORM_REQUEST_METHODS.has(meth) && CTX.classMethod) {
+        if (meth === 'user') {
+          return txAwait(obj + '.user()', node, '$this->user()');
+        }
+        return expr;
+      }
       if (!inController) {
         // A view: the ViewErrorBag and the paginator (the pagination view)
         // are the only objects with methods there.
@@ -1924,9 +1985,30 @@ function txClosure(node){
     if(info.byref) byRef.push(info.name);
     else byVal.push(info.name);
   }
+  // The type of each closure parameter (the variable -> the FQCN of the
+  // type). Laravel's `after()` hook returns a closure whose parameter IS the
+  // validator (`function (Validator $validator) { ... }` -
+  // Illuminate/Foundation/Http/FormRequest.php:114), so the compiled body
+  // must know the variable holds the kernel's validator.
+  const closureParamTypes = new Map();
+  for(const p of (node.arguments||[])){
+    const pn = p.name && p.name.name ? p.name.name : p.name;
+    const t = closureParamType(p);
+    if (pn && t) closureParamTypes.set(vname(pn), t);
+  }
   // build body JS: need to render block children via inline walk? reuse tx for statements by emitting JS function body string
   // Instead generate JS code for body by simulating walkChildren into string buffer via helper emitClosureBody
-  const bodyCode=emitClosureBody(node.body, byVal, byRef, node.arguments||[]);
+  const bodyCode=emitClosureBody(node.body, byVal, byRef, node.arguments||[], closureParamTypes);
+  // Inside a compiled CLASS method, `$this` is the JS `this` (the runtime
+  // binds the method to the instance) - and a PHP closure defined in a method
+  // is BOUND to that instance. A plain `function(){}` loses `this` when the
+  // caller calls it as a value (the validator calls `callback(this)`), so the
+  // closure is an ARROW function: it captures `this` (and the `use`d
+  // variables, which live in the enclosing scope with the same names)
+  // lexically - exactly like PHP's binding.
+  if (CTX && CTX.classMethod) {
+    return '(('+params.join(', ')+')=>{'+bodyCode+'})';
+  }
   const fn='function('+params.join(', ')+'){'+bodyCode+'}';
   if(byVal.length===0){
     return '('+fn+')';
@@ -1938,7 +2020,24 @@ function txClosure(node){
   return '(('+capParams.join(', ')+')=>('+fnWithLets+'))('+caps.join(', ')+')';
 }
 
-function emitClosureBody(body, byVal, byRef, params){
+// The type of a closure parameter, as the file writes it (`Validator` ->
+// `Illuminate\Contracts\Validation\Validator` through the file's own `use`
+// statements; a leading backslash is PHP's own syntax).
+function closureParamType(p) {
+  const t = p && p.type;
+  if (!t) return null;
+  let name = null;
+  if (typeof t === 'string') name = t;
+  else if (t.name && typeof t.name === 'string') name = t.name;
+  else if (t.name && t.name.name) name = t.name.name;
+  if (!name) return null;
+  const written = String(name).replace(/^\\/, '');
+  const resolved =
+    (CTX && CTX.imports instanceof Map && CTX.imports.get(written)) || written;
+  return resolved;
+}
+
+function emitClosureBody(body, byVal, byRef, params, closureParamTypes){
   if(!body) return '';
   if(body.kind==='block'){
     const paramSet=new Set((params||[]).map(p=> String(p.name && p.name.name ? p.name.name : p.name)));
@@ -1956,11 +2055,22 @@ function emitClosureBody(body, byVal, byRef, params){
     const locals=[...all].filter(n=> !paramSet.has(n) && !byValSet.has(n) && !byRefSet.has(n));
     const lines=[];
     if(locals.length) lines.push('let '+locals.map(vname).join(', ')+';');
+    // The closure's own parameters (the validator in Laravel's `after()`
+    // hook) are typed for the body: the calls on them must resolve to the
+    // kernel's surface.
+    const savedParamTypes = CTX && CTX.paramTypes ? new Map(CTX.paramTypes) : null;
+    if (CTX && CTX.paramTypes && closureParamTypes) {
+      for (const [k, v] of closureParamTypes) CTX.paramTypes.set(k, v);
+    }
     CLOSURE_DEPTH++;
     try{
       walkChildren(body.children||[], lines, '', {});
     }finally{
       CLOSURE_DEPTH--;
+      if (savedParamTypes && CTX && CTX.paramTypes) {
+        CTX.paramTypes.clear();
+        for (const [k, v] of savedParamTypes) CTX.paramTypes.set(k, v);
+      }
     }
     return lines.join(' ');
   }
@@ -1977,12 +2087,28 @@ function txArrowFunc(node){
     const pn=vname(p.name && p.name.name ? p.name.name : p.name);
     return p.value ? pn+' = '+tx(p.value) : pn;
   });
+  // The type of each arrow-function parameter (Laravel's `after()` hook often
+  // returns `fn (Validator $validator) => ...`).
+  const arrowParamTypes = new Map();
+  for(const p of (node.arguments||[])){
+    const pn = p.name && p.name.name ? p.name.name : p.name;
+    const t = closureParamType(p);
+    if (pn && t) arrowParamTypes.set(vname(pn), t);
+  }
+  const savedParamTypes = CTX && CTX.paramTypes ? new Map(CTX.paramTypes) : null;
+  if (CTX && CTX.paramTypes) {
+    for (const [k, v] of arrowParamTypes) CTX.paramTypes.set(k, v);
+  }
   CLOSURE_DEPTH++;
   let expr;
   try {
     expr=tx(node.body);
   } finally {
     CLOSURE_DEPTH--;
+    if (savedParamTypes && CTX && CTX.paramTypes) {
+      CTX.paramTypes.clear();
+      for (const [k, v] of savedParamTypes) CTX.paramTypes.set(k, v);
+    }
   }
   if(params.length===1) return '('+params[0]+'=>('+expr+'))';
   return '(('+params.join(', ')+')=>('+expr+'))';
@@ -2463,6 +2589,14 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     classMethod: !!opts.classMethod,
     // The class's own methods (a method call on $this is one of them).
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
+    // The type of each parameter of the method being compiled (the variable
+    // name -> the FQCN of the type). The FormRequest hooks take the validator
+    // (`withValidator(Validator $validator)`), so the compiled body must know
+    // that the variable holds the kernel's validator.
+    paramTypes: opts.paramTypes instanceof Map ? opts.paramTypes : new Map(Object.entries(opts.paramTypes || {})),
+    // The file's own `use` statements (the alias -> the FQCN): a type written
+    // short (`Validator`) resolves through them.
+    imports: opts.imports instanceof Map ? opts.imports : new Map(Object.entries(opts.imports || {})),
     // The compiled classes (FQCN -> { methods, base }): the registry of the
     // class compiler. A call on an INLINE instance (`(new OrderService())
     // ->doIt($o)`) must know the receiver's own methods - they take the
@@ -2541,4 +2675,4 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
 
 export default transpile;
 
-export { REQUEST_CALL, REQUEST_NO_CHAIN, REQUEST_ASYNC, REQUEST_DENY };
+export { REQUEST_CALL, REQUEST_NO_CHAIN, REQUEST_ASYNC, REQUEST_DENY, VALIDATOR_TYPES };
