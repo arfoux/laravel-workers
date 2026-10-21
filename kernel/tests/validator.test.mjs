@@ -683,3 +683,23 @@ test('the validator matches Laravel 13 (the probed semantics)', async () => {
     /requires at least 2 parameter/,
   );
 });
+
+test("unique: the 'NULL' column and the 'NULL' except mean what Laravel means", async () => {
+  // Laravel's rule object writes the absent column AND the absent id as the
+  // string 'NULL' (Unique::__toString()); the validator reads the column back
+  // as the attribute's name (getQueryColumn, ValidatesAttributes.php:1218) and
+  // the id as "no exception" (DatabasePresenceVerifier::getCount:
+  // `! is_null($excludeId) && $excludeId !== 'NULL'`).
+  let payload = null;
+  const v = new Validator(
+    { email: 'a@b.co' },
+    { email: 'unique:users,NULL,NULL,id' },
+    {},
+    { unique: async (p) => { payload = p; return true; } }
+  );
+  assert.equal(await v.passes(), true);
+  assert.equal(payload.table, 'users');
+  assert.equal(payload.column, 'email', "the 'NULL' column falls back to the attribute's name");
+  assert.equal(payload.except, null, "the 'NULL' id means no exception");
+  assert.equal(payload.idColumn, 'id');
+});

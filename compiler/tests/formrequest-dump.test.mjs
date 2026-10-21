@@ -197,6 +197,38 @@ const FIXTURE_BODIES = {
         // Laravel runs this after the validation passed.
     }
 `,
+  // A rule OBJECT: Laravel hands the validator the object and the validator
+  // reads its string form - so the dump normalizes it.
+  RuleObjectRequest: `
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'role' => ['required', \\Illuminate\\Validation\\Rule::in(['admin', 'user'])],
+            'tag' => [\\Illuminate\\Validation\\Rule::notIn(['x', 'y'])],
+            'email' => [\\Illuminate\\Validation\\Rule::unique('users', 'email')],
+        ];
+    }
+`,
+  // A CONDITIONAL rule object: its string form is the condition evaluated at
+  // build time, so the edge would bake the build-time branch into the rule.
+  ConditionalRuleRequest: `
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'name' => [\\Illuminate\\Validation\\Rule::requiredIf(true)],
+        ];
+    }
+`,
 };
 
 // The hooks the compiled rung does not run: the hook, the class that declares
@@ -291,6 +323,29 @@ test('the dump refuses an overridden prepareForValidation() with the code + the 
     'the reason says what the edge does instead'
   );
   assert.match(entry.error, /the working path: /, 'the reason names the path that works');
+});
+
+test('the dump normalizes a rule object to Laravel\'s string form', { skip }, () => {
+  // Laravel's validator reads the object's string form, so the edge gets the
+  // same string - and the kernel parses the parameters exactly like Laravel
+  // (the M61a CSV parse).
+  const entries = runDump([fqcnOf('RuleObjectRequest')]);
+  const entry = entries.get(fqcnOf('RuleObjectRequest'));
+  assert.ok(entry, 'the dump answered for RuleObjectRequest');
+  assert.equal(entry.error, null, 'a rule object is normalized, not refused');
+  assert.deepEqual(entry.rules.role, ['required', 'in:"admin","user"']);
+  assert.deepEqual(entry.rules.tag, ['not_in:"x","y"']);
+  assert.deepEqual(entry.rules.email, ['unique:users,email,NULL,id']);
+});
+
+test('the dump refuses a CONDITIONAL rule object (its string form bakes the build-time branch)', { skip }, () => {
+  const entries = runDump([fqcnOf('ConditionalRuleRequest')]);
+  const entry = entries.get(fqcnOf('ConditionalRuleRequest'));
+  assert.ok(entry, 'the dump answered for ConditionalRuleRequest');
+  assert.equal(typeof entry.error, 'string', 'the dump must refuse the class');
+  assert.match(entry.error, /^LW003 the rules use a rule object/);
+  assert.match(entry.error, /RequiredIf/, 'the reason names the rule class');
+  assert.match(entry.error, /conditional/, 'the reason says why');
 });
 
 test('a FormRequest without a hook still dumps its rules', { skip }, () => {

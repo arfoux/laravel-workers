@@ -821,10 +821,14 @@ export class Validator {
   async _resolveUniqueExists(field, value, rule, hasNumeric) {
     const parts = rule.params;
     const table = parts[0];
-    const column = parts[1] || field;
     // unique: table,column,except,idColumn. Laravel's rule object writes the
-    // absent id as the string 'NULL' (Unique::__toString()), and the validator
-    // reads it back as null - so 'NULL' means "no exception".
+    // absent column AND the absent id as the string 'NULL'
+    // (Unique::__toString()), and the validator reads both back: the column
+    // falls back to the attribute's name (getQueryColumn,
+    // ValidatesAttributes.php:1218) and the id means "no exception"
+    // (DatabasePresenceVerifier::getCount: `! is_null($excludeId) &&
+    // $excludeId !== 'NULL'`).
+    const column = parts[1] !== undefined && parts[1] !== 'NULL' ? parts[1] : field;
     const except = parts[2] === 'NULL' || parts[2] === 'null' ? null : parts[2];
     const idColumn = parts[3] || 'id';
     const payload = { table, column, value, except, idColumn, count: 0 };
