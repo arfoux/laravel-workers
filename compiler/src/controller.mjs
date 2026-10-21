@@ -537,6 +537,15 @@ function isPaginateCall(node) {
 
 const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 
+// The methods Laravel resolves a route-model binding through (an app that
+// overrides one of them binds a different row than the compiled lookup).
+const BINDING_METHODS = [
+  'resolveRouteBinding',
+  'resolveChildRouteBinding',
+  'resolveSoftDeletableRouteBinding',
+  'resolveSoftDeletableChildRouteBinding',
+];
+
 export function emitController(source, methodName, meta = {}) {
   const info = extractController(source, methodName);
   if (!info.ok) return { code: null, errors: info.errors };
@@ -601,6 +610,24 @@ export function emitController(source, methodName, meta = {}) {
             `the model-bound parameter $${p.name} has no matching route parameter (the route has: ${
               routeParams.join(', ') || 'none'
             }) — Laravel's implicit binding binds by name — ` + PORT_HINT,
+            null,
+            PORT_HINT
+          )
+        );
+      }
+      // Laravel resolves the binding through the MODEL's own method
+      // (`resolveRouteBinding`, ImplicitRouteBinding.php:57): an app that
+      // overrides it can scope the lookup (a tenant, a soft delete), so the
+      // compiled primary-key lookup would bind a DIFFERENT row.
+      const overridden = (p.modelBound.notCompiled || []).filter((m) =>
+        BINDING_METHODS.includes(m)
+      );
+      if (overridden.length) {
+        errors.push(
+          lwErr(
+            'LW003',
+            `the model ${p.modelBound.fqcn} overrides ${overridden[0]}() — Laravel binds the model through that method (the app can scope the lookup), the compiled binding fetches the model by its key — ` +
+              PORT_HINT,
             null,
             PORT_HINT
           )

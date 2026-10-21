@@ -2339,3 +2339,37 @@ test('emit+runtime: the value a controller returns is converted like Laravel\'s 
   assert.equal(res.status, 200);
   assert.equal(res.body, 'built');
 });
+
+test('emit: a model that overrides the route binding fails loud (LW003)', () => {
+  // Laravel resolves the binding through the model's own method
+  // (ImplicitRouteBinding.php:57 -> Model::resolveRouteBinding()): an app that
+  // overrides it can scope the lookup, so the compiled primary-key lookup
+  // would bind a DIFFERENT row.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function show(Post $post)\n' +
+    '    {\n' +
+    '        return $post->title;\n' +
+    '    }\n' +
+    '}\n';
+  const code = emitController(src, 'show', {
+    routeParams: ['post'],
+    models: [
+      {
+        alias: 'Post',
+        fqcn: 'App\\Models\\Post',
+        notCompiled: ['resolveRouteBinding', 'title'],
+        routeKey: 'id',
+        primaryKey: 'id',
+      },
+    ],
+    views: [],
+  });
+  assert.ok(code.errors.length, 'the build must stop');
+  const e = code.errors[0];
+  assert.equal(e.code, 'LW003');
+  assert.match(e.message, /overrides resolveRouteBinding\(\)/);
+  assert.match(e.message, /Laravel binds the model through that method/);
+});
