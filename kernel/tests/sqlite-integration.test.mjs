@@ -340,7 +340,9 @@ test('sqlite: builder binds booleans/Dates/undefined to D1-safe values', { skip 
   await table(db, 'posts').where('id', 1).update({ published: false });
   assert.equal(Number(await table(db, 'posts').where('id', 1).value('published')), 0);
   await table(db, 'posts').where('id', 1).update({ updated_at: new Date('2024-05-06T07:08:09.000Z') });
-  assert.equal(await table(db, 'posts').where('id', 1).value('updated_at'), '2024-05-06T07:08:09.000Z');
+  // Laravel binds a DateTimeInterface with the grammar's date format
+  // ('Y-m-d H:i:s') - an ISO string never matches the stored TEXT column.
+  assert.equal(await table(db, 'posts').where('id', 1).value('updated_at'), '2024-05-06 07:08:09');
   assert.equal(Number(await table(db, 'posts').where('title', undefined).count()), 0);
   await table(db, 'invoices').insert({ id: 2, amount: '1', meta: null, paid: true, secret: null });
   assert.equal(Number(await table(db, 'invoices').where('id', 2).value('paid')), 1);

@@ -1035,3 +1035,19 @@ test('sum() answers 0 on an empty set (Laravel: `$result ?: 0`)', async () => {
   const db2 = mockDb({ first: () => ({ aggregate: '7' }) });
   assert.equal(await table(db2, 'posts').sum('views'), 7);
 });
+
+test('a Date is bound with the grammar date format (Laravel: Y-m-d H:i:s)', async () => {
+  // Laravel's Connection::prepareBindings(): a DateTimeInterface is bound with
+  // the grammar's date format - an ISO string never matches the stored TEXT
+  // column.
+  const calls = [];
+  const stmt = {
+    bind(...p) { calls.push({ sql: this.sql, params: p }); return this; },
+    run: async () => ({ success: true, meta: { changes: 1 } }),
+    all: async () => ({ results: [] }),
+    first: async () => null,
+  };
+  const db = { prepare(sql) { stmt.sql = sql; return stmt; } };
+  await table(db, 'posts').where('created_at', new Date('2024-01-02T03:04:05Z')).get();
+  assert.deepEqual(calls[0].params, ['2024-01-02 03:04:05']);
+});

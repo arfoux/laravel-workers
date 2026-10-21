@@ -19,7 +19,12 @@ const ALLOWED_JOIN_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
 // become ISO strings, undefined becomes null.
 function bindValue(value) {
   if (typeof value === 'boolean') return value ? 1 : 0;
-  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Date) {
+    // Laravel's Connection::prepareBindings(): a DateTimeInterface is bound
+    // with the grammar's date format ('Y-m-d H:i:s') - an ISO string
+    // ('2024-01-02T03:04:05.000Z') never matches the stored TEXT column.
+    return value.toISOString().slice(0, 19).replace('T', ' ');
+  }
   if (value === undefined) return null;
   return value;
 }
