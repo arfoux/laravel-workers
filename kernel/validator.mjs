@@ -797,7 +797,9 @@ export class Validator {
       if (hasNullable && (value === null || value === '')) continue;
       if (isAbsent) continue;
       if (hasFilled && isEmptyRequired(value)) {
-        this._addError(field, 'required', null);
+        // The rule name selects the message: Laravel's `filled` says "The
+        // :attribute field must have a value." (not the `required` sentence).
+        this._addError(field, 'filled', null);
         continue;
       }
 

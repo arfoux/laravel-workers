@@ -671,6 +671,11 @@ test('the validator matches Laravel 13 (the probed semantics)', async () => {
   assert.equal(await new Validator({ n: 123 }, { n: 'ends_with:23' }).passes(), true);
   // The rule NAME is trimmed (Laravel: Str::studly(trim($rule))).
   assert.equal(await new Validator({ name: 'x' }, { name: ' required ' }).passes(), true);
+  // The `filled` failure carries the `filled` rule, so the message is
+  // Laravel's ("The :attribute field must have a value.").
+  const filled = await validate({ name: '  ' }, { name: 'filled' });
+  assert.equal(filled.ok, false);
+  assert.match(filled.errors.name[0], /must have a value/);
   // A rule with too few parameters is an InvalidArgumentException in Laravel -
   // the edge fails loud too.
   assert.throws(

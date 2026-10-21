@@ -1193,6 +1193,18 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       for (const e of classesCompile.errors) classErrors.set(e.class, e.message);
       const blockedClasses = {};
       const blockedShortNames = new Set();
+      // EVERY class that did not compile is blocked - not only the event
+      // classes: a mailable with Laravel 13's modern API, a listener with a
+      // queued trait, ... The transpiler then refuses to instantiate it, and
+      // the route that instantiates it is stopped with the reason.
+      for (const [cls, why] of classErrors) {
+        blockedClasses[cls] = why;
+        const short = cls.split('\\').pop();
+        if (!blockedShortNames.has(short)) {
+          blockedShortNames.add(short);
+          blockedClasses[short] = why;
+        }
+      }
       for (const [event, info] of Object.entries(classesDump.events || {})) {
         const names = [event, ...(info.listeners || [])];
         const bad = names.find((n) => classErrors.has(n));
