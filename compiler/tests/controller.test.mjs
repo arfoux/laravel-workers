@@ -939,6 +939,30 @@ test('emit: new <app class> fails loud (LW002) - the app classes are not compile
   assert.match(res.errors[0].message, /App\\Exceptions\\Mine/);
 });
 
+test('emit: new <model> fails loud with the MODEL\'s reason (not "only the built-in exceptions")', () => {
+  // The edge has the query builder, not the Eloquent instance: the reason has
+  // to name the model the app asked for.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    '        $p = new Post();\n' +
+    "        return response('ok');\n" +
+    '    }\n' +
+    '}\n';
+  const models = [{ alias: 'Post', fqcn: 'App\\Models\\Post' }];
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models, views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /the model App\\Models\\Post is not compiled at the edge/);
+  // The FQCN form names it too.
+  const srcFqcn = src.replace('new Post()', 'new \\App\\Models\\Post()');
+  const resFqcn = emitController(srcFqcn, 'demo', { routeUri: '/x', routeParams: [], models, views: [] });
+  assert.equal(resFqcn.code, null);
+  assert.match(resFqcn.errors[0].message, /the model App\\Models\\Post is not compiled at the edge/);
+});
+
 test('emit: the helper verbs compile (abort_if, abort_unless, today, Log::)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
