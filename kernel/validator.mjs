@@ -200,10 +200,14 @@ const ARRAY_RULES = new Set(['array', 'list']);
 // `-`, `:`, `#`, ... but a JS `u`-mode identity escape for those is a
 // SyntaxError), then each `*` becomes one dot-free segment and `\z` becomes
 // `$(?![\s\S])` so a trailing newline still fails.
+//
+// The segment is a parameter: the validation's wildcards match ONE dot-free
+// segment, while Illuminate\Support\Str::is() (the MessageBag's wildcard
+// lookup) lets the `*` span the dots.
 const JS_REGEX_SYNTAX = /[\\^$.*+?()[\]{}|]/g;
-function wildcardPattern(sourceKey) {
+function wildcardPattern(sourceKey, segment = '([^.]*)') {
   const escaped = String(sourceKey).replace(JS_REGEX_SYNTAX, '\\$&');
-  return new RegExp('^' + escaped.replace(/\\\*/g, '([^.]*)') + '$(?![\\s\\S])', 'u');
+  return new RegExp('^' + escaped.replace(/\\\*/g, segment) + '$(?![\\s\\S])', 'u');
 }
 
 function parsePipeString(str) {
@@ -510,6 +514,113 @@ function phpTruthy(value) {
   return true;
 }
 
+// The names of the error bag's methods. The edge keeps Laravel's bag a plain
+// map (the map the 422 body serializes), so a field with one of these names
+// would overwrite the method - the validator refuses such a field loudly.
+const BAG_METHOD_NAMES = new Set([
+  'add',
+  'addIf',
+  'has',
+  'first',
+  'get',
+  'keys',
+  'messages',
+  'getMessages',
+  'toArray',
+  'isEmpty',
+  'isNotEmpty',
+]);
+
+// Illuminate\Support\MessageBag — the bag the validator hands out.
+//
+// Laravel's bag keeps the messages in an array of its own; the edge keeps them
+// in the map the bag IS: the 422 body the HTTP kernel serializes is that map
+// (`{"field":["msg"]}`) and the callers read the messages straight off it
+// (`errors().email[0]`). The bag's methods are therefore non-enumerable own
+// properties of the map: the map's own enumerable keys stay exactly the
+// fields, so `Object.keys(errors)` is the field list and the JSON body does
+// not change.
+function messageBag(messages = {}) {
+  const bag = messages;
+  const define = (name, fn) => {
+    Object.defineProperty(bag, name, { value: fn, enumerable: false, writable: true, configurable: true });
+  };
+
+  // MessageBag::add() (MessageBag.php:59-66): the message is APPENDED to the
+  // field's list, and only when the field does not hold it yet (isUnique(),
+  // MessageBag.php:88-93) - so the same message is never listed twice.
+  define('add', (key, message) => {
+    if (BAG_METHOD_NAMES.has(String(key))) {
+      throw new Error(
+        'the field "' +
+          key +
+          '" is the name of one of the error bag\'s methods - the edge keeps the bag a plain map (the ' +
+          '422 body is that map), so the field would overwrite the method - rename the field'
+      );
+    }
+    const list = bag[key];
+    if (Array.isArray(list)) {
+      if (!list.includes(message)) list.push(message);
+    } else {
+      bag[key] = [message];
+    }
+    return bag;
+  });
+  // MessageBag::addIf() (MessageBag.php:76-79).
+  define('addIf', (condition, key, message) => (condition ? bag.add(key, message) : bag));
+  // MessageBag::keys() (MessageBag.php:47-50).
+  define('keys', () => Object.keys(bag));
+  // MessageBag::get() (MessageBag.php:186-209): the messages of the key; a
+  // wildcard key collects the messages of the fields it matches (Str::is -
+  // there the `*` spans the dots).
+  define('get', (key) => {
+    if (Object.prototype.hasOwnProperty.call(bag, key)) {
+      const list = bag[key];
+      return Array.isArray(list) ? list : [];
+    }
+    if (!String(key).includes('*')) return [];
+    const pattern = wildcardPattern(key, '.*');
+    const out = {};
+    for (const field of Object.keys(bag)) {
+      if (pattern.test(field)) out[field] = bag[field];
+    }
+    return out;
+  });
+  // MessageBag::first() (MessageBag.php:170-181): the first message of the key
+  // (or of the whole bag when the key is null).
+  define('first', (key = null) => {
+    if (key === null) {
+      for (const field of Object.keys(bag)) {
+        const list = bag[field];
+        if (Array.isArray(list) && list.length > 0) return list[0];
+      }
+      return '';
+    }
+    const found = bag.get(key);
+    if (Array.isArray(found)) return found.length > 0 ? found[0] : '';
+    for (const field of Object.keys(found)) {
+      const list = found[field];
+      if (Array.isArray(list) && list.length > 0) return list[0];
+    }
+    return '';
+  });
+  // MessageBag::has() (MessageBag.php:118-133): the field holds a message.
+  define('has', (key = null) => {
+    if (key === null) return Object.keys(bag).length > 0;
+    const keys = Array.isArray(key) ? key : [key];
+    return keys.every((one) => bag.first(one) !== '');
+  });
+  // MessageBag::messages() / getMessages() / toArray() (MessageBag.php:303,
+  // 313, 396): the raw map - the shape the 422 body serializes.
+  define('messages', () => bag);
+  define('getMessages', () => bag);
+  define('toArray', () => bag);
+  // MessageBag::isEmpty() / isNotEmpty() (MessageBag.php:356-370).
+  define('isEmpty', () => Object.keys(bag).length === 0);
+  define('isNotEmpty', () => !bag.isEmpty());
+  return bag;
+}
+
 export class Validator {
   constructor(data = {}, rules = {}, customMessages = {}, opts = {}) {
     this.data = data;
@@ -558,6 +669,9 @@ export class Validator {
     this._errors = null;
     this._excluded = new Set();
     this._asyncDone = false;
+    // The after callbacks (Illuminate\Validation\Validator::$after): they run
+    // at the end of the validation pass.
+    this._after = [];
   }
 
   // Expand a rule key containing `*` into concrete data paths (Laravel's
@@ -742,7 +856,9 @@ export class Validator {
 
   _ensureSync() {
     if (this._errors !== null) return;
-    this._errors = {};
+    // The error bag: the map the 422 body serializes, with Laravel's
+    // MessageBag methods attached (messageBag()).
+    this._errors = messageBag();
     for (const field of Object.keys(this.parsed)) {
       const fieldRules = this.parsed[field];
       const hasSometimes = fieldRules.some((r) => r.name === 'sometimes');
@@ -1201,6 +1317,19 @@ export class Validator {
   }
 
   _addError(field, rule, param) {
+    // The bag's methods live on the map the bag IS (the edge keeps Laravel's
+    // bag a plain map, so the 422 body does not change), so a field named
+    // like one of them would overwrite the method. Laravel keeps the messages
+    // in an array of its own and has no such clash: the edge refuses the
+    // field instead of answering something else.
+    if (BAG_METHOD_NAMES.has(String(field))) {
+      throw new Error(
+        'the validation field "' +
+          field +
+          '" is the name of one of the error bag\'s methods - the edge keeps the bag a plain map ' +
+          '(the 422 body is that map), so the field would overwrite the method - rename the field'
+      );
+    }
     const display = this._displayName(field);
     // The message placeholders take the rule's parameters the way Laravel
     // parses them (CSV, except for a regex rule's raw parameter).
@@ -1236,13 +1365,52 @@ export class Validator {
       valueOf: (other) => this.get(other),
       data: this.data,
     });
-    if (!this._errors[field]) this._errors[field] = [];
+    // The field's list: an own property (a field named like an inherited
+    // Object property - 'constructor', 'toString' - is a plain field in PHP).
+    if (!Object.prototype.hasOwnProperty.call(this._errors, field) || !Array.isArray(this._errors[field])) {
+      this._errors[field] = [];
+    }
     this._errors[field].push(msg);
+  }
+
+  // Illuminate\Validation\Validator::after() (Validator.php:447-461): register
+  // the callback that runs at the END of the validation pass. The callback
+  // receives the validator, so it can read the errors and add messages.
+  after(callback) {
+    // Laravel's array branch (Validator.php:449-455) registers every entry of
+    // the array (the rule objects it holds); the edge has no rule objects, so
+    // an array here is a list of callbacks.
+    if (Array.isArray(callback)) {
+      for (const one of callback) this.after(one);
+      return this;
+    }
+    if (typeof callback !== 'function') {
+      throw new Error(
+        'the validator\'s after() hook takes a callback (Laravel calls it with the validator) - got ' +
+          typeof callback
+      );
+    }
+    this._after.push(callback);
+    return this;
+  }
+
+  // The after callbacks run at the END of the pass, AFTER the rules - and they
+  // run even when a rule failed (Illuminate\Validation\Validator::passes(),
+  // Validator.php:509-511: `foreach ($this->after as $after) { $after(); }`).
+  async _runAfter() {
+    for (const callback of this._after) {
+      // The callback is a promise when the compiled hook is async: the pass
+      // awaits it, so the message it adds is in the bag when the pass ends.
+      await callback(this);
+    }
   }
 
   async passes() {
     this._ensureSync();
     await this._runAsync();
+    // The after hooks run last (Laravel's order) - and they run even when a
+    // rule failed: a message they add fails the validation.
+    await this._runAfter();
     return Object.keys(this._errors).length === 0;
   }
   async fails() {
@@ -1250,6 +1418,12 @@ export class Validator {
   }
   errors() {
     this._ensureSync();
+    // The bag (the map the 422 body serializes, with Laravel's MessageBag
+    // methods attached). Laravel's errors() triggers the whole pass when the
+    // messages are not computed yet (Validator.php:1145-1150); the kernel's
+    // errors() is synchronous and cannot await the after hooks, so they run in
+    // passes()/fails() - the lifecycle always calls one of them first
+    // (ValidatesWhenResolvedTrait::validateResolved() calls fails()).
     return this._errors;
   }
   validated() {
