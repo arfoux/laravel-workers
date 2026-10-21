@@ -612,7 +612,7 @@
       "check": "compiler",
       "expect": "fail",
       "code": "LW002",
-      "note": "A rule object is a class: the compiled validator evaluates the string rules only, so the rule would be silently ignored and the validation would differ. The build stops and names what it would take: the kernel validator must evaluate the rule object, the FormRequest must be compiled and its prepared input merged into the validated data.",
+      "note": "A rule object in a CONTROLLER's validate() call is a class: the compiler cannot evaluate it at build time (the rules live in the controller's source), so the rule would be silently ignored and the validation would differ. The build stops and names what it would take. (In a FormRequest the dump normalizes the object to its string form - the row below.)",
       "batch": "M43",
       "status": "todo",
       "reason": "a rule object"
@@ -623,9 +623,19 @@
       "php": null,
       "check": "build",
       "expect": "fail",
-      "note": "The FormRequest dump reads the rules Laravel itself builds: a rule object is found there and the build stops (\"the rules use a rule object (Illuminate\\Validation\\Rules\\File) - the compiled rung evaluates the string rules only\"). The dump's reason reaches the operator - it is not swallowed by a generic message anymore.",
-      "batch": "M43",
-      "status": "todo"
+      "note": "The FormRequest dump reads the rules Laravel itself builds and NORMALIZES a rule object to its string form (Laravel hands the validator the object and the validator reads that string): `Rule::in(['a','b'])` becomes `in:\"a\",\"b\"` - which the kernel parses exactly like Laravel (M61a). A CONDITIONAL rule object is refused (the row below).",
+      "batch": "M43/M62",
+      "status": "done"
+    },
+    {
+      "id": "form_request_conditional_rule_object",
+      "label": "A conditional rule object in a FormRequest",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "A conditional rule object (`Rule::requiredIf(true)`, `Rule::when(...)`) is refused: its string form is the CONDITION evaluated at build time (`RequiredIf::__toString()` returns 'required' or ''), so the edge would bake the build-time branch into the rule - a request Laravel accepts could be rejected (or the other way round). The dump stops with that reason (LW003).",
+      "batch": "M62",
+      "status": "done"
     },
     {
       "id": "prepare_for_validation",

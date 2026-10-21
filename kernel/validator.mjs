@@ -822,8 +822,10 @@ export class Validator {
     const parts = rule.params;
     const table = parts[0];
     const column = parts[1] || field;
-    // unique: table,column,except,idColumn
-    const except = parts[2];
+    // unique: table,column,except,idColumn. Laravel's rule object writes the
+    // absent id as the string 'NULL' (Unique::__toString()), and the validator
+    // reads it back as null - so 'NULL' means "no exception".
+    const except = parts[2] === 'NULL' || parts[2] === 'null' ? null : parts[2];
     const idColumn = parts[3] || 'id';
     const payload = { table, column, value, except, idColumn, count: 0 };
 

@@ -150,27 +150,91 @@ foreach (array_slice($argv, 1) as $fqcn) {
         $entry['messages'] = $fr->messages();
         $entry['attributes'] = $fr->attributes();
 
-        // A rule *object* (`Rule::file()->max(2048)`) is a class: the compiled
-        // rung evaluates the string rules only, so the build must stop instead
-        // of validating something else.
-        $objectRule = null;
-        $walk = function ($rules) use (&$walk, &$objectRule) {
+        // A rule OBJECT (`Rule::in(['a','b'])`, `Rule::file()->max(2048)`) is
+        // normalized at build time: Laravel hands the validator the object and
+        // the validator reads its string form - so the edge gets the same
+        // string (the kernel parses the parameters exactly like Laravel).
+        //
+        // The CONDITIONAL rules (the `*If` family, `Rule::when()`) are refused:
+        // their string form is the CONDITION evaluated at build time
+        // (`RequiredIf::__toString()` returns 'required' or ''), so the edge
+        // would bake the build-time branch into the rule.
+        $refused = null;
+        $conditional = [
+            'Illuminate\\Validation\\Rules\\RequiredIf',
+            'Illuminate\\Validation\\Rules\\RequiredUnless',
+            'Illuminate\\Validation\\Rules\\RequiredIfAccepted',
+            'Illuminate\\Validation\\Rules\\RequiredIfDeclined',
+            'Illuminate\\Validation\\Rules\\ProhibitedIf',
+            'Illuminate\\Validation\\Rules\\ProhibitedUnless',
+            'Illuminate\\Validation\\Rules\\ProhibitedIfAccepted',
+            'Illuminate\\Validation\\Rules\\ProhibitedIfDeclined',
+            'Illuminate\\Validation\\Rules\\ExcludeIf',
+            'Illuminate\\Validation\\Rules\\ExcludeUnless',
+            'Illuminate\\Validation\\Rules\\MissingIf',
+            'Illuminate\\Validation\\Rules\\MissingUnless',
+            'Illuminate\\Validation\\Rules\\PresentIf',
+            'Illuminate\\Validation\\Rules\\PresentUnless',
+            'Illuminate\\Validation\\Rules\\AcceptedIf',
+            'Illuminate\\Validation\\Rules\\DeclinedIf',
+            'Illuminate\\Validation\\ConditionalRules',
+        ];
+        $normalize = function ($rules) use (&$normalize, &$refused, $conditional) {
+            $out = [];
             foreach ((array) $rules as $key => $rule) {
+                if (is_string($rule) || is_int($rule) || is_float($rule)) {
+                    $out[$key] = (string) $rule;
+                    continue;
+                }
                 if (is_object($rule)) {
-                    $objectRule = is_object($key) ? get_class($key) : get_class($rule);
-                    return;
+                    $cls = get_class($rule);
+                    if (in_array($cls, $conditional, true)) {
+                        $refused = $cls . ' - the rule is conditional: its string form is the condition evaluated at build time, so the edge would bake the build-time branch into the rule';
+                        return null;
+                    }
+                    if (!method_exists($rule, '__toString')) {
+                        $refused = $cls . ' - the rule object has no string form (Laravel evaluates the object itself)';
+                        return null;
+                    }
+                    $out[$key] = (string) $rule;
+                    continue;
                 }
                 if (is_array($rule)) {
-                    $walk($rule);
-                    if ($objectRule !== null) {
+                    $sub = $normalize($rule);
+                    if ($sub === null) {
+                        return null;
+                    }
+                    $out[$key] = $sub;
+                    continue;
+                }
+                $out[$key] = $rule;
+            }
+            return $out;
+        };
+        $normalized = $normalize($entry['rules']);
+        if ($refused !== null) {
+            $entry['error'] = 'LW003 the rules use a rule object the compiled rung cannot evaluate: ' . $refused;
+        } else {
+            // The rules that read the file's CONTENT type (finfo): the edge
+            // cannot sniff the content like PHP does - the build stops.
+            $mimeRule = null;
+            $walkNames = function ($rules) use (&$walkNames, &$mimeRule) {
+                foreach ((array) $rules as $rule) {
+                    if (is_array($rule)) {
+                        $walkNames($rule);
+                    } elseif (is_string($rule) && in_array(explode(':', $rule)[0], ['mimes', 'mimetypes', 'image', 'dimensions'], true)) {
+                        $mimeRule = explode(':', $rule)[0];
                         return;
                     }
                 }
+            };
+            $walkNames($normalized);
+            if ($mimeRule !== null) {
+                $entry['error'] = 'LW003 the rules use the ' . $mimeRule
+                    . ' rule: it reads the file\'s *content* type (finfo) and the edge cannot sniff the content like PHP does';
+            } else {
+                $entry['rules'] = $normalized;
             }
-        };
-        $walk($entry['rules']);
-        if ($objectRule !== null) {
-            $entry['error'] = 'the rules use a rule object (' . $objectRule . ') - the compiled rung evaluates the string rules only';
         }
     } catch (Throwable $e) {
         $entry['error'] = get_class($e) . ': ' . $e->getMessage();
