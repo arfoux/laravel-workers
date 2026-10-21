@@ -869,11 +869,25 @@ export function emitController(source, methodName, meta = {}) {
   // resolves the FormRequest, which validates and authorizes it). The compiled
   // handler does the same: validate first, then run the method body.
   const formRequestLines = [];
+  // The FormRequest's hook needs the compiled class: the handler imports the
+  // classes module (the class registry) and hands it to the runtime.
+  let usesFormRequestClass = false;
   for (const p of params) {
     if (p.inject !== 'request') continue;
     if (!p.typeFqcn || p.typeFqcn === REQUEST_FQCN) continue;
     const dumped = formRequestMap[p.typeFqcn];
     if (!dumped) continue;
+    // Laravel runs the FormRequest's prepareForValidation() BEFORE the
+    // validation (ValidatesWhenResolvedTrait::validateResolved), so the input
+    // the hook prepares is what the rules see.
+    if (Array.isArray(dumped.hooks) && dumped.hooks.includes('prepareForValidation')) {
+      usesFormRequestClass = true;
+      // The compiled class methods take the runtime as their first argument
+      // (`async function (rt, ...)`) - the caller passes it.
+      formRequestLines.push(
+        `    await rt.newClass(${JSON.stringify(p.typeFqcn)}, []).prepareForValidation(rt);`
+      );
+    }
     formRequestLines.push(
       `    await rt.request().validate(${JSON.stringify(dumped.rules || {})}, ` +
         `${JSON.stringify(dumped.messages || {})}, ${JSON.stringify(dumped.attributes || {})});`
@@ -891,7 +905,7 @@ export function emitController(source, methodName, meta = {}) {
   }
   // The compiled classes (the listeners, the services, the mailables): the
   // runtime builds the instances.
-  if (emitted.usedEvents || emitted.usedClasses) {
+  if (emitted.usedEvents || emitted.usedClasses || usesFormRequestClass) {
     lines.push(
       "import { classes as LW_CLASSES, eventListeners as LW_EVENT_LISTENERS } from '../classes.generated.mjs';"
     );
@@ -911,7 +925,7 @@ export function emitController(source, methodName, meta = {}) {
   if (emitted.usedGate) {
     lines.push('    policies: LW_POLICIES,');
   }
-  if (emitted.usedEvents || emitted.usedClasses) {
+  if (emitted.usedEvents || emitted.usedClasses || usesFormRequestClass) {
     lines.push('    classes: LW_CLASSES,');
   }
   if (emitted.usedEvents) {

@@ -204,7 +204,7 @@ export default {
     },
     { label: 'GET /posts (list after create)', method: 'GET', uri: '/posts', jar: true },
     {
-      label: 'POST /posts (FormRequest validation failure)',
+      label: 'POST /posts (the FormRequest hook prepares the input)',
       method: 'POST',
       uri: '/posts',
       jar: true,

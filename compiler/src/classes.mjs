@@ -513,6 +513,8 @@ function compileMethod(fqcn, methodNode, opts) {
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
     // A mailable: the fluent surface of Laravel's Mailable.
     mailable: !!opts.mailable,
+    // A FormRequest: the request surface of the kernel's base.
+    formRequest: !!opts.formRequest,
     // The injected services of the constructor (`$this->mailer`): their async
     // methods are awaited.
     injectedDeps: opts.injectedDeps instanceof Map ? opts.injectedDeps : new Map(),
@@ -682,7 +684,10 @@ export function compileClasses(dump, opts = {}) {
     // A mailable extends Laravel's Mailable: the compiled class extends the
     // kernel's base (the fluent surface + the payload).
     const isMailable = info.kind === 'mailable';
-    if (classNode.extends && !isMailable) {
+    // A FormRequest extends Laravel's FormRequest: the compiled class extends
+    // the kernel's base (the request surface the hooks use).
+    const isFormRequest = info.kind === 'formRequest';
+    if (classNode.extends && !isMailable && !isFormRequest) {
       errors.push({
         class: fqcn,
         message:
@@ -721,6 +726,8 @@ export function compileClasses(dump, opts = {}) {
         .filter(Boolean)
     );
     options.mailable = info.kind === 'mailable';
+    // A FormRequest: the request surface of the kernel's base (the hooks).
+    options.formRequest = info.kind === 'formRequest';
     const ctor = compileConstructor(fqcn, classNode, options);
     if (ctor.error) {
       errors.push({ class: fqcn, message: ctor.error, code: ctor.code });
@@ -768,7 +775,7 @@ export function compileClasses(dump, opts = {}) {
       methods,
       deps: ctor.deps || [],
       // A mailable extends the kernel's Mailable base.
-      base: info.kind === 'mailable' ? 'mailable' : null,
+      base: info.kind === 'mailable' ? 'mailable' : info.kind === 'formRequest' ? 'formRequest' : null,
     });
   }
 

@@ -1116,3 +1116,42 @@ class TagsCache
   assert.match(res.errors[0].message, /Cache::tags\(\) is not supported/);
   assert.match(res.errors[0].message, /BadMethodCallException/);
 });
+
+const FORM_REQUEST_SOURCE = `<?php
+namespace App\\Http\\Requests;
+
+use Illuminate\\Foundation\\Http\\FormRequest;
+
+class StorePostRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return ['title' => ['required']];
+    }
+
+    public function prepareForValidation(): void
+    {
+        $this->merge(['title' => trim((string) $this->input('title'))]);
+    }
+}
+`;
+
+test('classes: a FormRequest compiles - the hook is compiled and the base is the kernel\'s', () => {
+  // The dump registers the FormRequest class (kind 'formRequest'), the class
+  // compiler compiles every method of the class (the hook Laravel runs before
+  // the validation), and the base is the kernel's FormRequest - the request
+  // surface the hook uses (merge(), input(), all()).
+  const file = classFile('StorePostRequest', FORM_REQUEST_SOURCE);
+  const dump = {
+    events: {},
+    classes: {
+      'App\\Http\\Requests\\StorePostRequest': { file, kind: 'formRequest', ctor: [] },
+    },
+  };
+  const res = compileClasses(dump, OPTIONS);
+  assert.deepEqual(res.errors, [], 'the FormRequest compiles');
+  assert.match(res.code, /base: "formRequest"/, 'the base is the kernel\'s FormRequest');
+  assert.match(res.code, /prepareForValidation/, 'the hook is compiled');
+  assert.match(res.code, /this\.merge\(/, 'the hook writes into the request');
+  assert.match(res.code, /this\.input\(/, 'the hook reads the request');
+});

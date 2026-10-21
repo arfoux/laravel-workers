@@ -1292,6 +1292,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             rules: dumped.rules || {},
             messages: dumped.messages || {},
             attributes: dumped.attributes || {},
+            // The hooks Laravel runs on the request (prepareForValidation) -
+            // the compiled handler runs them in Laravel's order.
+            hooks: dumped.hooks || [],
           };
         }
         if (formRequestError) {

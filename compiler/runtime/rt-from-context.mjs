@@ -5,6 +5,7 @@ import { str as strHelpers } from '../../kernel/str.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
+import { FormRequest } from '../../kernel/form-request.mjs';
 
 // The Collection marker: the runtime's Collection class is created per rt (a
 // view renders with its OWN rt - buildRt() runs again for it), so an
@@ -586,7 +587,12 @@ export function buildRt(context, opts = {}) {
     // A mailable extends Laravel's Mailable: the compiled class gets the
     // kernel's base (the fluent surface + the payload).
     const built = entry.ctor(Array.isArray(args) ? args : [], deps);
-    const obj = entry.base === 'mailable' ? Object.assign(new Mailable(), built) : built;
+    const obj =
+      entry.base === 'mailable'
+        ? Object.assign(new Mailable(), built)
+        : entry.base === 'formRequest'
+          ? Object.assign(new FormRequest(rt.request()), built)
+          : built;
     // The runtime: a mailable renders its view through it (`__lwMail`).
     Object.defineProperty(obj, '__rt', { value: rt, enumerable: false, configurable: true });
     // The class of the instance (the dispatch needs it) — not enumerable, so a

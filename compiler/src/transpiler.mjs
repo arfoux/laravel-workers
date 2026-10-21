@@ -57,6 +57,11 @@ const MAILABLE_METHODS = new Set([
   'subject', 'view', 'with', 'from', 'to', 'cc', 'bcc', 'replyTo', 'text', 'html', 'build', 'envelope', 'content',
 ]);
 const MAIL_ASYNC = new Set(['send']);
+// The FormRequest's surface (Laravel's Illuminate\Foundation\Http\FormRequest
+// IS a request): the compiled FormRequest extends the kernel's base, so these
+// methods exist there. The rest of the request surface is NOT compiled - it
+// fails loud.
+const FORM_REQUEST_METHODS = new Set(['merge', 'input', 'all']);
 function mkErr(code, message, loc, hint) {
   const e = new Error(message);
   e.lw = { code, message, line: loc?.start?.line ?? 0, column: loc?.start?.column ?? 0, hint: hint || '' };
@@ -1765,6 +1770,10 @@ function txCall(node) {
         // be a promise — "Order [object Promise]").
         const callArgs = args ? 'rt, ' + args : 'rt';
         return txAwait(obj + '.' + meth + '(' + callArgs + ')', node, '$this->' + meth + '()');
+      } else if (CTX && CTX.formRequest && FORM_REQUEST_METHODS.has(meth)) {
+        // A FormRequest's request surface (the kernel's base): merge(), input(),
+        // all() - the hooks write into the request's input bag.
+        return expr;
       } else if (CTX && CTX.mailable && MAILABLE_METHODS.has(meth)) {
         // A mailable's fluent surface (Laravel's Mailable): subject(), view(),
         // with(), from(), to(), cc(), bcc(), replyTo(), text(), html().
@@ -2354,6 +2363,8 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
     // A mailable: the fluent surface of Laravel's Mailable.
     mailable: !!opts.mailable,
+    // A FormRequest: the request surface of the kernel's base.
+    formRequest: !!opts.formRequest,
     // The name `$this` compiles to (a constructor builds its own object).
     thisVar: opts.thisVar || null,
     // The model alias of each model variable (var -> alias/fqcn).

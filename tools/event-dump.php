@@ -157,6 +157,14 @@ $addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$
 // renders its own view). The dump also carries the VIEW the mailable renders
 // (the build compiles that view too - a mailable's view is not reached from
 // a route).
+// The FormRequests (app/Http/Requests): the build compiles them too, so the
+// hooks Laravel runs on them (prepareForValidation) are compiled and run.
+foreach (glob($appRoot . '/app/Http/Requests/*.php') ?: [] as $requestFile) {
+    $fqcn = 'App\\Http\\Requests\\' . basename($requestFile, '.php');
+    if (!class_exists($fqcn)) continue;
+    $addClass($fqcn, 'formRequest');
+}
+
 $mailViews = [];
 foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
     $fqcn = 'App\\Mail\\' . basename($mailFile, '.php');

@@ -312,17 +312,15 @@ test('the dump refuses every FormRequest hook the compiled rung does not run', {
   }
 });
 
-test('the dump refuses an overridden prepareForValidation() with the code + the reason', { skip }, () => {
+test('the dump REPORTS an overridden prepareForValidation() (the hook is compiled now)', { skip }, () => {
+  // The hook is compiled: the build compiles the FormRequest class, so the
+  // compiled handler runs the hook BEFORE the validation (Laravel's order) and
+  // the input the hook prepares is what the rules see.
   const entries = runDump([fqcnOf('PrepareRequest')]);
   const entry = entries.get(fqcnOf('PrepareRequest'));
   assert.ok(entry, 'the dump answered for PrepareRequest');
-  assert.match(entry.error, /^LW003 prepareForValidation\(\) is overridden/, 'the refusal carries the code');
-  assert.match(
-    entry.error,
-    /the compiled rung validates the dumped rules against the raw input and never runs it/,
-    'the reason says what the edge does instead'
-  );
-  assert.match(entry.error, /the working path: /, 'the reason names the path that works');
+  assert.equal(entry.error, null, 'the hook is compiled, not refused');
+  assert.deepEqual(entry.hooks, ['prepareForValidation'], 'the dump reports the hook');
 });
 
 test('the dump normalizes a rule object to Laravel\'s string form', { skip }, () => {

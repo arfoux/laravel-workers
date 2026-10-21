@@ -1556,6 +1556,7 @@ writeTree(tmpRoot, {
   'kernel/paginator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'paginator.mjs'), 'utf8'),
   'kernel/php-json.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'php-json.mjs'), 'utf8'),
   'kernel/mailable.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'mailable.mjs'), 'utf8'),
+  'kernel/form-request.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'form-request.mjs'), 'utf8'),
   'kernel/php-serialize.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'php-serialize.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(
     path.join(pkgDir, 'compiler', 'runtime', 'rt-from-context.mjs'),

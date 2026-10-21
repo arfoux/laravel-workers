@@ -91,6 +91,7 @@ foreach (array_slice($argv, 1) as $fqcn) {
         'messages' => [],
         'attributes' => [],
         'authorize' => true,
+        'hooks' => [],
         'error' => null,
     ];
 
@@ -107,13 +108,14 @@ foreach (array_slice($argv, 1) as $fqcn) {
             continue;
         }
 
-        if ($rc->hasMethod('prepareForValidation')) {
-            $m = $rc->getMethod('prepareForValidation');
-            if ($m->getDeclaringClass()->getName() === $fqcn) {
-                $entry['error'] = 'LW003 prepareForValidation() is overridden - Laravel runs the hook before the validation (Illuminate/Validation/ValidatesWhenResolvedTrait.php:19), so the app can change the input that is validated; the compiled rung validates the dumped rules against the raw input and never runs it (the validated input would differ) - the working path: normalize the input in the controller method (the compiled handler validates first, then runs the body), or write a port handler';
-                $out[] = $entry;
-                continue;
-            }
+        // The hooks the app declares. prepareForValidation() is COMPILED: the
+        // build compiles the FormRequest class, so the compiled handler runs
+        // the hook before the validation (Laravel's order:
+        // ValidatesWhenResolvedTrait::validateResolved) and the input the hook
+        // prepares is what the rules see.
+        $entry['hooks'] = [];
+        if (lw_formrequest_hook($rc, 'prepareForValidation')) {
+            $entry['hooks'][] = 'prepareForValidation';
         }
 
         // The other hooks Laravel runs on the FormRequest: each one changes
