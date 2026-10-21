@@ -185,6 +185,27 @@ foreach ($providers as $provider) {
             if (is_array($implements) && in_array('Illuminate\\Contracts\\Queue\\ShouldQueue', $implements, true)) {
                 $events[$eventClass]['queued'][] = $listenerClass;
             }
+            // The broadcast listeners (ShouldBroadcast / ShouldBroadcastNow):
+            // Laravel broadcasts the event to the channels after the response
+            // (the broadcast is queued); the edge has no broadcast driver, so
+            // the notification would never be sent - the compiled rung must
+            // refuse it, not run it silently.
+            foreach (['Illuminate\\Contracts\\Broadcasting\\ShouldBroadcast', 'Illuminate\\Contracts\\Broadcasting\\ShouldBroadcastNow'] as $broadcastIface) {
+                if (is_array($implements) && in_array($broadcastIface, $implements, true)) {
+                    $events[$eventClass]['broadcast'][] = $listenerClass;
+                    break;
+                }
+            }
+            // The after-commit listeners (ShouldDispatchAfterCommit /
+            // ShouldHandleEventsAfterCommit): Laravel defers them until the
+            // database transaction is committed; the edge has no transaction,
+            // so the timing would differ - the compiled rung refuses it.
+            foreach (['Illuminate\\Contracts\\Events\\ShouldDispatchAfterCommit', 'Illuminate\\Contracts\\Events\\ShouldHandleEventsAfterCommit'] as $afterCommitIface) {
+                if (is_array($implements) && in_array($afterCommitIface, $implements, true)) {
+                    $events[$eventClass]['afterCommit'][] = $listenerClass;
+                    break;
+                }
+            }
         }
     }
 }

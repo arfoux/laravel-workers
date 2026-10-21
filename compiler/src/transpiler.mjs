@@ -1087,6 +1087,23 @@ function txCall(node) {
     // compiled). Laravel dispatches synchronously, so the edge does too.
     if (
       (cls0 === 'Event' || cls0 === 'Illuminate\\Support\\Facades\\Event') &&
+      meth0 === 'dispatchUntil'
+    ) {
+      // Laravel's dispatchUntil() is the halt variant: it stops at the first
+      // non-null answer and returns it. The compiled dispatch runs EVERY
+      // listener and answers the array of the responses, so the compiled rung
+      // cannot answer Laravel's value here.
+      throw mkErr(
+        'LW002',
+        'Event::dispatchUntil() is not supported — it stops the chain at the first non-null answer and returns it ' +
+          '(the halt semantics); the compiled dispatch runs every listener and answers the array of the responses, so ' +
+          'it cannot answer Laravel\'s value — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    if (
+      (cls0 === 'Event' || cls0 === 'Illuminate\\Support\\Facades\\Event') &&
       meth0 === 'dispatch'
     ) {
       const args = node.arguments || [];

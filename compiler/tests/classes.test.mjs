@@ -421,6 +421,42 @@ test('classes: a listener that answers false stops the chain (Laravel)', async (
   assert.deepEqual(answer, []);
 });
 
+test('classes: a circular service dependency fails loud at build time (Laravel names the cycle)', () => {
+  // The build knows the whole graph (each compiled class records its deps),
+  // so the cycle is named at build time - the runtime guard is the safety
+  // net, not the first line of defence.
+  const a = classFile('A', `<?php
+namespace App\\Services;
+use App\\Services\\B;
+class A
+{
+    public function __construct(private B $b)
+    {
+    }
+}
+`);
+  const b = classFile('B', `<?php
+namespace App\\Services;
+use App\\Services\\A;
+class B
+{
+    public function __construct(private A $a)
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {},
+      classes: { 'App\\Services\\A': { file: a }, 'App\\Services\\B': { file: b } },
+    },
+    { ...OPTIONS, classes: new Set(['App\\Services\\A', 'App\\Services\\B']) }
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /Circular dependency detected \[App\\Services\\A, App\\Services\\B, App\\Services\\A\]/);
+  assert.equal(res.errors[0].code, 'LW002');
+});
+
 test('classes: the runtime names a circular service dependency (Laravel: circular dependency detected)', async () => {
   // A service that needs a service that needs it back: the edge would recurse
   // forever (a stack overflow with no cause). Laravel names the cycle.

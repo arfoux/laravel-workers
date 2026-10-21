@@ -699,6 +699,692 @@
       "status": "done",
       "code": "LW002",
       "reason": "Cache::tags() is not supported"
+    },
+    {
+      "id": "listener_broadcast",
+      "label": "A broadcast listener (`ShouldBroadcast`)",
+      "check": "classes",
+      "broadcast": true,
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Events\\PostPublished;\n\nclass L\n{\n    public function handle(PostPublished $event): void\n    {\n        $event->id;\n    }\n}\n",
+      "expect": "fail",
+      "note": "Laravel broadcasts the event to the channels after the response (the broadcast itself is queued). The edge has no broadcast driver, so the notification would never be sent - a silent no-op, so the build stops and the route that dispatches the event names the reason.",
+      "batch": "M49",
+      "status": "done",
+      "reason": "is a broadcast listener (ShouldBroadcast)"
+    },
+    {
+      "id": "listener_after_commit",
+      "label": "A listener dispatched after the commit (`ShouldDispatchAfterCommit`)",
+      "check": "classes",
+      "afterCommit": true,
+      "class_php": "<?php\nnamespace App\\Listeners;\n\nuse App\\Events\\PostPublished;\n\nclass L\n{\n    public function handle(PostPublished $event): void\n    {\n        $event->id;\n    }\n}\n",
+      "expect": "fail",
+      "note": "Laravel defers the listener until the database transaction is committed. The edge has no transaction, so the timing would differ - the build stops and the route that dispatches the event names the reason.",
+      "batch": "M49",
+      "status": "done",
+      "reason": "is dispatched after the commit (ShouldDispatchAfterCommit)"
+    },
+    {
+      "id": "event_dispatch_until",
+      "label": "`Event::dispatchUntil()` (the halt variant)",
+      "php": "\\Illuminate\\Support\\Facades\\Event::dispatchUntil(new PostPublished(1));",
+      "expect": "fail",
+      "note": "Laravel's dispatchUntil() stops the chain at the first non-null answer and returns it. The compiled dispatch runs EVERY listener and answers the array of the responses, so the compiled rung cannot answer Laravel's value here - it fails loud with the halt semantics named.",
+      "batch": "M49",
+      "status": "done",
+      "reason": "it stops the chain at the first non-null answer"
+    },
+    {
+      "id": "facade_app",
+      "label": "The `App` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\App"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\App::configure();",
+      "expect": "fail",
+      "note": "The App facade is not compiled at the edge (Laravel 13 lists 142 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the App facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_artisan",
+      "label": "The `Artisan` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Artisan"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Artisan::commandStartedAt();",
+      "expect": "fail",
+      "note": "The Artisan facade is not compiled at the edge (Laravel 13 lists 18 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Artisan facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_auth",
+      "label": "The `Auth` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Auth"
+      ],
+      "php": "        Auth::check();",
+      "expect": "ok",
+      "note": "The Auth facade has a compiled surface (Laravel 13 lists 58 methods; the probe uses a method that compiles).",
+      "batch": "M49",
+      "status": "done"
+    },
+    {
+      "id": "facade_blade",
+      "label": "The `Blade` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Blade"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Blade::compile();",
+      "expect": "fail",
+      "note": "The Blade facade is not compiled at the edge (Laravel 13 lists 43 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Blade facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_broadcast",
+      "label": "The `Broadcast` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Broadcast"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Broadcast::routes();",
+      "expect": "fail",
+      "note": "The Broadcast facade is not compiled at the edge (Laravel 13 lists 30 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Broadcast facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_bus",
+      "label": "The `Bus` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Bus"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Bus::chain();",
+      "expect": "fail",
+      "note": "The Bus facade is not compiled at the edge (Laravel 13 lists 48 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Bus facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_cache",
+      "label": "The `Cache` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Cache"
+      ],
+      "php": "        Cache::get('k');",
+      "expect": "ok",
+      "note": "The Cache facade has a compiled surface (Laravel 13 lists 65 methods; the probe uses a method that compiles).",
+      "batch": "M49",
+      "status": "done"
+    },
+    {
+      "id": "facade_cloud",
+      "label": "The `Cloud` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Cloud"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Cloud::hosted();",
+      "expect": "fail",
+      "note": "The Cloud facade is not compiled at the edge (Laravel 13 lists 8 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Cloud facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_concurrency",
+      "label": "The `Concurrency` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Concurrency"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Concurrency::driver();",
+      "expect": "fail",
+      "note": "The Concurrency facade is not compiled at the edge (Laravel 13 lists 14 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Concurrency facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_config",
+      "label": "The `Config` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Config"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Config::all();",
+      "expect": "fail",
+      "note": "The Config facade is not compiled at the edge (Laravel 13 lists 17 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Config facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_context",
+      "label": "The `Context` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Context"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Context::all();",
+      "expect": "fail",
+      "note": "The Context facade is not compiled at the edge (Laravel 13 lists 43 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Context facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_cookie",
+      "label": "The `Cookie` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Cookie"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Cookie::getQueuedCookies();",
+      "expect": "fail",
+      "note": "The Cookie facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Cookie facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_crypt",
+      "label": "The `Crypt` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Crypt"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Crypt::getKey();",
+      "expect": "fail",
+      "note": "The Crypt facade is not compiled at the edge (Laravel 13 lists 11 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Crypt facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_db",
+      "label": "The `DB` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\DB"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\DB::connection();",
+      "expect": "fail",
+      "note": "The DB facade is not compiled at the edge (Laravel 13 lists 113 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the DB facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_date",
+      "label": "The `Date` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Date"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Date::useDefault();",
+      "expect": "fail",
+      "note": "The Date facade is not compiled at the edge (Laravel 13 lists 95 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Date facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_event",
+      "label": "The `Event` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Event"
+      ],
+      "php": "        Event::dispatch(new PostPublished(1));",
+      "expect": "fail",
+      "note": "The Event facade is not compiled at the edge (Laravel 13 lists 33 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "Event::dispatch() needs an instance of a compiled event class"
+    },
+    {
+      "id": "facade_exceptions",
+      "label": "The `Exceptions` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Exceptions"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Exceptions::register();",
+      "expect": "fail",
+      "note": "The Exceptions facade is not compiled at the edge (Laravel 13 lists 34 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Exceptions facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_facade",
+      "label": "The `Facade` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Facade"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Facade::x();",
+      "expect": "fail",
+      "note": "The Facade facade is not compiled at the edge (Laravel 13 lists 0 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Facade facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_file",
+      "label": "The `File` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\File"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\File::when();",
+      "expect": "fail",
+      "note": "The File facade is not compiled at the edge (Laravel 13 lists 53 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the File facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_gate",
+      "label": "The `Gate` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Gate"
+      ],
+      "php": "        Gate::allows('view', new PostPublished(1));",
+      "expect": "fail",
+      "note": "The Gate facade is not compiled at the edge (Laravel 13 lists 26 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "new PostPublished() is not supported - only the PHP built-in exceptions compile (Exception"
+    },
+    {
+      "id": "facade_hash",
+      "label": "The `Hash` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Hash"
+      ],
+      "php": "        Hash::make('x');",
+      "expect": "ok",
+      "note": "The Hash facade has a compiled surface (Laravel 13 lists 15 methods; the probe uses a method that compiles).",
+      "batch": "M49",
+      "status": "done"
+    },
+    {
+      "id": "facade_http",
+      "label": "The `Http` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Http"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Http::response();",
+      "expect": "fail",
+      "note": "The Http facade is not compiled at the edge (Laravel 13 lists 99 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Http facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_image",
+      "label": "The `Image` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Image"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Image::getDefaultDriver();",
+      "expect": "fail",
+      "note": "The Image facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Image facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_lang",
+      "label": "The `Lang` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Lang"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Lang::getSelector();",
+      "expect": "fail",
+      "note": "The Lang facade is not compiled at the edge (Laravel 13 lists 30 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Lang facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_log",
+      "label": "The `Log` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Log"
+      ],
+      "php": "        Log::info('x');",
+      "expect": "ok",
+      "note": "The Log facade has a compiled surface (Laravel 13 lists 31 methods; the probe uses a method that compiles).",
+      "batch": "M49",
+      "status": "done"
+    },
+    {
+      "id": "facade_mail",
+      "label": "The `Mail` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Mail"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Mail::mailer();",
+      "expect": "fail",
+      "note": "The Mail facade is not compiled at the edge (Laravel 13 lists 56 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "Mail::mailer() is not supported"
+    },
+    {
+      "id": "facade_maintenancemode",
+      "label": "The `MaintenanceMode` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\MaintenanceMode"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\MaintenanceMode::getDefaultDriver();",
+      "expect": "fail",
+      "note": "The MaintenanceMode facade is not compiled at the edge (Laravel 13 lists 7 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the MaintenanceMode facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_notification",
+      "label": "The `Notification` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Notification"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Notification::channel();",
+      "expect": "fail",
+      "note": "The Notification facade is not compiled at the edge (Laravel 13 lists 34 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Notification facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_paralleltesting",
+      "label": "The `ParallelTesting` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\ParallelTesting"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\ParallelTesting::callSetUpProcessCallbacks();",
+      "expect": "fail",
+      "note": "The ParallelTesting facade is not compiled at the edge (Laravel 13 lists 16 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the ParallelTesting facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_password",
+      "label": "The `Password` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Password"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Password::broker();",
+      "expect": "fail",
+      "note": "The Password facade is not compiled at the edge (Laravel 13 lists 11 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Password facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_pipeline",
+      "label": "The `Pipeline` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Pipeline"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Pipeline::thenReturn();",
+      "expect": "fail",
+      "note": "The Pipeline facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Pipeline facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_process",
+      "label": "The `Process` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Process"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Process::forever();",
+      "expect": "fail",
+      "note": "The Process facade is not compiled at the edge (Laravel 13 lists 39 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Process facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_queue",
+      "label": "The `Queue` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Queue"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Queue::connected();",
+      "expect": "fail",
+      "note": "The Queue facade is not compiled at the edge (Laravel 13 lists 85 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "Queue::connected() is not supported"
+    },
+    {
+      "id": "facade_ratelimiter",
+      "label": "The `RateLimiter` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\RateLimiter"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\RateLimiter::flushMacros();",
+      "expect": "fail",
+      "note": "The RateLimiter facade is not compiled at the edge (Laravel 13 lists 18 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the RateLimiter facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_redirect",
+      "label": "The `Redirect` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Redirect"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Redirect::back();",
+      "expect": "fail",
+      "note": "The Redirect facade is not compiled at the edge (Laravel 13 lists 19 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Redirect facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_redis",
+      "label": "The `Redis` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Redis"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Redis::connection();",
+      "expect": "fail",
+      "note": "The Redis facade is not compiled at the edge (Laravel 13 lists 302 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Redis facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_request",
+      "label": "The `Request` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Request"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Request::capture();",
+      "expect": "fail",
+      "note": "The Request facade is not compiled at the edge (Laravel 13 lists 192 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Request facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_response",
+      "label": "The `Response` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Response"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Response::make();",
+      "expect": "fail",
+      "note": "The Response facade is not compiled at the edge (Laravel 13 lists 21 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Response facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_route",
+      "label": "The `Route` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Route"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Route::getLastGroupPrefix();",
+      "expect": "fail",
+      "note": "The Route facade is not compiled at the edge (Laravel 13 lists 101 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Route facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_schedule",
+      "label": "The `Schedule` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Schedule"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Schedule::events();",
+      "expect": "fail",
+      "note": "The Schedule facade is not compiled at the edge (Laravel 13 lists 84 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Schedule facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_schema",
+      "label": "The `Schema` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Schema"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Schema::morphUsingUuids();",
+      "expect": "fail",
+      "note": "The Schema facade is not compiled at the edge (Laravel 13 lists 52 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Schema facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_session",
+      "label": "The `Session` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Session"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Session::shouldBlock();",
+      "expect": "fail",
+      "note": "The Session facade is not compiled at the edge (Laravel 13 lists 70 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Session facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_storage",
+      "label": "The `Storage` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Storage"
+      ],
+      "php": "        Storage::get('x');",
+      "expect": "ok",
+      "note": "The Storage facade has a compiled surface (Laravel 13 lists 84 methods; the probe uses a method that compiles).",
+      "batch": "M49",
+      "status": "done"
+    },
+    {
+      "id": "facade_url",
+      "label": "The `URL` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\URL"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\URL::full();",
+      "expect": "fail",
+      "note": "The URL facade is not compiled at the edge (Laravel 13 lists 46 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the URL facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_validator",
+      "label": "The `Validator` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Validator"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Validator::includeUnvalidatedArrayKeys();",
+      "expect": "fail",
+      "note": "The Validator facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Validator facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_view",
+      "label": "The `View` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\View"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\View::incrementRender();",
+      "expect": "fail",
+      "note": "The View facade is not compiled at the edge (Laravel 13 lists 79 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the View facade is not compiled at the edge"
+    },
+    {
+      "id": "facade_vite",
+      "label": "The `Vite` facade",
+      "uses": [
+        "Illuminate\\Support\\Facades\\Vite"
+      ],
+      "php": "        \\Illuminate\\Support\\Facades\\Vite::preloadedAssets();",
+      "expect": "fail",
+      "note": "The Vite facade is not compiled at the edge (Laravel 13 lists 32 methods): the build refuses it with that reason - a port handler answers it.",
+      "batch": "M49",
+      "status": "done",
+      "code": "LW002",
+      "reason": "the Vite facade is not compiled at the edge"
     }
-  ]
+  ],
+  "meta": {
+    "facade_total": 47,
+    "facade_source": "the vendored Illuminate/Support/Facades directory (Laravel 13) - every facade must have a row"
+  }
 }

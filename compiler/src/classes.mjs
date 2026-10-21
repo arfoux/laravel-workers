@@ -517,8 +517,12 @@ export function compileClasses(dump, opts = {}) {
   // run later, in a worker); the edge has no consumer, so running them inline
   // would be a different behaviour — they are not compiled.
   const queued = new Set();
+  const broadcast = new Set();
+  const afterCommit = new Set();
   for (const info of Object.values(events)) {
     for (const q of info.queued || []) queued.add(q);
+    for (const b of info.broadcast || []) broadcast.add(b);
+    for (const a of info.afterCommit || []) afterCommit.add(a);
   }
 
   for (const [fqcn, info] of Object.entries(classMap)) {
@@ -528,6 +532,32 @@ export function compileClasses(dump, opts = {}) {
         message:
           'the listener ' + fqcn + ' is queued (ShouldQueue) — Laravel pushes it to the queue and it runs later; ' +
           'the edge has no queue consumer, so the compiled rung does not run it inline',
+      });
+      continue;
+    }
+    // The broadcast listeners (ShouldBroadcast / ShouldBroadcastNow): Laravel
+    // broadcasts the event to the channels after the response (the broadcast
+    // itself is queued); the edge has no broadcast driver, so the
+    // notification would never be sent - that is a silent no-op, so the
+    // compiled rung refuses it.
+    if (broadcast.has(fqcn)) {
+      errors.push({
+        class: fqcn,
+        message:
+          'the listener ' + fqcn + ' is a broadcast listener (ShouldBroadcast) — Laravel broadcasts the event ' +
+          'after the response; the edge has no broadcast driver, so the notification would never be sent',
+      });
+      continue;
+    }
+    // The after-commit listeners (ShouldDispatchAfterCommit): Laravel defers
+    // them until the transaction is committed; the edge has no transaction,
+    // so the timing would differ - the compiled rung refuses it.
+    if (afterCommit.has(fqcn)) {
+      errors.push({
+        class: fqcn,
+        message:
+          'the listener ' + fqcn + ' is dispatched after the commit (ShouldDispatchAfterCommit) — Laravel defers it ' +
+          'until the transaction is committed; the edge has no transaction, so the timing would differ',
       });
       continue;
     }
@@ -581,6 +611,40 @@ export function compileClasses(dump, opts = {}) {
     }
     meta[fqcn] = { file: info.file, methods: Object.keys(methods) };
     entries.push({ fqcn, ctor: ctor.js, methods, deps: ctor.deps || [] });
+  }
+
+  // The circular service dependencies (A needs B that needs A): the edge
+  // would build them forever (a stack overflow with no cause), and Laravel
+  // names the cycle at build time - so the build does too.
+  {
+    const depsOf = new Map(entries.map((e) => [e.fqcn, (e.deps || []).filter((d) => d && d.kind === 'class').map((d) => d.type)]));
+    const stack = [];
+    const done = new Set();
+    const visit = (fqcn) => {
+      if (done.has(fqcn)) return null;
+      const at = stack.indexOf(fqcn);
+      if (at >= 0) return stack.slice(at).concat(fqcn);
+      stack.push(fqcn);
+      for (const dep of depsOf.get(fqcn) || []) {
+        if (!depsOf.has(dep)) continue;
+        const cycle = visit(dep);
+        if (cycle) return cycle;
+      }
+      stack.pop();
+      done.add(fqcn);
+      return null;
+    };
+    for (const e of entries) {
+      const cycle = visit(e.fqcn);
+      if (cycle) {
+        errors.push({
+          class: cycle[0],
+          message: 'Circular dependency detected [' + cycle.join(', ') + '] — the edge would build the services forever',
+          code: 'LW002',
+        });
+        break;
+      }
+    }
   }
 
   // The event -> listener map (only the events whose classes compiled).

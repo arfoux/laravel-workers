@@ -52,6 +52,69 @@ function contentMimeRuleOf(rules) {
   return null;
 }
 
+// The facades of Laravel 13 (the vendored Illuminate/Support/Facades directory). A
+// facade outside the compiled surface is not an Eloquent model: the reason must
+// name the facade, or the operator chases the wrong thing.
+const FACADE_NAMES = new Set([
+  'App',
+  'Artisan',
+  'Auth',
+  'Blade',
+  'Broadcast',
+  'Bus',
+  'Cache',
+  'Cloud',
+  'Concurrency',
+  'Config',
+  'Context',
+  'Cookie',
+  'Crypt',
+  'DB',
+  'Date',
+  'Event',
+  'Exceptions',
+  'Facade',
+  'File',
+  'Gate',
+  'Hash',
+  'Http',
+  'Image',
+  'Lang',
+  'Log',
+  'Mail',
+  'MaintenanceMode',
+  'Notification',
+  'ParallelTesting',
+  'Password',
+  'Pipeline',
+  'Process',
+  'Queue',
+  'RateLimiter',
+  'Redirect',
+  'Redis',
+  'Request',
+  'Response',
+  'Route',
+  'Schedule',
+  'Schema',
+  'Session',
+  'Storage',
+  'URL',
+  'Validator',
+  'View',
+  'Vite',
+]);
+
+// A facade class (Laravel 13's Illuminate/Support/Facades) — the class name
+// is the facade's short name.
+function facadeName(fqcn) {
+  const short = String(fqcn).split('\\').pop();
+  return FACADE_NAMES.has(short) ? short : null;
+}
+function isFacadeClass(fqcn) {
+  return facadeName(fqcn) !== null;
+}
+
 const TYPE_MAP = {
   string: 'string',
   int: 'int',
@@ -581,6 +644,18 @@ export function emitController(source, methodName, meta = {}) {
       continue;
     }
     if (!modelAliases.has(c.alias)) {
+      if (isFacadeClass(c.fqcn)) {
+        errors.push(
+          lwErr(
+            'LW002',
+            `the ${facadeName(c.fqcn)} facade is not compiled at the edge — the compiled rung has no ${facadeName(c.fqcn)} ` +
+              `surface; write a port handler for this route — ` + PORT_HINT,
+            null,
+            PORT_HINT
+          )
+        );
+        continue;
+      }
       errors.push(
         lwErr(
           'LW003',

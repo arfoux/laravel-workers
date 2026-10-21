@@ -59,7 +59,13 @@ function probeClasses(c) {
   const listener = c.class_listener || 'App\\Listeners\\L';
   const dump = {
     events: {
-      [event]: { file: eventFile, listeners: [listener], queued: c.queued ? [listener] : [] },
+      [event]: {
+        file: eventFile,
+        listeners: [listener],
+        queued: c.queued ? [listener] : [],
+        broadcast: c.broadcast ? [listener] : [],
+        afterCommit: c.afterCommit ? [listener] : [],
+      },
     },
     classes: {
       [event]: { file: eventFile },
@@ -169,6 +175,18 @@ if (process.argv.includes('--dump')) {
   }
   process.exit(0);
 }
+// The facade coverage: every facade of Laravel 13 has a row (the coverage is
+// enumerable, not an opinion).
+const facadeRows = rows.filter((r) => r.id.startsWith('facade_'));
+// The facades Laravel 13 has (the vendored Illuminate/Support/Facades
+// directory) - the registry declares the total, so a missing row shows up as
+// a coverage gap instead of a silent omission.
+const facadeTotal = (DATA.meta && Number(DATA.meta.facade_total)) || facadeRows.length;
+const facadeCounts = {
+  total: facadeRows.length,
+  ok: facadeRows.filter((r) => r.verdict === 'ok').length,
+  fail: facadeRows.filter((r) => r.verdict === 'fail').length,
+};
 const counts = {
   ok: rows.filter((r) => r.verdict === 'ok').length,
   fail: rows.filter((r) => r.verdict === 'fail').length,
@@ -191,7 +209,7 @@ const table = [
     return `| ${r.label} | ${v}${drift} | ${r.note} | ${r.batch} |`;
   }),
   '',
-  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.`,
+  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state. The Laravel 13 facades: **${facadeCounts.total} of ${facadeTotal} classified (${facadeCounts.ok} compile, ${facadeCounts.fail} fail loud) — the facade coverage is ${facadeTotal ? Math.round((facadeCounts.total / facadeTotal) * 100) : 0}%** (every facade of the vendored Illuminate/Support/Facades must have a row).`,
 ].join('\n');
 
 if (CHECK) {

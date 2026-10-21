@@ -435,8 +435,58 @@ or it **fails the build** - there is no third state (no silent degradation).
 | A listener that injects a framework service (the mailer) | ✅ compiles | The edge has no container: the worker hands the live service down (the mailer) and the compiled listener gets it. Its async methods are awaited in the compiled body (a promise must never leak into the response). | M44 |
 | A listener that pushes to the queue | ⛔ fails loud (`LW002`) | The refusal holds in a compiled class too: the job would never run at the edge (the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job). | M45 |
 | A listener that uses a tagged cache | ⛔ fails loud (`LW002`) | The D1 `database` store has no tags: in Laravel this route 500s with BadMethodCallException("This cache store does not support tagging."); the build refuses the route before it ships (stricter than Laravel, not a parity). | M45 |
+| A broadcast listener (`ShouldBroadcast`) | ⛔ fails loud | Laravel broadcasts the event to the channels after the response (the broadcast itself is queued). The edge has no broadcast driver, so the notification would never be sent - a silent no-op, so the build stops and the route that dispatches the event names the reason. | M49 |
+| A listener dispatched after the commit (`ShouldDispatchAfterCommit`) | ⛔ fails loud | Laravel defers the listener until the database transaction is committed. The edge has no transaction, so the timing would differ - the build stops and the route that dispatches the event names the reason. | M49 |
+| `Event::dispatchUntil()` (the halt variant) | ⛔ fails loud (`LW002`) | Laravel's dispatchUntil() stops the chain at the first non-null answer and returns it. The compiled dispatch runs EVERY listener and answers the array of the responses, so the compiled rung cannot answer Laravel's value here - it fails loud with the halt semantics named. | M49 |
+| The `App` facade | ⛔ fails loud (`LW002`) | The App facade is not compiled at the edge (Laravel 13 lists 142 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Artisan` facade | ⛔ fails loud (`LW002`) | The Artisan facade is not compiled at the edge (Laravel 13 lists 18 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Auth` facade | ✅ compiles | The Auth facade has a compiled surface (Laravel 13 lists 58 methods; the probe uses a method that compiles). | M49 |
+| The `Blade` facade | ⛔ fails loud (`LW002`) | The Blade facade is not compiled at the edge (Laravel 13 lists 43 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Broadcast` facade | ⛔ fails loud (`LW002`) | The Broadcast facade is not compiled at the edge (Laravel 13 lists 30 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Bus` facade | ⛔ fails loud (`LW002`) | The Bus facade is not compiled at the edge (Laravel 13 lists 48 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Cache` facade | ✅ compiles | The Cache facade has a compiled surface (Laravel 13 lists 65 methods; the probe uses a method that compiles). | M49 |
+| The `Cloud` facade | ⛔ fails loud (`LW002`) | The Cloud facade is not compiled at the edge (Laravel 13 lists 8 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Concurrency` facade | ⛔ fails loud (`LW002`) | The Concurrency facade is not compiled at the edge (Laravel 13 lists 14 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Config` facade | ⛔ fails loud (`LW002`) | The Config facade is not compiled at the edge (Laravel 13 lists 17 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Context` facade | ⛔ fails loud (`LW002`) | The Context facade is not compiled at the edge (Laravel 13 lists 43 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Cookie` facade | ⛔ fails loud (`LW002`) | The Cookie facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Crypt` facade | ⛔ fails loud (`LW002`) | The Crypt facade is not compiled at the edge (Laravel 13 lists 11 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `DB` facade | ⛔ fails loud (`LW002`) | The DB facade is not compiled at the edge (Laravel 13 lists 113 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Date` facade | ⛔ fails loud (`LW002`) | The Date facade is not compiled at the edge (Laravel 13 lists 95 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Event` facade | ⛔ fails loud (`LW002`) | The Event facade is not compiled at the edge (Laravel 13 lists 33 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Exceptions` facade | ⛔ fails loud (`LW002`) | The Exceptions facade is not compiled at the edge (Laravel 13 lists 34 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Facade` facade | ⛔ fails loud (`LW002`) | The Facade facade is not compiled at the edge (Laravel 13 lists 0 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `File` facade | ⛔ fails loud (`LW002`) | The File facade is not compiled at the edge (Laravel 13 lists 53 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Gate` facade | ⛔ fails loud (`LW002`) | The Gate facade is not compiled at the edge (Laravel 13 lists 26 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Hash` facade | ✅ compiles | The Hash facade has a compiled surface (Laravel 13 lists 15 methods; the probe uses a method that compiles). | M49 |
+| The `Http` facade | ⛔ fails loud (`LW002`) | The Http facade is not compiled at the edge (Laravel 13 lists 99 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Image` facade | ⛔ fails loud (`LW002`) | The Image facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Lang` facade | ⛔ fails loud (`LW002`) | The Lang facade is not compiled at the edge (Laravel 13 lists 30 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Log` facade | ✅ compiles | The Log facade has a compiled surface (Laravel 13 lists 31 methods; the probe uses a method that compiles). | M49 |
+| The `Mail` facade | ⛔ fails loud (`LW002`) | The Mail facade is not compiled at the edge (Laravel 13 lists 56 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `MaintenanceMode` facade | ⛔ fails loud (`LW002`) | The MaintenanceMode facade is not compiled at the edge (Laravel 13 lists 7 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Notification` facade | ⛔ fails loud (`LW002`) | The Notification facade is not compiled at the edge (Laravel 13 lists 34 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `ParallelTesting` facade | ⛔ fails loud (`LW002`) | The ParallelTesting facade is not compiled at the edge (Laravel 13 lists 16 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Password` facade | ⛔ fails loud (`LW002`) | The Password facade is not compiled at the edge (Laravel 13 lists 11 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Pipeline` facade | ⛔ fails loud (`LW002`) | The Pipeline facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Process` facade | ⛔ fails loud (`LW002`) | The Process facade is not compiled at the edge (Laravel 13 lists 39 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Queue` facade | ⛔ fails loud (`LW002`) | The Queue facade is not compiled at the edge (Laravel 13 lists 85 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `RateLimiter` facade | ⛔ fails loud (`LW002`) | The RateLimiter facade is not compiled at the edge (Laravel 13 lists 18 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Redirect` facade | ⛔ fails loud (`LW002`) | The Redirect facade is not compiled at the edge (Laravel 13 lists 19 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Redis` facade | ⛔ fails loud (`LW002`) | The Redis facade is not compiled at the edge (Laravel 13 lists 302 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Request` facade | ⛔ fails loud (`LW002`) | The Request facade is not compiled at the edge (Laravel 13 lists 192 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Response` facade | ⛔ fails loud (`LW002`) | The Response facade is not compiled at the edge (Laravel 13 lists 21 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Route` facade | ⛔ fails loud (`LW002`) | The Route facade is not compiled at the edge (Laravel 13 lists 101 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Schedule` facade | ⛔ fails loud (`LW002`) | The Schedule facade is not compiled at the edge (Laravel 13 lists 84 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Schema` facade | ⛔ fails loud (`LW002`) | The Schema facade is not compiled at the edge (Laravel 13 lists 52 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Session` facade | ⛔ fails loud (`LW002`) | The Session facade is not compiled at the edge (Laravel 13 lists 70 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Storage` facade | ✅ compiles | The Storage facade has a compiled surface (Laravel 13 lists 84 methods; the probe uses a method that compiles). | M49 |
+| The `URL` facade | ⛔ fails loud (`LW002`) | The URL facade is not compiled at the edge (Laravel 13 lists 46 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Validator` facade | ⛔ fails loud (`LW002`) | The Validator facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `View` facade | ⛔ fails loud (`LW002`) | The View facade is not compiled at the edge (Laravel 13 lists 79 methods): the build refuses it with that reason - a port handler answers it. | M49 |
+| The `Vite` facade | ⛔ fails loud (`LW002`) | The Vite facade is not compiled at the edge (Laravel 13 lists 32 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 
-**55 constructs: 33 compile, 19 fail loud, 3 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state.
+**105 constructs: 38 compile, 64 fail loud, 3 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state. The Laravel 13 facades: **47 of 47 classified (5 compile, 42 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
 
 <!-- construct-audit:end -->
 
