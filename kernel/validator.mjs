@@ -174,10 +174,110 @@ function parsePipeString(str) {
   }
   return out.filter((s) => s.length > 0);
 }
+// PHP's str_getcsv($str, escape: '\\') — the parser Laravel uses for a rule's
+// parameters (Illuminate\Validation\ValidationRuleParser::parseParameters).
+// A quoted field keeps its commas, a doubled quote is one quote, the escape
+// char makes the next char literal (and stays in the value), and nothing is
+// trimmed. Ported from php-src's php_fgetcsv (ext/standard/file.c) with no
+// stream to read on.
+export function strGetcsv(str) {
+  const s = String(str);
+  // The line end (a trailing \r\n) is not part of the fields.
+  let limit = s.length;
+  if (limit > 0 && s[limit - 1] === '\n') limit--;
+  if (limit > 0 && s[limit - 1] === '\r') limit--;
+  const lineEnd = s.slice(limit);
+  const isSpace = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\v' || c === '\f' || c === '\r';
+  const out = [];
+  let bptr = 0;
+  let incLen = 0;
+  let first = true;
+  do {
+    incLen = bptr < limit ? 1 : 0;
+    let field = '';
+    // A field that starts with whitespace is an enclosed field only when the
+    // whitespace is followed by the enclosure (PHP skips it then).
+    if (incLen === 1) {
+      let tmp = bptr;
+      while (tmp < limit && s[tmp] !== ',' && isSpace(s[tmp])) tmp++;
+      if (tmp < limit && s[tmp] === '"') bptr = tmp;
+    }
+    if (first && bptr === limit) return [null]; // a blank line
+    first = false;
+    if (incLen !== 0 && s[bptr] === '"') {
+      // The enclosed field: state 0 = plain, 1 = escaped, 2 = a closing
+      // enclosure to confirm.
+      bptr++;
+      let hunk = bptr;
+      let state = 0;
+      for (;;) {
+        if (bptr >= limit) {
+          if (state === 2) field += s.slice(hunk, bptr - 1);
+          else if (state === 1) field += s.slice(hunk, bptr);
+          else field += s.slice(hunk, bptr) + lineEnd;
+          hunk = bptr;
+          break;
+        }
+        if (state === 1) {
+          // The escaped char is literal; the escape char stays in the value.
+          bptr++;
+          state = 0;
+        } else if (state === 2) {
+          if (s[bptr] !== '"') {
+            // The enclosure closed the field.
+            field += s.slice(hunk, bptr - 1);
+            hunk = bptr;
+            break;
+          }
+          // A doubled quote is one quote.
+          field += s.slice(hunk, bptr);
+          bptr++;
+          hunk = bptr;
+          state = 0;
+        } else {
+          if (s[bptr] === '"') state = 2;
+          else if (s[bptr] === '\\') state = 1;
+          bptr++;
+        }
+      }
+      // The text after the closing enclosure, up to the delimiter.
+      incLen = bptr < limit ? 1 : 0;
+      for (;;) {
+        if (incLen === 0) break;
+        if (s[bptr] === ',') break;
+        bptr += incLen;
+        incLen = bptr < limit ? 1 : 0;
+      }
+      field += s.slice(hunk, bptr);
+      bptr += incLen; // the delimiter
+    } else {
+      // The plain field: up to the delimiter.
+      const start = bptr;
+      for (;;) {
+        if (incLen === 0) break;
+        if (s[bptr] === ',') break;
+        bptr += incLen;
+        incLen = bptr < limit ? 1 : 0;
+      }
+      field = s.slice(start, bptr);
+      if (bptr < limit && s[bptr] === ',') bptr++;
+    }
+    out.push(field);
+  } while (incLen > 0);
+  return out;
+}
+
 function parseRuleToken(token) {
   const idx = token.indexOf(':');
-  if (idx === -1) return { name: token.toLowerCase(), param: null, raw: token };
-  return { name: token.slice(0, idx).toLowerCase(), param: token.slice(idx + 1), raw: token };
+  if (idx === -1) return { name: token.toLowerCase(), param: null, params: [], raw: token };
+  const name = token.slice(0, idx).toLowerCase();
+  const param = token.slice(idx + 1);
+  // Laravel keeps a regex rule's parameter raw; every other rule's parameters
+  // are parsed as CSV.
+  const params = (name === 'regex' || name === 'not_regex' || name === 'notregex')
+    ? [param]
+    : strGetcsv(param);
+  return { name, param, params, raw: token };
 }
 
 // Illuminate\Validation\Concerns\ValidatesAttributes::validateDateFormat():
@@ -430,28 +530,28 @@ export class Validator {
     for (const r of rules) {
       if (r.name === 'required') return { required: true, rule: 'required', param: null };
       if (r.name === 'required_if') {
-        const [other, ...vals] = String(r.param).split(',');
+        const [other, ...vals] = r.params;
         const has = this._isPresent(other);
         if (has && vals.map(String).includes(String(this.get(other)))) {
           return { required: true, rule: r.name, param: r.param };
         }
       } else if (r.name === 'required_unless') {
-        const [other, ...vals] = String(r.param).split(',');
+        const [other, ...vals] = r.params;
         const has = this._isPresent(other);
         if (!has || !vals.map(String).includes(String(this.get(other)))) {
           return { required: true, rule: r.name, param: r.param };
         }
       } else if (r.name === 'required_with') {
-        const others = String(r.param).split(',');
+        const others = r.params;
         if (others.some((o) => !this._empty(o))) return { required: true, rule: r.name, param: r.param };
       } else if (r.name === 'required_without') {
-        const others = String(r.param).split(',');
+        const others = r.params;
         if (others.some((o) => this._empty(o))) return { required: true, rule: r.name, param: r.param };
       } else if (r.name === 'required_with_all') {
-        const others = String(r.param).split(',');
+        const others = r.params;
         if (others.every((o) => !this._empty(o))) return { required: true, rule: r.name, param: r.param };
       } else if (r.name === 'required_without_all') {
-        const others = String(r.param).split(',');
+        const others = r.params;
         if (others.every((o) => this._empty(o))) return { required: true, rule: r.name, param: r.param };
       }
     }
@@ -462,12 +562,12 @@ export class Validator {
     for (const r of rules) {
       if (r.name === 'prohibited') return { prohibited: true };
       if (r.name === 'prohibited_if') {
-        const [other, ...vals] = String(r.param).split(',');
+        const [other, ...vals] = r.params;
         if (this._isPresent(other) && vals.map(String).includes(String(this.get(other)))) {
           return { prohibited: true };
         }
       } else if (r.name === 'prohibited_unless') {
-        const [other, ...vals] = String(r.param).split(',');
+        const [other, ...vals] = r.params;
         if (!this._isPresent(other) || !vals.map(String).includes(String(this.get(other)))) {
           return { prohibited: true };
         }
@@ -483,14 +583,14 @@ export class Validator {
       const p = String(r.param == null ? '' : r.param);
       if (r.name === 'exclude') return true;
       if (r.name === 'exclude_if' || r.name === 'exclude_unless') {
-        const [other, ...vals] = p.split(',').map((s) => s.trim());
+        const [other, ...vals] = r.params;
         const has = this._isPresent(other);
         const match = has && vals.includes(String(this.get(other)));
         if (r.name === 'exclude_if' ? match : !match) return true;
       } else if (r.name === 'exclude_with') {
-        if (p.split(',').map((s) => s.trim()).some((o) => this._isPresent(o))) return true;
+        if (r.params.some((o) => this._isPresent(o))) return true;
       } else if (r.name === 'exclude_without') {
-        if (p.split(',').map((s) => s.trim()).every((o) => !this._isPresent(o))) return true;
+        if (r.params.every((o) => !this._isPresent(o))) return true;
       }
     }
     return false;
@@ -502,14 +602,14 @@ export class Validator {
       const p = String(r.param == null ? '' : r.param);
       if (r.name === 'missing') return { enforced: true, rule: 'missing', param: null };
       if (r.name === 'missing_if' || r.name === 'missing_unless') {
-        const [other, ...vals] = p.split(',').map((s) => s.trim());
+        const [other, ...vals] = r.params;
         const has = this._isPresent(other);
         const match = has && vals.includes(String(this.get(other)));
         if (r.name === 'missing_if' ? match : !match) return { enforced: true, rule: r.name, param: p };
       } else if (r.name === 'missing_with') {
-        if (p.split(',').map((s) => s.trim()).some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+        if (r.params.some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
       } else if (r.name === 'missing_with_all') {
-        if (p.split(',').map((s) => s.trim()).every((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+        if (r.params.every((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
       }
     }
     return { enforced: false };
@@ -520,14 +620,14 @@ export class Validator {
     for (const r of rules) {
       const p = String(r.param == null ? '' : r.param);
       if (r.name === 'present_if' || r.name === 'present_unless') {
-        const [other, ...vals] = p.split(',').map((s) => s.trim());
+        const [other, ...vals] = r.params;
         const has = this._isPresent(other);
         const match = has && vals.includes(String(this.get(other)));
         if (r.name === 'present_if' ? match : !match) return { enforced: true, rule: r.name, param: p };
       } else if (r.name === 'present_with') {
-        if (p.split(',').map((s) => s.trim()).some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+        if (r.params.some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
       } else if (r.name === 'present_with_all') {
-        if (p.split(',').map((s) => s.trim()).every((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
+        if (r.params.every((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
       }
     }
     return { enforced: false };
@@ -610,8 +710,7 @@ export class Validator {
   }
 
   async _resolveUniqueExists(field, value, rule, hasNumeric) {
-    const param = String(rule.param == null ? '' : rule.param);
-    const parts = param.split(',').map((s) => s.trim());
+    const parts = rule.params;
     const table = parts[0];
     const column = parts[1] || field;
     // unique: table,column,except,idColumn
@@ -688,7 +787,7 @@ export class Validator {
       case 'alpha_dash': return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
       case 'accepted': return value === true || value === 1 || value === '1' || value === 'yes' || value === 'on' || value === 'true';
       case 'accepted_if': {
-        const [other, ...vals] = String(p).split(',');
+        const [other, ...vals] = rule.params;
         if (this._isPresent(other) && vals.map(String).includes(String(this.get(other)))) {
           return value === true || value === 1 || value === '1' || value === 'yes' || value === 'on' || value === 'true';
         }
@@ -697,7 +796,7 @@ export class Validator {
       case 'declined': return value === false || value === 0 || value === '0' || value === 'no' || value === 'off' || value === 'false';
       case 'digits': return typeof value !== 'undefined' && /^\d+$/.test(String(value)) && String(value).length === Number(p);
       case 'digits_between': {
-        const [a, b] = String(p).split(',').map(Number);
+        const [a, b] = rule.params.map(Number);
         return /^\d+$/.test(String(value)) && String(value).length >= a && String(value).length <= b;
       }
       case 'multiple_of': {
@@ -718,11 +817,11 @@ export class Validator {
       case 'uppercase': return typeof value === 'string' && value === value.toUpperCase();
       case 'hex_color': return typeof value === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value);
       case 'starts_with': {
-        const list = String(p).split(',');
+        const list = rule.params;
         return typeof value === 'string' && list.some((s) => value.startsWith(s));
       }
       case 'ends_with': {
-        const list = String(p).split(',');
+        const list = rule.params;
         return typeof value === 'string' && list.some((s) => value.endsWith(s));
       }
       case 'before': {
@@ -780,7 +879,7 @@ export class Validator {
         return size <= Number(p);
       }
       case 'between': {
-        const [a, b] = String(p).split(',');
+        const [a, b] = rule.params;
         const size = this._size(value, hasNumeric);
         if (size === null) return false;
         if (typeof size === 'string') return compareDecimal(size, a) >= 0 && compareDecimal(size, b) <= 0;
@@ -793,12 +892,10 @@ export class Validator {
         return size === Number(p);
       }
       case 'in': {
-        const list = String(p).split(',');
-        return list.includes(String(value));
+        return rule.params.includes(String(value));
       }
       case 'not_in': {
-        const list = String(p).split(',');
-        return !list.includes(String(value));
+        return !rule.params.includes(String(value));
       }
       case 'same': return value === this.get(p);
       case 'different': return value !== this.get(p);
@@ -824,23 +921,23 @@ export class Validator {
         try { return !new RegExp(pattern, flags).test(value); } catch { return false; }
       }
       case 'doesnt_start_with': {
-        const list = String(p == null ? '' : p).split(',').map((s) => s.trim()).filter((s) => s !== '');
+        const list = rule.params.filter((s) => s !== '');
         return !(typeof value === 'string') || !list.some((pre) => value.startsWith(pre));
       }
       case 'doesnt_end_with': {
-        const list = String(p == null ? '' : p).split(',').map((s) => s.trim()).filter((s) => s !== '');
+        const list = rule.params.filter((s) => s !== '');
         return !(typeof value === 'string') || !list.some((suf) => value.endsWith(suf));
       }
       case 'list':
         return Array.isArray(value);
       case 'required_array_keys': {
         if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-        const keys = String(p == null ? '' : p).split(',').map((s) => s.trim());
+        const keys = rule.params;
         return keys.every((k) => Object.prototype.hasOwnProperty.call(value, k));
       }
       case 'array_keys': {
         if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-        const keys = String(p == null ? '' : p).split(',').map((s) => s.trim());
+        const keys = rule.params;
         return Object.keys(value).every((k) => keys.includes(k));
       }
       case 'in_array': {
@@ -857,7 +954,7 @@ export class Validator {
         const m = /^[+-]?\d*\.?(\d*)$/.exec(String(value));
         if (!m) return false;
         const decimals = m[1].length;
-        const parts = String(p == null ? '' : p).split(',').map((s) => s.trim());
+        const parts = rule.params;
         const min = Number(parts[0]);
         if (!Number.isFinite(min)) return false;
         if (parts.length < 2) return decimals === min;
@@ -954,6 +1051,13 @@ export class Validator {
 
   _addError(field, rule, param) {
     const display = this._displayName(field);
+    // The message placeholders take the rule's parameters the way Laravel
+    // parses them (CSV, except for a regex rule's raw parameter).
+    const parsedParams = param === null || param === undefined
+      ? []
+      : (rule === 'regex' || rule === 'not_regex' || rule === 'notregex'
+        ? [String(param)]
+        : strGetcsv(String(param)));
     let msg = this._customMessage(field, rule);
     const type = this._attributeType(field);
     const lowerRule = phpSnake(rule);
@@ -976,7 +1080,7 @@ export class Validator {
       attribute: field,
       display,
       rule: lowerRule,
-      params: param === null || param === undefined ? [] : String(param).split(','),
+      params: parsedParams,
       displayOf: (other) => this._displayName(other),
       valueOf: (other) => this.get(other),
       data: this.data,

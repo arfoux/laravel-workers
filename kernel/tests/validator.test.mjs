@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Validator, validate } from '../validator.mjs';
+import { Validator, validate, strGetcsv } from '../validator.mjs';
 
 test('required/nullable/sometimes', async () => {
   let v = new Validator({ a: '' }, { a: 'required' });
@@ -57,6 +57,33 @@ test('in/not_in', async () => {
   assert.equal(await new Validator({ r: 'admin' }, { r: 'in:admin,user' }).passes(), true);
   assert.equal(await new Validator({ r: 'guest' }, { r: 'in:admin,user' }).passes(), false);
   assert.equal(await new Validator({ r: 'guest' }, { r: 'not_in:admin,user' }).passes(), true);
+});
+
+test("the rule parameters are parsed like Laravel's (CSV)", async () => {
+  // Laravel parses a rule's parameters with str_getcsv(): the quotes are
+  // gone and a quoted field keeps its commas.
+  assert.equal(await new Validator({ r: 'admin' }, { r: 'in:"admin","user"' }).passes(), true);
+  assert.equal(await new Validator({ r: 'user' }, { r: 'in:"admin","user"' }).passes(), true);
+  assert.equal(await new Validator({ r: 'guest' }, { r: 'in:"admin","user"' }).passes(), false);
+  assert.equal(await new Validator({ r: 'a,b' }, { r: 'in:"a,b"' }).passes(), true);
+  // Nothing is trimmed: the spaces are part of the value.
+  assert.equal(await new Validator({ r: ' a ' }, { r: 'in: a , b ' }).passes(), true);
+  assert.equal(await new Validator({ r: 'a' }, { r: 'in: a , b ' }).passes(), false);
+  // A dependent rule looks the other field up by the exact name Laravel uses.
+  assert.equal(
+    await new Validator({ status: 'active' }, { reason: 'required_if: status , pending' }).passes(),
+    true,
+  );
+});
+
+test('str_getcsv matches PHP', () => {
+  assert.deepEqual(strGetcsv('admin,user'), ['admin', 'user']);
+  assert.deepEqual(strGetcsv('"admin","user"'), ['admin', 'user']);
+  assert.deepEqual(strGetcsv(' a , b '), [' a ', ' b ']);
+  assert.deepEqual(strGetcsv(''), [null]);
+  assert.deepEqual(strGetcsv('"a,b",c'), ['a,b', 'c']);
+  assert.deepEqual(strGetcsv('"a""b",c'), ['a"b', 'c']);
+  assert.deepEqual(strGetcsv('a,'), ['a', '']);
 });
 
 test('same/different/confirmed', async () => {

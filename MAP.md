@@ -341,6 +341,8 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 
 - **M60 - the mail payload is proven byte-for-byte (2026-10-21):** the unit tests lock the payload's shape, but the proof is the **shadow**: the PHP oracle captures Laravel's `MessageSent` event (the from/to/cc/bcc/replyTo/subject/html/text) and the harness compares those fields with the kernel mailer's outbox - the `POST /mail-demo` step (a mailable + its own view) matches on all 8 fields (the log line is never compared). Getting there fixed three real gaps: the **dump** took the mailables inside the constructor closure (so they were dumped only with a constructor), the build did not compile a mailable's **view** (a mailable's view is not reached from a route) and the handler did not get the **class registry** (a compiled mailable is a compiled class). The shadow: **39/45 byte-identical, 0 unexplained** (87% byte-identical, 100% accounted).
 
+- **M61a - the validation rules take Laravel's parameters (2026-10-21):** Laravel parses a rule's parameters with `str_getcsv` (`Illuminate\Validation\ValidationRuleParser::parseParameters`) - the edge split them with a plain `,`. A **quoted** parameter (the shape Laravel's own `Rule::in(['admin','user'])` normalizes to: `in:"admin","user"`) was compared with its quotes still on, so **every** valid value was rejected (a 422 where Laravel answers 200). The kernel parses the parameters like PHP does now: a quoted field keeps its commas, a doubled quote is one quote, the escape char makes the next char literal, and **nothing is trimmed** (Laravel never trims - so `required_if: status , pending` looked up the field `' status '` in Laravel, not `status`). Probed against PHP 8.3 itself: 500 random parameter strings, 0 differences. The rule objects of M61 normalize to exactly this shape, so they depend on it.
+
 ## B. Current state
 
 | Component | State |
@@ -467,7 +469,7 @@ Source: `laravel/docs@13.x` file listing, 105 pages, checked 2026-10. Legend: �
 | upgrade | ⛔ | meta; upgrade = recompile + parity |
 | urls | ✅ | url/route/asset; signed URLs |
 | valet | ⛔ | local env |
-| validation | 🟡 | 60+ rules; `$request->validate()` → redirect-back / 422 JSON (M19); unique/exists via D1; `$attributes` display names + wildcard custom messages (T10); the messages are **Laravel 13's own** (`kernel/validation-messages.mjs` + the generated `kernel/validation-messages.data.mjs` — the app's published `lang/` file wins, the build dumps it); a **rule object** (`Rule::file()->max()`) and a FormRequest that overrides `prepareForValidation()` fail loud (the compiled rung evaluates the string rules only) |
+| validation | 🟡 | 60+ rules; `$request->validate()` → redirect-back / 422 JSON (M19); unique/exists via D1; `$attributes` display names + wildcard custom messages (T10); the messages are **Laravel 13's own** (`kernel/validation-messages.mjs` + the generated `kernel/validation-messages.data.mjs` — the app's published `lang/` file wins, the build dumps it); a **rule object** (`Rule::file()->max()`) and a FormRequest that overrides `prepareForValidation()` fail loud (the compiled rung evaluates the string rules only); the rule parameters are parsed like Laravel (CSV - `in:"a","b"` works, nothing is trimmed) (M61a) |
 | verification | 🟡 | signed URLs + mail (signed URLs ok; mail wiring pending) |
 | views | 🟡 | compiled view handlers (echo/if/concat subset) |
 | vite | ✅ | manifest shims; proven today |

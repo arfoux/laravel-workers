@@ -362,6 +362,11 @@ stay refused, with the reason).
 | M68 | the hard pages (🔴) | broadcasting, images, processes, redis, reverb | each page gets its padanan (SSE/polling for the broadcasting, the D1 blob store for the images) or the explicit refusal | the docs gate + the construct audit | the parts that need a long-lived connection | medium | low |
 | M69 | the app timezone | localization, helpers, eloquent | the app's `app.timezone` reaches the edge: the model's timestamps, the date casts, the validator's `today`/`tomorrow` and the Carbon stub answer in the app's timezone — **today the compiled rung answers in UTC** (a documented divergence, the code says so) | the shadow: a route that renders a date, against the real app's timezone | the `Carbon` methods the stub does not implement (`diffForHumans`, `isoFormat`, the `CarbonImmutable` API) | medium | medium |
 
+**M61a (done, 2026-10-21)** - the kernel parses a rule's parameters with Laravel's own `str_getcsv`
+(`ValidationRuleParser::parseParameters`): a **quoted** parameter (the shape `Rule::in(['admin','user'])` normalizes to -
+`in:"admin","user"`) was compared with its quotes still on, so every valid value was rejected, and the dependent rules
+trimmed the parameters where Laravel never trims. M61's rule objects depend on this.
+
 **The rule of the sweep**: a page's trade (🟡) is only closed when the construct behind it
 **compiles and is proven** — never by writing a nicer sentence. A construct that cannot be
 answered like PHP at the edge **stays fail loud**, with the reason the operator needs (what
