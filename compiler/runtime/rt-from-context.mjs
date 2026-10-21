@@ -1766,6 +1766,47 @@ export function buildRt(context, opts = {}) {
     // a different body (Laravel's bytes are the parity).
     body: phpJsonEncode(value == null ? null : value),
   });
+  // Laravel's Router::toResponse (Illuminate/Routing/Router.php:929-953): the
+  // value a controller returns becomes the response - a string is the body
+  // (text/html), an array or an object is JSON, null is an empty 200, and a
+  // model that was just created answers 201.
+  rt.toResponse = (value) => {
+    // A response the controller already built (`view()`, `response()->json()`,
+    // `redirect()`) passes through untouched - Laravel's prepareResponse does
+    // the same with a Response instance.
+    if (
+      value && typeof value === 'object' && !Array.isArray(value) &&
+      typeof value.status === 'number' && value.body !== undefined &&
+      typeof value.toJSON !== 'function'
+    ) {
+      return value;
+    }
+    if (value === null || value === undefined) {
+      return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: '' };
+    }
+    if (typeof value === 'string') {
+      return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: value };
+    }
+    if (Array.isArray(value)) return rt.json(value);
+    if (typeof value === 'object') {
+      // A model that was just created: Laravel answers 201 (a JsonResponse).
+      if (value.wasRecentlyCreated && typeof value.toJSON === 'function') {
+        return rt.json(value.toJSON(), 201);
+      }
+      // Laravel's Model is Stringable (`__toString()` is `toJson()`), so a
+      // model that is returned is its JSON with the text/html type.
+      if (typeof value.toJSON === 'function') {
+        return {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+          body: phpJsonEncode(value.toJSON()),
+        };
+      }
+      return rt.json(value);
+    }
+    // A number or a boolean: Laravel's Response with the value as the body.
+    return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: String(value) };
+  };
   // The redirect, with Laravel's flash modifiers. The flash lives in the
   // session (it is read by the *next* request), exactly like Laravel's
   // RedirectResponse::with()/withInput()/withErrors().

@@ -867,8 +867,14 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('  try {');
   for (const l of paramLines) lines.push(l);
   for (const l of formRequestLines) lines.push(l);
+  // The body runs in its own function: the value it returns is converted the
+  // way Laravel's Router::toResponse converts it (a string is the body, an
+  // array is JSON, null is an empty 200). A method that returns nothing
+  // answers an empty 200 - Laravel does not fail there.
+  lines.push('    const __lwResult = await (async () => {');
   if (emitted.code) lines.push(emitted.code);
-  lines.push('    throw new Error(' + JSON.stringify('controller ' + info.fqcn + '@' + methodName + ' returned no response') + ');');
+  lines.push('    })();');
+  lines.push('    return rt.toResponse(__lwResult);');
   lines.push('  } catch (e) {');
   lines.push('    if (e && e.lwKernel) throw e;');
   lines.push('    if (e && e.status) {');

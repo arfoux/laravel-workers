@@ -2288,3 +2288,54 @@ test('emit: a mailable that the build compiled compiles (the fluent form)', () =
   // the response).
   assert.match(res.code, /await rt\.mail\(\)\.to\("a@b\.co"\)\.send\(rt\.newClass\(/);
 });
+
+test('emit+runtime: the value a controller returns is converted like Laravel\'s Router::toResponse', async () => {
+  // Laravel converts the returned value (Illuminate/Routing/Router.php:929-953):
+  // a string is the body (text/html), an array is JSON, an object is JSON, null
+  // is an empty 200 - and a model that was just created answers 201.
+  // Every case gets its own method name: the helper imports the compiled
+  // module by that name (the import is cached per name).
+  let n = 0;
+  const run = async (body) => {
+    const name = 'demo' + ++n;
+    const src = '<?php\n' +
+      'namespace App\\Http\\Controllers;\n' +
+      'class C {\n' +
+      '    public function ' + name + '()\n' +
+      '    {\n' +
+      '        ' + body + '\n' +
+      '    }\n' +
+      '}\n';
+    const handle = await handlerFromSource(src, name, {
+      routeUri: '/demo',
+      routeParams: [],
+      models: [],
+      views: [],
+    });
+    return handle({ params: {}, request: {} }, {});
+  };
+
+  let res = await run('return "hello";');
+  assert.equal(res.status, 200);
+  assert.equal(res.body, 'hello');
+  assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
+
+  res = await run('return ["a" => 1];');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'application/json');
+  assert.equal(res.body, '{"a":1}');
+
+  res = await run('return null;');
+  assert.equal(res.status, 200);
+  assert.equal(res.body, '');
+
+  // A void method answers an empty 200 (Laravel does not fail there).
+  res = await run('$x = 1;');
+  assert.equal(res.status, 200);
+  assert.equal(res.body, '');
+
+  // A response the controller built itself passes through untouched.
+  res = await run('return response("built");');
+  assert.equal(res.status, 200);
+  assert.equal(res.body, 'built');
+});

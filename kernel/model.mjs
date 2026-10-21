@@ -361,6 +361,9 @@ export class Model {
     const instance = new this();
     instance.fill(attributes);
     await instance.save(db);
+    // Laravel's `wasRecentlyCreated` (Model.php:1893): the model was created
+    // by this call, so a controller that returns it answers 201.
+    instance.wasRecentlyCreated = true;
     return instance;
   }
 
