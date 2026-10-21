@@ -273,3 +273,18 @@ test('DatabaseCacheStore: prefix is applied inside the store', async () => {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].key, PREFIX + 'k');
 });
+
+test('a TTL of 0 forgets the key (Laravel: Repository::put)', async () => {
+  // Laravel's Repository::put() (Cache/Repository.php:367-380): a NULL ttl
+  // means "forever"; a ttl of 0 (or less) FORGETS the key
+  // (`if ($seconds <= 0) { return $this->forget($key); }`). The edge stored it
+  // for ten years (now + 315360000).
+  const sqlite = makeSqlite();
+  const store = new DatabaseCacheStore(d1(sqlite), { table: 'cache', prefix: PREFIX, clock: () => NOW });
+  await store.put('k', 'v', 60);
+  assert.notEqual(await store.get('k'), null, 'the key is stored');
+  await store.put('k', 'v', 0);
+  assert.equal(await store.get('k'), null, 'a ttl of 0 forgets the key');
+  await store.put('k2', 'v');
+  assert.notEqual(await store.get('k2'), null, 'no ttl stores the key (forever)');
+});

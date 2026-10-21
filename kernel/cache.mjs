@@ -140,10 +140,20 @@ export class DatabaseCacheStore {
 
   /** DatabaseStore::putMany() — one upsert per row (D1 has no multi-row upsert). */
   async putMany(values, seconds) {
-    // DatabaseStore::put(): a TTL of 0 (or less) means "forever" - Laravel
-    // stores it as now + 315360000 (a year), never as an expired row.
-    const ttl = phpIntCastValue(seconds);
-    const expiration = ttl > 0 ? this.currentTime() + ttl : this.currentTime() + FOREVER_SECONDS;
+    // Laravel's Repository::put() (Cache/Repository.php:367-380): a NULL ttl
+    // means "forever" ($this->forever($key, $value)); a ttl of 0 (or less)
+    // FORGETS the key (`if ($seconds <= 0) { return $this->forget($key); }`).
+    // The edge stored a ttl of 0 for TEN YEARS (now + 315360000) - a key that
+    // Laravel drops was kept forever.
+    const ttl = seconds === undefined || seconds === null ? null : phpIntCastValue(seconds);
+    if (ttl !== null && ttl <= 0) {
+      let forgotten = 0;
+      for (const key of Object.keys(values)) {
+        forgotten += await this.forget(key) ? 1 : 0;
+      }
+      return forgotten > 0;
+    }
+    const expiration = ttl === null ? this.currentTime() + FOREVER_SECONDS : this.currentTime() + ttl;
     let changes = 0;
     for (const [key, value] of Object.entries(values)) {
       const res = await this.db
