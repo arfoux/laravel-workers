@@ -158,12 +158,20 @@ export function buildRt(context, opts = {}) {
     }
     return NaN;
   };
+  // A PHP array: a list or a plain object (the compiled side represents an
+  // array as an object literal; a model instance is not one).
+  const isPhpArray = (v) => {
+    if (Array.isArray(v)) return true;
+    if (v === null || typeof v !== 'object') return false;
+    const proto = Object.getPrototypeOf(v);
+    return proto === Object.prototype || proto === null;
+  };
   const phpTypeName = (v) => {
     if (v === null || v === undefined) return 'null';
     if (typeof v === 'boolean') return 'bool';
     if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
     if (typeof v === 'string') return 'string';
-    if (Array.isArray(v)) return 'array';
+    if (isPhpArray(v)) return 'array';
     return 'object';
   };
   const arithOperands = (op, a, b) => {
@@ -177,6 +185,15 @@ export function buildRt(context, opts = {}) {
     return [na, nb];
   };
   rt.add = (a, b) => {
+    // PHP 8: array + array is the union (the left keys win); every other
+    // combination follows the arithmetic rules. A PHP array is a plain object
+    // (the compiled side) or a list.
+    if (isPhpArray(a) && isPhpArray(b)) {
+      const out = {};
+      for (const k of Object.keys(a)) out[k] = a[k];
+      for (const k of Object.keys(b)) if (!Object.prototype.hasOwnProperty.call(out, k)) out[k] = b[k];
+      return out;
+    }
     const p = arithOperands('+', a, b);
     return p[0] + p[1];
   };
@@ -910,12 +927,13 @@ export function buildRt(context, opts = {}) {
   };
   rt.div = (a, b) => {
     const p = arithOperands('/', a, b);
-    if (p[1] === 0) throw new Error('Division by zero');
+    // PHP's DivisionByZeroError (the class name reaches the 500).
+    if (p[1] === 0) throw rt.newError('DivisionByZeroError', 'Division by zero');
     return p[0] / p[1];
   };
   rt.mod = (a, b) => {
     const p = arithOperands('%', a, b);
-    if (p[1] === 0) throw new Error('Modulo by zero');
+    if (p[1] === 0) throw rt.newError('DivisionByZeroError', 'Modulo by zero');
     return Math.trunc(p[0]) % Math.trunc(p[1]);
   };
   rt.pow = (a, b) => {

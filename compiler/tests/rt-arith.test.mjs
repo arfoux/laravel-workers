@@ -47,6 +47,23 @@ test('rt-arith: a division by zero is a DivisionByZeroError', () => {
   // PHP: 1/0 => DivisionByZeroError: Division by zero; 1%0 => Modulo by zero
   assert.throws(() => rt.div(1, 0), /Division by zero/);
   assert.throws(() => rt.mod(1, 0), /Modulo by zero/);
+  // The PHP class name survives to the 500.
+  try {
+    rt.div(1, 0);
+    assert.fail('the division by zero must throw');
+  } catch (e) {
+    assert.equal(e.name, 'DivisionByZeroError');
+  }
+});
+
+test('rt-arith: array + array is the union (PHP)', () => {
+  // PHP: [1] + [2] => [1]; ['a'=>1] + ['b'=>2] => ['a'=>1,'b'=>2];
+  // ['a'=>1] + ['a'=>2] => ['a'=>1] (the left keys win).
+  assert.deepEqual(rt.add([1], [2]), { 0: 1 });
+  assert.deepEqual(rt.add({ a: 1 }, { b: 2 }), { a: 1, b: 2 });
+  assert.deepEqual(rt.add({ a: 1 }, { a: 2 }), { a: 1 });
+  // An array with a scalar is a TypeError (PHP).
+  assert.throws(() => rt.add([1], 'x'), /Unsupported operand types: array \+ string/);
 });
 
 test('rt-arith: the modulo truncates its operands to int (PHP)', () => {
