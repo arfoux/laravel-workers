@@ -1981,22 +1981,29 @@ function walkStatement(node, lines, indent, ctx) {
       }
       lines.push(indent + '}');
       break;
-    case 'while':
-      lines.push(indent + 'while (rt.truthy(' + tx(node.test) + ')) {');
-      walkChildren(childStatements(node.body), lines, indent + '  ', ctx);
+    case 'while': {
+      // The loop has its own break label: a `break` inside it breaks the
+      // LOOP (PHP), not an enclosing switch.
+      const lb = '__l' + (walkStatement._lb = (walkStatement._lb || 0) + 1);
+      lines.push(indent + lb + ': while (rt.truthy(' + tx(node.test) + ')) {');
+      walkChildren(childStatements(node.body), lines, indent + '  ', { ...(ctx || {}), breakLabel: lb });
       lines.push(indent + '}');
       break;
-    case 'do':
-      lines.push(indent + 'do {');
-      walkChildren(childStatements(node.body), lines, indent + '  ', ctx);
+    }
+    case 'do': {
+      const lb = '__l' + (walkStatement._lb = (walkStatement._lb || 0) + 1);
+      lines.push(indent + lb + ': do {');
+      walkChildren(childStatements(node.body), lines, indent + '  ', { ...(ctx || {}), breakLabel: lb });
       lines.push(indent + '} while (rt.truthy(' + tx(node.test) + '));');
       break;
+    }
     case 'for': {
-      const ctx2 = ctx || {};
+      const lb = '__l' + (walkStatement._lb = (walkStatement._lb || 0) + 1);
+      const ctx2 = { ...(ctx || {}), breakLabel: lb };
       const init = (node.init || []).map(tx).join(', ');
       const test = (node.test || []).length ? 'rt.truthy(' + tx(node.test[0]) + ')' : 'true';
       const incr = (node.increment || []).map(tx).join(', ');
-      lines.push(indent + 'for (' + init + '; ' + test + '; ' + incr + ') {');
+      lines.push(indent + lb + ': for (' + init + '; ' + test + '; ' + incr + ') {');
       walkChildren(childStatements(node.body), lines, indent + '  ', ctx2);
       lines.push(indent + '}');
       break;
@@ -2027,10 +2034,11 @@ function walkStatement(node, lines, indent, ctx) {
           PORT_HINT
         );
       }
-      lines.push(indent + 'for (const ' + tmp + ' of rt.entries(' + tx(node.source) + ')) {');
+      const lb = '__l' + (walkStatement._lb = (walkStatement._lb || 0) + 1);
+      lines.push(indent + lb + ': for (const ' + tmp + ' of rt.entries(' + tx(node.source) + ')) {');
       if (node.key) lines.push(indent + '  ' + tx(node.key) + ' = ' + tmp + '[0];');
       lines.push(indent + '  ' + tx(node.value) + ' = ' + tmp + '[1];');
-      walkChildren(childStatements(node.body), lines, indent + '  ', ctx);
+      walkChildren(childStatements(node.body), lines, indent + '  ', { ...(ctx || {}), breakLabel: lb });
       lines.push(indent + '}');
       break;
     }
