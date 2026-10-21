@@ -2373,3 +2373,28 @@ test('emit: a model that overrides the route binding fails loud (LW003)', () => 
   assert.match(e.message, /overrides resolveRouteBinding\(\)/);
   assert.match(e.message, /Laravel binds the model through that method/);
 });
+
+test('emit: a grouped use keeps its prefix and a snake_case route parameter binds', () => {
+  // A grouped import (`use App\Models\{Post};`): PHP resolves the prefix, so
+  // the Request/Model type is found.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\{Post};\n' +
+    'class C {\n' +
+    '    public function show(Post $blogPost)\n' +
+    '    {\n' +
+    '        return $blogPost->title;\n' +
+    '    }\n' +
+    '}\n';
+  const code = emitController(src, 'show', {
+    routeParams: ['blog_post'],
+    models: [
+      { alias: 'Post', fqcn: 'App\\Models\\Post', notCompiled: [], routeKey: 'id', primaryKey: 'id' },
+    ],
+    views: [],
+  });
+  assert.deepEqual(code.errors, [], 'the grouped use resolves and the parameter binds');
+  // Laravel's ImplicitRouteBinding::getParameterName(): the exact name or its
+  // snake_case form - so the segment is read under the route's name.
+  assert.match(code.code, /rt\.param\(ctx\.params, "blog_post"/);
+});

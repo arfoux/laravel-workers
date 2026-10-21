@@ -10,6 +10,7 @@
 //     (params, model classes, view names) before it can emit code;
 //   emitController(source, method, meta) -> the final handler module source.
 import parser from 'php-parser';
+import { snake } from '../../kernel/str.mjs';
 import { transpileControllerMethod } from './transpiler.mjs';
 import { viewFileName } from './view-name.mjs';
 
@@ -214,11 +215,15 @@ function collectUses(children) {
   const uses = {};
   for (const n of children) {
     if (n.kind === 'usegroup') {
+      // A grouped import (`use App\Models\{Post, Comment};`): php-parser puts
+      // the group prefix on the usegroup node and the UNQUALIFIED name on each
+      // item - PHP resolves the prefix, so the compiler does too.
+      const prefix = nodeName(n.name);
       for (const item of n.items || []) {
         const full = nodeName(item.name);
         if (!full) continue;
         const alias = item.alias ? nodeName(item.alias) : full.split('\\').pop();
-        uses[alias] = full;
+        uses[alias] = prefix ? prefix + '\\' + full : full;
       }
     } else if (n.kind === 'use') {
       const full = nodeName(n.name);
@@ -602,14 +607,24 @@ export function emitController(source, methodName, meta = {}) {
     }
     if (p.modelBound) {
       // Laravel's implicit binding binds by NAME: the route parameter must
-      // carry the same name as the method's parameter.
-      if (!routeParams.includes(p.name)) {
+      // carry the same name as the method's parameter - or its snake_case form
+      // (ImplicitRouteBinding::getParameterName(): the exact name, else
+      // Str::snake($name) - 'blogPost' matches the route's 'blog_post').
+      let routeParamName = routeParams.includes(p.name) ? p.name : null;
+      if (!routeParamName) {
+        const wanted = snake(p.name);
+        for (const r of routeParams) {
+          if (snake(r) === wanted) { routeParamName = r; break; }
+        }
+      }
+      p.routeParamName = routeParamName;
+      if (!routeParamName) {
         errors.push(
           lwErr(
             'LW004',
             `the model-bound parameter $${p.name} has no matching route parameter (the route has: ${
               routeParams.join(', ') || 'none'
-            }) — Laravel's implicit binding binds by name — ` + PORT_HINT,
+            }) — Laravel's implicit binding binds by name (or its snake_case form) — ` + PORT_HINT,
             null,
             PORT_HINT
           )
@@ -819,7 +834,7 @@ export function emitController(source, methodName, meta = {}) {
       seg++;
       return (
         `    let ${vname(p.name)} = (await rt.model(${JSON.stringify(p.modelBound.fqcn)}).findOrFail(` +
-        `rt.param(ctx.params, ${JSON.stringify(p.name)}, "raw", false, null)));`
+        `rt.param(ctx.params, ${JSON.stringify(p.routeParamName || p.name)}, "raw", false, null)));`
       );
     }
     const segName = seg < routeParams.length ? routeParams[seg] : p.name;
