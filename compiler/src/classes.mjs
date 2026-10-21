@@ -684,9 +684,17 @@ export function compileClasses(dump, opts = {}) {
     // A mailable extends Laravel's Mailable: the compiled class extends the
     // kernel's base (the fluent surface + the payload).
     const isMailable = info.kind === 'mailable';
-    // A FormRequest extends Laravel's FormRequest: the compiled class extends
-    // the kernel's base (the request surface the hooks use).
-    const isFormRequest = info.kind === 'formRequest';
+    // A FormRequest extends LARAVEL's FormRequest: the compiled class extends
+    // the kernel's base (the request surface the hooks use). A FormRequest that
+    // extends its OWN base class is still refused - the inherited methods are
+    // not compiled, so the class would miss them at the edge.
+    const parentName = classNode.extends
+      ? String(nodeName(classNode.extends) || '').replace(/^\\/, '')
+      : '';
+    const parentFqcn =
+      (parsed.imports instanceof Map && parsed.imports.get(parentName)) || parentName;
+    const isFormRequest =
+      info.kind === 'formRequest' && parentFqcn === 'Illuminate\\Foundation\\Http\\FormRequest';
     if (classNode.extends && !isMailable && !isFormRequest) {
       errors.push({
         class: fqcn,

@@ -1155,3 +1155,47 @@ test('classes: a FormRequest compiles - the hook is compiled and the base is the
   assert.match(res.code, /this\.merge\(/, 'the hook writes into the request');
   assert.match(res.code, /this\.input\(/, 'the hook reads the request');
 });
+
+test('emit: the controller runs the FormRequest hook before the validation (awaited, with the runtime)', () => {
+  // The compiled class methods are `async function (rt, ...)` - the caller
+  // passes the runtime, so the call must pass it - and the promise must be
+  // awaited, and the hook must run BEFORE the validation (Laravel's order:
+  // ValidatesWhenResolvedTrait::validateResolved). The shadow cannot cover
+  // this in the repo (the fixture app lives in %TEMP%), so this is the guard.
+  const src = `<?php
+namespace App\\Http\\Controllers;
+
+use App\\Http\\Requests\\StorePostRequest;
+
+class C
+{
+    public function store(StorePostRequest $request)
+    {
+        return $request->input('title');
+    }
+}
+`;
+  const code = emitController(src, 'store', {
+    routeParams: [],
+    models: [],
+    views: [],
+    formRequests: {
+      'App\\Http\\Requests\\StorePostRequest': {
+        rules: { title: ['required'] },
+        messages: {},
+        attributes: {},
+        hooks: ['prepareForValidation'],
+      },
+    },
+  });
+  assert.deepEqual(code.errors, [], 'the controller compiles');
+  assert.match(
+    code.code,
+    /await rt\.newClass\("App\\\\Http\\\\Requests\\\\StorePostRequest", \[\]\)\.prepareForValidation\(rt\);/,
+    'the hook is awaited and gets the runtime'
+  );
+  const hookAt = code.code.indexOf('prepareForValidation(rt)');
+  const validateAt = code.code.indexOf('rt.request().validate(');
+  assert.ok(validateAt > -1, 'the validation is emitted');
+  assert.ok(hookAt > -1 && hookAt < validateAt, 'the hook runs BEFORE the validation');
+});
