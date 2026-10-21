@@ -59,6 +59,13 @@ test('paginator: the URLs (the page, the query string)', () => {
   const enc = new LengthAwarePaginator(items, 3, 2, 1, { path: '/posts' });
   enc.appends('q', 'a b');
   assert.equal(enc.url(1), '/posts?q=a%20b&page=1');
+  // The query string is PHP's http_build_query (Arr::query()): the booleans
+  // become 1/0, an array becomes the bracket form.
+  const qs = new LengthAwarePaginator(items, 3, 2, 1, { path: '/posts' });
+  qs.appends('flag', true);
+  qs.appends('off', false);
+  qs.appends('tags', ['a', 'b']);
+  assert.equal(qs.url(1), '/posts?flag=1&off=0&tags%5B0%5D=a&tags%5B1%5D=b&page=1');
 });
 
 test('paginator: the URL window (the elements the pagination view renders)', () => {

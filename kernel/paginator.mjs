@@ -30,6 +30,32 @@ const phpTruthy = (v) => {
 
 const isArrayLike = (v) => Array.isArray(v) || (v !== null && typeof v === 'object');
 
+// PHP's http_build_query($data, '', '&', PHP_QUERY_RFC3986) - the form Laravel
+// uses for a query string (Illuminate\Support\Arr::query()): the booleans
+// become 1/0, the nulls are skipped, an array becomes the bracket form
+// ('tags%5B0%5D=a') and the keys AND the values are RFC3986-encoded.
+export function phpQueryString(values) {
+  const parts = [];
+  const walk = (key, value) => {
+    if (value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(`${key}[${i}]`, v));
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) walk(`${key}[${k}]`, v);
+      return;
+    }
+    if (typeof value === 'boolean') {
+      parts.push(`${phpUrlEncode(key)}=${value ? '1' : '0'}`);
+      return;
+    }
+    parts.push(`${phpUrlEncode(key)}=${phpUrlEncode(value)}`);
+  };
+  for (const [k, v] of Object.entries(values || {})) walk(k, v);
+  return parts.join('&');
+}
+
 export class LengthAwarePaginator {
   constructor(items, total, perPage, currentPage, options = {}) {
     const opts = options || {};
@@ -143,10 +169,7 @@ export class LengthAwarePaginator {
     // come first; the page name overwrites the query's value in place.
     const parameters = { ...this.__query };
     parameters[this.__pageName] = p;
-    const query = Object.keys(parameters)
-      .filter((k) => parameters[k] !== null && parameters[k] !== undefined)
-      .map((k) => `${phpUrlEncode(k)}=${phpUrlEncode(parameters[k])}`)
-      .join('&');
+    const query = phpQueryString(parameters);
     return (
       this.__path +
       (this.__path.includes('?') ? '&' : '?') +
