@@ -1063,7 +1063,113 @@ class C {
   const res = emitController(src, 'demo', { ...META_BASE, routeUri: '/x', routeParams: [] });
   assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
   assert.match(res.code, /rt\.model\("Post"\)\.where\(/);
-  assert.match(res.code, /v_posts = v_q\.get\(\)/);
+  // The terminal on a VARIABLE is awaited, exactly like the chain form: the
+  // builder's own get() is a promise (Laravel's Eloquent\Builder::get()
+  // answers a Collection - Illuminate/Database/Eloquent/Builder.php:926).
+  // It used to compile to `v_posts = v_q.get()` - a floating promise: the
+  // route answered before the rows arrived, and a rejection was swallowed.
+  assert.match(res.code, /v_posts = \(await v_q\.get\(\)\)/);
+  assert.doesNotMatch(res.code, /v_posts = v_q\.get\(\)/);
+});
+
+test('emit: the terminal query method on a VARIABLE is awaited (no floating promise)', () => {
+  const src = String.raw`<?php
+namespace App\Http\Controllers;
+use App\Models\Post;
+class C {
+    public function demo()
+    {
+        $q = Post::where('published', true);
+        $posts = $q->get();
+        $first = $q->first();
+        $count = $q->count();
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'demo', { ...META_BASE, routeUri: '/x', routeParams: [] });
+  assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
+  assert.match(res.code, /v_posts = \(await v_q\.get\(\)\)/);
+  assert.match(res.code, /v_first = \(await v_q\.first\(\)\)/);
+  assert.match(res.code, /v_count = \(await v_q\.count\(\)\)/);
+});
+
+test('emit: paginate() on a VARIABLE is the paginator (not the builder\'s own paginate)', () => {
+  const src = String.raw`<?php
+namespace App\Http\Controllers;
+use App\Models\Post;
+class C {
+    public function demo()
+    {
+        $q = Post::where('published', true);
+        $posts = $q->paginate(10);
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'demo', { ...META_BASE, routeUri: '/x', routeParams: [] });
+  assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
+  // The LengthAwarePaginator (the request carries the page and the path) -
+  // not the builder's own paginate(), which answers a plain array.
+  assert.match(res.code, /v_posts = \(await rt\.paginate\(v_q, 10\)\)/);
+  assert.doesNotMatch(res.code, /v_q\.paginate\(/);
+});
+
+test('emit: the async model-instance methods take the db binding (and are awaited)', () => {
+  // Laravel: Model::increment() (Illuminate/Database/Eloquent/Model.php:1107),
+  // Model::load() (…/Model.php:880), loadCount() (…/Model.php:947) and
+  // loadAggregate() (…/Model.php:934) all hit the database. The compiled side
+  // hands them the D1 binding (like save()) and awaits them: the first PHP
+  // argument used to land in the db slot (increment('views') -> db = 'views'),
+  // so the counter was never written.
+  const src = String.raw`<?php
+namespace App\Http\Controllers;
+use App\Models\Post;
+class C {
+    public function demo($id)
+    {
+        $post = Post::findOrFail($id);
+        $post->increment('views');
+        $post->load('comments');
+        $post->loadCount('comments');
+        $post->loadAggregate('comments', 'votes');
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'demo', { ...META_BASE, routeUri: '/x', routeParams: ['id'] });
+  assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
+  assert.match(res.code, /\(await v_post\.increment\(rt\.db\(\), "views"\)\)/);
+  assert.match(res.code, /\(await v_post\.load\(rt\.db\(\), "comments"\)\)/);
+  assert.match(res.code, /\(await v_post\.loadCount\(rt\.db\(\), "comments"\)\)/);
+  assert.match(res.code, /\(await v_post\.loadAggregate\(rt\.db\(\), "comments", "votes"\)\)/);
+  // The db binding is the FIRST argument - the PHP argument is the second.
+  assert.doesNotMatch(res.code, /v_post\.increment\("views"/);
+});
+
+test('emit: related() fails loud - Laravel\'s Model has no such method (LW003)', () => {
+  // Laravel's Model::__call forwards an unknown method to the query builder
+  // (Illuminate/Database/Eloquent/Model.php:2902 → :2917) and the builder
+  // throws a BadMethodCallException (Illuminate/Database/Query/Builder.php:5015)
+  // - so `$post->related('comments')` is a 500 in Laravel. The build refuses it.
+  const src = String.raw`<?php
+namespace App\Http\Controllers;
+use App\Models\Post;
+class C {
+    public function demo($id)
+    {
+        $post = Post::findOrFail($id);
+        $comments = $post->related('comments');
+        return response('ok');
+    }
+}
+`;
+  const res = emitController(src, 'demo', { ...META_BASE, routeUri: '/x', routeParams: ['id'] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /Laravel's Model has no related\(\) method/);
+  assert.match(res.errors[0].message, /BadMethodCallException/);
 });
 
 test('emit: a relation read as a property fails loud (LW003)', () => {
@@ -1740,7 +1846,11 @@ test('runtime: a view with a layout renders the sections inside the layout', asy
   assert.match(res.body, /<\/body><\/html>$/);
 });
 
-test('runtime: unresolved promise in view data fails loud at request time', async () => {
+test('runtime: the query terminal on a VARIABLE is awaited (the view data holds the rows)', async () => {
+  // The variable form used to compile to `v_posts = v_q.get()` - a floating
+  // promise: the route answered before the rows arrived, and the view data
+  // held a promise. The terminal is awaited now, so the view renders the rows
+  // Laravel renders.
   const src = `<?php
 namespace App\\Http\\Controllers;
 use App\\Models\\Post;
@@ -1758,7 +1868,19 @@ class C {
   const file = path.join(tmpRoot, 'src', 'controllers', 'late.mjs');
   fs.writeFileSync(file, code.code);
   const mod = await import(pathToFileURL(file).href + '?v=late');
-  await assert.rejects(() => mod.default(ctxFor({}), { DB: dbWithRow }), /unresolved promise/);
+  const res = await mod.default(ctxFor({}), { DB: dbWithRow });
+  assert.equal(res.status, 200);
+  assert.match(res.body, /Hello Edge/);
+});
+
+test('runtime: an unresolved promise in the view data still fails loud at request time', async () => {
+  // The runtime's safety net: a promise that reaches the view data is a
+  // request-time failure, not a page with "[object Promise]" in it.
+  const { buildRt } = await import(pathToFileURL(path.join(tmpRoot, 'src', 'runtime', 'rt-from-context.mjs')).href);
+  const { models } = await import(pathToFileURL(path.join(tmpRoot, 'src', 'models.generated.mjs')).href);
+  const { default: main } = await import(pathToFileURL(path.join(tmpRoot, 'src', 'views', 'posts.index.mjs')).href);
+  const rt = buildRt(null, { runtime: true, db: dbWithRow, models, views: { 'posts.index': { main } } });
+  assert.throws(() => rt.view('posts.index', { posts: Promise.resolve([]) }), /unresolved promise/);
 });
 
 test('runtime: missing D1 binding fails loud', async () => {

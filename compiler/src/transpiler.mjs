@@ -479,7 +479,11 @@ const MODEL_CHAIN_BUILDER = new Set([
   'where', 'orWhere', 'whereIn', 'whereNotIn', 'whereNull', 'whereNotNull',
   'orderBy', 'orderByDesc', 'latest', 'oldest', 'limit', 'offset', 'select',
 ]);
-// Terminal builder methods (return a Promise).
+// Terminal builder methods (return a Promise). They are the builder's own
+// promise-returning methods: Laravel's Eloquent\Builder::get() answers a
+// Collection (Illuminate/Database/Eloquent/Builder.php:926), so the call must
+// be awaited — in the chain form AND in the variable form ($q = Post::where();
+// $q->get()).
 const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'pluck', 'value', 'paginate']);
 // The paginator's surface (kernel/paginator.mjs - the LengthAwarePaginator).
 // `links()` renders the pagination view (the compiled `pagination::tailwind`).
@@ -496,9 +500,28 @@ const PAGINATOR_METHODS = new Set([
 const MODEL_INSTANCE_METHODS = new Set([
   'get', 'set', 'fill', 'forceFill', 'toJSON', 'trashed', 'increment',
   'save', 'delete', 'forceDelete', 'restore', 'refresh',
-  'related', 'load', 'loadCount', 'loadAggregate',
+  'load', 'loadCount', 'loadAggregate',
   'setRelation', 'getRelation', 'relationLoaded',
 ]);
+// The model-instance methods that hit the database: they are async, so the
+// compiled side awaits them and hands them the D1 binding (the kernel's Model
+// takes the connection as its first argument — like save()).
+// Laravel: Model::increment() (Illuminate/Database/Eloquent/Model.php:1107),
+// Model::load() (…/Model.php:880), loadCount() (…/Model.php:947) and
+// loadAggregate() (…/Model.php:934).
+const MODEL_INSTANCE_ASYNC = new Set(['increment', 'load', 'loadCount', 'loadAggregate']);
+// The model methods Laravel does NOT have. Laravel's Model::__call forwards an
+// unknown method to the query builder
+// (Illuminate/Database/Eloquent/Model.php:2902 → :2917) and the builder
+// throws a BadMethodCallException
+// (Illuminate/Database/Query/Builder.php:5015) — so the call is a 500 in
+// Laravel. The build refuses it: the compiled rung would answer something
+// else.
+const MODEL_LACKS = {
+  related:
+    "Laravel's Model has no related() method — Model::__call forwards an unknown method to the query builder " +
+    '(Illuminate\\Database\\Eloquent\\Model.php:2902) and the builder throws a BadMethodCallException (a 500 in Laravel) — ',
+};
 
 const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
@@ -794,7 +817,7 @@ function txModelChain(chain, node) {
       }
       if (seg.name === 'paginate') {
         // The paginator needs the request (the page, the path, the query).
-        expr = txAwait('rt.paginate(' + expr + ', ' + at + ')', seg.node);
+        expr = txAwait('rt.paginate(' + expr + (at ? ', ' + at : '') + ')', seg.node);
       } else {
         expr = txAwait(expr + '.' + seg.name + '(' + at + ')', seg.node);
       }
@@ -1645,6 +1668,32 @@ function txCall(node) {
     if (CTX && CTX.controller && SESSION_STORE_RE.test(obj) && SESSION_ASYNC.has(meth)) {
       return txAwait(expr, node, 'session()->' + meth + '()');
     }
+    // A model instance: the build knows the kinds of the model variables, so
+    // the Model's own surface is checked here (Laravel's Model).
+    if (CTX && CTX.controller && modelReceiverKind(what.what) === 'model') {
+      if (MODEL_INSTANCE_ASYNC.has(meth)) {
+        // Laravel's Model::increment()/load()/loadCount()/loadAggregate() hit
+        // the database: the compiled side awaits them and hands them the D1
+        // binding (the kernel's Model takes the connection as its first
+        // argument — like save()). Without it the first PHP argument landed
+        // in the db slot (increment('views') -> db = 'views'), so the counter
+        // was never written.
+        return txAwait(obj + '.' + meth + '(rt.db()' + (args ? ', ' + args : '') + ')', node, 'model->' + meth + '()');
+      }
+      if (MODEL_LACKS[meth]) {
+        // Laravel has no such Model method (a BadMethodCallException there).
+        throw mkErr('LW003', MODEL_LACKS[meth] + PORT_HINT, node.loc, PORT_HINT);
+      }
+      if (!MODEL_INSTANCE_METHODS.has(meth)) {
+        throw mkErr(
+          'LW003',
+          'the model method ' + meth + '() is not compiled (an Eloquent relation?) - the compiled rung has the instance writes only (save, delete, ...); ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return expr;
+    }
     // A method call on a variable the compiled rung does not know. It used to
     // compile and answer a 500 at the edge (a silent gap); the build stops.
     if (what.what && what.what.kind === 'variable') {
@@ -1678,14 +1727,19 @@ function txCall(node) {
             PORT_HINT
           );
         }
-      } else if (kind === 'model') {
-        if (!MODEL_INSTANCE_METHODS.has(meth)) {
-          throw mkErr(
-            'LW003',
-            'the model method ' + meth + '() is not compiled (an Eloquent relation?) - the compiled rung has the instance writes only (save, delete, ...); ' + PORT_HINT,
-            node.loc,
-            PORT_HINT
-          );
+        if (MODEL_CHAIN_TERMINAL.has(meth)) {
+          // The terminal builder methods answer with a promise (Laravel's
+          // Eloquent\Builder::get() answers a Collection —
+          // Illuminate/Database/Eloquent/Builder.php:926), so the variable
+          // form awaits them exactly like the chain does: a floating promise
+          // answers before the rows arrive, and a rejection is swallowed.
+          if (meth === 'paginate') {
+            // The paginator is Laravel's LengthAwarePaginator (the request
+            // carries the page and the path) — not the builder's own
+            // paginate(), which answers a plain array.
+            return txAwait('rt.paginate(' + obj + (args ? ', ' + args : '') + ')', node, 'the paginator');
+          }
+          return txAwait(obj + '.' + meth + '(' + args + ')', node, 'the query');
         }
       } else if (kind === 'paginator') {
         if (!PAGINATOR_METHODS.has(meth)) {
@@ -1704,8 +1758,13 @@ function txCall(node) {
           PORT_HINT
         );
       } else if (CTX && CTX.classMethods && CTX.classMethods.has(meth)) {
-        // A method of the class being compiled (its own methods).
-        return expr;
+        // A method of the class being compiled (its own methods). The compiled
+        // methods are `async function (rt, ...)` (compiler/src/classes.mjs), so
+        // the call takes the runtime as its first argument and is awaited: a
+        // promise must never leak into the answer (the helper's answer would
+        // be a promise — "Order [object Promise]").
+        const callArgs = args ? 'rt, ' + args : 'rt';
+        return txAwait(obj + '.' + meth + '(' + callArgs + ')', node, '$this->' + meth + '()');
       } else if (CTX && CTX.mailable && MAILABLE_METHODS.has(meth)) {
         // A mailable's fluent surface (Laravel's Mailable): subject(), view(),
         // with(), from(), to(), cc(), bcc(), replyTo(), text(), html().
@@ -1822,6 +1881,20 @@ function txArrowFunc(node){
   return '(('+params.join(', ')+')=>('+expr+'))';
 }
 
+
+// The kind of the receiver of a method call: the build knows the kinds of the
+// model variables (a model instance, a list of models, a builder, ...), so it
+// knows what a method is called ON. `$posts[0]` is a model of a list of
+// models.
+function modelReceiverKind(node) {
+  if (!CTX || !CTX.modelVars || !node) return null;
+  if (node.kind === 'variable') return CTX.modelVars.get(vname(node.name)) || null;
+  if (node.kind === 'offsetlookup' && node.what && node.what.kind === 'variable') {
+    const kind = CTX.modelVars.get(vname(node.what.name));
+    return kind === 'list' ? 'model' : null;
+  }
+  return null;
+}
 
 // The kind of a model expression:
 //   builder - Post::where(...)          (the query builder)
