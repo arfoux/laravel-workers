@@ -639,3 +639,42 @@ test('display names: validation integration passes $attributes through request.v
   );
 });
 
+test('the validator matches Laravel 13 (the probed semantics)', async () => {
+  // Every value below is Laravel's own answer (probed against the vendored
+  // Laravel 13 in the fixture app).
+  // required / filled: a whitespace-only string is empty (validateRequired:
+  // `is_string($value) && trim($value) === ''`).
+  assert.equal(await new Validator({ name: '  ' }, { name: 'required' }).fails(), true);
+  assert.equal(await new Validator({ name: ' \t ' }, { name: 'required' }).fails(), true);
+  assert.equal(await new Validator({ name: 'x' }, { name: 'required' }).passes(), true);
+  assert.equal(await new Validator({ name: '  ' }, { name: 'filled' }).fails(), true);
+  // in / not_in: the value is cast with PHP's (string) (true -> '1', false -> '')
+  // and compared strictly; with an `array` rule every element is checked.
+  assert.equal(await new Validator({ flag: true }, { flag: 'in:1,0' }).passes(), true);
+  assert.equal(await new Validator({ flag: false }, { flag: 'in:1,0' }).fails(), true);
+  assert.equal(await new Validator({ flag: true }, { flag: 'not_in:0' }).passes(), true);
+  assert.equal(await new Validator({ tags: ['a', 'b'] }, { tags: 'array|in:a,b' }).passes(), true);
+  assert.equal(await new Validator({ tags: ['a', 'c'] }, { tags: 'array|in:a,b' }).fails(), true);
+  assert.equal(await new Validator({ tags: ['a'] }, { tags: 'in:a' }).fails(), true);
+  assert.equal(await new Validator({ n: 1 }, { n: 'in:1,2' }).passes(), true);
+  assert.equal(await new Validator({ n: '1' }, { n: 'in:1,2' }).passes(), true);
+  // The dependent rules compare like Laravel: `in_array($other, $values,
+  // is_bool($other) || is_null($other))` - loose for the numbers, strict for a
+  // bool/null.
+  assert.equal(await new Validator({ count: 1, name: '' }, { name: 'required_if:count,1' }).fails(), true);
+  assert.equal(await new Validator({ count: '1', name: '' }, { name: 'required_if:count,1' }).fails(), true);
+  assert.equal(await new Validator({ ok: true, name: '' }, { name: 'required_if:ok,true' }).fails(), true);
+  assert.equal(await new Validator({ name: '' }, { name: 'required_if:count,1' }).passes(), true);
+  // starts_with / ends_with accept a numeric value (Laravel: is_string($value)
+  // || is_numeric($value)).
+  assert.equal(await new Validator({ n: 123 }, { n: 'starts_with:12' }).passes(), true);
+  assert.equal(await new Validator({ n: 123 }, { n: 'ends_with:23' }).passes(), true);
+  // The rule NAME is trimmed (Laravel: Str::studly(trim($rule))).
+  assert.equal(await new Validator({ name: 'x' }, { name: ' required ' }).passes(), true);
+  // A rule with too few parameters is an InvalidArgumentException in Laravel -
+  // the edge fails loud too.
+  assert.throws(
+    () => new Validator({ name: 'x' }, { name: 'required_if' }),
+    /requires at least 2 parameter/,
+  );
+});

@@ -63,6 +63,82 @@ function isEmptyValue(v) {
   if (Array.isArray(v) && v.length === 0) return true;
   return false;
 }
+// Laravel's validateRequired (ValidatesAttributes.php:2168-2179): a string
+// that is only whitespace is empty (PHP's trim strips " \t\n\r\0\x0B"), and
+// so is an empty countable.
+function isEmptyRequired(v) {
+  if (v === null || v === undefined) return true;
+  if (typeof v === 'string') return v.replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, '') === '';
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object' && typeof v.length === 'number') return v.length < 1;
+  return false;
+}
+
+// PHP's (string) cast: true becomes '1', false becomes '', null becomes ''.
+function phpStringCast(value) {
+  if (value === null || value === undefined) return '';
+  if (value === true) return '1';
+  if (value === false) return '';
+  if (Array.isArray(value)) return 'Array';
+  if (typeof value === 'number' && !Number.isInteger(value)) {
+    // PHP's float-to-string: the shortest representation that round-trips.
+    return String(value);
+  }
+  return String(value);
+}
+
+// PHP's loose comparison (==) for the values a dependent rule compares.
+function phpNumberEquals(num, str) {
+  const s = String(str).trim();
+  if (s === '') return num === 0;
+  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(s)) return false; // PHP 8: a non-numeric string != a number
+  return Number(s) === num;
+}
+function phpLooseEquals(a, b) {
+  if (a === b) return true;
+  const A = a === undefined ? null : a;
+  const B = b === undefined ? null : b;
+  if (A === null || B === null) {
+    const other = A === null ? B : A;
+    if (other === null) return true;
+    if (typeof other === 'boolean') return !other;
+    if (typeof other === 'number') return other === 0;
+    if (typeof other === 'string') return other === '' || other === '0';
+    return false;
+  }
+  if (typeof A === 'boolean' || typeof B === 'boolean') {
+    const bool = typeof A === 'boolean' ? A : B;
+    const other = typeof A === 'boolean' ? B : A;
+    if (typeof other === 'number') return (bool ? 1 : 0) === other;
+    if (typeof other === 'string') {
+      if (other === '' || other === '0') return !bool;
+      return bool;
+    }
+    return false;
+  }
+  if (typeof A === 'number' && typeof B === 'string') return phpNumberEquals(A, B);
+  if (typeof A === 'string' && typeof B === 'number') return phpNumberEquals(B, A);
+  return String(A) === String(B);
+}
+
+// The rules that need a minimum number of parameters (Laravel's
+// requireParameterCount, ValidatesAttributes.php). A rule with too few
+// parameters is an InvalidArgumentException in Laravel - a 500 - so the edge
+// fails loud instead of answering something else.
+const PARAMETER_COUNTS = {
+  accepted_if: 2, declined_if: 2, between: 2, digits_between: 2,
+  missing_if: 2, missing_unless: 2, present_if: 2, present_unless: 2,
+  required_if: 2, required_unless: 2, prohibited_if: 2, prohibited_unless: 2,
+  exclude_if: 2, exclude_unless: 2,
+  before: 1, before_or_equal: 1, after: 1, after_or_equal: 1, array_keys: 1,
+  date_format: 1, date_equals: 1, decimal: 1, different: 1, digits: 1,
+  exists: 1, unique: 1, gt: 1, lt: 1, gte: 1, lte: 1, in_array: 1, max: 1, min: 1,
+  missing_with: 1, missing_with_all: 1, multiple_of: 1, present_with: 1,
+  present_with_all: 1, regex: 1, not_regex: 1, required_if_accepted: 1,
+  required_if_declined: 1, prohibited_if_accepted: 1, prohibited_if_declined: 1,
+  exclude_with: 1, exclude_without: 1, same: 1, size: 1,
+};
+
 function isNumericValue(v) {
   if (typeof v === 'number' && !Number.isNaN(v)) return true;
   if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return true;
@@ -269,8 +345,10 @@ export function strGetcsv(str) {
 
 function parseRuleToken(token) {
   const idx = token.indexOf(':');
-  if (idx === -1) return { name: token.toLowerCase(), param: null, params: [], raw: token };
-  const name = token.slice(0, idx).toLowerCase();
+  // Laravel trims the rule NAME (parseStringRule: `Str::studly(trim($rule))`)
+  // but not the parameter.
+  if (idx === -1) return { name: token.trim().toLowerCase(), param: null, params: [], raw: token };
+  const name = token.slice(0, idx).trim().toLowerCase();
   const param = token.slice(idx + 1);
   // Laravel keeps a regex rule's parameter raw; every other rule's parameters
   // are parsed as CSV.
@@ -462,6 +540,14 @@ export class Validator {
         if (!KNOWN_RULES.has(r.name)) {
           throw new Error('unknown validation rule: ' + r.name);
         }
+        // Laravel's requireParameterCount: too few parameters is an
+        // InvalidArgumentException (a 500) there - the edge fails loud too.
+        const needed = PARAMETER_COUNTS[r.name];
+        if (needed !== undefined && r.params.length < needed) {
+          throw new Error(
+            'the ' + r.name + ' validation rule requires at least ' + needed + ' parameter(s) (Laravel throws an InvalidArgumentException)'
+          );
+        }
       }
       if (String(field).includes('*')) this._implicit.add(field);
       for (const [concrete, rules] of this._expandField(field, parsed)) {
@@ -522,7 +608,28 @@ export class Validator {
     return false;
   }
   _empty(field) {
-    return !this._isPresent(field) || isEmptyValue(this.get(field));
+    return !this._isPresent(field) || isEmptyRequired(this.get(field));
+  }
+
+  // Laravel's parseDependentRuleParameters() (ValidatesAttributes.php:2472-2487)
+  // and the comparison that uses it: the other field's value, the values (the
+  // boolean conversion when the other field has a boolean rule or its value is
+  // a bool, the null conversion when the value is null), and
+  // `in_array($other, $values, is_bool($other) || is_null($other))` - strict
+  // only for a bool/null.
+  _dependentMatches(r) {
+    const other = r.params[0];
+    const otherValue = this.get(other);
+    let values = r.params.slice(1);
+    const otherRules = (this.parsed[other] || []).map((x) => x.name);
+    if (otherRules.includes('boolean') || typeof otherValue === 'boolean') {
+      values = values.map((v) => (String(v) === 'true' ? true : String(v) === 'false' ? false : v));
+    }
+    if (otherValue === null || otherValue === undefined) {
+      values = values.map((v) => (String(v).toLowerCase() === 'null' ? null : v));
+    }
+    const strict = typeof otherValue === 'boolean' || otherValue === null || otherValue === undefined;
+    return values.some((v) => (strict ? v === otherValue : phpLooseEquals(otherValue, v)));
   }
 
   _conditionalRequired(rules) {
@@ -530,15 +637,15 @@ export class Validator {
     for (const r of rules) {
       if (r.name === 'required') return { required: true, rule: 'required', param: null };
       if (r.name === 'required_if') {
-        const [other, ...vals] = r.params;
+        const other = r.params[0];
         const has = this._isPresent(other);
-        if (has && vals.map(String).includes(String(this.get(other)))) {
+        if (has && this._dependentMatches(r)) {
           return { required: true, rule: r.name, param: r.param };
         }
       } else if (r.name === 'required_unless') {
-        const [other, ...vals] = r.params;
+        const other = r.params[0];
         const has = this._isPresent(other);
-        if (!has || !vals.map(String).includes(String(this.get(other)))) {
+        if (!has || !this._dependentMatches(r)) {
           return { required: true, rule: r.name, param: r.param };
         }
       } else if (r.name === 'required_with') {
@@ -562,13 +669,13 @@ export class Validator {
     for (const r of rules) {
       if (r.name === 'prohibited') return { prohibited: true };
       if (r.name === 'prohibited_if') {
-        const [other, ...vals] = r.params;
-        if (this._isPresent(other) && vals.map(String).includes(String(this.get(other)))) {
+        const other = r.params[0];
+        if (this._isPresent(other) && this._dependentMatches(r)) {
           return { prohibited: true };
         }
       } else if (r.name === 'prohibited_unless') {
-        const [other, ...vals] = r.params;
-        if (!this._isPresent(other) || !vals.map(String).includes(String(this.get(other)))) {
+        const other = r.params[0];
+        if (!this._isPresent(other) || !this._dependentMatches(r)) {
           return { prohibited: true };
         }
       }
@@ -583,9 +690,9 @@ export class Validator {
       const p = String(r.param == null ? '' : r.param);
       if (r.name === 'exclude') return true;
       if (r.name === 'exclude_if' || r.name === 'exclude_unless') {
-        const [other, ...vals] = r.params;
+        const other = r.params[0];
         const has = this._isPresent(other);
-        const match = has && vals.includes(String(this.get(other)));
+        const match = has && this._dependentMatches(r);
         if (r.name === 'exclude_if' ? match : !match) return true;
       } else if (r.name === 'exclude_with') {
         if (r.params.some((o) => this._isPresent(o))) return true;
@@ -602,9 +709,9 @@ export class Validator {
       const p = String(r.param == null ? '' : r.param);
       if (r.name === 'missing') return { enforced: true, rule: 'missing', param: null };
       if (r.name === 'missing_if' || r.name === 'missing_unless') {
-        const [other, ...vals] = r.params;
+        const other = r.params[0];
         const has = this._isPresent(other);
-        const match = has && vals.includes(String(this.get(other)));
+        const match = has && this._dependentMatches(r);
         if (r.name === 'missing_if' ? match : !match) return { enforced: true, rule: r.name, param: p };
       } else if (r.name === 'missing_with') {
         if (r.params.some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
@@ -620,9 +727,9 @@ export class Validator {
     for (const r of rules) {
       const p = String(r.param == null ? '' : r.param);
       if (r.name === 'present_if' || r.name === 'present_unless') {
-        const [other, ...vals] = r.params;
+        const other = r.params[0];
         const has = this._isPresent(other);
-        const match = has && vals.includes(String(this.get(other)));
+        const match = has && this._dependentMatches(r);
         if (r.name === 'present_if' ? match : !match) return { enforced: true, rule: r.name, param: p };
       } else if (r.name === 'present_with') {
         if (r.params.some((o) => this._isPresent(o))) return { enforced: true, rule: r.name, param: p };
@@ -672,7 +779,7 @@ export class Validator {
 
       const req = this._conditionalRequired(fieldRules);
       if (req.required) {
-        if (isEmptyValue(value)) {
+        if (isEmptyRequired(value)) {
           this._addError(field, req.rule, req.param);
           continue;
         }
@@ -689,7 +796,7 @@ export class Validator {
 
       if (hasNullable && (value === null || value === '')) continue;
       if (isAbsent) continue;
-      if (hasFilled && isEmptyValue(value)) {
+      if (hasFilled && isEmptyRequired(value)) {
         this._addError(field, 'required', null);
         continue;
       }
@@ -787,8 +894,8 @@ export class Validator {
       case 'alpha_dash': return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
       case 'accepted': return value === true || value === 1 || value === '1' || value === 'yes' || value === 'on' || value === 'true';
       case 'accepted_if': {
-        const [other, ...vals] = rule.params;
-        if (this._isPresent(other) && vals.map(String).includes(String(this.get(other)))) {
+        const other = rule.params[0];
+        if (this._isPresent(other) && this._dependentMatches(rule)) {
           return value === true || value === 1 || value === '1' || value === 'yes' || value === 'on' || value === 'true';
         }
         return true;
@@ -817,12 +924,18 @@ export class Validator {
       case 'uppercase': return typeof value === 'string' && value === value.toUpperCase();
       case 'hex_color': return typeof value === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value);
       case 'starts_with': {
+        // Laravel: `is_string($value) || is_numeric($value)` then
+        // Str::startsWith((string) $value, $parameters) (ANY needle matches).
         const list = rule.params;
-        return typeof value === 'string' && list.some((s) => value.startsWith(s));
+        if (typeof value !== 'string' && !isNumericValue(value)) return false;
+        const str = phpStringCast(value);
+        return list.some((s) => str.startsWith(phpStringCast(s)));
       }
       case 'ends_with': {
         const list = rule.params;
-        return typeof value === 'string' && list.some((s) => value.endsWith(s));
+        if (typeof value !== 'string' && !isNumericValue(value)) return false;
+        const str = phpStringCast(value);
+        return list.some((s) => str.endsWith(phpStringCast(s)));
       }
       case 'before': {
         const v = new Date(value); const d = dateValue(p, this.data);
@@ -892,10 +1005,24 @@ export class Validator {
         return size === Number(p);
       }
       case 'in': {
-        return rule.params.includes(String(value));
+        // Laravel's validateIn (ValidatesAttributes.php:1558): the value is
+        // cast with PHP's (string) (true -> '1', false -> '') and compared
+        // strictly; with an `array` rule on the attribute every element is
+        // checked instead.
+        if (Array.isArray(value)) {
+          const hasArrayRule = (this.parsed[field] || []).some((r) => r.name === 'array');
+          if (!hasArrayRule) return false;
+          return value.every((el) => !Array.isArray(el) && rule.params.includes(phpStringCast(el)));
+        }
+        return rule.params.includes(phpStringCast(value));
       }
       case 'not_in': {
-        return !rule.params.includes(String(value));
+        if (Array.isArray(value)) {
+          const hasArrayRule = (this.parsed[field] || []).some((r) => r.name === 'array');
+          if (!hasArrayRule) return true;
+          return !value.every((el) => !Array.isArray(el) && rule.params.includes(phpStringCast(el)));
+        }
+        return !rule.params.includes(phpStringCast(value));
       }
       case 'same': return value === this.get(p);
       case 'different': return value !== this.get(p);
