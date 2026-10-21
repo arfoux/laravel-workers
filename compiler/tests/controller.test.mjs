@@ -2398,3 +2398,24 @@ test('emit: a grouped use keeps its prefix and a snake_case route parameter bind
   // snake_case form - so the segment is read under the route's name.
   assert.match(code.code, /rt\.param\(ctx\.params, "blog_post"/);
 });
+
+test('extract: the classes the body instantiates are reported (a mailable that did not compile stops the route)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Mail\\OrderMail;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    '        Mail::to("buyer@example.com")->send(new OrderMail());\n' +
+    '        return "ok";\n' +
+    '    }\n' +
+    '}\n';
+  const info = extractController(src, 'demo');
+  assert.ok(info.ok, 'the source parses');
+  // The instantiated classes are reported apart from the static ones: the build
+  // stops the route when one of them did not compile (a mailable with Laravel
+  // 13's modern API) - otherwise the route would fail at request time.
+  const mail = (info.newClasses || []).find((c) => c.fqcn === 'App\\Mail\\OrderMail');
+  assert.ok(mail, 'the instantiated mailable is reported');
+  assert.equal(mail.alias, 'OrderMail');
+});

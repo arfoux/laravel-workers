@@ -1222,6 +1222,20 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // phase C: emit one handler module per transpilable route
       let emittedCount = 0;
       for (const p of prepared) {
+        // A class the route instantiates that did not compile (a mailable with
+        // Laravel 13's modern API, ...) makes the route fail at REQUEST time -
+        // the build stops the route and names the reason.
+        const brokenClass = (p.meta.newClasses || []).find(
+          (c) => classErrors.has(c.fqcn) || classErrors.has(c.alias)
+        );
+        if (brokenClass) {
+          console.log(
+            `  controller ${p.route}: skipped — the class ${brokenClass.fqcn} did not compile: ${
+              classErrors.get(brokenClass.fqcn) || classErrors.get(brokenClass.alias)
+            }`
+          );
+          continue;
+        }
         const ambiguous = (p.meta.classes || []).find((c) => (aliasToFqcns.get(c.alias) || new Set()).size > 1);
         if (ambiguous) {
           console.log(`  controller ${p.route}: skipped — model alias "${ambiguous.alias}" is ambiguous between namespaces`);

@@ -58,6 +58,8 @@ if (cmd === 'extract') {
     method: info.method,
     params: info.params,
     classes: info.classes,
+    // The classes the body instantiates (`new OrderMail()`).
+    newClasses: info.newClasses,
     constants: info.constants,
     views: info.views,
     // A paginator in the method + the kinds of the data the views receive.

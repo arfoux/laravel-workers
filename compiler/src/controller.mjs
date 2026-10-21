@@ -322,10 +322,10 @@ function analyzeParams(method, uses = null, nsName = null) {
 }
 
 // Walk the method body for static class references and literal view() names.
-function scanBody(node, classes, views, constants) {
+function scanBody(node, classes, views, constants, newClasses) {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) {
-    for (const n of node) scanBody(n, classes, views, constants);
+    for (const n of node) scanBody(n, classes, views, constants, newClasses);
     return;
   }
   // A call whose target is a static lookup (`Post::where(...)`) — the class is a
@@ -361,6 +361,13 @@ function scanBody(node, classes, views, constants) {
       const a0 = (node.arguments || [])[0];
       if (a0 && a0.kind === 'string') views.add(String(a0.value));
     }
+  } else if (node.kind === 'new') {
+    // `new OrderMail()` - the class the body instantiates. The build needs it:
+    // a class that does not compile (a mailable with Laravel 13's modern API)
+    // makes the route fail at request time.
+    const what = node.what;
+    const alias = what && typeof what.name === 'string' ? what.name : null;
+    if (alias && newClasses) newClasses.add(alias);
   } else if (node.kind === 'staticlookup') {
     // `Model::class` — the class name as a string. It is not a constant read;
     // the compiler resolves it (the Gate subject) or fails loud.
@@ -373,7 +380,7 @@ function scanBody(node, classes, views, constants) {
   for (const k of Object.keys(node)) {
     if (k === 'loc') continue;
     if (k === 'what' && skipTarget) continue;
-    scanBody(node[k], classes, views, constants);
+    scanBody(node[k], classes, views, constants, newClasses);
   }
 }
 
@@ -402,7 +409,8 @@ export function extractController(source, methodName) {
   const classSet = new Set();
   const viewSet = new Set();
   const constantSet = new Set();
-  scanBody(method.body, classSet, viewSet, constantSet);
+  const newClassSet = new Set();
+  scanBody(method.body, classSet, viewSet, constantSet, newClassSet);
 
   const classes = [...classSet]
     .filter((alias) => !NON_MODEL_STATICS.has(alias.replace(/^\\/, '')))
@@ -414,6 +422,16 @@ export function extractController(source, methodName) {
       return { alias, fqcn };
     });
   classes.sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
+
+  // The classes the body instantiates (`new OrderMail()`): the build stops
+  // the route when one of them does not compile.
+  const newClasses = [...newClassSet]
+    .map((rawAlias) => {
+      const alias = String(rawAlias).replace(/^\\/, '');
+      const fqcn = uses[alias] || (alias.includes('\\') ? alias : nsName ? nsName + '\\' + alias : alias);
+      return { alias, fqcn };
+    })
+    .sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
 
   // Classes read for a *constant* (e.g. RouteServiceProvider::HOME).
   const constantClasses = [...constantSet]
@@ -437,6 +455,7 @@ export function extractController(source, methodName) {
     uses,
     params,
     classes,
+    newClasses,
     constants: constantClasses,
     views: [...viewSet].sort(),
     // A paginator in the method (Model::paginate()): the handler then renders

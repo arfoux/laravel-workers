@@ -163,11 +163,18 @@ foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
     if (!class_exists($fqcn)) continue;
     $addClass($fqcn, 'mailable');
     $source = (string) file_get_contents($mailFile);
-    if (preg_match_all("/->view\(\s*'([^']+)'/", $source, $m)) {
-        foreach ($m[1] as $viewName) $mailViews[] = $viewName;
-    }
-    if (preg_match_all("/->textView\(\s*'([^']+)'/", $source, $m2)) {
-        foreach ($m2[1] as $viewName) $mailViews[] = $viewName;
+    // The view a mailable renders: `->view('x')`, `->textView('x')` and
+    // Laravel 13's modern API `->markdown('x')`. The name can be in single OR
+    // double quotes - a mailable that renders a view the build does not know
+    // about would compile and fail at request time (a 500), so every shape is
+    // read here.
+    foreach (['view', 'textView', 'markdown'] as $method) {
+        // A SINGLE-quoted PHP string: a double-quoted one would eat the \1
+        // backreference (PHP reads it as the octal escape chr(1)).
+        $pattern = '/->' . $method . '\(\s*(["\'])([^"\']+)\1/';
+        if (preg_match_all($pattern, $source, $m3, PREG_SET_ORDER)) {
+            foreach ($m3 as $set) $mailViews[] = $set[2];
+        }
     }
 }
 $mailViews = array_values(array_unique($mailViews));
