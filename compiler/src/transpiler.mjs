@@ -245,8 +245,16 @@ function tx(node) {
       return op + tx(node.what);
     }
     case 'retif': {
+      // The elvis operator (`$a ?: $b`): the test is evaluated ONCE (PHP
+      // evaluates it once - emitting it twice would run a side effect twice).
+      if (!node.trueExpr) {
+        // The elvis operator (`$a ?: $b`): the test is evaluated ONCE (PHP
+        // evaluates it once - emitting it twice would run a side effect
+        // twice), and the else branch runs only when the test is falsy (PHP
+        // is lazy here too).
+        return 'rt.elvis(() => (' + tx(node.test) + '), () => (' + tx(node.falseExpr) + '))';
+      }
       const test = tx(node.test);
-      if (!node.trueExpr) return '(rt.truthy(' + test + ') ? ' + test + ' : ' + tx(node.falseExpr) + ')';
       return '(rt.truthy(' + test + ') ? ' + tx(node.trueExpr) + ' : ' + tx(node.falseExpr) + ')';
     }
     case 'match': {
@@ -371,7 +379,10 @@ function txBin(node) {
   if (t === '.' || t === '+' || t === '-') return txMix(node);
   switch (t) {
     case '??':
-      return 'rt.coalesce(' + L() + ', ' + R() + ')';
+      // PHP's `??` short-circuits: the right side runs only when the left is
+      // null. The native JS `??` does the same (and the left side is
+      // evaluated once).
+      return '(' + L() + ' ?? ' + R() + ')';
     case '||':
       return '(' + L() + ' || ' + R() + ')';
     case '&&':

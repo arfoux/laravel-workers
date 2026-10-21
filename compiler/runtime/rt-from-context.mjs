@@ -849,6 +849,12 @@ export function buildRt(context, opts = {}) {
   };
 
   // ---- PHP truthiness / logic ----
+  // The elvis operator (`$a ?: $b`): the test is evaluated once, and the
+  // else branch runs only when the test is falsy (PHP's semantics).
+  rt.elvis = (test, other) => {
+    const v = test();
+    return rt.truthy(v) ? v : other();
+  };
   rt.truthy = (v) => {
     if (v === null || v === undefined) return false;
     if (typeof v === 'boolean') return v;
