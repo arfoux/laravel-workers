@@ -26,7 +26,21 @@ export function parseMultipart(bytes, contentType) {
   const delim = enc.encode('--' + boundary);
   const fields = {};
   const files = {};
-  let pos = indexOfBytes(bytes, delim, 0);
+  // PHP's rfc1867 parser (ext/standard/rfc1867.c): the delimiter is
+  // CRLF + "--boundary" - a file whose CONTENT contains the boundary bytes
+  // must not end the part (the edge searched the bare bytes, so such a file
+  // truncated the upload). The FIRST boundary starts the body (no CRLF before
+  // it).
+  const findDelimiter = (from) => {
+    let at = from;
+    for (;;) {
+      const found = indexOfBytes(bytes, delim, at);
+      if (found === -1) return -1;
+      if (found === 0 || (bytes[found - 1] === 10 && bytes[found - 2] === 13)) return found;
+      at = found + 1;
+    }
+  };
+  let pos = findDelimiter(0);
   if (pos === -1) throw new Error('multipart/form-data: the body has no boundary');
   pos += delim.length;
   for (;;) {
@@ -37,7 +51,7 @@ export function parseMultipart(bytes, contentType) {
     if (headEnd === -1) break;
     const head = dec.decode(bytes.subarray(pos, headEnd));
     const bodyStart = headEnd + 4;
-    const next = indexOfBytes(bytes, delim, bodyStart);
+    const next = findDelimiter(bodyStart);
     if (next === -1) break;
     // the part's body ends with a CRLF before the delimiter
     let end = next;

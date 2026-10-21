@@ -110,6 +110,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **A58c** **The paginator's fragment is Laravel's** (2026-10-21) - Laravel stores the fragment without the '#' and `buildFragment()` adds it; the edge appended it as it was, so `fragment('list')` produced a URL without the '#'.
 - **A58d** **The paginator's query string is PHP's** (2026-10-21) - Laravel builds it with `http_build_query(..., PHP_QUERY_RFC3986)` (booleans as 1/0, arrays in the bracket form, nulls skipped); the edge built its own, so the URL bytes differed.
 - **A58e** **A Date is bound with the grammar's date format** (2026-10-21) - Laravel binds a DateTimeInterface as `Y-m-d H:i:s`; the edge bound an ISO string, so `where('created_at', $date)` never matched the stored column.
+- **A58f** **The multipart delimiter needs its CRLF** (2026-10-21) - PHP's parser looks for CRLF + `--boundary`; the edge looked for the bare bytes, so a file whose content contains the boundary truncated the upload.
 
 ## Supported vs unsupported
 

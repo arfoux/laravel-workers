@@ -167,3 +167,16 @@ test('upload: the files are not flashed back into the form', () => {
   assert.equal('avatar' in all, false);
   assert.equal(all.title, 'Shadow upload');
 });
+
+test('upload: a file whose CONTENT contains the boundary is not truncated', () => {
+  // PHP's rfc1867 parser (ext/standard/rfc1867.c): the delimiter is
+  // CRLF + "--boundary" - the boundary bytes inside the file's content are
+  // content, not a delimiter. The edge searched the bare bytes, so such a file
+  // ended the part early.
+  const content = `before --${BOUNDARY} after`;
+  const req = uploadRequest([{ name: 'avatar', filename: 'a.txt', content }]);
+  const file = req.file('avatar');
+  assert.ok(file, 'the file is there');
+  assert.equal(file.getSize(), content.length, 'the whole content is the file');
+  assert.equal(new TextDecoder().decode(file.get()), content);
+});
