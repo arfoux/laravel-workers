@@ -3,9 +3,14 @@
 // Raw fragments (selectRaw/whereRaw/havingRaw) accept explicit bindings — the
 // caller owns their safety (documented trust boundary).
 
-// SQLite's operators (Laravel's SQLiteGrammar): 'IS' is not one of them -
-// in Laravel `where('c', 'IS')` is a VALUE ('c' = 'IS'), not an operator.
-const ALLOWED_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'NOT LIKE']);
+// The operators Laravel accepts (Query/Builder.php:249-253 - `$operators`):
+// '<=>' and 'IS'/'IS NOT' are in that list, so a rule with them is a legal
+// query there. The 2-ARGUMENT form is different: Laravel's
+// prepareValueAndOperator() makes the operator '=' and the given operator the
+// VALUE (`where('c', 'IS')` is `c = 'IS'`).
+const ALLOWED_OPS = new Set([
+  '=', '!=', '<>', '<', '>', '<=', '>=', '<=>', 'LIKE', 'NOT LIKE', 'IS', 'IS NOT',
+]);
 const ALLOWED_JOIN_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
 
 // D1/SQLite only bind null | number | string | ArrayBuffer. Normalize the JS
@@ -107,6 +112,9 @@ export class QueryBuilder {
     // compare with NULL at all is an illegal combination
     // (InvalidArgumentException).
     if (val === null) {
+      // Laravel's invalidOperatorAndValue() (Query/Builder.php:1083-1087): a
+      // NULL value with an operator outside ['=', '<=>', '<>', '!='] is an
+      // illegal combination (Laravel throws).
       if (operator !== '=' && operator !== '<=>' && operator !== '!=' && operator !== '<>') {
         throw new Error('Illegal operator and value combination.');
       }

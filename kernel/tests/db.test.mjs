@@ -928,13 +928,27 @@ test('where(col, null) is a where-null clause (Laravel: IS NULL, never `= NULL`)
   sql = null;
   table(db, 'posts').where('deleted_at', '<>', null).get();
   assert.match(sql, /"deleted_at" IS NOT NULL/);
-  // An operator that cannot compare with NULL is an illegal combination.
+  // An operator that cannot compare with NULL is an illegal combination
+  // (Laravel's invalidOperatorAndValue: a NULL value with an operator outside
+  // ['=', '<=>', '<>', '!=']).
   assert.throws(
     () => table(db, 'posts').where('deleted_at', '>', null),
     /Illegal operator and value combination/,
   );
-  // SQLite has no 'IS' operator: Laravel reads `where('c', 'IS')` as a value.
-  assert.throws(() => table(db, 'posts').where('c', 'IS', null), /unsupported where operator/);
+  // '<=>' is one of Laravel's operators: with a NULL value it is IS NULL.
+  sql = null;
+  table(db, 'posts').where('deleted_at', '<=>', null).get();
+  assert.match(sql, /"deleted_at" IS NULL/);
+  // 'IS'/'IS NOT' are operators too (Laravel's $operators): with a value they
+  // render `col IS ?` (SQLite supports it), with NULL they are an illegal
+  // combination.
+  sql = null;
+  table(db, 'posts').where('deleted_at', 'IS', 5).get();
+  assert.match(sql, /"deleted_at" IS \?/);
+  assert.throws(
+    () => table(db, 'posts').where('deleted_at', 'IS', null),
+    /Illegal operator and value combination/,
+  );
 });
 
 test('the model casts are PHP\'s casts (probed against PHP 8.3)', () => {
