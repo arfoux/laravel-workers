@@ -353,7 +353,7 @@
       "label": "`Mail::to()->send()`",
       "php": "\\Illuminate\\Support\\Facades\\Mail::to('a@b.co')->send(new \\App\\Mail\\OrderMail());",
       "expect": "ok",
-      "note": "A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The methods the kernel mailer does not implement (raw, html, queue, later) fail loud.",
+      "note": "A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The unit tests lock the payload's shape; the byte-for-byte proof against the real app's mail (the PHP oracle's MessageSent) is the next stage. The methods the kernel mailer does not implement (raw, html, queue, later) fail loud.",
       "batch": "M57",
       "status": "done",
       "classes": {
