@@ -366,6 +366,17 @@
       }
     },
     {
+      "id": "mail_send_view",
+      "label": "`Mail::send()` (a view name)",
+      "php": "\\Illuminate\\Support\\Facades\\Mail::send('emails.welcome', ['name' => 'x']);",
+      "expect": "fail",
+      "code": "LW002",
+      "note": "Laravel's Mailer::send() has two shapes: a Mailable INSTANCE (it is sent as it is) and a VIEW NAME (Laravel renders the view with the data and sends THAT - the route answers 200 and the mail goes out). The edge has only the first shape: the compiled mailer carries a payload (a compiled Mailable, or an object with to/subject/html), so a view name throws at request time (\"mail(): the message is not a payload\") and the route answers 500 - the build refuses the view shape instead of shipping a route that 500s where Laravel sends the mail. A mailable still compiles (`Mail::send(new OrderMail())` and `Mail::to($user)->send(new OrderMail())`); a dynamic first argument is NOT refused (it can hold a mailable and the build cannot prove which it is - refusing it would refuse a legal send).",
+      "batch": "M60",
+      "status": "done",
+      "reason": "a view name is not a payload at the edge"
+    },
+    {
       "id": "queue_push",
       "label": "`Queue::push()`",
       "php": "\\Illuminate\\Support\\Facades\\Queue::push(\\App\\Jobs\\SendMail::class);",

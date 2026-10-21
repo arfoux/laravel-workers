@@ -1232,6 +1232,34 @@ function txCall(node) {
       CTX.usedEvents = true;
       return txAwait('rt.event.dispatch(' + tx(arg) + ')', node, 'Event::dispatch()');
     }
+    // Laravel's Mailer::send() has TWO shapes: a Mailable INSTANCE (it is sent
+    // as it is - Mailer::send() sends the mailable) and a VIEW NAME (Laravel
+    // renders the view with the data and sends THAT - Mailer::send() parses
+    // the view and adds the rendered content to the message). The edge has
+    // only the first shape: the compiled mailer carries a PAYLOAD (a compiled
+    // Mailable, or an object with to/subject/html), so a view name throws at
+    // request time ("mail(): the message is not a payload") and the route
+    // answers 500 where Laravel answers 200 and sends the mail. The build
+    // refuses the view shape, before the arguments are translated (an
+    // argument may be a class name the edge does not know).
+    // A DYNAMIC first argument is NOT refused: it can hold a mailable (a
+    // legal send) and the build cannot prove which it is - refusing it would
+    // refuse a legal send.
+    if ((cls0 === 'Mail' || cls0 === 'Illuminate\\Support\\Facades\\Mail') && meth0 === 'send') {
+      const first = (node.arguments || [])[0];
+      if (first && first.kind === 'string') {
+        throw mkErr(
+          'LW002',
+          'Mail::send("' + first.value + '") is not supported — a view name is not a payload at the edge: the compiled ' +
+            'mailer only carries a compiled Mailable (or an object with to/subject/html), so the view name throws at ' +
+            'request time ("mail(): the message is not a payload") and the route answers 500. In Laravel the view is ' +
+            'rendered with the data and the mail is sent, so the route answers 200 — send a mailable instead: ' +
+            'Mail::to($user)->send(new OrderMail()) — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+    }
     const tailor = UNSUPPORTED_FACADES[cls0];
     if (tailor && typeof meth0 === 'string') {
       throw mkErr('LW002', tailor(meth0), node.loc, PORT_HINT);
