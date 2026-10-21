@@ -38,6 +38,27 @@ function applyCast(value, cast) {
   return value;
 }
 
+// PHP's `is_numeric()`: a number, or a string that reads as one. Laravel's
+// `originalIsEquivalent()` ends on this test (the values compare by their
+// numeric reading, not by their PHP type).
+function phpIsNumeric(value) {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string') return false;
+  return /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(value.trim());
+}
+
+// Laravel's json-cast branch of `originalIsEquivalent()`:
+// `$this->fromJson($attribute) === $this->fromJson($original)` - the decoded
+// values must match (the decoded arrays compare key for key, in order).
+function jsonEquivalent(a, b) {
+  if (a === b) return true;
+  try {
+    return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b));
+  } catch {
+    return false;
+  }
+}
+
 // Laravel's `freshTimestampString()` - the app date format (`Y-m-d H:i:s`)
 // in the app timezone (UTC on the compiled rung).
 export function phpDateString(d) {
@@ -87,8 +108,83 @@ export class Model {
   constructor(attributes = {}) {
     this.attributes = { ...attributes };
     this._relations = {};
+    // The attributes touched through set()/fill()/forceFill(). The insert
+    // path persists them (an attribute that is not fillable, e.g. the
+    // remember_token the auth guard writes). The dirty CHECK is `getDirty()`
+    // below - the comparison with the original.
     this._dirty = new Set();
     this.exists = this.attributes[this.constructor.primaryKey] != null;
+    // Eloquent's `$original`: the attribute snapshot the dirty check compares
+    // against. A model that carries its key is a row that is already in the
+    // database (the compiled rung's `exists` flag), so its attributes ARE the
+    // original ones - Eloquent hydrates a row with `newFromBuilder()`
+    // (`Model.php:811`) -> `setRawAttributes($attributes, true)`
+    // (`HasAttributes.php:2103`), which syncs the original. A model without a
+    // key is new: Eloquent's constructor calls `syncOriginal()` BEFORE
+    // `fill()` (`Model.php:331`), so every attribute it carries is dirty.
+    this._original = this.exists ? { ...this.attributes } : {};
+  }
+
+  // Eloquent's `getDirty()` (HasAttributes.php:2341): the attributes that
+  // differ from the model's original. This is what "dirty" means in Eloquent:
+  // an attribute that was set to the value it already had is NOT dirty.
+  getDirty() {
+    const dirty = [];
+    for (const key of Object.keys(this.attributes)) {
+      if (!this.originalIsEquivalent(key)) dirty.push(key);
+    }
+    return dirty;
+  }
+
+  // Eloquent's `isDirty()` (HasAttributes.php:2262): has the model (or the
+  // given attribute) changed since the last sync?
+  isDirty(attribute) {
+    const dirty = this.getDirty();
+    if (attribute === undefined) return dirty.length > 0;
+    return dirty.includes(attribute);
+  }
+
+  // Eloquent's `originalIsEquivalent()` (HasAttributes.php:2390): is the
+  // current value of the attribute the same as the original one?
+  originalIsEquivalent(key) {
+    if (!Object.prototype.hasOwnProperty.call(this._original, key)) return false;
+    const attribute = this.attributes[key];
+    const original = this._original[key];
+    if (attribute === original) return true;
+    if (attribute == null) return false;
+    const cast = this.constructor.casts[key];
+    if (cast != null) {
+      const spec = String(cast).toLowerCase();
+      // The json-ish casts compare the decoded values.
+      if (JSON_CASTS.has(spec)) return jsonEquivalent(attribute, original);
+      // The float casts compare with an epsilon.
+      if (spec === 'float' || spec === 'double' || spec === 'real') {
+        return Math.abs(applyCast(attribute, cast) - applyCast(original, cast)) < Number.EPSILON * 4;
+      }
+      // The primitive casts compare the cast values ('5' and 5 are the same
+      // 'int'). The `hashed` cast hashes at set-time and stores the digest
+      // raw (`HasAttributes.php:1133`), so the digests compare as they are: a
+      // re-hash of the same password is a different value and stays dirty.
+      if (spec !== 'hashed') return applyCast(attribute, cast) === applyCast(original, cast);
+    }
+    // Laravel's last resort: two numeric values that read the same.
+    return phpIsNumeric(attribute) && phpIsNumeric(original) && String(attribute) === String(original);
+  }
+
+  // Eloquent's `syncOriginal()` (HasAttributes.php:2206): the current
+  // attributes become the new original (the baseline of the dirty check).
+  syncOriginal() {
+    this._original = { ...this.attributes };
+    return this;
+  }
+
+  // Eloquent's `syncOriginalAttributes()` (HasAttributes.php:2230): the given
+  // attributes become part of the original.
+  syncOriginalAttributes(attributes) {
+    for (const key of [].concat(attributes)) {
+      if (Object.prototype.hasOwnProperty.call(this.attributes, key)) this._original[key] = this.attributes[key];
+    }
+    return this;
   }
 
   get(key) {
@@ -272,43 +368,73 @@ export class Model {
     return value;
   }
 
+  // Eloquent's `save()` (`Model.php:1407`): the row is only written when the
+  // model is dirty (`Model.php:1425`) and the answer is a bool - `false` only
+  // when a `saving` event cancels the write. The compiled rung has no model
+  // events, so the only way the write fails is the write itself.
   async save(db) {
     const ctor = this.constructor;
     const now = this.constructor.now();
-    const data = {};
-    // Eloquent persists the model's dirty attribute set. The compiled rung
-    // keeps its fillable-when-declared baseline for unmodified models and
-    // additionally persists every attribute touched through set()/forceFill()
-    // (e.g. remember_token written by the auth guard, which is not fillable).
-    const columns = ctor.fillable.length ? [...ctor.fillable] : Object.keys(this.attributes);
-    for (const key of this._dirty) {
-      if (!columns.includes(key)) columns.push(key);
-    }
-    for (const key of columns) {
-      if (Object.prototype.hasOwnProperty.call(this.attributes, key)) data[key] = this._storeValue(key);
-    }
     // Instance-level `timestamps = false` (Eloquent `$user->timestamps = false`)
     // suppresses updated_at/created_at writes for this save only.
     const useTimestamps = this.timestamps === false ? false : ctor.timestamps;
-    if (useTimestamps) {
-      if (!this.exists) data.created_at = data.created_at ?? now;
-      data.updated_at = now;
-      this.attributes.created_at = data.created_at ?? this.attributes.created_at;
-      this.attributes.updated_at = data.updated_at;
-    }
 
-    if (this.exists) {
-      const pk = ctor.primaryKey;
-      const id = this.attributes[pk];
-      const { changes } = await ctor.withTrashed(db).where(pk, id).update(data);
-      if (changes === 0) throw new Error('model update affected 0 rows');
-    } else {
+    if (!this.exists) {
+      // ---- performInsert (`Model.php:1607`) ----
+      const data = {};
+      // Eloquent persists the model's dirty attribute set. The compiled rung
+      // keeps its fillable-when-declared baseline for unmodified models and
+      // additionally persists every attribute touched through set()/forceFill()
+      // (e.g. remember_token written by the auth guard, which is not fillable).
+      const columns = ctor.fillable.length ? [...ctor.fillable] : Object.keys(this.attributes);
+      for (const key of this._dirty) {
+        if (!columns.includes(key)) columns.push(key);
+      }
+      for (const key of columns) {
+        if (Object.prototype.hasOwnProperty.call(this.attributes, key)) data[key] = this._storeValue(key);
+      }
+      if (useTimestamps) {
+        data.created_at = data.created_at ?? now;
+        data.updated_at = now;
+        this.attributes.created_at = data.created_at;
+        this.attributes.updated_at = data.updated_at;
+      }
       const { lastInsertRowid } = await ctor.withTrashed(db).insert(data);
       if (lastInsertRowid != null) this.attributes[ctor.primaryKey] = lastInsertRowid;
       this.exists = true;
+      this._dirty.clear();
+      // Eloquent's `finishSave()` syncs the original after a successful write
+      // (`Model.php:1512`), so the model is clean again.
+      this.syncOriginal();
+      return true;
     }
+
+    // ---- performUpdate (`Model.php:1521`) ----
+    // An unchanged model is not written at all: Eloquent asks `isDirty()`
+    // before it touches the row (`Model.php:1425`), and `updateTimestamps()`
+    // lives INSIDE `performUpdate()` (`Model.php:1534`) - so `updated_at` is
+    // not bumped either.
+    if (!this.isDirty()) return true;
+
+    // `updateTimestamps()` (`Concerns/HasTimestamps.php:87`) bumps `updated_at`
+    // first (unless the attribute was set by hand), so the timestamp is part
+    // of the dirty set the UPDATE writes.
+    if (useTimestamps && !this.isDirty('updated_at')) this.attributes.updated_at = now;
+
+    // Eloquent writes the dirty attributes only (`getDirtyForUpdate()`,
+    // `HasAttributes.php:2359`).
+    const data = {};
+    for (const key of this.getDirty()) {
+      data[key] = this._storeValue(key);
+    }
+
+    const pk = ctor.primaryKey;
+    const id = this.attributes[pk];
+    const { changes } = await ctor.withTrashed(db).where(pk, id).update(data);
+    if (changes === 0) throw new Error('model update affected 0 rows');
     this._dirty.clear();
-    return this;
+    this.syncOriginal();
+    return true;
   }
 
   async delete(db) {
@@ -319,6 +445,9 @@ export class Model {
       const now = this.constructor.now();
       const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).update({ [ctor.deletedAtColumn]: now });
       this.attributes[ctor.deletedAtColumn] = now;
+      // Eloquent's `runSoftDelete()` syncs the original after the write
+      // (`SoftDeletes.php:155`), so the model is clean again.
+      this.syncOriginal();
       return res;
     }
     const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).delete();
@@ -340,6 +469,9 @@ export class Model {
     if (!ctor.softDeletes) return { changes: 0 };
     const res = await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).update({ [ctor.deletedAtColumn]: null });
     this.attributes[ctor.deletedAtColumn] = null;
+    // Eloquent's `restore()` writes through `save()` (`SoftDeletes.php:165`),
+    // so the original is synced and the model is clean again.
+    this.syncOriginal();
     return res;
   }
 
@@ -413,6 +545,9 @@ export class Model {
     if (fresh) {
       this.attributes = { ...fresh.attributes };
       this.exists = true;
+      // Eloquent's `refresh()` re-reads the row and syncs the original
+      // (`Model.php:2196`), so the model is clean again.
+      this.syncOriginal();
     }
     return this;
   }
@@ -514,6 +649,10 @@ async function loadCounts(db, ModelClass, rows, names) {
       if (r._relations) delete r._relations[name];
       r.attributes[name + '_count'] = count;
       r.setRelation(name + '_count', count);
+      // Eloquent reads the count as a column of the row, so it is part of the
+      // original (`Collection.php:141` syncs the aggregate attributes) - the
+      // model stays clean.
+      r.syncOriginalAttributes([name + '_count']);
     }
   }
 }
@@ -682,6 +821,10 @@ async function loadAggregates(db, ModelClass, rows, specs) {
         else value = Math.max(...nums);
       }
       r.attributes[spec.alias] = value;
+      // Eloquent reads the aggregate as a column of the row, so it is part of
+      // the original (`Collection.php:141` syncs the aggregate attributes) -
+      // the model stays clean.
+      r.syncOriginalAttributes([spec.alias]);
     }
   }
 }

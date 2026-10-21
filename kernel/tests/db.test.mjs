@@ -166,6 +166,96 @@ test('Model base CRUD', async () => {
   assert.equal(state.users.some((u) => u.id === 1), false);
 });
 
+// A users table with a frozen clock: the model timestamps are stubbed, so the
+// write carries a known timestamp (the oracle value: 1700000000 ->
+// '2023-11-14 22:13:20').
+function usersFixture() {
+  const state = {
+    users: [
+      {
+        id: 1,
+        name: 'Ada',
+        email: 'ada@example.com',
+        created_at: '2024-01-01 00:00:00',
+        updated_at: '2024-01-01 00:00:00',
+      },
+    ],
+  };
+  const calls = [];
+  const db = mockDb({
+    all: () => ({ results: state.users.map((u) => ({ ...u })) }),
+    run: (sql, params) => {
+      calls.push({ sql, params });
+      const row = state.users.find((u) => u.id === params[params.length - 1]);
+      if (row && /^UPDATE/.test(sql)) {
+        const set = sql.slice(sql.indexOf('SET') + 4, sql.indexOf('WHERE'));
+        [...set.matchAll(/"([^"]+)"/g)].forEach((m, i) => {
+          row[m[1]] = params[i];
+        });
+      }
+      return { success: true, meta: { changes: 1 } };
+    },
+  });
+  return { state, calls, db };
+}
+
+class SaveUser extends Model {
+  static table = 'users';
+  static fillable = ['name', 'email'];
+}
+SaveUser.now = () => '2023-11-14 22:13:20';
+
+test('Model save() on an unchanged model writes nothing and returns true', async () => {
+  // Eloquent's `save()` only writes when the model is dirty (`Model.php:1425`).
+  const { state, calls, db } = usersFixture();
+  const found = await SaveUser.find(db, 1);
+  assert.equal(await found.save(db), true);
+  assert.equal(calls.length, 0, 'an unchanged model issues no UPDATE');
+  assert.equal(state.users[0].updated_at, '2024-01-01 00:00:00', 'updated_at is not bumped');
+});
+
+test('Model save() with an unchanged attribute is not dirty', async () => {
+  // "Dirty" means "differs from the original" - setting the value the
+  // attribute already has is not a change (`HasAttributes.php:2341`).
+  const { state, calls, db } = usersFixture();
+  const found = await SaveUser.find(db, 1);
+  found.set('name', 'Ada');
+  assert.equal(found.isDirty(), false);
+  assert.equal(await found.save(db), true);
+  assert.equal(calls.length, 0, 'an unchanged model issues no UPDATE');
+  assert.equal(state.users[0].updated_at, '2024-01-01 00:00:00', 'updated_at is not bumped');
+});
+
+test('Model save() on a changed model updates the row and bumps updated_at', async () => {
+  const { state, calls, db } = usersFixture();
+  const found = await SaveUser.find(db, 1);
+  found.set('name', 'Grace');
+  assert.equal(found.isDirty(), true);
+  assert.equal(await found.save(db), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sql, 'UPDATE "users" SET "name" = ?, "updated_at" = ? WHERE "id" = ?');
+  assert.deepEqual(calls[0].params, ['Grace', '2023-11-14 22:13:20', 1]);
+  assert.equal(state.users[0].name, 'Grace');
+  assert.equal(state.users[0].updated_at, '2023-11-14 22:13:20');
+});
+
+test('Model save() on a new model inserts both timestamps and returns true', async () => {
+  const calls = [];
+  const db = mockDb({
+    run: (sql, params) => {
+      calls.push({ sql, params });
+      return { success: true, meta: { changes: 1, last_row_id: 7 } };
+    },
+  });
+  const user = new SaveUser();
+  user.fill({ name: 'Grace', email: 'grace@example.com' });
+  assert.equal(await user.save(db), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sql, 'INSERT INTO "users" ("name", "email", "created_at", "updated_at") VALUES (?, ?, ?, ?)');
+  assert.deepEqual(calls[0].params, ['Grace', 'grace@example.com', '2023-11-14 22:13:20', '2023-11-14 22:13:20']);
+  assert.equal(user.get('id'), 7);
+});
+
 test('DB.table alias works', () => {
   assert.equal(typeof DB.table, 'function');
   assert.ok(new QueryBuilder(mockDb(), 'x') instanceof QueryBuilder);
