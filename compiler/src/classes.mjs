@@ -123,6 +123,7 @@ function findMethod(classNode, name) {
 function literalOf(node) {
   if (!node) return null;
   switch (node.kind) {
+    case 'nullkeyword':
     case 'null': return { js: 'null' };
     case 'boolean': return { js: node.value ? 'true' : 'false' };
     case 'number': return { js: String(node.value) };
@@ -140,8 +141,46 @@ function compileConstructor(fqcn, classNode, opts) {
   const ctor = findMethod(classNode, '__construct');
   const props = [];
   const deps = [];
-  if (!ctor) return { js: '(args, deps) => ({})', deps };
-  const params = ctor.arguments || [];
+  const params = ctor ? ctor.arguments || [] : [];
+  // The declared properties (`public int $sent = 0;`): the instance carries
+  // them, like PHP does. A property without a default stays undefined (PHP
+  // leaves it uninitialized - reading it is an error there too).
+  // The injected services of this constructor (param -> dep): their async
+  // methods are awaited in the compiled body (a floating promise means the
+  // effect never happens - the mail is never sent).
+  const ctorDeps = new Map();
+  const declared = [];
+  for (const member of classMembers(classNode)) {
+    if (!member) continue;
+    // A property statement (`public int $sent = 0;`) holds the properties.
+    const list = member.kind === 'propertystatement' ? member.properties || [] : [member];
+    for (const prop of list) {
+      if (!prop || prop.kind !== 'property') continue;
+      const pname = nodeName(prop.name);
+      if (!pname) continue;
+      if (prop.value === undefined || prop.value === null) {
+        declared.push({ name: pname, js: 'undefined' });
+        continue;
+      }
+      const lit = literalOf(prop.value);
+      if (!lit) {
+        return {
+          error: 'the property $' + pname + ' of ' + fqcn + ' has a default the compiled rung cannot inline',
+          code: 'LW002',
+        };
+      }
+      declared.push({ name: pname, js: lit.js });
+    }
+  }
+  const declaredJs = declared.length
+    ? 'Object.assign(__self, { ' + declared.map((d) => JSON.stringify(d.name) + ': ' + d.js).join(', ') + ' });\n'
+    : '';
+  if (!ctor) {
+    return {
+      js: '(args, deps) => {\n    const __self = {};\n    ' + declaredJs + '    return __self;\n  }',
+      deps,
+    };
+  }
   // The edge instantiates a listener (and the services it needs) with no
   // arguments: a class-typed parameter is a dependency the build has to
   // resolve (an app service it compiles, a framework service it adapts) and a
@@ -165,6 +204,7 @@ function compileConstructor(fqcn, classNode, opts) {
       if (r.dep) {
         depOf.set(i, r.dep);
         deps.push(r.dep);
+        ctorDeps.set(r.dep.param, r.dep);
         continue;
       }
       // A plain value: the edge has none.
@@ -245,6 +285,10 @@ function compileConstructor(fqcn, classNode, opts) {
     classMethod: true,
     // The constructor builds its own object.
     thisVar: '__self',
+    // The services the constructor injected (`$this->mailer`): their async
+    // methods are awaited in the compiled body (a floating promise means the
+    // effect never happens).
+    injectedDeps: ctorDeps,
   });
   if (emitted.errors.length) {
     return {
@@ -256,10 +300,23 @@ function compileConstructor(fqcn, classNode, opts) {
     .split('\n')
     .map((l) => (l ? '    ' + l : l))
     .join('\n');
+  // The constructor is SYNCHRONOUS at the edge (the runtime calls
+  // `entry.ctor(args, deps)` without awaiting it), so a body that needs an
+  // await would emit `await` inside a non-async function - a SyntaxError that
+  // breaks the whole worker at import time. The build refuses it instead.
+  if (/\bawait\b/.test(bodyCode)) {
+    return {
+      error:
+        'the constructor of ' + fqcn + ' needs an await — the constructor is synchronous at the edge, so an awaited ' +
+        'call in it would break the worker (move the query or the call into the method)',
+      code: 'LW002',
+    };
+  }
   return {
     js:
       'function (args, deps) {\n' +
       '    const __self = ' + promoted + ';\n' +
+      (declaredJs ? '    ' + declaredJs : '') +
       (bindings.length ? bindings.join('\n') + '\n' : '') +
       bodyCode + '\n' +
       '    return __self;\n' +

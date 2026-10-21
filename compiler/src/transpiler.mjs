@@ -115,8 +115,12 @@ function tx(node) {
   switch (node.kind) {
     case 'string':
       return JSON.stringify(node.value);
-    case 'number':
-      return String(Number(node.value));
+    case 'number': {
+      // The int/float distinction matters (PHP's `===` and `match`): 1 and 1.0
+      // are different values, so a float literal must stay a float literal.
+      const raw = String(node.value);
+      return /[.eE]/.test(raw) ? raw : String(Number(raw));
+    }
     case 'boolean':
       return node.value ? 'true' : 'false';
     case 'null':
@@ -262,6 +266,15 @@ function tx(node) {
       return txAssignExpr(node);
     case 'array': {
       const items = node.items || [];
+      // The spread (`[...$a, ...$b]`): the values of the array, in order (the
+      // keys are dropped - PHP's spread builds a list).
+      const spread = items.filter((it) => it.unpack);
+      if (spread.length) {
+        if (items.some((it) => it.key != null)) {
+          throw mkErr('LW002', 'an array literal with a spread and a key is not compiled (PHP drops the keys of the spread parts)', node.loc);
+        }
+        return '[' + items.map((it) => (it.unpack ? '...rt.spread(' + tx(it.value) + ')' : tx(it.value))).join(', ') + ']';
+      }
       const isAssoc = items.some((it) => it.key != null);
       if (isAssoc) {
         const pairs = items.map((it) => txOffsetKey(it.key) + ': ' + tx(it.value));
@@ -1990,6 +2003,18 @@ function walkStatement(node, lines, indent, ctx) {
           srcKind = CTX.fileVars.get(vname(node.source.name)) || null;
         }
         if (srcKind) CTX.fileVars.set(vname(node.value.name), srcKind);
+      }
+      // A by-reference foreach (`foreach ($a as &$v)`): PHP writes the
+      // changes back into the source array - a by-value loop would lose them
+      // and the compiled side would answer a different array.
+      if (node.value && node.value.byref) {
+        throw mkErr(
+          'LW002',
+          'a foreach by reference (foreach ($a as &$v)) is not compiled — PHP writes the changes back into the source ' +
+            'array, so a by-value loop would answer a different result — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
       }
       lines.push(indent + 'for (const ' + tmp + ' of rt.entries(' + tx(node.source) + ')) {');
       if (node.key) lines.push(indent + '  ' + tx(node.key) + ' = ' + tmp + '[0];');

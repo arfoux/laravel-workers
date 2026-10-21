@@ -559,6 +559,79 @@ class WithMailer
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(/);
 });
 
+test('classes: a constructor that needs an await fails loud (the ctor is sync at the edge)', () => {
+  // The runtime calls `entry.ctor(args, deps)` without awaiting it, so an
+  // `await` in the constructor body would be a SyntaxError in the generated
+  // module - the whole worker would fail to import while the build said OK.
+  const file = classFile('Querying', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+use App\\Models\\Post;
+class Querying
+{
+    public function __construct()
+    {
+        $this->post = Post::find(1);
+    }
+    public function handle(PostPublished $event): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\Querying'],
+        },
+      },
+      classes: { 'App\\Listeners\\Querying': { file } },
+    },
+    {
+      ...OPTIONS,
+      modelAliases: new Set(['Post']),
+      modelClassFqcns: { Post: 'App\\Models\\Post' },
+      classes: new Set(['App\\Events\\PostPublished', 'App\\Listeners\\Querying']),
+    }
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /needs an await/);
+  assert.equal(res.errors[0].code, 'LW002');
+});
+
+test('classes: a declared property keeps its default (the instance carries it)', () => {
+  // PHP: `public int $sent = 0;` - the instance starts at 0. A dropped
+  // property would answer null (and `null + 1` is 1 - a counter that starts
+  // at the wrong value).
+  const file = classFile('Counter', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+class Counter
+{
+    public int $sent = 0;
+    public function handle(PostPublished $event): void
+    {
+        $this->sent = $this->sent + 1;
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\Counter'],
+        },
+      },
+      classes: { 'App\\Listeners\\Counter': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /"sent": 0/);
+});
+
 test('classes: the injected app service is awaited in the compiled body (the runtime is passed)', () => {
   const serviceFile = classFile('Mailer', `<?php
 namespace App\\Services;

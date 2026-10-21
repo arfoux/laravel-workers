@@ -958,6 +958,17 @@ export function buildRt(context, opts = {}) {
   };
 
   // ---- foreach over PHP arrays/objects ----
+  // The spread (`[...$a]`): the VALUES of the array, in order (PHP drops the
+  // keys - the spread builds a list).
+  rt.spread = (src) => {
+    if (src === null || src === undefined) return [];
+    if (Array.isArray(src)) return src.slice();
+    if (typeof src === 'object') {
+      if (Array.isArray(src.__items)) return src.__items.slice();
+      return Object.keys(src).map((k) => src[k]);
+    }
+    return [src];
+  };
   rt.entries = (src) => {
     // A paginator (and a Collection) iterate their items, not their fields.
     if (src && typeof src === 'object' && Array.isArray(src.__items)) {
