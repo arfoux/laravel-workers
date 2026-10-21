@@ -51,7 +51,9 @@ test('paginator: the URLs (the page, the query string)', () => {
   const q = new LengthAwarePaginator(items, 3, 2, 1, { path: '/posts' });
   q.appends('sort', 'title');
   assert.equal(q.url(2), '/posts?sort=title&page=2');
-  q.fragment('#list');
+  // Laravel's fragment() takes the fragment WITHOUT the '#' (buildFragment()
+  // adds it: `return $this->fragment ? '#'.$this->fragment : '';`).
+  q.fragment('list');
   assert.equal(q.url(2), '/posts?sort=title&page=2#list');
   // The RFC3986 encoding (a space is %20, not +).
   const enc = new LengthAwarePaginator(items, 3, 2, 1, { path: '/posts' });

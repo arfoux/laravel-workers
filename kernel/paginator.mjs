@@ -151,7 +151,10 @@ export class LengthAwarePaginator {
       this.__path +
       (this.__path.includes('?') ? '&' : '?') +
       query +
-      this.__fragment
+      // Laravel's buildFragment() (AbstractPaginator.php:290-293):
+      // `return $this->fragment ? '#'.$this->fragment : '';` - the caller
+      // passes the fragment WITHOUT the '#'.
+      (this.__fragment ? '#' + this.__fragment : '')
     );
   }
   previousPageUrl() {
