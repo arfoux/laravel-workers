@@ -1017,7 +1017,10 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         viewDeps.set(view, deps);
         return deps;
       };
-      const viewQueue = [...neededViews];
+      // The mailable's views (the dump carries them): a mailable's view is not
+      // reached from a route, so the build compiles it here.
+      const mailViews = Array.isArray(classesDump.mailViews) ? classesDump.mailViews : [];
+      const viewQueue = [...neededViews, ...mailViews];
       while (viewQueue.length) {
         const view = viewQueue.shift();
         if (compiledViews.has(view) || failedViews.has(view)) continue;
@@ -1293,6 +1296,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         // The route's views + the pagination view (when the route has a
         // paginator: `$paginator->links()` renders it).
         const routeViewNames = [...(p.meta.views || [])];
+        // A mailable's view (the method sends a mail): the runtime renders it,
+        // and a mailable's view is not reached from a route.
+        if (p.meta.usesMail) routeViewNames.push(...(classesDump.mailViews || []));
         if (p.meta.usesPaginator) routeViewNames.push(paginationView);
         const routeViews = viewsFor(routeViewNames);
         const missingView = routeViews.find((v) => !compiledViews.has(v));

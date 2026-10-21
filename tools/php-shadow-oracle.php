@@ -72,6 +72,38 @@ ob_start();
 
 $config = $app['config'];
 
+// ---------------------------------------------------------------------------
+// The sent mails (Laravel's MessageSent): the harness compares the mail the
+// real app sent with the mail the compiled side sent (the fields, byte for
+// byte) - the log format is NOT compared.
+// ---------------------------------------------------------------------------
+$lwMails = [];
+$app['events']->listen(\Illuminate\Mail\Events\MessageSent::class, function ($event) use (&$lwMails) {
+    $message = $event->message;
+    $lwMails[] = [
+        'from' => lwMailAddresses($message->getFrom() ?: []),
+        'to' => lwMailAddresses($message->getTo() ?: []),
+        'cc' => lwMailAddresses($message->getCc() ?: []),
+        'bcc' => lwMailAddresses($message->getBcc() ?: []),
+        'replyTo' => lwMailAddresses($message->getReplyTo() ?: []),
+        'subject' => $message->getSubject(),
+        'html' => $message->getHtmlBody(),
+        'text' => $message->getTextBody(),
+    ];
+});
+
+// Laravel's address list -> the edge's shape: one address is a string, more are
+// an array (the kernel mailer's payload uses the same shape, so the harness
+// compares the fields exactly).
+function lwMailAddresses($addresses)
+{
+    $out = [];
+    foreach ((array) $addresses as $address) {
+        $out[] = is_object($address) ? (string) $address->getAddress() : (string) $address;
+    }
+    return count($out) === 1 ? $out[0] : $out;
+}
+
 // The oracle runs in a controlled environment: whoops (the debug error page)
 // prints the error page to stdout and exits, which would destroy the harness
 // result. With debug off Laravel renders the error page as a normal response.
@@ -506,7 +538,11 @@ foreach (($input['steps'] ?? []) as $step) {
         'body' => $body,
         'session_rows' => $rows,
         'session_plain' => $sessionPlain,
+        // The mails this step sent (the fields, not the log line).
+        'mails' => $lwMails,
     ];
+    // The next step starts with an empty outbox (the app instance is reused).
+    $lwMails = [];
 
     // One app instance is reused across steps; flush per-request state so the next
     // step starts like a fresh worker request would. The session store is

@@ -165,6 +165,18 @@ export default {
       expectBody: 'notified|notified twice',
     },
     {
+      // The mail: a mailable is a class, so the build compiles it (and its
+      // view). The mail goes out; the harness compares the FIELDS the real app
+      // sent with the fields the edge sent (not the log line).
+      label: 'POST /mail-demo (the mailable)',
+      method: 'POST',
+      uri: '/mail-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'sent',
+      expectMails: 1,
+    },
+    {
       // The Gate: the policy check (the compiled policies answer it at the
       // edge). The user owns the post, so `update` is allowed and `denies` is
       // false; the class-level `viewAny` is allowed for a signed-in user.

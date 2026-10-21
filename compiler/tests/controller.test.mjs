@@ -229,6 +229,51 @@ test('emit: typed params with defaults use rt.param', () => {
   assert.match(code, /\{ "posts": v_posts, "slug": v_slug, "page": v_page \}/);
 });
 
+// ---------------------------------------------------------------------------
+// the compiled classes (a mailable)
+// ---------------------------------------------------------------------------
+
+const SAMPLE_MAIL = `<?php
+
+namespace App\\Http\\Controllers;
+
+use App\\Mail\\OrderMail;
+
+class MailController extends Controller
+{
+    public function send()
+    {
+        \\Illuminate\\Support\\Facades\\Mail::to('buyer@example.com')->send(new OrderMail());
+
+        return response('sent');
+    }
+}
+`;
+
+test('extract: a mail in the method is flagged (the build compiles the mailable\'s view)', () => {
+  const info = extractController(SAMPLE_MAIL, 'send');
+  assert.equal(info.ok, true);
+  assert.equal(info.usesMail, true);
+  // A method without a mail does not need the mailable's view.
+  assert.equal(extractController(SAMPLE, 'index').usesMail, false);
+});
+
+test('emit: a compiled class (a mailable) is built by the runtime and the handler gets the class registry', () => {
+  const res = emitController(SAMPLE_MAIL, 'send', {
+    ...META_BASE,
+    classes: { fqcns: ['App\\Mail\\OrderMail'], aliases: { OrderMail: 'App\\Mail\\OrderMail' } },
+  });
+  assert.deepEqual(res.errors, [], 'the mailable compiles');
+  // The instance comes from the runtime (the class registry).
+  assert.match(res.code, /rt\.newClass\("App\\\\Mail\\\\OrderMail", \[\]\)/);
+  // ... so the handler must import the registry and hand it to the runtime.
+  assert.match(res.code, /import \{ classes as LW_CLASSES, eventListeners as LW_EVENT_LISTENERS \} from '\.\.\/classes\.generated\.mjs';/);
+  assert.match(res.code, /classes: LW_CLASSES,/);
+  // The chained send is awaited: a floating promise would leave the mail
+  // after the response.
+  assert.match(res.code, /await rt\.mail\(\)\.to\("buyer@example\.com"\)\.send\(/);
+});
+
 test('emit: redirects, json and url()', () => {
   const go = emitOk('go');
   assert.match(go, /return rt\.redirect\(rt\.route\("posts\.show", v_post\)\);/);

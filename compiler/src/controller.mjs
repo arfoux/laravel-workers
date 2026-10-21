@@ -437,9 +437,33 @@ export function extractController(source, methodName) {
     // A paginator in the method (Model::paginate()): the handler then renders
     // the pagination view (the compiled `pagination::tailwind`).
     usesPaginator: bodyHasCall(method.body, 'paginate'),
+    // A mail in the method (`Mail::to($u)->send($mailable)`): the handler then
+    // renders the mailable's view (a mailable's view is not reached from a
+    // route, so the build compiles it and hands it to the runtime).
+    usesMail: bodyHasMail(method.body),
     viewDataKinds,
     methodNode: method,
   };
+}
+
+// Does the body send a mail? (`Mail::to($u)->send($mailable)`) — a static call
+// on the Mail facade (the FQCN or the alias).
+function bodyHasMail(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) {
+    for (const n of node) if (bodyHasMail(n)) return true;
+    return false;
+  }
+  if (node.kind === 'staticlookup') {
+    const w = node.what;
+    const name = String((w && typeof w === 'object' ? w.name : w) || '').replace(/^\\/, '');
+    if (name === 'Mail' || name.endsWith('\\Mail')) return true;
+  }
+  for (const k of Object.keys(node)) {
+    if (k === 'loc') continue;
+    if (bodyHasMail(node[k])) return true;
+  }
+  return false;
 }
 
 // Does the body call the named method? (`Post::paginate()`, `$q->paginate()`)
@@ -804,8 +828,9 @@ export function emitController(source, methodName, meta = {}) {
   if (emitted.usedGate) {
     lines.push("import { policies as LW_POLICIES } from '../policies.generated.mjs';");
   }
-  // The event dispatch reads the compiled classes (the listeners).
-  if (emitted.usedEvents) {
+  // The compiled classes (the listeners, the services, the mailables): the
+  // runtime builds the instances.
+  if (emitted.usedEvents || emitted.usedClasses) {
     lines.push(
       "import { classes as LW_CLASSES, eventListeners as LW_EVENT_LISTENERS } from '../classes.generated.mjs';"
     );
@@ -825,8 +850,10 @@ export function emitController(source, methodName, meta = {}) {
   if (emitted.usedGate) {
     lines.push('    policies: LW_POLICIES,');
   }
-  if (emitted.usedEvents) {
+  if (emitted.usedEvents || emitted.usedClasses) {
     lines.push('    classes: LW_CLASSES,');
+  }
+  if (emitted.usedEvents) {
     lines.push('    eventListeners: LW_EVENT_LISTENERS,');
   }
   lines.push("    origin: (function () { var r = ctx && ctx.request; if (!r) return null; var h = (typeof r.host === 'function') ? r.host() : r.host; if (!h) return null; if (typeof r.schemeAndHttpHost === 'function') return r.schemeAndHttpHost(); var s = (typeof r.scheme === 'function') ? r.scheme() : 'https'; return s + '://' + h; })(),");

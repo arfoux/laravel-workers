@@ -53,27 +53,20 @@ $isAppClass = function (string $fqcn) use ($appRootReal): bool {
     return true;
 };
 
+
 // The constructor of a class: the parameters the edge has to provide. A
 // parameter with a class type is a dependency (the build resolves it); a
 // builtin one is a plain value; an untyped one Laravel resolves by name
 // (through the container) — the edge cannot.
 $ctorDump = function (string $fqcn) use ($app, $isAppClass): array {
-    // The mailables (app/Mail): the classes the build compiles, so the
-// `Mail::to($u)->send(new OrderMail())` call can be compiled (the mailable
-// renders its own view).
-foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
-    $fqcn = 'App\\Mail\\' . basename($mailFile, '.php');
-    if (!class_exists($fqcn)) continue;
-    $addClass($fqcn, 'mailable');
-}
-
-$out = [];
     try {
         $rc = new ReflectionClass($fqcn);
     } catch (Throwable $e) {
-        return $out;
+        return [];
     }
     $ctor = $rc->getConstructor();
+    $out = [];
+
     if (!$ctor) return $out;
     foreach ($ctor->getParameters() as $p) {
         $entry = ['name' => $p->getName()];
@@ -159,6 +152,26 @@ $addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$
     }
 };
 
+// The mailables (app/Mail): the classes the build compiles, so the
+// `Mail::to($u)->send(new OrderMail())` call can be compiled (the mailable
+// renders its own view). The dump also carries the VIEW the mailable renders
+// (the build compiles that view too - a mailable's view is not reached from
+// a route).
+$mailViews = [];
+foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
+    $fqcn = 'App\\Mail\\' . basename($mailFile, '.php');
+    if (!class_exists($fqcn)) continue;
+    $addClass($fqcn, 'mailable');
+    $source = (string) file_get_contents($mailFile);
+    if (preg_match_all("/->view\(\s*'([^']+)'/", $source, $m)) {
+        foreach ($m[1] as $viewName) $mailViews[] = $viewName;
+    }
+    if (preg_match_all("/->textView\(\s*'([^']+)'/", $source, $m2)) {
+        foreach ($m2[1] as $viewName) $mailViews[] = $viewName;
+    }
+}
+$mailViews = array_values(array_unique($mailViews));
+
 // The provider instances: the app keeps them in `serviceProviders` (the
 // public API gives the names only).
 $providers = [];
@@ -228,6 +241,7 @@ foreach (array_keys($events) as $eventClass) {
 $out = [
     'events' => $events,
     'classes' => $classes,
+    'mailViews' => $mailViews,
 ];
 
 echo json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";

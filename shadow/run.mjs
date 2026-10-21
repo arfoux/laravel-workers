@@ -291,10 +291,11 @@ async function loadDist(appRoot) {
   const { createCookieEncryptor } = await import(u('kernel/cookies.mjs'));
   const { normalizeTable } = await import(u('kernel/router.mjs'));
   const { createStorage } = await import(u('kernel/storage.mjs'));
+  const { createMailer } = await import(u('kernel/mail.mjs'));
   const { routeTable, handlers } = await import(u('src/routes.generated.mjs'));
   const { default: config } = await import(u('src/config.generated.mjs'));
   const { models } = await import(u('src/models.generated.mjs'));
-  return { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage };
+  return { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createMailer, createStorage };
 }
 
 function decodePayload(b64) {
@@ -329,7 +330,7 @@ function rowToken(row) {
 }
 
 async function runCompiled(loaded, appRoot, scenario, dbPath) {
-  const { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage } =
+  const { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage, createMailer } =
     loaded;
   const { DatabaseSync } = await import('node:sqlite');
   const sqlite = new DatabaseSync(dbPath);
@@ -397,6 +398,12 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
     const stepQuery = step.query ? new URLSearchParams(step.query).toString() : '';
     const url = BASE + (step.uri || '/') + (stepQuery ? '?' + stepQuery : '');
     let res;
+    // The mailer (the log transport): the mails this step sent are compared
+    // with the mails the real app sent (the fields, not the log line).
+    const mail = createMailer({
+      transport: (config && config['mail.driver']) || 'log',
+      from: (config && config['mail.from.address']) || undefined,
+    });
     try {
       res = await handleHttp(
       { method: step.method || 'GET', url, headers, body },
@@ -408,6 +415,9 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         db,
         cache,
         storage,
+        // The worker hands the mailer down as a service (the kernel puts it in
+        // the context the handler gets).
+        mail,
         log: (level, message, context) => {
           logs.push({ level, message, context: context ?? null });
           return null;
@@ -471,7 +481,24 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
       );
     }
 
-    out.push({ label: step.label, status: res.status, headers: res.headers, body: res.body });
+    out.push({
+      label: step.label,
+      status: res.status,
+      headers: res.headers,
+      body: res.body,
+      // The mails this step sent (the fields, byte for byte - not the log
+      // line).
+      mails: mail.outbox.map((m) => ({
+        from: m.from ?? null,
+        to: m.to ?? null,
+        cc: m.cc ?? [],
+        bcc: m.bcc ?? [],
+        replyTo: m.replyTo ?? [],
+        subject: m.subject ?? null,
+        html: m.html ?? null,
+        text: m.text ?? null,
+      })),
+    });
   }
 
   sqlite.close();
@@ -598,8 +625,20 @@ async function main() {
         step.expectBody === undefined ||
         (String(phpBody ?? '').includes(String(step.expectBody)) &&
           String(j.body ?? '').includes(String(step.expectBody)));
+      // The mails this step sent: the fields, byte for byte (the log line is
+      // NOT compared). A step may declare the mails it expects (expectMails).
+      const phpMails = Array.isArray(p.mails) ? p.mails : [];
+      const jsMails = Array.isArray(j.mails) ? j.mails : [];
+      const mailFields = ['from', 'to', 'cc', 'bcc', 'replyTo', 'subject', 'html', 'text'];
+      const mailsEqual =
+        phpMails.length === jsMails.length &&
+        phpMails.every((m, k) => mailFields.every((f) => String(m[f] ?? '') === String(jsMails[k][f] ?? '')));
+      const expectMailsOk =
+        step.expectMails === undefined ||
+        (phpMails.length === step.expectMails && jsMails.length === step.expectMails);
       const ok =
-        statusOk && headerDiff.length === 0 && body.equal && expectBodyOk && expectStatusOk && expectHeaderOk;
+        statusOk && headerDiff.length === 0 && body.equal && expectBodyOk && expectStatusOk && expectHeaderOk &&
+        mailsEqual && expectMailsOk;
       const expected = step.expect || 'match';
       let verdict;
       if (ok) {
@@ -631,6 +670,9 @@ async function main() {
         expectBody: step.expectBody ?? null,
         headerDiff: headerDiff.map((k) => ({ name: k, php: ph[k], js: jh[k] })),
         bodyOk: body.equal,
+        mailsEqual,
+        mailsPhp: phpMails,
+        mailsJs: jsMails,
         bodyPhp: body.equal ? undefined : preview(p.body),
         bodyJs: body.equal ? undefined : preview(j.body),
         bodyPhpRaw: phpBody,
@@ -666,6 +708,14 @@ async function main() {
             r.why ? ` (${r.why})` : ''
           }`
         );
+        if (r.mailsPhp && r.mailsPhp.length) {
+          // The mail proof: the fields the real app sent vs the fields the edge
+          // sent (byte for byte - the log line is not compared).
+          for (const m of r.mailsPhp) {
+            console.log(`    mail: ${JSON.stringify(m)}`);
+          }
+          console.log(`    mail (edge): ${JSON.stringify(r.mailsJs[0])}`);
+        }
         if (r.verdict === 'MISMATCH') {
           for (const h of r.headerDiff) console.log(`    header ${h.name}: php=${h.php} js=${h.js}`);
           if (r.expectBody !== null && !r.expectBodyOk) {

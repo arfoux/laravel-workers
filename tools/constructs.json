@@ -353,8 +353,8 @@
       "label": "`Mail::to()->send()`",
       "php": "\\Illuminate\\Support\\Facades\\Mail::to('a@b.co')->send(new \\App\\Mail\\OrderMail());",
       "expect": "ok",
-      "note": "A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The unit tests lock the payload's shape; the byte-for-byte proof against the real app's mail (the PHP oracle's MessageSent) is the next stage. The methods the kernel mailer does not implement (raw, html, queue, later) fail loud.",
-      "batch": "M57",
+      "note": "A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The byte-for-byte proof is the shadow: the PHP oracle captures Laravel's `MessageSent` event (the from/to/cc/bcc/replyTo/subject/html/text) and the harness compares those fields with the kernel mailer's outbox - all 8 fields are identical, the log line is not compared. The methods the kernel mailer does not implement (raw, html, queue, later) fail loud.",
+      "batch": "M60",
       "status": "done",
       "classes": {
         "fqcns": [
@@ -1090,8 +1090,8 @@
       ],
       "php": "        \\Illuminate\\Support\\Facades\\Mail::to('a@b.co');",
       "expect": "ok",
-      "note": "The Mail facade is compiled: the kernel's mailer implements Laravel's PendingMail (to/cc/bcc/replyTo + send()), so the fluent form compiles. The methods it does not implement (raw, html, queue, later) fail loud - a mail that silently lost its cc would be a wrong answer.",
-      "batch": "M57",
+      "note": "The Mail facade is compiled: the kernel's mailer implements Laravel's PendingMail (to/cc/bcc/replyTo + send()), so the fluent form compiles. The shadow proves the payload against the real app (the `MessageSent` fields vs the kernel outbox - all 8 fields identical). The methods it does not implement (raw, html, queue, later) fail loud - a mail that silently lost its cc would be a wrong answer.",
+      "batch": "M60",
       "status": "done"
     },
     {

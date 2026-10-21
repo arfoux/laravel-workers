@@ -62,6 +62,8 @@ if (cmd === 'extract') {
     views: info.views,
     // A paginator in the method + the kinds of the data the views receive.
     usesPaginator: info.usesPaginator,
+    // A mail in the method: the build compiles the mailable's view.
+    usesMail: info.usesMail,
     viewDataKinds: info.viewDataKinds,
   };
   const text = JSON.stringify(out);

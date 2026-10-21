@@ -333,6 +333,9 @@ function tx(node) {
       if (CTX && CTX.classFqcns) {
         const fqcn = CTX.classFqcns.get(cls) || (CTX.classes && CTX.classes.has(cls) ? cls : null);
         if (fqcn) {
+          // The compiled class (a listener, a service, a mailable): the handler
+          // needs the class registry (the runtime builds the instance).
+          CTX.usedClasses = true;
           return 'rt.newClass(' + JSON.stringify(fqcn) + (ctorArgs ? ', [' + ctorArgs + ']' : ', []') + ')';
         }
       }
@@ -2301,6 +2304,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     formRequests: opts.formRequests || new Map(),
     // Did this method use the Gate? (the handler then imports the policies)
     usedGate: false,
+    usedClasses: false,
     // Did this method use a paginator? (the handler then imports the
     // pagination view).
     usedPaginator: false,
@@ -2322,11 +2326,13 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   const lines = [];
   if (declared.length) lines.push(indent + 'let ' + declared.join(', ') + ';');
   let usedGate = false;
+  let usedClasses = false;
   let usedPaginator = false;
   let usedEvents = false;
   try {
     walkChildren(bodyChildren || [], lines, indent, {});
-    usedGate = !!CTX.usedGate;
+      usedGate = !!CTX.usedGate;
+    usedClasses = !!CTX.usedClasses;
     usedPaginator = !!CTX.usedPaginator;
     usedEvents = !!CTX.usedEvents;
   } catch (e) {
@@ -2336,7 +2342,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     CTX = null;
     CLOSURE_DEPTH = 0;
   }
-  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator, usedEvents };
+  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator, usedEvents, usedClasses };
 }
 
 export default transpile;
