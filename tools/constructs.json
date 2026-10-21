@@ -634,8 +634,8 @@
       "check": "build",
       "expect": "fail",
       "note": "The FormRequest dump sees the overridden hook and refuses the class: \"LW003 prepareForValidation() is overridden - Laravel runs the hook before the validation (Illuminate/Validation/ValidatesWhenResolvedTrait.php:19), so the app can change the input that is validated; the compiled rung validates the dumped rules against the raw input and never runs it (the validated input would differ)\". The build stops and the reason reaches the operator.",
-      "batch": "M43",
-      "status": "todo"
+      "batch": "M43/M61g",
+      "status": "done"
     },
     {
       "id": "form_request_with_validator",
