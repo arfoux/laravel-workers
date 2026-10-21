@@ -200,7 +200,7 @@ function compileConstructor(fqcn, classNode, opts) {
       const name = nodeName(p.name);
       const dumped = (ctorInfo || []).find((d) => d && d.name === name) || null;
       const r = resolveCtorDep(fqcn, name, typeNameOf(p && p.type), dumped, opts);
-      if (r.error) return { error: r.error };
+      if (r.error) return { error: r.error, code: r.code };
       if (r.dep) {
         depOf.set(i, r.dep);
         deps.push(r.dep);
@@ -210,10 +210,18 @@ function compileConstructor(fqcn, classNode, opts) {
       // A plain value: the edge has none.
       if (!p.value) {
         const who = opts.listeners && opts.listeners.has(fqcn) ? 'a listener' : 'the class';
+        // Laravel's container cannot resolve a scalar without a default
+        // either: it throws a BindingResolutionException ("Unresolvable
+        // dependency resolving [$x] in class ..."), so the reason must not
+        // claim that Laravel resolves it.
+        const builtin = p.type && BUILTIN_TYPES.has(String(typeNameOf(p.type)).toLowerCase());
         return {
-          error:
-            'the constructor of ' + fqcn + ' needs $' + name + ' — the edge instantiates ' + who + ' without ' +
-            'arguments (Laravel resolves it through the container)',
+          error: builtin
+            ? 'the constructor of ' + fqcn + ' needs $' + name + ' and it has no default — Laravel cannot build it either ' +
+              '(the container throws a BindingResolutionException: "Unresolvable dependency resolving [$' + name + '] in class ...")'
+            : 'the constructor of ' + fqcn + ' needs $' + name + ' — the edge instantiates ' + who + ' without ' +
+              'arguments (Laravel resolves it through the container)',
+          code: 'LW002',
         };
       }
     }
@@ -236,7 +244,7 @@ function compileConstructor(fqcn, classNode, opts) {
     if (p.value !== undefined && p.value !== null) {
       const lit = literalOf(p.value);
       if (!lit) {
-        return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline' };
+        return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline', code: 'LW002' };
       }
       fallback = lit.js;
     }
@@ -259,7 +267,7 @@ function compileConstructor(fqcn, classNode, opts) {
     if (p.value !== undefined && p.value !== null) {
       const lit = literalOf(p.value);
       if (!lit) {
-        return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline' };
+        return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline', code: 'LW002' };
       }
       fallback = lit.js;
     }
@@ -377,12 +385,13 @@ function resolveCtorDep(fqcn, name, type, dumped, opts) {
     if (!adapter) {
       const why = REFUSED_SERVICES[depType];
       if (why) {
-        return { error: 'the constructor of ' + fqcn + ' asks for ' + depType + ' — ' + why };
+        return { error: 'the constructor of ' + fqcn + ' asks for ' + depType + ' — ' + why, code: 'LW002' };
       }
       return {
         error:
           'the constructor of ' + fqcn + ' asks for ' + depType + ' — the edge has no adapter for this framework ' +
           'service (only the mailer, the logger and the queue have one)',
+        code: 'LW002',
       };
     }
     return { dep: { param: name, kind: 'adapter', type: depType, adapter } };
@@ -436,10 +445,10 @@ function typeNameOf(typeNode) {
 function compileMethod(fqcn, methodNode, opts) {
   const name = nodeName(methodNode.name);
   if (methodNode.isStatic) {
-    return { error: 'the method ' + fqcn + '::' + name + '() is static — the compiled classes are instances' };
+    return { error: 'the method ' + fqcn + '::' + name + '() is static — the compiled classes are instances', code: 'LW002' };
   }
   if (methodNode.abstract) {
-    return { error: 'the method ' + fqcn + '::' + name + '() is abstract' };
+    return { error: 'the method ' + fqcn + '::' + name + '() is abstract', code: 'LW002' };
   }
   const params = (methodNode.arguments || []).map((p) => {
     const type = typeNameOf(p && p.type);
@@ -451,8 +460,8 @@ function compileMethod(fqcn, methodNode, opts) {
     };
   });
   for (const p of params) {
-    if (p.variadic) return { error: 'the method ' + fqcn + '::' + name + '() has a variadic parameter' };
-    if (p.byRef) return { error: 'the method ' + fqcn + '::' + name + '() has a by-reference parameter' };
+    if (p.variadic) return { error: 'the method ' + fqcn + '::' + name + '() has a variadic parameter', code: 'LW002' };
+    if (p.byRef) return { error: 'the method ' + fqcn + '::' + name + '() has a by-reference parameter', code: 'LW002' };
     // The type of the parameter (a leading backslash is PHP's own syntax:
     // `\App\Events\PostPublished` is the same class).
     const ptype = p.type ? String(p.type).replace(/^\\/, '') : null;
@@ -627,6 +636,50 @@ export function compileClasses(dump, opts = {}) {
     const classNode = parsed.classes.find((c) => nodeName(c.name) === short);
     if (!classNode) {
       errors.push({ class: fqcn, message: 'the class ' + fqcn + ' is not in ' + info.file });
+      continue;
+    }
+    // The traits and the parent class: their members are not compiled, so a
+    // listener that uses a trait would compile "OK" and have no handle() at
+    // request time (a 500 where Laravel answers 200).
+    // A trait use is a statement in the class body (`use Notifies;`).
+    const traitUses = classMembers(classNode).filter((m) => m && m.kind === 'traituse');
+    if (traitUses.length) {
+      const names = traitUses
+        .map((m) => (m.uses || []).map((u) => nodeName(u.trait) || (u.trait && u.trait.name) || '?').join(', '))
+        .join(', ');
+      errors.push({
+        class: fqcn,
+        message:
+          'the class ' + fqcn + ' uses a trait (' + names +
+          ') — the trait members are not compiled, so the class would miss its methods at the edge',
+        code: 'LW002',
+      });
+      continue;
+    }
+    if (classNode.extends) {
+      errors.push({
+        class: fqcn,
+        message:
+          'the class ' + fqcn + ' extends ' + (nodeName(classNode.extends) || 'another class') +
+          ' — the inherited methods are not compiled, so the class would miss them at the edge',
+        code: 'LW002',
+      });
+      continue;
+    }
+    // The magic accessors (`__get`, `__set`, `__call`, `__toString`): PHP
+    // calls them, so a property read would answer null where Laravel answers
+    // the computed value.
+    const magic = classMembers(classNode).find(
+      (m) => m && m.kind === 'method' && ['__get', '__set', '__call', '__callStatic', '__toString', '__isset'].includes(nodeName(m.name))
+    );
+    if (magic) {
+      errors.push({
+        class: fqcn,
+        message:
+          'the class ' + fqcn + ' defines the magic method ' + nodeName(magic.name) +
+          '() — the magic accessors are not compiled, so a property read would answer null where Laravel answers the computed value',
+        code: 'LW002',
+      });
       continue;
     }
     // The namespace + the imports of the file (a type written short resolves

@@ -262,7 +262,11 @@ class NeedsArg
     OPTIONS
   );
   assert.equal(res.errors.length, 1);
-  assert.match(res.errors[0].message, /instantiates a listener without arguments/);
+  // Laravel's container cannot resolve a scalar without a default either: it
+  // throws a BindingResolutionException - so the reason must not claim that
+  // Laravel resolves it.
+  assert.match(res.errors[0].message, /BindingResolutionException/);
+  assert.equal(res.errors[0].code, 'LW002');
 });
 
 test('classes: the event dispatch compiles (and the handler imports the classes)', () => {
@@ -557,6 +561,104 @@ class WithMailer
   );
   assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(/);
+});
+
+test('classes: a listener that uses a trait fails loud (the trait members are not compiled)', () => {
+  const file = classFile('UsesTrait', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+trait Notifies
+{
+    public function notify(PostPublished $event): void
+    {
+    }
+}
+class UsesTrait
+{
+    use Notifies;
+    public function handle(PostPublished $event): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\UsesTrait'],
+        },
+      },
+      classes: { 'App\\Listeners\\UsesTrait': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /uses a trait/);
+  assert.equal(res.errors[0].code, 'LW002');
+});
+
+test('classes: a listener that extends another class fails loud (the inherited methods are not compiled)', () => {
+  const file = classFile('ChildListener', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+class Base
+{
+    public function handle(PostPublished $event): void
+    {
+    }
+}
+class ChildListener extends Base
+{
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\ChildListener'],
+        },
+      },
+      classes: { 'App\\Listeners\\ChildListener': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /extends/);
+  assert.equal(res.errors[0].code, 'LW002');
+});
+
+test('classes: a magic accessor fails loud (a property read would answer null)', () => {
+  const file = classFile('Magic', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+class Magic
+{
+    public function __get($name)
+    {
+        return 'computed';
+    }
+    public function handle(PostPublished $event): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\Magic'],
+        },
+      },
+      classes: { 'App\\Listeners\\Magic': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /magic method __get/);
+  assert.equal(res.errors[0].code, 'LW002');
 });
 
 test('classes: a constructor that needs an await fails loud (the ctor is sync at the edge)', () => {
