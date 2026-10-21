@@ -478,7 +478,13 @@ export class QueryBuilder {
     return row.aggregate == null ? null : Number(row.aggregate);
   }
 
-  async sum(column) { return this._aggregate('SUM', column); }
+  async sum(column) {
+    // Laravel's sum() (Query/Builder.php:4099-4104): `$result = $this->aggregate(
+    // __FUNCTION__, [$column]); return $result ?: 0;` - an empty set (or an
+    // all-NULL column) answers 0, not null (the JSON body differed).
+    const value = await this._aggregate('SUM', column);
+    return value == null ? 0 : value;
+  }
   async avg(column) { return this._aggregate('AVG', column); }
   async min(column) { return this._aggregate('MIN', column); }
   async max(column) { return this._aggregate('MAX', column); }
