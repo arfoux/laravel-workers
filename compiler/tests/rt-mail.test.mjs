@@ -61,12 +61,18 @@ test('rt-mail: the mailable renders its view and the mailer sends the payload', 
   assert.equal(sent.text, null);
 });
 
-test('rt-mail: the payload is the mailable\'s (the pending recipients win)', async () => {
+test('rt-mail: the recipients are the mailable\'s + the pending\'s (Laravel appends them)', async () => {
+  // Laravel's PendingMail::send(): the pending's recipients are APPENDED to the
+  // mailable's own (Mailable::setAddress() dedupes by address, the last
+  // occurrence wins).
   const { rt, mailer } = makeRt();
   const mailable = rt.newClass('App\\Mail\\OrderMail', []);
   mailable.to('owner@example.com');
-  await rt.mail().send(mailable);
+  await rt.mail().to('buyer@example.com').send(mailable);
   assert.equal(mailer.outbox.length, 1);
-  assert.equal(mailer.outbox[0].to, 'owner@example.com');
+  assert.deepEqual(mailer.outbox[0].to, ['owner@example.com', 'buyer@example.com']);
   assert.equal(mailer.outbox[0].subject, 'Order shipped');
+  // The from falls back to the app's mail.from (Laravel: the mailable's own
+  // ?? the app's config).
+  assert.equal(mailer.outbox[0].from, 'hello@example.com');
 });
