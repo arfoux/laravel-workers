@@ -55,23 +55,43 @@ function uriToRegex(uri) {
   const norm = normalizeUri(uri);
   const segs = norm.split('/');
   // handle root: '' segments
-  const parts = segs.map((seg, i) => {
+  let pattern = '';
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
     const wild = seg.match(/^\{(\w+)\*\}$/);
     if (wild) {
       if (i !== segs.length - 1) {
         throw new Error('wildcard {param*} must be the last segment: ' + norm);
       }
-      return '(?<' + wild[1] + '>.+)';
+      pattern += (i === 0 ? '' : '/') + '(?<' + wild[1] + '>.+)';
+      continue;
     }
     const m = seg.match(/^\{(\w+)\??\}$/);
     if (m) {
       const name = m[1];
       const optional = seg.endsWith('?}');
-      return optional ? '(?<' + name + '>[^/]*)?' : '(?<' + name + '>[^/]+)';
+      if (optional) {
+        // Symfony's RouteCompiler: an optional variable becomes a subpattern
+        // ("Enclose each optional token in a subpattern to make it optional"),
+        // so '/users/{id?}' also answers '/users'. The separator goes INSIDE
+        // the group - except when the optional variable is the only token
+        // (the separator is required there) or when it is not the last one
+        // (Symfony's first-optional scan stops at the text token after it, so
+        // the variable is required in the regex).
+        if (i !== segs.length - 1) {
+          pattern += (i === 0 ? '' : '/') + '(?<' + name + '>[^/]+)';
+        } else if (segs.length === 2) {
+          pattern += '/(?<' + name + '>[^/]*)?';
+        } else {
+          pattern += '(?:/(?<' + name + '>[^/]*))?';
+        }
+        continue;
+      }
+      pattern += (i === 0 ? '' : '/') + '(?<' + name + '>[^/]+)';
+      continue;
     }
-    return escapeRegex(seg);
-  });
-  const pattern = parts.join('/');
+    pattern += (i === 0 ? '' : '/') + escapeRegex(seg);
+  }
   return new RegExp('^' + pattern + '/?$');
 }
 
@@ -90,6 +110,29 @@ function hostMatches(route, host) {
   if (!host) return false;
   const h = String(host).split(':')[0];
   return domainToRegex(route.domain).test(h);
+}
+
+// PHP's rawurldecode(): the percent escapes are decoded, an invalid escape
+// is left alone.
+function rawurldecode(path) {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path.replace(/%[0-9A-Fa-f]{2}/g, (m) => {
+      try { return decodeURIComponent(m); } catch { return m; }
+    });
+  }
+}
+
+// The path the route matches: the query string is out, the trailing slashes
+// are trimmed and the escapes are decoded — Laravel's UriValidator does
+// rtrim() first and rawurldecode() second.
+function requestPath(req) {
+  let path = (req && req.path) || '/';
+  const qIdx = path.indexOf('?');
+  if (qIdx !== -1) path = path.slice(0, qIdx);
+  if (path.length > 1 && path.endsWith('/')) path = path.replace(/\/+$/, '');
+  return rawurldecode(path);
 }
 
 function resolveMethod(req) {
@@ -113,12 +156,7 @@ function methodMatches(route, method) {
 
 export function match(table, req) {
   const method = resolveMethod(req);
-  let path = (req && req.path) || '/';
-  // strip query string
-  const qIdx = path.indexOf('?');
-  if (qIdx !== -1) path = path.slice(0, qIdx);
-  // normalize trailing slashes (except root)
-  if (path.length > 1 && path.endsWith('/')) path = path.replace(/\/+$/, '');
+  const path = requestPath(req);
 
   const host = req && (req.host || req.hostname);
   const tbl = Array.isArray(table) ? table : (table && table.routes) || [];
@@ -131,10 +169,8 @@ export function match(table, req) {
     const params = {};
     if (m.groups) {
       for (const k of Object.keys(m.groups)) {
-        if (m.groups[k] != null) {
-          try { params[k] = decodeURIComponent(m.groups[k]); }
-          catch (e) { params[k] = m.groups[k]; }
-        }
+        // The path was decoded before it matched, so the capture is decoded.
+        if (m.groups[k] != null) params[k] = m.groups[k];
       }
     }
     if (route.domain && host) {
@@ -151,14 +187,11 @@ export function match(table, req) {
 // the method itself is left out. Laravel's router answers 405 (or the
 // automatic OPTIONS response) when the URI matches a route but the method does
 // not; the Allow header lists these verbs.
-const ROUTER_VERBS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+const ROUTER_VERBS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'QUERY'];
 
 export function allowedMethods(table, req) {
   const method = resolveMethod(req);
-  let path = (req && req.path) || '/';
-  const qIdx = path.indexOf('?');
-  if (qIdx !== -1) path = path.slice(0, qIdx);
-  if (path.length > 1 && path.endsWith('/')) path = path.replace(/\/+$/, '');
+  const path = requestPath(req);
   const host = req && (req.host || req.hostname);
   const tbl = Array.isArray(table) ? table : (table && table.routes) || [];
   const verbs = [];

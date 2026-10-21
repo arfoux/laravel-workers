@@ -126,6 +126,38 @@ assert.equal(m.params.sub, 'acme');
 m = match(dtable, { method: 'GET', path: '/admin', host: 'admin.example.com:8787' });
 assert.ok(m, 'port must be stripped from host');
 
+// an optional parameter: the separator belongs to the optional group
+// (Symfony's RouteCompiler), so '/users/{id?}' also answers '/users'.
+const otable = normalizeTable([
+  { uri: '/users/{id?}', name: 'users.show', methods: ['GET'], domain: null },
+  { uri: '/files/{path}', name: 'files.show', methods: ['GET'], domain: null },
+]);
+m = match(otable, { method: 'GET', path: '/users' });
+assert.ok(m, 'the optional segment may be absent');
+assert.equal(m.route.name, 'users.show');
+assert.equal(m.params.id, undefined, 'an absent optional parameter is not captured');
+m = match(otable, { method: 'GET', path: '/users/5' });
+assert.ok(m);
+assert.equal(m.params.id, '5');
+// the optional variable as the only token: the separator stays outside
+// (Symfony's RouteCompiler) and the parameter may be absent
+const onlytable = normalizeTable([{ uri: '/{id?}', name: 'root', methods: ['GET'], domain: null }]);
+m = match(onlytable, { method: 'GET', path: '/' });
+assert.ok(m, 'the root route matches');
+assert.equal(m.params.id, undefined);
+m = match(onlytable, { method: 'GET', path: '/7' });
+assert.ok(m);
+assert.equal(m.params.id, '7');
+// an optional parameter that is not the last one is required (Symfony stops
+// its first-optional scan at the text token after it)
+const midtable = normalizeTable([{ uri: '/a/{b?}/c', name: 'mid', methods: ['GET'], domain: null }]);
+assert.equal(match(midtable, { method: 'GET', path: '/a/c' }), null, 'the middle parameter is required');
+assert.ok(match(midtable, { method: 'GET', path: '/a/x/c' }));
+// Laravel decodes the path BEFORE the route matches it (UriValidator), so an
+// encoded slash is a separator there: '/files/a%2Fb' is '/files/a/b' and does
+// not match a one-segment route.
+assert.equal(match(otable, { method: 'GET', path: '/files/a%2Fb' }), null, 'an encoded slash splits the path');
+
 // method override (POST + header -> PUT)
 const mtable = normalizeTable([{ uri: '/things/1', name: 'update', methods: ['PUT'], domain: null }]);
 m = match(mtable, { method: 'POST', path: '/things/1', headers: { 'x-http-method-override': 'PUT' } });
