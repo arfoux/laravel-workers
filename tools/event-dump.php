@@ -10,7 +10,17 @@
 //
 // The output (stdout):
 //   {"events":{"App\\Events\\PostPublished":{"file":"...","listeners":["App\\Listeners\\MarkPostNotified"]}},
-//    "classes":{"App\\Events\\PostPublished":{"file":"...","kind":"event","ctor":[{"name":"postId","kind":"builtin","type":"int"}]}, ...}}
+//    "classes":{"App\\Events\\PostPublished":{"file":"...","kind":"event","ctor":[{"name":"postId","kind":"builtin","type":"int"}]}, ...},
+//    "mailViews":["mail.order"],
+//    "mailViewsByClass":{"App\\Mail\\OrderMail":["mail.order"]},
+//    "mailableClasses":["App\\Mail\\OrderMail"]}
+//
+// The `mailableClasses` are EVERY app mailable (app/Mail) - the ones with a
+// view and the ones without (a mailable with only a subject is legal), so the
+// build can tell a mailable it knows from one it never saw. The `mailViews`
+// (the flat list - the compile queue) and the `mailViewsByClass` (the views
+// PER mailable) are the views those mailables render: the build compiles them
+// (a mailable's view is not reached from a route).
 //
 // The `ctor` of a class is its constructor's parameters: the kind of each one
 // tells the build how to provide it at the edge (a plain value, an injected
@@ -27,6 +37,11 @@ if ($appRoot === '' || !is_dir($appRoot)) {
 }
 
 require $appRoot . '/vendor/autoload.php';
+// The views a mailable renders: the extractor reads the mailable's own source
+// (the fluent call AND the public property - the compiled kernel honours
+// both).
+require_once __DIR__ . '/mailable-views.php';
+
 $app = require $appRoot . '/bootstrap/app.php';
 $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
@@ -166,28 +181,32 @@ foreach (glob($appRoot . '/app/Http/Requests/*.php') ?: [] as $requestFile) {
 }
 
 $mailViews = [];
+$mailViewsByClass = [];
+$mailableClasses = [];
 foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
     $fqcn = 'App\\Mail\\' . basename($mailFile, '.php');
     if (!class_exists($fqcn)) continue;
     $addClass($fqcn, 'mailable');
-    $source = (string) file_get_contents($mailFile);
-    // The view a mailable renders: `->view('x')`, `->textView('x')` and
-    // Laravel 13's modern API `->markdown('x')`. The name can be in single OR
-    // double quotes - a mailable that renders a view the build does not know
-    // about would compile and fail at request time (a 500), so every shape is
-    // read here.
-    $views = [];
-    foreach (['view', 'textView', 'markdown'] as $method) {
-        // A SINGLE-quoted PHP string: a double-quoted one would eat the \1
-        // backreference (PHP reads it as the octal escape chr(1)).
-        $pattern = '/->' . $method . '\(\s*(["\'])([^"\']+)\1/';
-        if (preg_match_all($pattern, $source, $m3, PREG_SET_ORDER)) {
-            foreach ($m3 as $set) $views[] = $set[2];
-        }
-    }
+    // EVERY app mailable: the build must be able to tell a mailable it knows
+    // from one it never saw. A mailable with no view at all (only a subject)
+    // is legal - it is not an unknown one.
+    $mailableClasses[] = $fqcn;
+    // The view a mailable renders: the FLUENT call (`->view('x')`,
+    // `->textView('x')`, Laravel 13's modern API `->markdown('x')`) AND the
+    // PUBLIC property (`public $view = 'x';`, `$this->view = 'x';`).
+    // Laravel's Mailable carries the view in both shapes (the field
+    // Illuminate/Mail/Mailable.php:110,117 and the fluent setters :915,930)
+    // and the compiled kernel honours both (kernel/mailable.mjs: the payload
+    // reads the fluent value first and falls back to the PUBLIC field), so a
+    // mailable written in the property form COMPILES - but if the build does
+    // not learn its view, the view is never compiled and the mail dies at
+    // request time (a 500 where Laravel sends the mail). The name can be in
+    // single OR double quotes, and a DYNAMIC name (`->view($name)`) is no
+    // name at all (the build cannot know which view to compile).
+    $views = lw_mailable_views((string) file_get_contents($mailFile));
     if ($views) {
         // Per mailable: only the route that SENDS a mailable needs its view.
-        $mailViewsByClass[$fqcn] = array_values(array_unique($views));
+        $mailViewsByClass[$fqcn] = $views;
         foreach ($views as $v) {
             $mailViews[] = $v;
         }
@@ -268,6 +287,9 @@ $out = [
     // The views PER mailable (only the route that sends a mailable needs
     // them - the flat list above is the compile queue).
     'mailViewsByClass' => $mailViewsByClass,
+    // EVERY app mailable (the ones with a view and the ones without): the
+    // build tells a mailable it knows from one it never saw.
+    'mailableClasses' => $mailableClasses,
 ];
 
 echo json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
