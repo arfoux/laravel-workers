@@ -360,7 +360,9 @@ test('sqlite: firstOrCreate/updateOrCreate/increment/refresh/findOrFail on real 
 
   const post = await Post.find(db, 2);
   assert.equal(Number(post.get('published')), 0);
-  assert.equal(await post.increment(db, 'published', 2), 2);
+  // Laravel's increment() answers the affected-row count (the atomic
+  // statement touched one row), not the new value.
+  assert.equal(await post.increment(db, 'published', 2), 1);
   assert.equal(Number(await table(db, 'posts').where('id', 2).value('published')), 2);
   await table(db, 'posts').where('id', 2).update({ published: 9 });
   await post.refresh(db);
