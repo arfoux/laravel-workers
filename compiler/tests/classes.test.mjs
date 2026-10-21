@@ -1,16 +1,18 @@
 // compiler/tests/classes.test.mjs — the class compiler (the event listeners).
 //
-// The listeners are classes: at the edge there is no listener runtime, so the
-// build compiles them (the constructor, the public methods) and the dispatch
+// The listeners are classes: at the edge there is no listener runtime, so
+// the build compiles them (the constructor, the methods) and the dispatch
 // calls them (Laravel dispatches synchronously).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { compileClasses } from '../src/classes.mjs';
 import { emitController } from '../src/controller.mjs';
 import { buildRt } from '../runtime/rt-from-context.mjs';
+import { createMailer } from '../../kernel/mail.mjs';
 
 // A class file in a temp dir (the compiler reads the app's sources).
 function classFile(name, source) {
@@ -18,6 +20,15 @@ function classFile(name, source) {
   const file = join(dir, name + '.php');
   writeFileSync(file, source, 'utf8');
   return file;
+}
+
+// The compiled registry as a module (the build writes it to
+// dist/src/classes.generated.mjs): the test imports it, so the runtime runs
+// the very code the build emits.
+async function compiledModule(code) {
+  const file = join(mkdtempSync(join(tmpdir(), 'lw-classes-')), 'classes.generated.mjs');
+  writeFileSync(file, code, 'utf8');
+  return import(pathToFileURL(file).href);
 }
 
 const EVENT_SOURCE = `<?php
@@ -155,6 +166,104 @@ class WithService
   assert.match(res.errors[0].message, /Mailer/);
   // The class is not compiled: the dispatch would be a silent no-op.
   assert.equal(Object.keys(res.meta).length, 0);
+});
+
+test('classes: a listener that calls its own private helper compiles the helper (the compiled body must not call a method that does not exist)', async () => {
+  // The helper is the CLASS's own method (Laravel calls it from inside the
+  // class), so the edge has to carry it - nothing else does. A helper that is
+  // not compiled is a method that does not exist at the edge: the compiled
+  // handle() would call it and die with a TypeError at request time, while
+  // the build is green.
+  const eventFile = classFile('PostPublished', EVENT_SOURCE);
+  const file = classFile('MarkPostNotified', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+class MarkPostNotified
+{
+    public function handle(PostPublished $event): string
+    {
+        return $this->format($event);
+    }
+    private function format(PostPublished $event): string
+    {
+        return 'post-' . $event->postId;
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': { file: eventFile, listeners: ['App\\Listeners\\MarkPostNotified'] },
+      },
+      classes: {
+        'App\\Events\\PostPublished': { file: eventFile, kind: 'event' },
+        'App\\Listeners\\MarkPostNotified': { file },
+      },
+    },
+    { ...OPTIONS, classes: new Set(['App\\Events\\PostPublished', 'App\\Listeners\\MarkPostNotified']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The private helper is compiled (the registry carries it).
+  assert.match(res.code, /"format":/);
+  // The compiled handle() calls it.
+  assert.match(res.code, /this\.format\(/);
+  // The dispatch answers Laravel's value: the helper ran and its answer came
+  // back (a promise that leaked in would answer {}).
+  const mod = await compiledModule(res.code);
+  const rt = buildRt({}, { http: {}, classes: mod.classes, eventListeners: mod.eventListeners });
+  const event = rt.newClass('App\\Events\\PostPublished', [7]);
+  const answer = await rt.event.dispatch(event);
+  assert.deepEqual(answer, ['post-7']);
+});
+
+test('classes: a listener that injects a MODEL fails loud with the model\'s reason (a service is another thing)', () => {
+  // Laravel's container BUILDS a model (Illuminate\Container\Container:
+  // `build()` - a concrete class is instantiable), so the reason must not
+  // claim that Laravel cannot resolve it: the edge cannot PROVIDE one (the
+  // class is instantiated with no arguments). A service the build does not
+  // compile is a different thing - it gets the service's reason.
+  const file = classFile('WithModel', `<?php
+namespace App\\Listeners;
+use App\\Models\\Post;
+class WithModel
+{
+    public function __construct(private Post $post)
+    {
+    }
+    public function handle(\\App\\Events\\PostPublished $event): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Listeners\\WithModel': { file } } },
+    { ...OPTIONS, modelClassFqcns: { Post: 'App\\Models\\Post' } }
+  );
+  assert.equal(res.errors.length, 1);
+  assert.match(res.errors[0].message, /asks for the model App\\Models\\Post/);
+  assert.equal(res.errors[0].code, 'LW002');
+
+  const serviceFile = classFile('WithService', `<?php
+namespace App\\Listeners;
+use App\\Services\\Mailer;
+class WithService
+{
+    public function __construct(private Mailer $mailer)
+    {
+    }
+    public function handle(\\App\\Events\\PostPublished $event): void
+    {
+    }
+}
+`);
+  const serviceRes = compileClasses(
+    { events: {}, classes: { 'App\\Listeners\\WithService': { file: serviceFile } } },
+    { ...OPTIONS, modelClassFqcns: { Post: 'App\\Models\\Post' } }
+  );
+  assert.equal(serviceRes.errors.length, 1);
+  // The service is not a model: the reason must say so.
+  assert.match(serviceRes.errors[0].message, /asks for App\\Services\\Mailer/);
+  assert.doesNotMatch(serviceRes.errors[0].message, /the model/);
 });
 test('classes: a listener that injects a compiled service compiles (the edge builds it)', () => {
   const serviceFile = classFile('Mailer', `<?php
@@ -563,10 +672,13 @@ class WithMailer
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(/);
 });
 
-test('classes: a mailable with a PROTECTED build() compiles (Laravel\'s build() is protected)', () => {
-  // Laravel's Mailable::build() is protected - the class compiler compiles the
-  // public methods only, so without this the mailable would have no build()
-  // and the payload would be empty.
+test('classes: a mailable with a PROTECTED build() compiles (every method of the class is the mailable\'s own)', () => {
+  // The class compiler compiles EVERY method of the class (the protected and
+  // the private ones too). Laravel's Mailable carries the surface (the
+  // subject(), the view(), the with() - Illuminate\Mail\Mailable:36) and the
+  // kernel's base carries it at the edge, so the app's own methods are the
+  // mailable's own: a mailable with a protected build() has one - without it
+  // the payload would be empty.
   const file = classFile('OrderMail', `<?php
 namespace App\\Mail;
 class OrderMail
@@ -596,6 +708,50 @@ class OrderMail
   // The protected build() and the protected helper are compiled.
   assert.match(res.code, /"build":/);
   assert.match(res.code, /"formatOrder":/);
+});
+
+test('classes: a mailable that calls its own PRIVATE helper compiles the helper (the helper is the mailable\'s own)', async () => {
+  // Laravel's Mailable carries the surface (Illuminate\Mail\Mailable:
+  // `subject()`, `view()`, `with()`), and the kernel's base carries it at the
+  // edge (kernel/mailable.mjs). The app's own methods are the mailable's own:
+  // build() and the helpers build() calls. A helper that is not compiled is
+  // a method that does not exist at the edge: the compiled build() would call
+  // it and die with a TypeError at request time, while the build is green.
+  const file = classFile('OrderMail', `<?php
+namespace App\\Mail;
+class OrderMail
+{
+    protected function build(): self
+    {
+        $this->subject('Order ' . $this->formatOrder());
+        return $this;
+    }
+    private function formatOrder(): string
+    {
+        return 'shipped';
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {},
+      classes: { 'App\\Mail\\OrderMail': { file, kind: 'mailable' } },
+    },
+    { ...OPTIONS, classes: new Set(['App\\Mail\\OrderMail']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The private helper is compiled (the registry carries it).
+  assert.match(res.code, /"formatOrder":/);
+  // The compiled build() calls it.
+  assert.match(res.code, /this\.formatOrder\(/);
+  // The compiled mailable runs: the mail that goes out carries the helper's
+  // value (Laravel: the subject is the one build() set).
+  const mod = await compiledModule(res.code);
+  const mailer = createMailer({ transport: 'log', from: 'hello@example.com' });
+  const rt = buildRt({}, { http: { mail: mailer }, classes: mod.classes, eventListeners: mod.eventListeners });
+  const mail = rt.newClass('App\\Mail\\OrderMail', []);
+  await rt.mail().to('buyer@example.com').send(mail);
+  assert.equal(mailer.outbox[0].subject, 'Order shipped');
 });
 
 test('classes: every class-path refusal carries a code', () => {

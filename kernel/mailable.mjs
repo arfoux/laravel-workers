@@ -1,7 +1,9 @@
 // kernel/mailable.mjs — the Mailable base (Laravel's Illuminate\Mail\Mailable).
 //
 // The compiled mailable extends this: the class compiler emits the app's own
-// methods (build() - which is PROTECTED in Laravel - and the class's helpers)
+// methods (Laravel calls the mailable's own `build()` when it has one -
+// Illuminate\Mail\Mailable: `if (method_exists($this, 'build')) { Container::getInstance()->call([$this, 'build']); }` -
+// and the class's helpers)
 // and this base provides Laravel's surface plus the payload the mailer sends.
 //
 // Laravel's Mailable declares PUBLIC fields (Illuminate\Mail\Mailable:

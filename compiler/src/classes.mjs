@@ -3,8 +3,9 @@
 // An event listener (and the event class it receives) is a PHP class: at the
 // edge there is no listener runtime, so a dispatch that answers nothing would
 // be a *silent* no-op. The compiled rung compiles the classes instead: the
-// constructor (the promoted properties), the public methods (their bodies
-// through the ordinary transpiler) and the event -> listener map.
+// constructor (the promoted properties), the methods (their bodies through the
+// ordinary transpiler - every method of the class, the protected and the
+// private ones too) and the event -> listener map.
 //
 // The metadata comes from tools/event-dump.php (Laravel's own resolution: the
 // explicit `$listen` + the auto-discovery), so the compiled listeners are
@@ -738,12 +739,14 @@ export function compileClasses(dump, opts = {}) {
     let failedCode = null;
     for (const m of classMembers(classNode)) {
       if (!m || m.kind !== 'method') continue;
-      // A mailable's build() is PROTECTED in Laravel (Illuminate\Mail\Mailable:
-      // `protected function build()`), and the mail's payload comes from it - so
-      // for a mailable every method is compiled (build() may call the class's
-      // own helpers, which are protected too).
-      const isMailableClass = options.mailable === true;
-      if (m.visibility && m.visibility !== 'public' && !isMailableClass) continue;
+      // EVERY method of the class is compiled - the protected and the private
+      // ones too. A helper the class calls on itself ($this->helper()) is the
+      // CLASS's own method: Laravel calls it from inside the class, and the
+      // edge provides only Laravel's surface (the kernel's Mailable base -
+      // Illuminate\Mail\Mailable: `subject()`, `view()`, `with()`), never the
+      // class's own methods. So a helper that is dropped is a helper that
+      // does not exist at the edge: the compiled body would call it and die
+      // with a TypeError at request time, while the build is green.
       const methodName = nodeName(m.name);
       if (methodName === '__construct') continue;
       const r = compileMethod(fqcn, m, options);
