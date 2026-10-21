@@ -81,9 +81,9 @@ function uriToRegex(uri) {
         if (i !== segs.length - 1) {
           pattern += (i === 0 ? '' : '/') + '(?<' + name + '>[^/]+)';
         } else if (segs.length === 2) {
-          pattern += '/(?<' + name + '>[^/]*)?';
+          pattern += '/(?<' + name + '>[^/]+)?';
         } else {
-          pattern += '(?:/(?<' + name + '>[^/]*))?';
+          pattern += '(?:/(?<' + name + '>[^/]+))?';
         }
         continue;
       }

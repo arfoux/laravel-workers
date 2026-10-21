@@ -157,6 +157,10 @@ assert.ok(match(midtable, { method: 'GET', path: '/a/x/c' }));
 // encoded slash is a separator there: '/files/a%2Fb' is '/files/a/b' and does
 // not match a one-segment route.
 assert.equal(match(otable, { method: 'GET', path: '/files/a%2Fb' }), null, 'an encoded slash splits the path');
+// Symfony's requirement is `[^/]++` (one or more): an encoded trailing slash
+// ('/users/%2F' decodes to '/users//') leaves the group empty, and Symfony
+// refuses it - Laravel answers 404.
+assert.equal(match(otable, { method: 'GET', path: '/users/%2F' }), null, 'an empty optional parameter does not match');
 
 // method override (POST + header -> PUT)
 const mtable = normalizeTable([{ uri: '/things/1', name: 'update', methods: ['PUT'], domain: null }]);

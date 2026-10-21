@@ -94,6 +94,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M61q** The **validator's remaining Laravel semantics** (2026-10-21) - `required` did not treat a whitespace-only string as empty; `in`/`not_in` compared with JS's `String()` instead of PHP's `(string)` cast (and missed Laravel's array branch); the dependent rules compared as strings where Laravel compares strictly (loose only for a bool/null, with the bool/null conversions); the parameter count was never checked (Laravel throws); and the rule name was not trimmed (Laravel trims it). All five are Laravel's now (probed against the real validator).
 - **M61r** The **model's created flag and the appended dates** (2026-10-21) - Laravel sets `wasRecentlyCreated` in the insert paths, so a controller returning a model it just saved answers 201; the kernel only set it in `create()`. The appended attributes go through the same date serialisation as the timestamps now.
 - **M61s** The **query builder accepts Laravel's operators** (2026-10-21) - `<=>` and `IS`/`IS NOT` are in Laravel's operator list, so the edge refused queries Laravel runs (`where('c','<=>',null)` is `IS NULL` there, `where('c','is',5)` renders `c is ?`). The list is Laravel's now.
+- **M61t** The **optional route segment uses Symfony's requirement** (2026-10-21) - the kernel's `[^/]*` could capture an empty optional parameter where Symfony's `[^/]++` refuses the group (`/users/%2F` decodes to `/users//`: the edge answered 200, Laravel answers 404).
 
 ## Supported vs unsupported
 
