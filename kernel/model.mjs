@@ -22,17 +22,84 @@ function castAttributeAsHashedString(value, rounds) {
   return value;
 }
 
+// PHP's (bool): false for null, false, 0, 0.0, '' and '0' - every other
+// value is true ('false' is TRUE in PHP, and so is a non-empty array).
+function phpBoolCast(value) {
+  if (value === null || value === undefined || value === false) return false;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') return value !== '' && value !== '0';
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+// PHP's (int): the leading integer part ('12abc' -> 12, 'abc' -> 0, 1.9 -> 1).
+function phpIntCast(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.trunc(value) : 0;
+  if (Array.isArray(value)) return value.length ? 1 : 0;
+  const m = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(String(value));
+  if (!m) return 0;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+// PHP's (float): the leading number ('12abc' -> 12.0).
+function phpFloatCast(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (Array.isArray(value)) return value.length ? 1 : 0;
+  const m = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(String(value));
+  if (!m) return 0;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Laravel's decimal cast: BigDecimal::of((string) $value)->toScale($decimals,
+// RoundingMode::HalfUp) - the rounding happens on the DECIMAL string, not on
+// the binary double ('2.675' -> '2.68', where toFixed() says '2.67').
+function phpDecimalCast(value, places) {
+  const m = /^\s*([+-]?)(\d*)(?:\.(\d*))?$/.exec(String(value));
+  if (!m || (m[2] === '' && (m[3] === undefined || m[3] === ''))) {
+    const err = new Error('Unable to cast value to a decimal.');
+    err.phpClass = 'MathException';
+    throw err;
+  }
+  const sign = m[1] === '-' ? '-' : '';
+  const int = m[2] || '0';
+  const frac = (m[3] || '').padEnd(places + 1, '0');
+  const roundUp = Number(frac[places] || '0') >= 5;
+  const scaled = BigInt(int + frac.slice(0, places)) + (roundUp ? 1n : 0n);
+  const digits = scaled.toString().padStart(places + 1, '0');
+  const intPart = digits.slice(0, digits.length - places) || '0';
+  return sign + intPart + (places ? '.' + digits.slice(digits.length - places) : '');
+}
+
+// Laravel's `asTimestamp()`: the date's Unix timestamp (the model's date
+// format is 'Y-m-d H:i:s' in UTC).
+function phpTimestampCast(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Math.trunc(value);
+  const str = String(value);
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(str);
+  if (m) return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000);
+  const t = Date.parse(str);
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+}
+
 function applyCast(value, cast) {
   if (value == null) return value;
   const spec = String(cast).toLowerCase();
   if (JSON_CASTS.has(spec)) return typeof value === 'string' ? JSON.parse(value) : value;
   if (spec.startsWith('decimal:')) {
     const places = Number(spec.slice('decimal:'.length)) || 0;
-    return Number(value).toFixed(places);
+    return phpDecimalCast(value, places);
   }
-  if (spec === 'int' || spec === 'integer' || spec === 'timestamp') return Number(value);
-  if (spec === 'float' || spec === 'double' || spec === 'real') return Number(value);
-  if (spec === 'bool' || spec === 'boolean') return value === true || value === 1 || value === '1' || value === 'true';
+  if (spec === 'int' || spec === 'integer') return phpIntCast(value);
+  if (spec === 'timestamp') return phpTimestampCast(value);
+  if (spec === 'float' || spec === 'double' || spec === 'real') return phpFloatCast(value);
+  if (spec === 'bool' || spec === 'boolean') return phpBoolCast(value);
   if (spec === 'string') return String(value);
   // date/datetime/immutable_* and unknown casts pass through (strings in D1).
   return value;

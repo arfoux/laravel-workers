@@ -930,3 +930,28 @@ test('where(col, null) is a where-null clause (Laravel: IS NULL, never `= NULL`)
   // SQLite has no 'IS' operator: Laravel reads `where('c', 'IS')` as a value.
   assert.throws(() => table(db, 'posts').where('c', 'IS', null), /unsupported where operator/);
 });
+
+test('the model casts are PHP\'s casts (probed against PHP 8.3)', () => {
+  // PHP's casts, probed:
+  //   (bool) 'false' = true, '0' = false, '' = false, '0.0' = true
+  //   (int) '12abc' = 12, 'abc' = 0, '1.9' = 1, '1e3' = 1000
+  //   the decimal cast: BigDecimal::of($v)->toScale(2, HALF_UP) - the rounding
+  //   happens on the DECIMAL string ('2.675' -> '2.68', where toFixed() says
+  //   '2.67')
+  class M extends Model {}
+  M.casts = { b: 'bool', i: 'int', f: 'float', d: 'decimal:2', t: 'timestamp' };
+  const m = new M({ b: 'false', i: '12abc', f: '1.9', d: '2.675', t: '2026-01-02 03:04:05' });
+  assert.equal(m.get('b'), true);
+  assert.equal(m.get('i'), 12);
+  assert.equal(m.get('f'), 1.9);
+  assert.equal(m.get('d'), '2.68');
+  assert.equal(m.get('t'), 1767323045);
+  const m2 = new M({ b: '0', i: 'abc', d: '-2.675' });
+  assert.equal(m2.get('b'), false);
+  assert.equal(m2.get('i'), 0);
+  assert.equal(m2.get('d'), '-2.68');
+  const m3 = new M({ b: '0.0', i: '1e3', d: '1.005' });
+  assert.equal(m3.get('b'), true);
+  assert.equal(m3.get('i'), 1000);
+  assert.equal(m3.get('d'), '1.01');
+});
