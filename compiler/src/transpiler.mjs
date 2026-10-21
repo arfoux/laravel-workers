@@ -341,6 +341,11 @@ function tx(node) {
           // The compiled class (a listener, a service, a mailable): the handler
           // needs the class registry (the runtime builds the instance).
           CTX.usedClasses = true;
+          // The class this method instantiates: the build needs the graph (a
+          // route that reaches a class that sends a mailable needs that
+          // mailable's view). The RESOLVED name is recorded - the same one
+          // the compiled code instantiates, so the graph and the code agree.
+          if (CTX.instantiated) CTX.instantiated.add(fqcn);
           return 'rt.newClass(' + JSON.stringify(fqcn) + (ctorArgs ? ', [' + ctorArgs + ']' : ', []') + ')';
         }
       }
@@ -2357,6 +2362,10 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     // queued, the listener injects a service, ...): a dispatch of one of them
     // would be a silent no-op, so the build stops and names the reason.
     classBlocked: opts.classBlocked instanceof Map ? opts.classBlocked : new Map(Object.entries(opts.classBlocked || {})),
+    // The app classes this method instantiates (`new X()`), resolved to their
+    // FQCN: the build needs the class graph (which route reaches which class -
+    // and through it, which mailable's view the route needs).
+    instantiated: new Set(),
     // Inside a compiled class method, `$this` is the instance.
     classMethod: !!opts.classMethod,
     // The class's own methods (a method call on $this is one of them).
@@ -2413,12 +2422,14 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   let usedClasses = false;
   let usedPaginator = false;
   let usedEvents = false;
+  let instantiated = [];
   try {
     walkChildren(bodyChildren || [], lines, indent, {});
       usedGate = !!CTX.usedGate;
     usedClasses = !!CTX.usedClasses;
     usedPaginator = !!CTX.usedPaginator;
     usedEvents = !!CTX.usedEvents;
+    instantiated = [...CTX.instantiated];
   } catch (e) {
     const lw = e.lw || { code: 'LW002', message: e.message, line: 0, column: 0, hint: '' };
     return { code: null, errors: [lw] };
@@ -2426,7 +2437,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     CTX = null;
     CLOSURE_DEPTH = 0;
   }
-  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator, usedEvents, usedClasses };
+  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator, usedEvents, usedClasses, instantiated };
 }
 
 export default transpile;

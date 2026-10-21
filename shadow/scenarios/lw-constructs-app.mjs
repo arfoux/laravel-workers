@@ -177,6 +177,20 @@ export default {
       expectMails: 1,
     },
     {
+      // The mail through a LISTENER: the route dispatches an event, the
+      // listener sends the mailable, and the mailable renders its OWN view
+      // through the ROUTE's runtime. The route never names the mailable, so
+      // the route's own view map does not carry that view - the edge must
+      // render it anyway.
+      label: 'POST /listener-mail-demo (the mailable a listener sends)',
+      method: 'POST',
+      uri: '/listener-mail-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'sent',
+      expectMails: 1,
+    },
+    {
       // The Gate: the policy check (the compiled policies answer it at the
       // edge). The user owns the post, so `update` is allowed and `denies` is
       // false; the class-level `viewAny` is allowed for a signed-in user.

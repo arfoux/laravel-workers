@@ -20,6 +20,7 @@ import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import { compilePolicies } from './compiler/src/policy.mjs';
 import { compileClasses } from './compiler/src/classes.mjs';
+import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
 import { viewFileName } from './compiler/src/view-name.mjs';
 import {
   cpSync,
@@ -1331,20 +1332,38 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         // The route's views + the pagination view (when the route has a
         // paginator: `$paginator->links()` renders it).
         const routeViewNames = [...(p.meta.views || [])];
-        // A mailable's view (the method sends a mail): the runtime renders it,
-        // and a mailable's view is not reached from a route.
-        if (p.meta.usesMail) {
-          // The views of the mailables THIS route sends (the classes the body
-          // instantiates) - not every mailable's view.
-          for (const c of p.meta.newClasses || []) {
-            for (const v of mailViewsByClass[c.fqcn] || []) routeViewNames.push(v);
-          }
+        // A mailable's view (the route sends a mail): the runtime renders it
+        // through the ROUTE's runtime, so the view must be in THIS route's
+        // view map. The mailables a route can send are the ones it REACHES:
+        // the classes its body instantiates, the listeners of the events it
+        // dispatches, and their dependencies - a route that dispatches an event
+        // whose listener sends a mailable needs that mailable's view.
+        // The views are attached per route: a mailable no route reaches costs
+        // no route a view (and one broken mailable view no longer skips every
+        // route of the app).
+        const routeReach = reachableClasses(p.meta.newClasses, classesMeta, {
+          classMeta: classesCompile.meta,
+          dumpClasses: classesDump.classes,
+          events: classesDump.events,
+        });
+        for (const mailable of reachedMailables(routeReach.reached, classesDump.classes)) {
+          for (const v of mailViewsByClass[mailable] || []) routeViewNames.push(v);
         }
         if (p.meta.usesPaginator) routeViewNames.push(paginationView);
         const routeViews = viewsFor(routeViewNames);
         const missingView = routeViews.find((v) => !compiledViews.has(v));
         if (missingView) {
-          console.log(`  controller ${p.route}: skipped — view "${missingView}" did not compile`);
+          // A mailable's view that did not compile: the reason names the
+          // mailable (the class that renders it) and the route that reaches it -
+          // the route would answer 500 where Laravel sends the mail.
+          const mailableOf = Object.keys(mailViewsByClass).find(
+            (m) => (mailViewsByClass[m] || []).includes(missingView)
+          );
+          console.log(
+            mailableOf
+              ? `  controller ${p.route}: skipped — the view "${missingView}" of the mailable ${mailableOf} did not compile`
+              : `  controller ${p.route}: skipped — view "${missingView}" did not compile`
+          );
           continue;
         }
         // The CORS paths (HandleCors): the compiled worker does not add the CORS

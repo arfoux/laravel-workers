@@ -291,6 +291,10 @@ function compileConstructor(fqcn, classNode, opts) {
     formRequests: new Map(),
     modelVarSeeds: [],
     classes: opts.classes,
+    // The alias of each compiled class (`OrderMail` -> `App\Mail\OrderMail`):
+    // `new OrderMail()` resolves through it, the way PHP resolves a name
+    // through the file's own `use` statements.
+    classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(),
     classMethod: true,
     // The class's own methods: a method call on $this (or on a variable that
     // holds the instance) is one of them.
@@ -508,6 +512,11 @@ function compileMethod(fqcn, methodNode, opts) {
     modelVarSeeds: [],
     // The classes the build compiled: `new X(...)` and the event dispatch.
     classes: opts.classes,
+    // The alias of each compiled class (`OrderMail` -> `App\Mail\OrderMail`):
+    // `new OrderMail()` resolves through it, the way PHP resolves a name
+    // through the file's own `use` statements (the file's imports are the
+    // authority here - see the alias map below).
+    classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(),
     classMethod: true,
     // The class's own methods (a method call on $this).
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
@@ -535,12 +544,66 @@ function compileMethod(fqcn, methodNode, opts) {
         .join('\n') +
       '\n    }',
     params: params.map((p) => vname(p.name)),
+    // The app classes this method instantiates (`new X()`), resolved to their
+    // FQCN (the same name the compiled body instantiates).
+    instantiated: emitted.instantiated || [],
   };
 }
 
 // ---------------------------------------------------------------------------
 // the whole registry
 // ---------------------------------------------------------------------------
+
+// The alias of each class a file can instantiate (`new OrderMail()`), resolved
+// the way PHP resolves a name in that file:
+//   1. the file's own `use` statements (`use App\Mail\OrderMail;`),
+//   2. the file's own namespace (`App\Mail\OrderMail` in App\Mail),
+//   3. the global namespace (`OrderMail`).
+// Only a class the build COMPILED resolves: the edge builds the compiled
+// classes, so a name that is not among them cannot be instantiated. An
+// ambiguous short name (two compiled classes share it) does NOT resolve - the
+// edge cannot tell them apart, so the transpiler refuses it.
+//
+// The FQCN-written form (`new \App\Mail\OrderMail()`) resolves through the
+// transpiler itself (it matches the compiled FQCN set), so it needs no entry
+// here.
+function aliasMapFor(options) {
+  const map = new Map();
+  const compiled = options.classes instanceof Set ? options.classes : new Set();
+  const namespace = options.namespace || '';
+  // The file's own `use` statements: the authority for a short name.
+  for (const [alias, fqcn] of options.imports || []) {
+    if (!alias || !fqcn) continue;
+    // Only a compiled class: an import of a class the build did not compile
+    // (a model, a framework class) must NOT resolve - the edge cannot build
+    // it.
+    if (!compiled.has(fqcn)) continue;
+    map.set(alias, fqcn);
+  }
+  // The file's own namespace: a class of the same namespace, written short.
+  if (namespace) {
+    for (const fqcn of compiled) {
+      if (!fqcn.startsWith(namespace + '\\')) continue;
+      const alias = shortName(fqcn);
+      // An explicit `use` wins over the namespace (PHP's own rule).
+      if (map.has(alias)) continue;
+      map.set(alias, fqcn);
+    }
+  }
+  // The global namespace: a compiled class outside every namespace, written
+  // short. An ambiguous short name does not resolve.
+  const global = new Map();
+  for (const fqcn of compiled) {
+    if (fqcn.includes('\\')) continue;
+    if (global.has(fqcn)) global.set(fqcn, null);
+    else global.set(fqcn, fqcn);
+  }
+  for (const [alias, fqcn] of global) {
+    if (!fqcn || map.has(alias)) continue;
+    map.set(alias, fqcn);
+  }
+  return map;
+}
 
 export function compileClasses(dump, opts = {}) {
   const events = (dump && dump.events) || {};
@@ -725,6 +788,13 @@ export function compileClasses(dump, opts = {}) {
     // through them).
     options.namespace = parsed.namespace || '';
     options.imports = parsed.imports instanceof Map ? parsed.imports : new Map();
+    // The alias of each class this file can instantiate (`new OrderMail()`),
+    // resolved the way PHP resolves a name in this file: the file's own `use`
+    // statements first, then the file's own namespace, then the global
+    // namespace. Only a class the build COMPILED resolves - anything else
+    // stays unresolved, and the transpiler refuses it (the class is not
+    // compiled, so the edge cannot build it).
+    options.classFqcns = aliasMapFor(options);
     // The class's own methods (a method call on $this is one of them) and the
     // mailable flag (the fluent surface of Laravel's Mailable).
     options.classMethods = new Set(
@@ -750,6 +820,11 @@ export function compileClasses(dump, opts = {}) {
     }
     options.injectedDeps = injectedDeps;
     const methods = {};
+    // The app classes this class instantiates (`new X()`), resolved to their
+    // FQCN: the build needs the class graph (a route that reaches a class that
+    // sends a mailable needs that mailable's view; a class that instantiates a
+    // class that did NOT compile must fail too).
+    const instantiated = new Set();
     let failed = null;
     let failedCode = null;
     for (const m of classMembers(classNode)) {
@@ -759,9 +834,9 @@ export function compileClasses(dump, opts = {}) {
       // CLASS's own method: Laravel calls it from inside the class, and the
       // edge provides only Laravel's surface (the kernel's Mailable base -
       // Illuminate\Mail\Mailable: `subject()`, `view()`, `with()`), never the
-      // class's own methods. So a helper that is dropped is a helper that
-      // does not exist at the edge: the compiled body would call it and die
-      // with a TypeError at request time, while the build is green.
+      // class's own methods. So a helper that is dropped is a helper that does
+      // not exist at the edge: the compiled body would call it and die with a
+      // TypeError at request time, while the build is green.
       const methodName = nodeName(m.name);
       if (methodName === '__construct') continue;
       const r = compileMethod(fqcn, m, options);
@@ -771,12 +846,13 @@ export function compileClasses(dump, opts = {}) {
         break;
       }
       methods[methodName] = { js: r.js, params: r.params };
+      for (const inst of r.instantiated || []) instantiated.add(inst);
     }
     if (failed) {
       errors.push({ class: fqcn, message: failed, code: failedCode });
       continue;
     }
-    meta[fqcn] = { file: info.file, methods: Object.keys(methods) };
+    meta[fqcn] = { file: info.file, methods: Object.keys(methods), instantiated: [...instantiated] };
     entries.push({
       fqcn,
       ctor: ctor.js,
@@ -785,6 +861,51 @@ export function compileClasses(dump, opts = {}) {
       // A mailable extends the kernel's Mailable base.
       base: info.kind === 'mailable' ? 'mailable' : info.kind === 'formRequest' ? 'formRequest' : null,
     });
+  }
+
+  // A class that instantiates a class that did NOT compile fails too: the
+  // edge builds the instance at request time and the class is not in the
+  // registry ("the class X is not compiled"), so the request would die with a
+  // 500 where Laravel answers 200. The class is refused HERE, with the
+  // reason of the class it needs, so the routes that reach it are stopped
+  // (the build's blocking machinery) instead of failing at request time.
+  {
+    const failedBy = new Map(errors.map((e) => [e.class, e.message]));
+    // The classes that instantiate a failed class fail as well - and so on
+    // (a class that needs a class that needs a failed class). The loop
+    // repeats until nothing changes.
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const e of entries.slice()) {
+        if (failedBy.has(e.fqcn)) continue;
+        const clsMeta = meta[e.fqcn] || {};
+        for (const inst of clsMeta.instantiated || []) {
+          if (!failedBy.has(inst)) continue;
+          const why = failedBy.get(inst);
+          failedBy.set(
+            e.fqcn,
+            'the class ' + e.fqcn + ' instantiates ' + inst + ', which did not compile: ' + why
+          );
+          errors.push({
+            class: e.fqcn,
+            message: failedBy.get(e.fqcn),
+            code: 'LW002',
+          });
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (failedBy.size) {
+      // The classes that failed are not in the registry: the runtime cannot
+      // build them, so the routes that reach them are stopped.
+      for (let i = entries.length - 1; i >= 0; i--) {
+        if (failedBy.has(entries[i].fqcn)) entries.splice(i, 1);
+      }
+      for (const fqcn of Object.keys(meta)) {
+        if (failedBy.has(fqcn)) delete meta[fqcn];
+      }
+    }
   }
 
   // The circular service dependencies (A needs B that needs A): the edge
