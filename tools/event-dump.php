@@ -176,12 +176,20 @@ foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
     // double quotes - a mailable that renders a view the build does not know
     // about would compile and fail at request time (a 500), so every shape is
     // read here.
+    $views = [];
     foreach (['view', 'textView', 'markdown'] as $method) {
         // A SINGLE-quoted PHP string: a double-quoted one would eat the \1
         // backreference (PHP reads it as the octal escape chr(1)).
         $pattern = '/->' . $method . '\(\s*(["\'])([^"\']+)\1/';
         if (preg_match_all($pattern, $source, $m3, PREG_SET_ORDER)) {
-            foreach ($m3 as $set) $mailViews[] = $set[2];
+            foreach ($m3 as $set) $views[] = $set[2];
+        }
+    }
+    if ($views) {
+        // Per mailable: only the route that SENDS a mailable needs its view.
+        $mailViewsByClass[$fqcn] = array_values(array_unique($views));
+        foreach ($views as $v) {
+            $mailViews[] = $v;
         }
     }
 }
@@ -257,6 +265,9 @@ $out = [
     'events' => $events,
     'classes' => $classes,
     'mailViews' => $mailViews,
+    // The views PER mailable (only the route that sends a mailable needs
+    // them - the flat list above is the compile queue).
+    'mailViewsByClass' => $mailViewsByClass,
 ];
 
 echo json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";

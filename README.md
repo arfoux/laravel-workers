@@ -113,6 +113,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **A58f** **The multipart delimiter needs its CRLF** (2026-10-21) - PHP's parser looks for CRLF + `--boundary`; the edge looked for the bare bytes, so a file whose content contains the boundary truncated the upload.
 - **A58g** **`response()->json($model)` answers the model's JSON** (2026-10-21) - Laravel's Model is JsonSerializable, so json_encode answers its toArray(); the edge threw "unsupported value (Model)" and answered a 500.
 - **A58h** **`find([1, 2])` returns the collection** (2026-10-21) - Laravel's find() with an array of ids returns a collection of the found models; the edge bound the array as one value, so the query matched nothing.
+- **A67** **A mailable's view is attached per route** (2026-10-21) - the dump attached every mailable's view to every route, so one view that failed to compile skipped every route (the app shipped without routes); now only the views of the mailables a route actually sends are attached.
 
 ## Supported vs unsupported
 
