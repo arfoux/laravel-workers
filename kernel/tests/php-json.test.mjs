@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { phpJsonEncode, phpJsonDecode, PhpJsonError } from '../php-json.mjs';
+import { Model } from '../model.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-json-oracle.php');
@@ -246,4 +247,17 @@ test('documented divergence: PHP json_decode loses -0 on decode', () => {
 test('phpJsonDecode reads PHP-produced payloads', () => {
   assert.deepEqual(phpJsonDecode('{"a":[1,2],"b":{"c":null}}'), { a: [1, 2], b: { c: null } });
   assert.deepEqual(phpJsonDecode('[]'), []);
+});
+
+test("a model is JsonSerializable (Laravel: json_encode($model) = its toArray())", () => {
+  // Laravel's Model implements JsonSerializable: json_encode($model) answers
+  // the model's toArray() (its toJSON()). The edge threw "unsupported value
+  // (Model)", so `response()->json($post)` was a 500.
+  class M extends Model {}
+  M.table = 'posts';
+  const model = new M({ id: 1, title: 'Hello' });
+  assert.equal(phpJsonEncode(model), '{"id":1,"title":"Hello"}');
+  // A Date has a toJSON() too - and PHP's json_encode(new DateTime()) answers
+  // '{}', so it stays unsupported here.
+  assert.throws(() => phpJsonEncode(new Date(0)), PhpJsonError);
 });

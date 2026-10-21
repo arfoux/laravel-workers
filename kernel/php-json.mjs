@@ -182,6 +182,17 @@ function writeValue(value, out) {
     out.push('}');
     return;
   }
+  // A Model is JsonSerializable: Laravel's json_encode($model) answers the
+  // model's toArray() (its toJSON()), not a "PHP object" error. The edge
+  // answered a 500 for `response()->json($post)`. Only a MODEL: a Date has a
+  // toJSON() too, and PHP's json_encode(new DateTime()) answers '{}'.
+  if (
+    value && typeof value === 'object' && typeof value.toJSON === 'function' &&
+    value.constructor && value.constructor.__lwModel
+  ) {
+    writeValue(value.toJSON(), out);
+    return;
+  }
   const name = value?.constructor?.name || t;
   throw new PhpJsonError(`unsupported value (${name}) — PHP objects are outside the subset`);
 }

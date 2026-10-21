@@ -166,6 +166,10 @@ function studly(key) {
 }
 
 export class Model {
+  // The marker the JSON encoder looks for: a Model is JsonSerializable
+  // (Laravel's json_encode($model) answers the model's toArray()). The marker
+  // travels on the class, so a subclass inherits it.
+  static __lwModel = true;
   static table = null;
   static primaryKey = 'id';
   static fillable = [];
