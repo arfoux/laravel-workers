@@ -32,15 +32,22 @@ test('rt-semantics2: two numeric strings are compared with the int64 precision',
   assert.equal(rt.looseEq('1e3', '1000'), true);
   assert.equal(rt.looseEq('abc', 'abc'), true);
   assert.equal(rt.looseEq('abc', 'abd'), false);
+  // PHP: '1.5' == '1.50' => true (the same number).
+  assert.equal(rt.looseEq('1.5', '1.50'), true);
 });
 
-test('rt-semantics2: a negative string offset fails loud (PHP returns the last character)', () => {
+test('rt-semantics2: a negative string offset answers the last character (PHP 7.1+)', () => {
+  // PHP: $s = 'abc'; echo $s[-1]; => c
   const src =
     '<?php\nnamespace App\\Http\\Controllers;\nclass C {\n    public function demo()\n    {\n' +
     "        $s = 'abc';\n        echo $s[-1];\n" +
     '\n        return response("ok");\n    }\n}\n';
   const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
-  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
-  assert.equal(res.errors[0].code, 'LW002');
-  assert.match(res.errors[0].message, /negative string offset/);
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /rt\.strOffset\(/);
+  // The runtime helper: the character from the end.
+  const rt2 = buildRt({}, { strict: false });
+  assert.equal(rt2.strOffset('abc', -1), 'c');
+  assert.equal(rt2.strOffset('abc', -3), 'a');
+  assert.equal(rt2.strOffset('abc', 0), 'a');
 });

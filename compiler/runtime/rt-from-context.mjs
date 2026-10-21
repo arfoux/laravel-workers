@@ -1091,6 +1091,15 @@ export function buildRt(context, opts = {}) {
     }
     return [src];
   };
+  // A string offset (`$s[-1]`): PHP 7.1+ counts from the end (a negative
+  // offset), the positive ones from the start.
+  rt.strOffset = (s, offset) => {
+    const str = String(s == null ? '' : s);
+    const off = Number(offset) || 0;
+    const at = off < 0 ? str.length + off : off;
+    if (at < 0 || at >= str.length) return '';
+    return str[at];
+  };
   rt.entries = (src) => {
     // A paginator (and a Collection) iterate their items, not their fields.
     if (src && typeof src === 'object' && Array.isArray(src.__items)) {
@@ -1795,7 +1804,7 @@ export function buildRt(context, opts = {}) {
   };
 
   // rt.view: render a compiled Blade view with runtime data.
-  rt.view = (name, data) => {
+  rt.view = (name, data, opts) => {
     const key = String(name);
     const entry = viewsMap[key];
     if (!entry || typeof entry.main !== 'function') {
@@ -1828,7 +1837,13 @@ export function buildRt(context, opts = {}) {
     return {
       status: 200,
       headers: { 'content-type': 'text/html; charset=utf-8' },
-      body: String(sub.__output).replace(/^[ \t\n\r\0\x0B]+/, ''),
+      // The response path trims (Laravel's HTTP response); the MAIL path does
+      // not (Laravel's View::render() returns the raw output) - so the caller
+      // asks for the raw body.
+      body:
+        opts && opts.raw
+          ? String(sub.__output)
+          : String(sub.__output).replace(/^[ \t\n\r\0\x0B]+/, ''),
     };
   };
 

@@ -2081,7 +2081,9 @@ test('emit: Queue::push() fails loud with the structural reason', () => {
   assert.match(res.errors[0].message, /a D1 table the cron trigger reads/);
 });
 
-test('emit: a mailable fails loud with the structural reason', () => {
+test('emit: a mailable that the build did not compile fails loud with the reason', () => {
+  // The mailable class is not in the compiled set (the build compiles the app's
+  // Mail classes) - the reason says so.
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
     'class C {\n' +
@@ -2094,6 +2096,28 @@ test('emit: a mailable fails loud with the structural reason', () => {
   const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
-  assert.match(res.errors[0].message, /renders its own Blade view/);
-  assert.match(res.errors[0].message, /compare the mail payload byte for byte/);
+  assert.match(res.errors[0].message, /mailable class is not in the compiled set/);
+});
+
+test('emit: a mailable that the build compiled compiles (the fluent form)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    '        \\Illuminate\\Support\\Facades\\Mail::to(\'a@b.co\')->send(new \\App\\Mail\\OrderMail());\n' +
+    '        return response("ok");\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', {
+    routeUri: '/x',
+    routeParams: [],
+    models: [],
+    views: [],
+    classes: { fqcns: ['App\\Mail\\OrderMail'], aliases: { OrderMail: 'App\\Mail\\OrderMail' } },
+  });
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The send is awaited (a floating promise means the mail can leave after
+  // the response).
+  assert.match(res.code, /await rt\.mail\(\)\.to\("a@b\.co"\)\.send\(rt\.newClass\(/);
 });

@@ -420,10 +420,20 @@ function resolveCtorDep(fqcn, name, type, dumped, opts) {
     target = resolved;
   }
   if (!target) {
+    // A model-typed parameter: the model IS compiled, but the edge cannot
+    // provide it - the class is instantiated with no arguments (the caller
+    // builds the event, not the service).
+    const isModel = Boolean(
+      opts.modelClassFqcns &&
+      Object.values(opts.modelClassFqcns).some((f) => f === depType)
+    );
     return {
-      error:
-        'the constructor of ' + fqcn + ' asks for ' + depType + ' — the build does not compile it (it is not a ' +
-        'class of the app the dump reached)',
+      error: isModel
+        ? 'the constructor of ' + fqcn + ' asks for the model ' + depType + ' — a model cannot be provided at the ' +
+          'edge (the class is instantiated with no arguments)'
+        : 'the constructor of ' + fqcn + ' asks for ' + depType + ' — the build does not compile it (it is not a ' +
+          'class of the app the dump reached)',
+      code: 'LW002',
     };
   }
   return { dep: { param: name, kind: 'class', type: target } };
@@ -730,9 +740,10 @@ export function compileClasses(dump, opts = {}) {
       if (!m || m.kind !== 'method') continue;
       // A mailable's build() is PROTECTED in Laravel (Illuminate\Mail\Mailable:
       // `protected function build()`), and the mail's payload comes from it - so
-      // for a mailable the protected build() is compiled too.
+      // for a mailable every method is compiled (build() may call the class's
+      // own helpers, which are protected too).
       const isMailableClass = options.mailable === true;
-      if (m.visibility && m.visibility !== 'public' && !(isMailableClass && nodeName(m.name) === 'build')) continue;
+      if (m.visibility && m.visibility !== 'public' && !isMailableClass) continue;
       const methodName = nodeName(m.name);
       if (methodName === '__construct') continue;
       const r = compileMethod(fqcn, m, options);

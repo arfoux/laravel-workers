@@ -168,13 +168,7 @@ function tx(node) {
       // answer where Laravel answers a character).
       const offsetNode = node.offset;
       if (offsetNode && offsetNode.kind === 'unary' && offsetNode.type === '-') {
-        throw mkErr(
-          'LW002',
-          'a negative string offset ($s[-1]) is not compiled — PHP 7.1+ returns the character from the end of the ' +
-            'string, and a plain index would answer nothing — ' + PORT_HINT,
-          node.loc,
-          PORT_HINT
-        );
+        return 'rt.strOffset(' + tx(node.what) + ', ' + tx(offsetNode.what) + ')';
       }
       return tx(node.what) + '[' + txOffsetKey(node.offset) + ']';
     }
@@ -903,10 +897,11 @@ function txRedirectChain(node) {
 // and the shadow harness would have to compare the mail payload byte for byte
 // (it cannot today: the log format differs). So the payload could not be
 // proven, and the build stops with that reason.
+// The mailable that the build did not compile (the dump takes the app's Mail
+// classes, so a mailable outside app/Mail is not in the compiled set).
 const MAILABLE_REASON =
-  'a mailable renders its own Blade view: the compiled rung would have to compile the mailable, render that view ' +
-  'and produce the very same payload, and the shadow harness would have to compare the mail payload byte for byte ' +
-  '(it cannot today - the log format differs), so the payload could not be proven - ';
+  'the mailable class is not in the compiled set - the build compiles the app\'s Mail classes (app/Mail), so this ' +
+  'mailable is not one of them - ';
 
 // The Queue facade: the call is refused, so the compiled route cannot push
 // at all. The wording is the runtime's own (compiler/runtime/rt-from-context.mjs

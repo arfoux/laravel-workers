@@ -1,8 +1,8 @@
 // kernel/mailable.mjs — the Mailable base (Laravel's Illuminate\Mail\Mailable).
 //
 // The compiled mailable extends this: the class compiler emits the app's own
-// methods (build(), ...) and this base provides Laravel's surface plus the
-// payload the mailer sends.
+// methods (build() - which is PROTECTED in Laravel - and the class's helpers)
+// and this base provides Laravel's surface plus the payload the mailer sends.
 //
 // Laravel's Mailable declares PUBLIC fields (Illuminate\Mail\Mailable:
 // `public $subject; public $from = []; public $to = []; public $cc = [];
@@ -11,13 +11,13 @@
 // (`subject()`, `view()`, `with()`, ...). PHP keeps the field and the method
 // apart; JavaScript does not - a field would shadow the method. So the base
 // keeps its values in private fields (`__subject`, ...) and the payload reads
-// the private value first, then the public field (so `public $subject = 'X'`
-// and `$this->subject('X')` both work).
+// the private value first, then the PUBLIC field - and the fallback is
+// TYPE-CHECKED (a prototype method is not a value).
 //
 // The payload is Laravel's message shape: { from, to, cc, bcc, replyTo,
-// subject, html, text }. The html is the compiled view (the runtime renders it
-// with the mailable's data - Laravel's buildViewData(): the PUBLIC properties
-// merged with the with() data).
+// subject, html, text }. The html (and the text) are the compiled views
+// (the runtime renders them with the mailable's data - Laravel's
+// buildViewData(): the PUBLIC properties merged with the with() data).
 export class Mailable {
   constructor() {
     // The private values (the fluent setters write them).
@@ -53,23 +53,23 @@ export class Mailable {
     return this;
   }
   from(address, name) {
-    this.__from = appendAddress(this.__from || this.from || [], address, name);
+    this.__from = appendAddress(this.__from || publicList(this, 'from'), address, name);
     return this;
   }
   to(address, name) {
-    this.__to = appendAddress(this.__to || this.to || [], address, name);
+    this.__to = appendAddress(this.__to || publicList(this, 'to'), address, name);
     return this;
   }
   cc(address, name) {
-    this.__cc = appendAddress(this.__cc || this.cc || [], address, name);
+    this.__cc = appendAddress(this.__cc || publicList(this, 'cc'), address, name);
     return this;
   }
   bcc(address, name) {
-    this.__bcc = appendAddress(this.__bcc || this.bcc || [], address, name);
+    this.__bcc = appendAddress(this.__bcc || publicList(this, 'bcc'), address, name);
     return this;
   }
   replyTo(address, name) {
-    this.__replyTo = appendAddress(this.__replyTo || this.replyTo || [], address, name);
+    this.__replyTo = appendAddress(this.__replyTo || publicList(this, 'replyTo'), address, name);
     return this;
   }
   text(value) {
@@ -86,28 +86,30 @@ export class Mailable {
   async __lwMail(rt) {
     const r = rt || this.__rt || null;
     if (typeof this.build === 'function') await this.build(r);
-    const subject = this.__subject !== undefined ? this.__subject : this.subject;
-    const view = this.__view !== undefined ? this.__view : this.view;
-    const viewData = this.__viewData !== undefined ? this.__viewData : this.viewData;
-    const from = this.__from !== undefined ? this.__from : this.from;
-    const to = this.__to !== undefined ? this.__to : this.to;
-    const cc = this.__cc !== undefined ? this.__cc : this.cc;
-    const bcc = this.__bcc !== undefined ? this.__bcc : this.bcc;
-    const replyTo = this.__replyTo !== undefined ? this.__replyTo : this.replyTo;
-    // The app may set the public field (`public $html`) or call the setter
-    // (`$this->html(...)`) - a prototype method is never the value.
-    const publicHtml = typeof this.html === 'function' ? undefined : this.html;
-    const publicText = typeof this.text === 'function' ? undefined : this.text;
-    let html = this.__html !== undefined ? this.__html : publicHtml;
-    if (html == null && view) {
-      // Laravel's buildViewData(): the mailable's PUBLIC properties merged with
-      // the with() data (the with() data wins).
-      const data = Object.assign({}, publicProperties(this), viewData || {});
-      const rendered = r ? r.view(view, data) : null;
-      // The runtime's view() answers a response; the mail's html is its body.
-      // Laravel's View::render() does NOT trim the output, so the raw body is
-      // used here (the response path trims - that is Laravel's HTTP path).
-      html = rendered && rendered.body !== undefined ? String(rendered.body) : '';
+    const subject = this.__subject !== undefined ? this.__subject : publicString(this, 'subject');
+    const view = this.__view !== undefined ? this.__view : publicString(this, 'view');
+    const textView = this.__textView !== undefined ? this.__textView : publicString(this, 'textView');
+    const viewData = this.__viewData !== undefined ? this.__viewData : publicMap(this, 'viewData');
+    const from = this.__from !== undefined ? this.__from : publicList(this, 'from');
+    const to = this.__to !== undefined ? this.__to : publicList(this, 'to');
+    const cc = this.__cc !== undefined ? this.__cc : publicList(this, 'cc');
+    const bcc = this.__bcc !== undefined ? this.__bcc : publicList(this, 'bcc');
+    const replyTo = this.__replyTo !== undefined ? this.__replyTo : publicList(this, 'replyTo');
+    const html = this.__html !== undefined ? this.__html : publicString(this, 'html');
+    const text = this.__text !== undefined ? this.__text : publicString(this, 'text');
+    // The views: Laravel renders the mailable's view (and its text twin).
+    const data = Object.assign({}, publicProperties(this), viewData || {});
+    let renderedHtml = html;
+    if (renderedHtml == null && view) {
+      // Laravel's View::render() returns the RAW output (the HTTP response path
+      // trims - the mail does not).
+      const rendered = r ? r.view(view, data, { raw: true }) : null;
+      renderedHtml = rendered && rendered.body !== undefined ? String(rendered.body) : '';
+    }
+    let renderedText = text;
+    if (renderedText == null && textView) {
+      const rendered = r ? r.view(textView, data, { raw: true }) : null;
+      renderedText = rendered && rendered.body !== undefined ? String(rendered.body) : '';
     }
     return {
       from: from && from.length ? from[0] : null,
@@ -116,14 +118,14 @@ export class Mailable {
       bcc: bcc || [],
       replyTo: replyTo || [],
       subject: subject == null ? null : String(subject),
-      html: html == null ? null : String(html),
-      text: this.__text !== undefined ? this.__text : publicText == null ? null : String(publicText),
+      html: renderedHtml == null ? null : String(renderedHtml),
+      text: renderedText == null ? null : String(renderedText),
     };
   }
 }
 
-// Laravel's Mailable::setAddress() APPENDS the recipient and the list is
-// deduped by address (the LAST occurrence wins).
+// Laravel's Mailable::setAddress() APPENDS the recipient; the list is deduped
+// by address and the LAST occurrence wins (at its own position).
 function appendAddress(list, address, name) {
   const out = Array.isArray(list) ? list.slice() : [];
   const addr = { address: String(address), name: name == null ? null : String(name) };
@@ -131,6 +133,21 @@ function appendAddress(list, address, name) {
   if (at >= 0) out[at] = addr;
   else out.push(addr);
   return out;
+}
+
+// The PUBLIC field of the mailable - type-checked (a prototype method is not a
+// value).
+function publicString(mailable, key) {
+  const v = mailable[key];
+  return typeof v === 'string' ? v : undefined;
+}
+function publicList(mailable, key) {
+  const v = mailable[key];
+  return Array.isArray(v) ? v : [];
+}
+function publicMap(mailable, key) {
+  const v = mailable[key];
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : undefined;
 }
 
 // The mailable's PUBLIC properties (Laravel's buildViewData()).

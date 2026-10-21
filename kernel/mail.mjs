@@ -32,19 +32,23 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
   // The recipients: the mailable's own + the pending's, appended and deduped by
   // address (Laravel's Mailable::setAddress()).
   const mergeAddresses = (own, extra) => {
-    const out = [];
-    const push = (a) => {
-      const address = typeof a === 'string' ? a : a && a.address;
-      if (!address) return;
-      const at = out.findIndex((x) => x.address === address);
-      const entry = { address: String(address), name: typeof a === 'string' ? null : a.name || null };
-      if (at >= 0) out[at] = entry;
-      else out.push(entry);
-    };
+    // Laravel's Mailable::setAddress(): the list is deduped by address and the
+    // LAST occurrence wins - at its own position (reverse()->unique('address')
+    // ->reverse()).
     const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
-    for (const a of asList(own)) push(a);
-    for (const a of asList(extra)) push(a);
-    return out;
+    const all = [];
+    for (const a of asList(own)) all.push(a);
+    for (const a of asList(extra)) all.push(a);
+    const seen = new Set();
+    const reversed = [];
+    for (let k = all.length - 1; k >= 0; k--) {
+      const a = all[k];
+      const address = typeof a === 'string' ? a : a && a.address;
+      if (!address || seen.has(address)) continue;
+      seen.add(address);
+      reversed.push(typeof a === 'string' ? { address: String(a), name: null } : a);
+    }
+    return reversed.reverse();
   };
 
   // The transport: the payload goes out (the log, the noop, the resend API).
@@ -111,7 +115,9 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
     const base = await payloadOf(message);
     const p = pendingValues || {};
     return {
-      from: p.from || (base.from && base.from.length ? base.from[0] : null) || defaultFrom || 'noreply@example.com',
+      // Laravel's $from is a LIST; the payload's from is a string for one address and an
+      // array for more (like to) - the app's mail.from is a string.
+      from: p.from || oneOrMany(mergeAddresses(base.from, [])) || defaultFrom || 'noreply@example.com',
       to: oneOrMany(mergeAddresses(base.to, p.to)),
       cc: many(mergeAddresses(base.cc, p.cc)),
       bcc: many(mergeAddresses(base.bcc, p.bcc)),

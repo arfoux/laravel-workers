@@ -563,6 +563,41 @@ class WithMailer
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(/);
 });
 
+test('classes: a mailable with a PROTECTED build() compiles (Laravel\'s build() is protected)', () => {
+  // Laravel's Mailable::build() is protected - the class compiler compiles the
+  // public methods only, so without this the mailable would have no build()
+  // and the payload would be empty.
+  const file = classFile('OrderMail', `<?php
+namespace App\\Mail;
+class OrderMail
+{
+    public $order;
+    protected function build(): self
+    {
+        $this->subject('Order shipped');
+        $this->view('mail.order');
+        $this->with(['id' => 7]);
+        return $this;
+    }
+    protected function formatOrder(): string
+    {
+        return 'order';
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {},
+      classes: { 'App\\Mail\\OrderMail': { file, kind: 'mailable' } },
+    },
+    { ...OPTIONS, classes: new Set(['App\\Mail\\OrderMail']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The protected build() and the protected helper are compiled.
+  assert.match(res.code, /"build":/);
+  assert.match(res.code, /"formatOrder":/);
+});
+
 test('classes: every class-path refusal carries a code', () => {
   // The invariant: every fail-loud carries a code (the controller path always
   // did; the class path must agree).
