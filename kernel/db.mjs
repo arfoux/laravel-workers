@@ -3,7 +3,9 @@
 // Raw fragments (selectRaw/whereRaw/havingRaw) accept explicit bindings — the
 // caller owns their safety (documented trust boundary).
 
-const ALLOWED_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'NOT LIKE', 'IS', 'IS NOT']);
+// SQLite's operators (Laravel's SQLiteGrammar): 'IS' is not one of them -
+// in Laravel `where('c', 'IS')` is a VALUE ('c' = 'IS'), not an operator.
+const ALLOWED_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'NOT LIKE']);
 const ALLOWED_JOIN_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
 
 // D1/SQLite only bind null | number | string | ArrayBuffer. Normalize the JS
@@ -98,6 +100,17 @@ export class QueryBuilder {
       operator = String(operatorOrValue).toUpperCase();
       val = value;
       if (!ALLOWED_OPS.has(operator)) throw new Error('unsupported where operator: ' + operator);
+    }
+    // Laravel's where() (Query/Builder.php:988-991): a NULL value is not a
+    // comparison - `col = NULL` never matches a row - it is a where-null
+    // clause, and '!=' / '<>' make it `IS NOT NULL`. An operator that cannot
+    // compare with NULL at all is an illegal combination
+    // (InvalidArgumentException).
+    if (val === null) {
+      if (operator !== '=' && operator !== '<=>' && operator !== '!=' && operator !== '<>') {
+        throw new Error('Illegal operator and value combination.');
+      }
+      return this._whereNull(boolean, operator === '!=' || operator === '<>' ? 'notNull' : 'null', column);
     }
     this.wheres.push({ type: 'basic', boolean, column: String(column), operator, value: val });
     return this;

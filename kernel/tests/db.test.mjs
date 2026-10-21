@@ -902,3 +902,29 @@ test('the model shim fails loud on a relation attribute (a relation is not compi
   assert.throws(() => m.get('comments'), /not compiled/);
   assert.equal(m.get('title'), 'x');
 });
+
+test('where(col, null) is a where-null clause (Laravel: IS NULL, never `= NULL`)', () => {
+  // Laravel's where() (Query/Builder.php:988-991): a NULL value is not a
+  // comparison - `col = NULL` matches no row - it is `IS NULL`, and '!=' /
+  // '<>' make it `IS NOT NULL`.
+  let sql = null;
+  const db = mockDb({ all: (s) => { sql = s; return { results: [] }; } });
+  table(db, 'posts').where('deleted_at', null).get();
+  assert.match(sql, /"deleted_at" IS NULL/);
+  sql = null;
+  table(db, 'posts').where('deleted_at', '=', null).get();
+  assert.match(sql, /"deleted_at" IS NULL/);
+  sql = null;
+  table(db, 'posts').where('deleted_at', '!=', null).get();
+  assert.match(sql, /"deleted_at" IS NOT NULL/);
+  sql = null;
+  table(db, 'posts').where('deleted_at', '<>', null).get();
+  assert.match(sql, /"deleted_at" IS NOT NULL/);
+  // An operator that cannot compare with NULL is an illegal combination.
+  assert.throws(
+    () => table(db, 'posts').where('deleted_at', '>', null),
+    /Illegal operator and value combination/,
+  );
+  // SQLite has no 'IS' operator: Laravel reads `where('c', 'IS')` as a value.
+  assert.throws(() => table(db, 'posts').where('c', 'IS', null), /unsupported where operator/);
+});
