@@ -88,6 +88,26 @@ function phpTimestampCast(value) {
   return Number.isNaN(t) ? null : Math.floor(t / 1000);
 }
 
+// Laravel's Carbon::toJSON(): the ISO-8601 form with the microseconds
+// ('2024-01-01T00:00:00.000000Z'). The model stores the UTC 'Y-m-d H:i:s'.
+function isoDateString(value) {
+  if (value == null) return value;
+  const s = String(value);
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
+  if (!m) return value;
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.000000Z`;
+}
+
+// The attributes Laravel treats as dates: the timestamps + the date casts
+// (HasAttributes::getDates()).
+function isDateAttribute(ctor, key) {
+  if (key === 'created_at' || key === 'updated_at') return true;
+  const cast = ctor.casts && ctor.casts[key];
+  if (cast == null) return false;
+  const spec = String(cast).toLowerCase();
+  return spec === 'date' || spec === 'datetime' || spec === 'immutable_date' || spec === 'immutable_datetime';
+}
+
 function applyCast(value, cast) {
   if (value == null) return value;
   const spec = String(cast).toLowerCase();
@@ -317,7 +337,9 @@ export class Model {
     for (const key of Object.keys(this.attributes)) {
       if (hidden.includes(key)) continue;
       if (visible.length && !visible.includes(key)) continue;
-      out[key] = this.get(key);
+      const value = this.get(key);
+      // Laravel serialises the date attributes through Carbon::toJSON().
+      out[key] = isDateAttribute(ctor, key) ? isoDateString(value) : value;
     }
     for (const key of ctor.appends || []) out[key] = this.get(key);
     for (const key of Object.keys(this._relations || {})) {
@@ -518,7 +540,14 @@ export class Model {
     const pk = ctor.primaryKey;
     if (ctor.softDeletes) {
       const now = this.constructor.now();
-      const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).update({ [ctor.deletedAtColumn]: now });
+      // Laravel's runSoftDelete() (SoftDeletes.php:141-152) writes the
+      // deleted_at column AND updated_at (when the model has timestamps).
+      const data = { [ctor.deletedAtColumn]: now };
+      if (ctor.timestamps && this.timestamps !== false) {
+        data.updated_at = now;
+        this.attributes.updated_at = now;
+      }
+      const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).update(data);
       this.attributes[ctor.deletedAtColumn] = now;
       // Eloquent's `runSoftDelete()` syncs the original after the write
       // (`SoftDeletes.php:155`), so the model is clean again.
@@ -542,7 +571,14 @@ export class Model {
     if (!this.exists) return { changes: 0 };
     const ctor = this.constructor;
     if (!ctor.softDeletes) return { changes: 0 };
-    const res = await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).update({ [ctor.deletedAtColumn]: null });
+    // Laravel's restore() (SoftDeletes.php:159-167) writes through save(), so
+    // the timestamp is bumped too.
+    const data = { [ctor.deletedAtColumn]: null };
+    if (ctor.timestamps && this.timestamps !== false) {
+      data.updated_at = this.constructor.now();
+      this.attributes.updated_at = data.updated_at;
+    }
+    const res = await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).update(data);
     this.attributes[ctor.deletedAtColumn] = null;
     // Eloquent's `restore()` writes through `save()` (`SoftDeletes.php:165`),
     // so the original is synced and the model is clean again.

@@ -715,10 +715,16 @@ test('Model softDeletes: query filters, delete stamps, restore clears, forceDele
   assert.equal(m.trashed(), false);
   await m.delete(db);
   assert.equal(m.trashed(), true);
-  assert.match(calls[0].sql, /^UPDATE "notes" SET "deleted_at" = \? WHERE "id" = \?$/);
+  // Laravel's runSoftDelete() (SoftDeletes.php:141-152) writes deleted_at AND
+  // updated_at - the row's timestamp is the delete time.
+  assert.match(calls[0].sql, /"deleted_at" = \?/);
+  assert.match(calls[0].sql, /"updated_at" = \?/);
   await m.restore(db);
   assert.equal(m.trashed(), false);
-  assert.deepEqual(calls[1].params, [null, 1]);
+  // The restore writes through save(): deleted_at = null and a fresh
+  // updated_at.
+  assert.equal(calls[1].params[0], null);
+  assert.equal(calls[1].params[calls[1].params.length - 1], 1);
   await m.forceDelete(db);
   assert.equal(calls[2].sql, 'DELETE FROM "notes" WHERE "id" = ?');
   assert.equal(m.exists, false);
@@ -954,4 +960,24 @@ test('the model casts are PHP\'s casts (probed against PHP 8.3)', () => {
   assert.equal(m3.get('b'), true);
   assert.equal(m3.get('i'), 1000);
   assert.equal(m3.get('d'), '1.01');
+});
+
+test('the model JSON serialises the date attributes like Carbon (ISO-8601)', () => {
+  // Laravel serialises the timestamps (and the date casts) through
+  // Carbon::toJSON() -> '2024-01-01T00:00:00.000000Z' (the model's JSON is
+  // what a response carries).
+  class M extends Model {}
+  M.casts = { published_at: 'datetime' };
+  const m = new M({
+    id: 1,
+    title: 'A',
+    created_at: '2024-01-01 00:00:00',
+    updated_at: '2024-01-02 03:04:05',
+    published_at: '2024-01-03 00:00:00',
+  });
+  const json = m.toJSON();
+  assert.equal(json.created_at, '2024-01-01T00:00:00.000000Z');
+  assert.equal(json.updated_at, '2024-01-02T03:04:05.000000Z');
+  assert.equal(json.published_at, '2024-01-03T00:00:00.000000Z');
+  assert.equal(json.title, 'A');
 });
