@@ -1009,3 +1009,14 @@ test('the model flags a fresh insert (Laravel\'s wasRecentlyCreated)', async () 
   await existing.save(db);
   assert.equal(existing.wasRecentlyCreated, false, 'an update is not a fresh insert');
 });
+
+test('orderBy refuses a direction that is not asc/desc (Laravel throws)', () => {
+  // Laravel's orderBy (Query/Builder.php:3042-3062): 'Order direction must be
+  // "asc" or "desc".' - the edge used to answer any direction as ASC (a
+  // different row order, silently).
+  const dir = (d) => table(mockDb(), 'posts').orderBy('title', d).order[0].direction;
+  assert.equal(dir('asc'), 'ASC');
+  assert.equal(dir('desc'), 'DESC');
+  assert.equal(dir('DESC'), 'DESC');
+  assert.throws(() => table(mockDb(), 'posts').orderBy('title', 'sideways'), /Order direction must be/);
+});

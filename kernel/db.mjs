@@ -316,8 +316,15 @@ export class QueryBuilder {
   }
 
   orderBy(column, direction = 'asc') {
-    const dir = String(direction).toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
-    this.order.push({ column: String(column), direction: dir });
+    // Laravel's orderBy (Query/Builder.php:3042-3062): the direction must be
+    // 'asc' or 'desc' - anything else is an InvalidArgumentException (a 500
+    // there). The edge used to answer ANY direction as ASC: a different row
+    // order, silently.
+    const dir = String(direction).toLowerCase();
+    if (dir !== 'asc' && dir !== 'desc') {
+      throw new Error('Order direction must be "asc" or "desc".');
+    }
+    this.order.push({ column: String(column), direction: dir.toUpperCase() });
     return this;
   }
   orderByDesc(column) { return this.orderBy(column, 'desc'); }
