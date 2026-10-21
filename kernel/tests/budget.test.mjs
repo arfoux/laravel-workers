@@ -153,7 +153,8 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
   }
 
   // The event dispatch (the compiled classes): the listeners are called in the
-  // registration order, like Laravel (a listener that answers stops the chain).
+  // registration order, like Laravel (EVERY listener runs; only an answer of
+  // false stops the chain).
   {
     const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
     const rt = buildRt(
@@ -184,6 +185,48 @@ test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async
     const { avg, p95 } = stats(a);
     assert.ok(avg <= 2, `event dispatch avg ${avg}`);
     assert.ok(p95 <= 5, `event dispatch p95 ${p95}`);
+  }
+
+  // The mail (a compiled mailable + the kernel mailer): the payload is built
+  // and the mail goes out - the new runtime feature needs its own budget row.
+  {
+    const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+    const { createMailer } = await import('../mail.mjs');
+    const mailer = createMailer({ transport: 'log', from: 'hello@example.com' });
+    const rt = buildRt(
+      {},
+      {
+        http: { mail: mailer },
+        classes: {
+          'App\\Mail\\OrderMail': {
+            base: 'mailable',
+            ctor: () => ({}),
+            deps: [],
+            methods: {
+              build: async function () {
+                this.subject('Order shipped');
+                this.view('mail.order');
+                this.with({ id: 7 });
+                return this;
+              },
+            },
+          },
+        },
+        views: {
+          'mail.order': { context: {}, main: (r) => { r.echo('<p>Order ' + r.var('id') + '</p>'); } },
+        },
+      }
+    );
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      const t0 = performance.now();
+      const mailable = rt.newClass('App\\Mail\\OrderMail', []);
+      await rt.mail().to('buyer@example.com').send(mailable);
+      a.push(performance.now() - t0);
+    }
+    const { avg, p95 } = stats(a);
+    assert.ok(avg <= 2, `mail avg ${avg}`);
+    assert.ok(p95 <= 5, `mail p95 ${p95}`);
   }
 
   // rt.cache() facade (controller-facing Cache::* surface over the D1 store).

@@ -1213,7 +1213,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         })`
       );
       for (const e of classesCompile.errors) {
-        console.log(`     ! ${e.class}: ${e.message}`);
+        console.log(`     ! ${e.code || 'LW002'} ${e.class}: ${e.message}`);
       }
 
       // phase C: emit one handler module per transpilable route

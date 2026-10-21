@@ -607,6 +607,7 @@ export function compileClasses(dump, opts = {}) {
         message:
           'the listener ' + fqcn + ' is queued (ShouldQueue) — Laravel pushes it to the queue and it runs later; ' +
           'the edge has no queue consumer, so the compiled rung does not run it inline',
+        code: 'LW002',
       });
       continue;
     }
@@ -621,6 +622,7 @@ export function compileClasses(dump, opts = {}) {
         message:
           'the listener ' + fqcn + ' is a broadcast listener (ShouldBroadcast) — Laravel broadcasts the event ' +
           'after the response; the edge has no broadcast driver, so the notification would never be sent',
+        code: 'LW002',
       });
       continue;
     }
@@ -633,18 +635,19 @@ export function compileClasses(dump, opts = {}) {
         message:
           'the listener ' + fqcn + ' is dispatched after the commit (ShouldDispatchAfterCommit) — Laravel defers it ' +
           'until the transaction is committed; the edge has no transaction, so the timing would differ',
+        code: 'LW002',
       });
       continue;
     }
     const parsed = parseClassFile(info.file);
     if (parsed.error) {
-      errors.push({ class: fqcn, message: parsed.error });
+      errors.push({ class: fqcn, message: parsed.error, code: 'LW004' });
       continue;
     }
     const short = shortName(fqcn);
     const classNode = parsed.classes.find((c) => nodeName(c.name) === short);
     if (!classNode) {
-      errors.push({ class: fqcn, message: 'the class ' + fqcn + ' is not in ' + info.file });
+      errors.push({ class: fqcn, message: 'the class ' + fqcn + ' is not in ' + info.file, code: 'LW002' });
       continue;
     }
     // The traits and the parent class: their members are not compiled, so a
@@ -725,7 +728,11 @@ export function compileClasses(dump, opts = {}) {
     let failedCode = null;
     for (const m of classMembers(classNode)) {
       if (!m || m.kind !== 'method') continue;
-      if (m.visibility && m.visibility !== 'public') continue;
+      // A mailable's build() is PROTECTED in Laravel (Illuminate\Mail\Mailable:
+      // `protected function build()`), and the mail's payload comes from it - so
+      // for a mailable the protected build() is compiled too.
+      const isMailableClass = options.mailable === true;
+      if (m.visibility && m.visibility !== 'public' && !(isMailableClass && nodeName(m.name) === 'build')) continue;
       const methodName = nodeName(m.name);
       if (methodName === '__construct') continue;
       const r = compileMethod(fqcn, m, options);

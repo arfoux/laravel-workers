@@ -29,6 +29,23 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
   const flat = (list) => (list.length === 1 ? list[0].address : list.map((a) => a.address));
   const oneOrMany = (list) => (list && list.length ? flat(list) : null);
   const many = (list) => (list && list.length ? list.map((a) => a.address) : []);
+  // The recipients: the mailable's own + the pending's, appended and deduped by
+  // address (Laravel's Mailable::setAddress()).
+  const mergeAddresses = (own, extra) => {
+    const out = [];
+    const push = (a) => {
+      const address = typeof a === 'string' ? a : a && a.address;
+      if (!address) return;
+      const at = out.findIndex((x) => x.address === address);
+      const entry = { address: String(address), name: typeof a === 'string' ? null : a.name || null };
+      if (at >= 0) out[at] = entry;
+      else out.push(entry);
+    };
+    const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
+    for (const a of asList(own)) push(a);
+    for (const a of asList(extra)) push(a);
+    return out;
+  };
 
   // The transport: the payload goes out (the log, the noop, the resend API).
   const deliver = async (payload) => {
@@ -84,12 +101,24 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
     if (message && typeof message.__lwMail === 'function') base = await message.__lwMail();
     else if (message && typeof message === 'object' && !Array.isArray(message)) base = message;
     else throw new Error('mail(): the message is not a payload (a compiled Mailable or an object with to/subject/html)');
+    return base;
+  };
+  // ONE builder for every path (the pending, the facade's send, the raw/html):
+  // the recipients are merged (the mailable's own + the pending's, appended and
+  // deduped by address) and then shaped like Laravel's message (to: a string for
+  // one address, an array for more; cc/bcc/replyTo: always arrays).
+  const buildPayload = async (pendingValues, message) => {
+    const base = await payloadOf(message);
+    const p = pendingValues || {};
     return {
-      ...base,
-      to: normalizeTo(base.to),
-      cc: normalizeMany(base.cc),
-      bcc: normalizeMany(base.bcc),
-      replyTo: normalizeMany(base.replyTo),
+      from: p.from || (base.from && base.from.length ? base.from[0] : null) || defaultFrom || 'noreply@example.com',
+      to: oneOrMany(mergeAddresses(base.to, p.to)),
+      cc: many(mergeAddresses(base.cc, p.cc)),
+      bcc: many(mergeAddresses(base.bcc, p.bcc)),
+      replyTo: many(mergeAddresses(base.replyTo, p.replyTo)),
+      subject: base.subject == null ? null : base.subject,
+      html: base.html === undefined ? null : base.html,
+      text: base.text === undefined ? null : base.text,
     };
   };
 
@@ -131,19 +160,8 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
       return p;
     };
     // The message: the pending recipients win over the mailable's own.
-    const build = async (message) => {
-      const base = await payloadOf(message);
-      return {
-        from: p.from || base.from || defaultFrom || 'noreply@example.com',
-        to: p.__to.length ? oneOrMany(p.__to) : oneOrMany(base.to),
-        cc: p.__cc.length ? many(p.__cc) : many(base.cc),
-        bcc: p.__bcc.length ? many(p.__bcc) : many(base.bcc),
-        replyTo: p.__replyTo.length ? many(p.__replyTo) : many(base.replyTo),
-        subject: p.__subject || base.subject || null,
-        html: base.html === undefined ? null : base.html,
-        text: base.text === undefined ? null : base.text,
-      };
-    };
+    const build = (message) =>
+      buildPayload({ from: p.from, to: p.__to, cc: p.__cc, bcc: p.__bcc, replyTo: p.__replyTo }, message);
     p.send = async (message) => deliver(await build(message));
     p.sendNow = p.send;
     // A queued mail: the edge pushes it to the queue, but nothing consumes
@@ -180,10 +198,10 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
     },
     // Laravel: Mail::send($mailable) — the mailable's own envelope.
     async send(message) {
-      return deliver(await payloadOf(message));
+      return deliver(await buildPayload({}, message));
     },
     async sendNow(message) {
-      return deliver(await payloadOf(message));
+      return deliver(await buildPayload({}, message));
     },
     // Laravel: Mail::raw($text, $callback) — the callback fills the message.
     async raw(text, callback) {

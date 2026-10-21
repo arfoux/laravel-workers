@@ -163,6 +163,19 @@ function tx(node) {
       if (!node.offset) {
         throw mkErr('LW002', 'an array read without an offset ($arr[]) is not compiled', node.loc, PORT_HINT);
       }
+      // A NEGATIVE offset (`$s[-1]`): PHP 7.1+ returns the character from the
+      // end of the string; a plain JS index would be undefined (an empty
+      // answer where Laravel answers a character).
+      const offsetNode = node.offset;
+      if (offsetNode && offsetNode.kind === 'unary' && offsetNode.type === '-') {
+        throw mkErr(
+          'LW002',
+          'a negative string offset ($s[-1]) is not compiled — PHP 7.1+ returns the character from the end of the ' +
+            'string, and a plain index would answer nothing — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
       return tx(node.what) + '[' + txOffsetKey(node.offset) + ']';
     }
     case 'staticlookup': {
@@ -1551,6 +1564,16 @@ function txCall(node) {
     }
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
+    // A chained facade call (`Mail::to($u)->send($m)`): the terminal method is
+    // async at the edge, so the call must be awaited - a floating promise
+    // means the mail can leave after the response (and a rejection is
+    // swallowed).
+    if (what.what && what.what.kind === 'call' && what.what.what && what.what.what.kind === 'staticlookup') {
+      const chainCls = String((what.what.what.what && what.what.what.what.name) || '').replace(/^\\/, '');
+      if ((chainCls === 'Mail' || chainCls === 'Illuminate\\Support\\Facades\\Mail') && MAIL_ASYNC.has(meth)) {
+        return txAwait(obj + '.' + meth + '(' + args + ')', node, 'Mail::' + meth + '()');
+      }
+    }
     // The service the constructor injected (`$this->mailer->send(...)`): its
     // methods are async in the compiled world, so the call is awaited (a
     // promise must never leak into the response — the mail would never be

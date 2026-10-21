@@ -732,9 +732,15 @@ export function buildRt(context, opts = {}) {
   rt.unset = () => {}; // no-op in emitted code (variables are lets; M1 has none)
   rt.count = (v) => (Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 0));
   rt.in_array = (needle, haystack, strict) => {
-    const arr = Array.isArray(haystack) ? haystack : [];
+    // A PHP array is a list OR an assoc array (a plain object on the compiled
+    // side) - in_array walks the VALUES of both.
+    const arr = Array.isArray(haystack)
+      ? haystack
+      : haystack !== null && typeof haystack === 'object'
+        ? Object.values(haystack)
+        : [];
     if (strict) return arr.some((x) => x === needle && typeof x === typeof needle);
-    return arr.some((x) => x == needle); // eslint-disable-line eqeqeq
+    return arr.some((x) => rt.looseEq(x, needle));
   };
   const isObj = (v) => v !== null && typeof v === 'object';
   const arrValues = (v) => (Array.isArray(v) ? v.slice() : (isObj(v) ? Object.keys(v).map((k) => v[k]) : []));
@@ -951,6 +957,41 @@ export function buildRt(context, opts = {}) {
   };
   const arrEmpty = (v) => (Array.isArray(v) ? v.length === 0 : (v && typeof v === 'object' ? Object.keys(v).length === 0 : true));
 
+  // Two numeric strings, compared with the int64 precision PHP uses.
+  const numericStringEq = (a, b) => {
+    const norm = (s) => {
+      const t = s.trim();
+      const m = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(t);
+      if (!m) return null;
+      const sign = m[1] === '-' ? -1n : 1n;
+      const int = m[2] || '0';
+      const frac = m[3] || '';
+      const exp = m[4] ? parseInt(m[4], 10) : 0;
+      return { sign, int, frac, exp };
+    };
+    const x = norm(a);
+    const y = norm(b);
+    if (!x || !y) return false;
+    // The same value in decimal: align the exponents, then compare the digits.
+    const toDecimal = (n) => {
+      const digits = n.int + (n.frac || '');
+      const point = n.int.length + n.exp;
+      if (point <= 0) return { sign: n.sign, int: '0', frac: '0'.repeat(-point) + digits };
+      if (point >= digits.length) return { sign: n.sign, int: digits + '0'.repeat(point - digits.length), frac: '' };
+      return { sign: n.sign, int: digits.slice(0, point), frac: digits.slice(point) };
+    };
+    const dx = toDecimal(x);
+    const dy = toDecimal(y);
+    const strip = (v) => {
+      let int = v.int.replace(/^0+(?=\d)/, '');
+      let frac = v.frac.replace(/0+$/, '');
+      return { sign: v.sign, int: int || '0', frac };
+    };
+    const sx = strip(dx);
+    const sy = strip(dy);
+    if (sx.sign !== sy.sign) return false;
+    return sx.int === sy.int && sx.frac === sy.frac;
+  };
   rt.looseEq = (a, b) => {
     const ta = tagOf(a), tb = tagOf(b);
     if (ta === 'null' && tb === 'null') return true;
@@ -964,7 +1005,10 @@ export function buildRt(context, opts = {}) {
     if (tb === 'null') return rt.looseEq(b, a);
     if (ta === 'num' && tb === 'num') return a === b;
     if (ta === 'str' && tb === 'str') {
-      if (isNumericStr(a) && isNumericStr(b)) return Number(a) === Number(b);
+      // Two numeric strings are compared as numbers - with the full int64
+      // precision (JS's Number() rounds beyond 2^53, so '9007199254740993' ==
+      // '9007199254740992' would answer true where PHP says false).
+      if (isNumericStr(a) && isNumericStr(b)) return numericStringEq(a, b);
       return a === b;
     }
     if (ta === 'num' && tb === 'str') return isNumericStr(b) ? a === Number(b) : String(a) === String(b);

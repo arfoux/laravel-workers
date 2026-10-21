@@ -563,6 +563,56 @@ class WithMailer
   assert.match(res.code, /await rt\.prop\(this, "mailer"\)\.send\(/);
 });
 
+test('classes: every class-path refusal carries a code', () => {
+  // The invariant: every fail-loud carries a code (the controller path always
+  // did; the class path must agree).
+  const cases = [
+    {
+      file: classFile('Queued', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+class Queued implements \\Illuminate\\Contracts\\Queue\\ShouldQueue
+{
+    public function handle(PostPublished $event): void
+    {
+    }
+}
+`),
+      listener: 'App\\Listeners\\Queued',
+      queued: true,
+    },
+    {
+      file: classFile('Broken', `<?php
+namespace App\\Listeners;
+class Broken
+{
+    public function handle(
+}
+`),
+      listener: 'App\\Listeners\\Broken',
+    },
+  ];
+  for (const c of cases) {
+    const res = compileClasses(
+      {
+        events: {
+          'App\\Events\\PostPublished': {
+            file: classFile('PostPublished', EVENT_SOURCE),
+            listeners: [c.listener],
+            queued: c.queued ? [c.listener] : [],
+          },
+        },
+        classes: { [c.listener]: { file: c.file } },
+      },
+      OPTIONS
+    );
+    assert.ok(res.errors.length >= 1, 'the construct must fail loud');
+    for (const e of res.errors) {
+      assert.ok(e.code, 'every class-path refusal carries a code: ' + JSON.stringify(e));
+    }
+  }
+});
+
 test('classes: a mailable compiles (the Mailable base + the payload)', () => {
   // The mailable extends Laravel's Mailable: the compiled class gets the
   // kernel's base (the fluent surface + the payload the mailer sends).
