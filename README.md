@@ -105,6 +105,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M62d** The **FormRequest's `prepareForValidation()` is compiled** (2026-10-21) - the hook Laravel runs before the validation was refused by the dump, so the app could change the validated input and the edge never saw it. The FormRequest is a compiled class now (the kernel's new `kernel/form-request.mjs` base), the handler runs the hook before the validation, and the shadow proves it (the fixture's hook fills the missing title, so the step now passes the validation on both sides).
 - **M62e** The **query builder refuses a bad order direction** (2026-10-21) - `orderBy('title', 'sideways')` answered ASC at the edge (a different row order, silently); Laravel throws, so the edge fails loud now.
 - **A57** The **query builder's two Laravel edges** (2026-10-21) - `orderBy()` with a direction that is not asc/desc answered ASC at the edge (Laravel throws), and `sum()` answered null on an empty set where Laravel answers 0.
+- **A58** The **hash surface is Laravel's** (2026-10-21) - `Hash::isHashed()` answered true for a `$2a$`/`$2b$` or a truncated digest where Laravel's `password_get_info()` says it is not a hash; and the async `Hash::make()` wrote bcryptjs's `$2a$` prefix where PHP writes `$2y$` (so the edge's own hashes were not recognised).
 
 ## Supported vs unsupported
 

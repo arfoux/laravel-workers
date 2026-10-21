@@ -23,7 +23,9 @@ const ARGON = '$argon2id$v=19$m=65536,t=4,p=1$c29tZXNhbHQ$abc';
 
 test('hash round-trip (bcrypt)', async () => {
   const h = await make('hello', { rounds: 4 });
-  assert.equal(h.slice(0, 7), '$2a$04$');
+  // PHP 8.3 password_hash() emits `$2y$` - the kernel stores PHP's prefix
+  // (bcryptjs emits `$2a$`), so the digest is what Laravel writes.
+  assert.equal(h.slice(0, 7), '$2y$04$');
   assert.equal(await check('hello', h), true);
   assert.equal(await check('wrong', h), false);
   assert.equal(await check('hello', ''), false);
@@ -39,7 +41,9 @@ test('hash needsRehash', async () => {
 test('isHashed detects bcrypt/argon2 digests', async () => {
   const h = await make('hello', { rounds: 4 });
   assert.equal(isHashed(h), true);
-  assert.equal(isHashed('$2y$10$abcdefghijklmnopqrstuv'), true);
+  // A TRUNCATED digest is not a hash (PHP's password_get_info() identifies
+  // only a full `$2y$` bcrypt digest - but the argon2 prefix it does).
+  assert.equal(isHashed('$2y$10$abcdefghijklmnopqrstuv'), false);
   assert.equal(isHashed('$argon2id$v=19$m=65536'), true);
   assert.equal(isHashed('plain'), false);
   assert.equal(isHashed(''), false);
@@ -113,9 +117,10 @@ test('isHashedDigest uses exact HashManager::isHashed semantics', () => {
   assert.equal(isHashedDigest(ARGON), true);
   assert.equal(isHashedDigest('plain'), false);
   assert.equal(isHashedDigest(null), false);
-  // The loose helper keeps its historical, permissive behavior.
-  assert.equal(isHashed(HASH12_A), true);
-  assert.equal(isHashed(SHORT_2Y), true);
+  // isHashed() is the same rule as isHashedDigest() (Laravel's
+  // Hash::isHashed() is `$this->driver()->info($value)['algo'] !== null`).
+  assert.equal(isHashed(HASH12_A), false);
+  assert.equal(isHashed(SHORT_2Y), false);
 });
 
 test('verifyConfiguration accepts cost <= rounds and rejects others', () => {
@@ -128,4 +133,17 @@ test('verifyConfiguration accepts cost <= rounds and rejects others', () => {
   assert.equal(verifyConfiguration(ARGON, { rounds: 12 }), false);
   assert.equal(verifyConfiguration('plain', { rounds: 12 }), false);
   assert.equal(verifyConfiguration(null, { rounds: 12 }), false);
+});
+
+test('isHashed() follows password_get_info (Laravel: Hash::isHashed)', () => {
+  // Laravel's Hash::isHashed() is `$this->driver()->info($value)['algo'] !==
+  // null` - the same rule as PHP's password_get_info(), which identifies only a
+  // FULL `$2y$` bcrypt digest (or an argon2 one). A `$2a$`/`$2b$` prefix or a
+  // truncated digest is NOT a hash.
+  const full = '$2y$10$' + 'a'.repeat(53);
+  assert.equal(isHashed(full), true);
+  assert.equal(isHashed('$2a$10$' + 'a'.repeat(53)), false);
+  assert.equal(isHashed('$2b$10$' + 'a'.repeat(53)), false);
+  assert.equal(isHashed('$2y$10$short'), false);
+  assert.equal(isHashed('plain'), false);
 });

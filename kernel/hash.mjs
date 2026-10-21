@@ -26,7 +26,12 @@ export function timingSafeEqual(a, b) {
 
 export async function make(value, { rounds = 10 } = {}) {
   const salt = await bcrypt.genSalt(rounds);
-  return bcrypt.hash(String(value), salt);
+  const hash = await bcrypt.hash(String(value), salt);
+  // PHP 8.3 password_hash() emits `$2y$`; bcryptjs emits `$2a$`. Store the
+  // PHP prefix (like makeSync below) so password_get_info()-shaped checks
+  // (isHashed, verifyConfiguration, needsRehash) treat our own hashes as
+  // bcrypt - exactly like BcryptHasher.
+  return hash.replace(/^\$2[abxy]\$/, '$2y$');
 }
 
 // Synchronous bcrypt for Eloquent's `hashed` cast. Laravel's
@@ -96,12 +101,13 @@ export function needsRehash(hashed, { rounds = 10 } = {}) {
   }
 }
 
-// Laravel `Hash::isHashed()`: true when the value already looks like a bcrypt
-// (or argon2) digest, so callers don't double-hash.
-const HASHED_RE = /^\$(2[aby]\$\d{2}\$|argon2(id|i|d)\$)/;
-
+// Laravel `Hash::isHashed()` (HashManager.php:97-100): `$this->driver()->info(
+// $value)['algo'] !== null` - the same rule as password_get_info(). The kernel
+// used a loose regex, so a `$2a$`/`$2b$` digest or a TRUNCATED one counted as
+// hashed where PHP says it is not (Laravel's own isHashedDigest() is the
+// faithful rule - the driver checks the digest, not its shape).
 export function isHashed(value) {
-  return typeof value === 'string' && HASHED_RE.test(value);
+  return isHashedDigest(value);
 }
 
 export default { make, makeSync, check, needsRehash, isHashed, isHashedDigest, passwordInfo, verifyConfiguration, timingSafeEqual };
