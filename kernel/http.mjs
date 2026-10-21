@@ -522,13 +522,22 @@ export function buildRequest(raw, options = {}) {
     }
   }
 
-  // Symfony honours `_method` (body/query) for POST, plus the header form here.
+  // Symfony's getMethod(): the X-HTTP-Method-Override header wins over the
+  // `_method` parameter (body/query), and the override must be A-Z - anything
+  // else is a SuspiciousOperationException ('Invalid HTTP method override.'),
+  // which Laravel does not map, so the answer is a 500.
   let methodOverride = null;
   if (rawMethod === 'POST') {
-    const candidate = post._method ?? query._method ?? null;
     const headerOverride = headers.get('x-http-method-override');
-    const chosen = candidate != null && candidate !== '' ? candidate : headerOverride;
-    if (chosen != null && chosen !== '') methodOverride = String(chosen).toUpperCase();
+    const candidate = post._method ?? query._method ?? null;
+    const chosen = headerOverride != null && headerOverride !== '' ? headerOverride : candidate;
+    if (chosen != null && chosen !== '') {
+      const up = String(chosen).toUpperCase();
+      if (up.length !== up.replace(/[^A-Z]/g, '').length) {
+        throw new HttpError('Invalid HTTP method override.', 500);
+      }
+      methodOverride = up;
+    }
   }
   const method = methodOverride || rawMethod;
 

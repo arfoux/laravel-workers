@@ -1116,3 +1116,34 @@ test('request: a multipart body is parsed (the fields + the uploaded file)', () 
   // ... but the body wins on a key that is in both.
   assert.equal(typeof req.all().title, 'string');
 });
+
+test('request: the method override follows Symfony (the header wins, A-Z only)', () => {
+  // Symfony's getMethod(): the X-HTTP-Method-Override header wins over the
+  // `_method` parameter (body/query), and an override that is not A-Z throws
+  // a SuspiciousOperationException ('Invalid HTTP method override.') - which
+  // Laravel does not map, so the answer is a 500.
+  const req = buildRequest({
+    method: 'POST',
+    url: 'http://localhost/x',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-http-method-override': 'PUT' },
+    body: '_method=DELETE',
+  });
+  assert.equal(req.methodOverride(), 'PUT', 'the header wins over the _method parameter');
+  const req2 = buildRequest({
+    method: 'POST',
+    url: 'http://localhost/x',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: '_method=DELETE',
+  });
+  assert.equal(req2.methodOverride(), 'DELETE', 'the _method parameter is honoured');
+  assert.throws(
+    () =>
+      buildRequest({
+        method: 'POST',
+        url: 'http://localhost/x',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-http-method-override': 'PU T' },
+        body: '',
+      }),
+    /Invalid HTTP method override/,
+  );
+});

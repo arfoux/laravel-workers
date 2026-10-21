@@ -95,6 +95,7 @@ PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** 
 - **M61r** The **model's created flag and the appended dates** (2026-10-21) - Laravel sets `wasRecentlyCreated` in the insert paths, so a controller returning a model it just saved answers 201; the kernel only set it in `create()`. The appended attributes go through the same date serialisation as the timestamps now.
 - **M61s** The **query builder accepts Laravel's operators** (2026-10-21) - `<=>` and `IS`/`IS NOT` are in Laravel's operator list, so the edge refused queries Laravel runs (`where('c','<=>',null)` is `IS NULL` there, `where('c','is',5)` renders `c is ?`). The list is Laravel's now.
 - **M61t** The **optional route segment uses Symfony's requirement** (2026-10-21) - the kernel's `[^/]*` could capture an empty optional parameter where Symfony's `[^/]++` refuses the group (`/users/%2F` decodes to `/users//`: the edge answered 200, Laravel answers 404).
+- **M61u** The **method override follows Symfony** (2026-10-21) - the edge preferred the `_method` parameter over the `X-HTTP-Method-Override` header (Symfony reads the header first) and accepted any value (Symfony throws for a non-A-Z override, which Laravel answers as a 500).
 
 ## Supported vs unsupported
 
