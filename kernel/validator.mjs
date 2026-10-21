@@ -828,8 +828,24 @@ export class Validator {
     // ValidatesAttributes.php:1218) and the id means "no exception"
     // (DatabasePresenceVerifier::getCount: `! is_null($excludeId) &&
     // $excludeId !== 'NULL'`).
-    const column = parts[1] !== undefined && parts[1] !== 'NULL' ? parts[1] : field;
-    const except = parts[2] === 'NULL' || parts[2] === 'null' ? null : parts[2];
+    let column = parts[1] !== undefined && parts[1] !== 'NULL' ? parts[1] : field;
+    if (parts[1] === undefined || parts[1] === 'NULL') {
+      // Laravel's guessColumnForQuery (:1229-1237): for an IMPLICIT attribute
+      // (one the wildcard expanded) the column is the last dot segment
+      // ('items.*.id' -> 'id'); every other attribute keeps its name.
+      const primary = this._primary[field];
+      if (primary && this._implicit.has(primary)) {
+        const last = String(field).split('.').pop();
+        if (!/^[0-9]+$/.test(last)) column = last;
+      }
+    }
+    let except = parts[2] === 'NULL' || parts[2] === 'null' ? null : parts[2];
+    if (typeof except === 'string') {
+      // Laravel's prepareUniqueId (:1151-1155): a bracketed id ('[id]') is the
+      // value of that field in the data - not the literal string.
+      const m = /^\[(.*)\]$/.exec(except);
+      if (m) except = this.get(m[1]);
+    }
     const idColumn = parts[3] || 'id';
     const payload = { table, column, value, except, idColumn, count: 0 };
 

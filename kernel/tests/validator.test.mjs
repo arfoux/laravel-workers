@@ -703,3 +703,33 @@ test("unique: the 'NULL' column and the 'NULL' except mean what Laravel means", 
   assert.equal(payload.except, null, "the 'NULL' id means no exception");
   assert.equal(payload.idColumn, 'id');
 });
+
+test("unique: the wildcard column and the bracketed id are Laravel's", async () => {
+  // Probed against the real Laravel 13 (a spy presence verifier):
+  //   'items.*.id' => 'unique:items,id'  -> the column is 'id' (the last dot
+  //   segment of an IMPLICIT attribute - guessColumnForQuery)
+  //   'email' => 'unique:users,email,[id]' -> the except id is the VALUE of
+  //   'id' in the data (prepareUniqueId), not the literal '[id]'
+  let payload = null;
+  const spy = { unique: async (p) => { payload = p; return true; } };
+  const v = new Validator(
+    { items: [{ id: 1 }, { id: 2 }] },
+    { 'items.*.id': 'unique:items,id' },
+    {},
+    spy
+  );
+  assert.equal(await v.passes(), true);
+  assert.equal(payload.column, 'id', 'the wildcard column is the last dot segment');
+  assert.equal(payload.table, 'items');
+
+  let payload2 = null;
+  const v2 = new Validator(
+    { id: 7, email: 'a@b.co' },
+    { email: 'unique:users,email,[id]' },
+    {},
+    { unique: async (p) => { payload2 = p; return true; } }
+  );
+  assert.equal(await v2.passes(), true);
+  assert.equal(payload2.except, 7, "the bracketed id is the field's value in the data");
+  assert.equal(payload2.idColumn, 'id');
+});
