@@ -664,6 +664,33 @@ export function compileClasses(dump, opts = {}) {
   const entries = [];
   const errors = [];
 
+  // The registry of the classes (FQCN -> { methods, base }): a call on an
+  // INLINE instance (`(new OrderService())->doIt($o)`) must know the
+  // receiver's own methods - they take the runtime as their first argument -
+  // and the receiver's base (a mailable's fluent surface takes only its own
+  // arguments). The pre-pass parses every class file ONCE (the parse is
+  // cached) so the registry is complete before any class is compiled.
+  const parseCache = new Map();
+  const parseCached = (file) => {
+    if (!parseCache.has(file)) parseCache.set(file, parseClassFile(file));
+    return parseCache.get(file);
+  };
+  const registry = new Map();
+  for (const [fqcn, info] of Object.entries(classMap)) {
+    const parsed = parseCached(info.file);
+    if (parsed.error) continue;
+    const classNode = parsed.classes.find((c) => nodeName(c.name) === shortName(fqcn));
+    if (!classNode) continue;
+    registry.set(fqcn, {
+      methods: classMembers(classNode)
+        .filter((m) => m && m.kind === 'method' && !m.isStatic)
+        .map((m) => nodeName(m.name))
+        .filter(Boolean),
+      base: info.kind === 'mailable' ? 'mailable' : info.kind === 'formRequest' ? 'formRequest' : null,
+    });
+  }
+  options.classRegistry = registry;
+
   // The queued listeners (ShouldQueue): Laravel pushes them to the queue (they
   // run later, in a worker); the edge has no consumer, so running them inline
   // would be a different behaviour — they are not compiled.
@@ -715,7 +742,7 @@ export function compileClasses(dump, opts = {}) {
       });
       continue;
     }
-    const parsed = parseClassFile(info.file);
+    const parsed = parseCached(info.file);
     if (parsed.error) {
       errors.push({ class: fqcn, message: parsed.error, code: 'LW004' });
       continue;
@@ -852,7 +879,15 @@ export function compileClasses(dump, opts = {}) {
       errors.push({ class: fqcn, message: failed, code: failedCode });
       continue;
     }
-    meta[fqcn] = { file: info.file, methods: Object.keys(methods), instantiated: [...instantiated] };
+    meta[fqcn] = {
+      file: info.file,
+      methods: Object.keys(methods),
+      instantiated: [...instantiated],
+      // The kernel's base the class extends (a mailable's fluent surface, a
+      // FormRequest's request surface) - a call on an inline instance needs
+      // to know it (the base's methods take only their own arguments).
+      base: info.kind === 'mailable' ? 'mailable' : info.kind === 'formRequest' ? 'formRequest' : null,
+    };
     entries.push({
       fqcn,
       ctor: ctor.js,

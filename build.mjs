@@ -1228,6 +1228,17 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         fqcns: Object.keys(classesCompile.meta),
         aliases: Object.fromEntries(classAliases),
         blocked: blockedClasses,
+        // The compiled classes' own methods (FQCN -> { methods, base }): a
+        // call on an INLINE instance (`(new OrderService())->doIt($o)`) must
+        // hand the runtime over as the first argument - the compiled methods
+        // are `async function (rt, ...)`. Without this the app's first
+        // argument landed in the `rt` slot (a 500 where Laravel answers 200).
+        registry: Object.fromEntries(
+          Object.entries(classesCompile.meta).map(([fqcn, m]) => [
+            fqcn,
+            { methods: m.methods || [], base: m.base || null },
+          ])
+        ),
       };
       console.log(
         `  -> dist/src/classes.generated.mjs (${classesMeta.fqcns.length} class(es)${

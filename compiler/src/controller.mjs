@@ -809,6 +809,10 @@ export function emitController(source, methodName, meta = {}) {
     // The event classes that did not compile, with the reason: a dispatch of
     // one of them would be a silent no-op, so the build stops and names it.
     classBlocked: (meta.classes && meta.classes.blocked) || {},
+    // The compiled classes' own methods (FQCN -> { methods, base }): a call
+    // on an inline instance (`(new OrderService())->doIt($o)`) must hand the
+    // runtime over as the first argument.
+    classRegistry: (meta.classes && meta.classes.registry) || {},
     // The app's object store (the default disk's name + the configured disks):
     // only the default disk compiles.
     storage: meta.storage && typeof meta.storage === 'object' ? meta.storage : {},

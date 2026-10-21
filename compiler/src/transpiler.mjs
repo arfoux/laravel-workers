@@ -349,6 +349,22 @@ function tx(node) {
           return 'rt.newClass(' + JSON.stringify(fqcn) + (ctorArgs ? ', [' + ctorArgs + ']' : ', []') + ')';
         }
       }
+      // A MODEL: the edge has no Eloquent instance (the compiled rung has the
+      // query builder, not the model), so the reason must name the model -
+      // "only the PHP built-in exceptions compile" is true but misleading (the
+      // app asked for its own model), and so is "the app classes are not
+      // compiled" (the model is not an app CLASS the compiler could take).
+      const modelFqcn = CTX && CTX.modelClassFqcns ? CTX.modelClassFqcns.get(cls) : null;
+      if (modelFqcn) {
+        throw mkErr(
+          'LW002',
+          'new ' + cls + '() is not supported — the model ' + modelFqcn +
+            ' is not compiled at the edge (the compiled rung has the query builder, not the Eloquent instance); ' +
+            PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
       if (cls.includes('\\')) {
         // A mailable (the app's Mail namespace): it renders its own Blade
         // view, so the compiled rung could not prove the payload. The build
@@ -757,6 +773,17 @@ function txAwait(expr, node, label = 'database query') {
     throw mkErr('LW002', label + ' inside a closure is not supported — move the query outside the closure', node.loc, PORT_HINT);
   }
   return '(await ' + expr + ')';
+}
+
+// The FQCN of an INLINE instance of a compiled class: the receiver of
+// `(new OrderService())->doIt($o)`. It is resolved the way the `new` itself
+// is resolved (the alias map, then the compiled class set), so the call site
+// and the instantiation always name the same class.
+function inlineNewFqcn(node) {
+  if (!node || node.kind !== 'new' || !node.what || node.what.kind !== 'name') return null;
+  if (!CTX || !CTX.classFqcns) return null;
+  const cls = String(node.what.name).replace(/^\\/, '');
+  return CTX.classFqcns.get(cls) || (CTX.classes && CTX.classes.has(cls) ? cls : null);
 }
 
 // The FQCN of a model class as it is written in the source ('Post' ->
@@ -1615,6 +1642,44 @@ function txCall(node) {
   }
   if (what.kind === 'propertylookup') {
     const obj = tx(what.what);
+    // The INLINE form of a compiled class: `(new OrderService())->doIt($o)`.
+    // The compiled methods are `async function (rt, ...)` (compiler/src/
+    // classes.mjs), so the call must hand the runtime over as its FIRST
+    // argument and must be awaited. Without the runtime the app's first
+    // argument landed in the `rt` slot (the body then called `rt.model(...)`
+    // on the app's argument) - a 500 at request time where Laravel answers
+    // 200. The variable form (`$s = new OrderService(); $s->doIt($o);`) is
+    // refused (the build cannot know what a variable holds).
+    const inlineFqcn = inlineNewFqcn(what.what);
+    if (inlineFqcn) {
+      const inlineMeth = what.offset && what.offset.name;
+      const entry = CTX && CTX.classRegistry ? CTX.classRegistry.get(inlineFqcn) : null;
+      const names = entry && entry.methods ? entry.methods : [];
+      if (names.includes(inlineMeth)) {
+        return txAwait(
+          obj + '.' + inlineMeth + '(rt' + (args ? ', ' + args : '') + ')',
+          node,
+          '(new ' + inlineFqcn + '())->' + inlineMeth + '()'
+        );
+      }
+      // The kernel's base surfaces take only their own arguments: a
+      // mailable's fluent surface (subject(), view(), with(), ...) and a
+      // FormRequest's request surface (merge(), input(), all()).
+      if (entry && entry.base === 'mailable' && MAILABLE_METHODS.has(inlineMeth)) {
+        return obj + '.' + inlineMeth + '(' + args + ')';
+      }
+      if (entry && entry.base === 'formRequest' && FORM_REQUEST_METHODS.has(inlineMeth)) {
+        return obj + '.' + inlineMeth + '(' + args + ')';
+      }
+      throw mkErr(
+        'LW002',
+        'the method ' + inlineMeth + '() of the class ' + inlineFqcn + ' is not compiled' +
+          (names.length ? ' (the compiled methods: ' + names.join(', ') + ')' : ' (the class did not compile)') +
+          ' - ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
     if (CTX && what.what && what.what.kind === 'call') {
       const _m = requestMethodOfCall(what.what);
       if (_m && REQUEST_NO_CHAIN.has(_m)) {
@@ -2398,6 +2463,12 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     classMethod: !!opts.classMethod,
     // The class's own methods (a method call on $this is one of them).
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
+    // The compiled classes (FQCN -> { methods, base }): the registry of the
+    // class compiler. A call on an INLINE instance (`(new OrderService())
+    // ->doIt($o)`) must know the receiver's own methods - they take the
+    // runtime as their first argument - and the receiver's base (a mailable's
+    // fluent surface takes only its own arguments).
+    classRegistry: opts.classRegistry instanceof Map ? opts.classRegistry : new Map(Object.entries(opts.classRegistry || {})),
     // A mailable: the fluent surface of Laravel's Mailable.
     mailable: !!opts.mailable,
     // A FormRequest: the request surface of the kernel's base.
