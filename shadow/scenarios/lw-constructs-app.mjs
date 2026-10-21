@@ -154,12 +154,15 @@ export default {
       // (at the edge there is no listener runtime). The listener writes to the
       // post, so the answer shows the effect (Laravel dispatches it
       // synchronously).
-      label: 'POST /event-demo (the event dispatch)',
+      label: 'POST /event-demo (the event dispatch - EVERY listener runs)',
       method: 'POST',
       uri: '/event-demo',
       jar: true,
       form: { _token: '@token' },
-      expectBody: 'notified',
+      // Laravel runs every listener of an event (only an answer of false stops
+      // the chain): the first listener writes the body, the second one the
+      // title. The edge must answer both.
+      expectBody: 'notified|notified twice',
     },
     {
       // The Gate: the policy check (the compiled policies answer it at the
