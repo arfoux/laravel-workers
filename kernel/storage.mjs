@@ -163,6 +163,15 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
   // default `throwsExceptions`), so the compiled side fails loud too.
   // A binary object (the D1 blob store keeps the bytes base64-encoded) is
   // decoded back to its bytes and read as UTF-8 text.
+  //
+  // A PHP string is a BYTE ARRAY, so `Storage::get()` on a binary file hands
+  // the app the exact bytes (FilesystemAdapter::get(), :200-215: the stream's
+  // contents, no decoding). A JS string cannot hold them: `TextDecoder` would
+  // replace every invalid sequence with U+FFFD and the app would silently ship
+  // a corrupted file (A58). So the edge decodes STRICTLY - bytes that are not
+  // valid UTF-8 fail loud, and the reason names the byte-level alternatives
+  // (`getBytes` / the file's own response path) that carry them unchanged.
+  const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true });
   async function getText(key) {
     const obj = await base.get(key);
     if (obj === null || obj === undefined) {
@@ -170,7 +179,17 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     }
     if (typeof obj.text === 'function') return obj.text();
     if (typeof obj.body === 'string') return obj.body;
-    if (obj.body instanceof Uint8Array) return new TextDecoder('utf-8').decode(obj.body);
+    if (obj.body instanceof Uint8Array) {
+      try {
+        return STRICT_UTF8.decode(obj.body);
+      } catch {
+        throw new Error(
+          'storage get: the file "' + key + '" is not valid UTF-8 (a PHP string is a byte ' +
+            'array, so Laravel hands the app the raw bytes; a JS string cannot hold them ' +
+            'without loss) - read it with getBytes() or stream the file, do not decode it as text'
+        );
+      }
+    }
     if (obj.body !== undefined && obj.body !== null) return String(obj.body);
     return null;
   }
