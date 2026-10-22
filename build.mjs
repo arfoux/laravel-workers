@@ -22,6 +22,7 @@ import { compilePolicies } from './compiler/src/policy.mjs';
 import { compileClasses } from './compiler/src/classes.mjs';
 import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
 import { viewFileName } from './compiler/src/view-name.mjs';
+import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import {
   cpSync,
   existsSync,
@@ -45,7 +46,13 @@ if (existsSync(join(process.cwd(), 'artisan')) && existsSync(join(process.cwd(),
   appDir = process.cwd();
 }
 const isNpmMode = appDir !== pkgDir && existsSync(join(appDir, 'artisan'));
-const dist = isNpmMode ? join(appDir, 'dist') : join(pkgDir, 'dist');
+// The build writes into a STAGING directory and swaps it into place only after
+// every artifact landed (see the end of this file). A build that fails halfway
+// used to leave a half-written `dist/` behind - an operator (or a watcher)
+// could then deploy an artifact the build never finished, and the bundler's
+// error named a missing file instead of the skipped route that caused it.
+const distFinal = isNpmMode ? join(appDir, 'dist') : join(pkgDir, 'dist');
+const dist = distFinal + '.building';
 const cacheDir = isNpmMode ? join(appDir, '.cache', 'laravel-workers') : join(pkgDir, '.cache');
 const strict = process.argv.includes('--strict');
 const scaffold = process.argv.includes('--scaffold');
@@ -53,6 +60,9 @@ const PHP = process.env.PHP_BIN || 'php';
 
 const fail = (msg) => {
   console.error('BUILD FAILED: ' + msg);
+  // The staging directory is thrown away: `dist/` keeps the last build that
+  // COMPLETED (a failed build must never leave a half-written dist behind).
+  discardStaging(dist);
   process.exit(1);
 };
 
@@ -2041,6 +2051,17 @@ if (queuePushes.length && !(cronTriggers && cronTriggers.length)) {
   );
 }
 
+// ---------- the swap ----------
+// Every check passed and every artifact landed in the staging directory: move
+// the previous `dist/` aside and put the new one in its place. A build that
+// failed above never reaches this line, so `dist/` still holds the last build
+// that COMPLETED (compiler/src/dist-swap.mjs).
+commitDist(dist, distFinal, (file) =>
+  console.log(
+    `  (warning: ${relative(appDir, file)} is locked by a running process — restart the dev server if build output looks stale)`
+  )
+);
+
 console.log(
-  `done. dist: ${relative(appDir, dist)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, controllers: ${controllerRoutes.size}, ignored: ${ignoreMap.length})`
+  `done. dist: ${relative(appDir, distFinal)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, controllers: ${controllerRoutes.size}, ignored: ${ignoreMap.length})`
 );
