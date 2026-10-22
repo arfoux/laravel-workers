@@ -173,6 +173,9 @@ export class Model {
   static table = null;
   static primaryKey = 'id';
   static fillable = [];
+  // Laravel's own default (GuardsAttributes::$guarded = ['*']): a model that
+  // declares NEITHER $fillable nor $guarded refuses every mass assignment.
+  static guarded = ['*'];
   static casts = {};
   // bcrypt rounds used by the `hashed` cast (build bakes config
   // hashing.bcrypt.rounds; Laravel's BcryptHasher default is 12).
@@ -350,10 +353,41 @@ export class Model {
     return this;
   }
 
+  /**
+   * `Model::isFillable($key)` (GuardsAttributes::isFillable(), :96-135): a
+   * `$fillable` list wins; otherwise `$guarded = ['*']` refuses everything and
+   * an empty `$guarded` allows everything.
+   */
+  static isFillableKey(key) {
+    const fillable = this.fillable || [];
+    if (fillable.length) return fillable.includes(key);
+    const guarded = this.guarded;
+    if (guarded === undefined || guarded === null) return true;
+    if (guarded.length === 1 && guarded[0] === '*') return false;
+    return !guarded.includes(key);
+  }
+
+  /**
+   * `Model::fill($attributes)` (Model.php:327-345 -> fillableFromArray +
+   * setAttribute): a key that is not fillable THROWS MassAssignmentException
+   * when the model guards everything (`$guarded = ['*']`, the default for a
+   * model that declares neither list) - Laravel's own message. Otherwise the
+   * unfillable key is silently DROPPED (`fillableFromArray` filters it).
+   */
   fill(attributes = {}) {
-    const fillable = this.constructor.fillable;
+    const ctor = this.constructor;
+    const fillable = ctor.fillable || [];
+    const guarded = ctor.guarded;
+    const guardsEverything =
+      !fillable.length && Array.isArray(guarded) && guarded.length === 1 && guarded[0] === '*';
     for (const key of Object.keys(attributes || {})) {
-      if (!fillable.length || fillable.includes(key)) this.set(key, attributes[key]);
+      if (guardsEverything) {
+        throw new Error(
+          'Add [' + key + '] to fillable property to allow mass assignment on [' +
+            (ctor.name || 'the model') + '].'
+        );
+      }
+      if (ctor.isFillableKey(key)) this.set(key, attributes[key]);
     }
     return this;
   }
@@ -543,7 +577,11 @@ export class Model {
       // keeps its fillable-when-declared baseline for unmodified models and
       // additionally persists every attribute touched through set()/forceFill()
       // (e.g. remember_token written by the auth guard, which is not fillable).
-      const columns = ctor.fillable.length ? [...ctor.fillable] : Object.keys(this.attributes);
+      const columns = ctor.fillable.length
+        ? [...ctor.fillable]
+        : Array.isArray(ctor.guarded) && ctor.guarded.length === 1 && ctor.guarded[0] === '*'
+          ? Object.keys(this.attributes)
+          : Object.keys(this.attributes);
       for (const key of this._dirty) {
         if (!columns.includes(key)) columns.push(key);
       }

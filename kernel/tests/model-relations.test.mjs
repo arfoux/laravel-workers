@@ -168,3 +168,45 @@ test('an accessor receives the real column value', () => {
   const user = new User({ id: 1, full_name: 'Ada' });
   assert.equal(user.get('full_name'), 'Ada (accessor)');
 });
+
+// ---- mass assignment (audit row A42, P0) ----------------------------------
+//
+// Probed against the vendored Laravel 13:
+//   - a model that declares NEITHER `$fillable` nor `$guarded` has Laravel's
+//     default `$guarded = ['*']`, so `fill(['name' => 'a'])` throws
+//     MassAssignmentException: "Add [name] to fillable property to allow mass
+//     assignment on [OpenModel]."
+//   - `$fillable = ['name']` accepts `name` and DROPS `admin`;
+//   - `$guarded = ['secret']` accepts everything else and drops `secret`.
+// The edge used to allow EVERY key when `$fillable` was empty - the opposite
+// answer, and the dangerous one.
+
+test('mass assignment follows $fillable/$guarded, and an unguarded model throws', () => {
+  class Open extends Model {
+    static table = 'open';
+    static primaryKey = 'id';
+  }
+  const open = new Open({});
+  assert.throws(
+    () => open.fill({ name: 'a' }),
+    /Add \[name\] to fillable property to allow mass assignment on \[Open\]\./
+  );
+
+  class Filled extends Model {
+    static table = 'filled';
+    static primaryKey = 'id';
+    static fillable = ['name'];
+  }
+  const filled = new Filled({});
+  filled.fill({ name: 'a', admin: 1 });
+  assert.deepEqual(filled.attributes, { name: 'a' });
+
+  class Guarded extends Model {
+    static table = 'guarded';
+    static primaryKey = 'id';
+    static guarded = ['secret'];
+  }
+  const guarded = new Guarded({});
+  guarded.fill({ name: 'a', secret: 'x' });
+  assert.deepEqual(guarded.attributes, { name: 'a' });
+});

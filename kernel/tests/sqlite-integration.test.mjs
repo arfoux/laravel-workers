@@ -53,6 +53,11 @@ class Comment extends Model {}
 Comment.table = 'comments';
 class Post extends Model {}
 Post.table = 'posts';
+// Laravel's default for a model that declares NEITHER list is `$guarded =
+// ['*']` - every mass assignment throws MassAssignmentException
+// (GuardsAttributes::isFillable()). A real app declares $fillable; the edge
+// mirrors that, so the fixture does too.
+Post.fillable = ['title', 'published', 'body', 'slug'];
 Post.softDeletes = true;
 Post.relations = { comments: { type: 'hasMany', model: Comment } };
 Post.prototype.scopePublished = (q) => q.where('published', 1);

@@ -79,6 +79,11 @@ foreach (array_slice($argv, 1) as $fqcn) {
         // getFillable() merges the `#[Fillable]` class attribute (Laravel 13.x)
         // with the classic `$fillable` property.
         $entry['fillable'] = array_values($instance->getFillable());
+        // The `$guarded` list (GuardsAttributes::getGuarded()): Laravel's
+        // DEFAULT is ['*'] - a model that declares neither $fillable nor
+        // $guarded refuses every mass assignment (MassAssignmentException).
+        // The edge needs the list to answer the same, not to allow everything.
+        $entry['guarded'] = array_values($instance->getGuarded());
         $entry['casts'] = $casts;
         $entry['timestamps'] = (bool) $instance->usesTimestamps();
         $entry['softDeletes'] = in_array(
