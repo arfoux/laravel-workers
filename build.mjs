@@ -959,6 +959,17 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         }
       }
 
+      // A policy (and a compiled class) may read a class constant too
+      // (`Post::PUBLISHED`): its model and policy classes join the dump, so
+      // the body compiles instead of stopping on an unavailable constant.
+      // This runs AFTER both dumps (they declare their own maps below the
+      // controller loop, so reading them earlier is a TDZ error).
+      for (const e of policyDump.models || []) {
+        if (e && e.model) constantFqcns.add(e.model);
+        if (e && e.policy) constantFqcns.add(e.policy);
+      }
+      for (const fqcn of Object.keys(classesDump.classes || {})) constantFqcns.add(fqcn);
+
       // Class constants — dumped at build time and baked into the handler.
       const constantDump = new Map();
       if (constantFqcns.size) {
@@ -1156,12 +1167,34 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
         }
       }
+      // The dumped constants keyed by the name the source writes (the alias
+      // and the FQCN). An alias shared by two classes is skipped: the
+      // transpiler must not guess which one the source meant.
+      const constantsByAlias = {};
+      const aliasOwners = new Map();
+      for (const [fqcn, dumped] of constantDump) {
+        if (!dumped || dumped.error) continue;
+        const alias = fqcn.split('\\').pop();
+        if (aliasOwners.has(alias) && aliasOwners.get(alias) !== fqcn) {
+          aliasOwners.set(alias, null);
+        } else {
+          aliasOwners.set(alias, fqcn);
+        }
+      }
+      for (const [fqcn, dumped] of constantDump) {
+        if (!dumped || dumped.error) continue;
+        const alias = fqcn.split('\\').pop();
+        if (aliasOwners.get(alias) === fqcn) constantsByAlias[alias] = dumped.constants || {};
+        constantsByAlias[fqcn] = dumped.constants || {};
+      }
       const policyCompile = compilePolicies(policyDump, {
         models: knownModelFqcnSet,
         modelNotCompiled,
         modelClassFqcns,
         // The user of a policy: the app's auth provider model.
         userModel: authProviderFqcns[0] || null,
+        // The class constants the policy bodies may read.
+        constants: constantsByAlias,
       });
       writeFileSync(join(dist, 'src', 'policies.generated.mjs'), policyCompile.code);
       const policiesMeta = policyCompile.meta;
@@ -1180,6 +1213,8 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         models: knownModelFqcnSet,
         modelNotCompiled,
         modelClassFqcns,
+        // The class constants a listener/service body may read.
+        constants: constantsByAlias,
         classes: new Set(Object.keys(classesDump.classes || {})),
       });
       writeFileSync(join(dist, 'src', 'classes.generated.mjs'), classesCompile.code);

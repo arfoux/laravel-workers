@@ -163,7 +163,10 @@ function compileMethod(entry, methodMeta, isBefore, opts, classNode) {
     indent: '',
     paramVars,
     requestVars: new Set(),
-    constants: {},
+    // The class constants the app declares (`Post::PUBLISHED`): dumped at
+    // build time, so a policy body that reads one compiles instead of
+    // stopping on an unavailable constant.
+    constants: opts.constants || {},
     formRequests: new Map(),
     modelVarSeeds: seeds,
   });
@@ -198,6 +201,8 @@ export function compilePolicies(dump, opts = {}) {
     modelNotCompiled: opts.modelNotCompiled || new Map(),
     modelClassFqcns,
     userModel: opts.userModel || null,
+    // The dumped class constants, by alias and by FQCN.
+    constants: opts.constants || {},
   };
 
   const meta = {};
