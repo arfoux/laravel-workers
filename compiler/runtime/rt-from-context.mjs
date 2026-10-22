@@ -829,11 +829,28 @@ export function buildRt(context, opts = {}) {
     return arr.some((x) => rt.looseEq(x, needle));
   };
   const isObj = (v) => v !== null && typeof v === 'object';
-  const arrValues = (v) => (Array.isArray(v) ? v.slice() : (isObj(v) ? Object.keys(v).map((k) => v[k]) : []));
+  const arrValues = (v) => (Array.isArray(v) ? v.slice() : (isObj(v) ? rt.phpKeys(v).map((k) => v[k]) : []));
   rt.implode = (glue, arr) => arrValues(arr).map((x) => (x == null ? '' : String(x))).join(glue == null ? '' : String(glue));
   rt.explode = (delim, str, limit) => String(str).split(String(delim));
   rt.array_key_exists = (k, arr) => (isObj(arr) ? Object.prototype.hasOwnProperty.call(arr, k) : false);
-  rt.array_keys = (arr) => (isObj(arr) ? Object.keys(arr).map((k) => (/^\d+$/.test(k) ? Number(k) : k)) : []);
+  // PHP preserves an array's insertion order; a JS object does not (an
+  // integer-like key enumerates first). A literal that mixes both kinds is
+  // built by `rt.assoc()`, which records the order in a non-enumerable marker
+  // - every key iterator below reads it first.
+  rt.phpKeys = (v) =>
+    v && typeof v === 'object' && Array.isArray(v.__lwOrder) ? v.__lwOrder : Object.keys(v || {});
+  rt.assoc = (pairs) => {
+    const out = {};
+    const order = [];
+    for (const pair of pairs) {
+      const key = String(pair[0]);
+      if (!Object.prototype.hasOwnProperty.call(out, key)) order.push(key);
+      out[key] = pair[1];
+    }
+    Object.defineProperty(out, '__lwOrder', { value: order, enumerable: false });
+    return out;
+  };
+  rt.array_keys = (arr) => (isObj(arr) ? rt.phpKeys(arr).map((k) => (/^\d+$/.test(k) ? Number(k) : k)) : []);
   rt.array_values = (arr) => arrValues(arr);
   rt.array_merge = (...arrs) => {
     if (arrs.every((a) => Array.isArray(a))) {
@@ -1204,7 +1221,7 @@ export function buildRt(context, opts = {}) {
     }
     if (src && typeof src === 'object') {
       const keyOf = (k) => (/^\d+$/.test(k) ? Number(k) : k);
-      return Object.keys(src).map((k) => [keyOf(k), src[k]]);
+      return rt.phpKeys(src).map((k) => [keyOf(k), src[k]]);
     }
     return [];
   };

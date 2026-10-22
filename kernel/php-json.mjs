@@ -145,7 +145,10 @@ function writeValue(value, out) {
     return;
   }
   if (isPlainObject(value)) {
-    const keys = Object.keys(value);
+    // PHP's json_encode preserves the array's INSERTION order. A JS object
+    // enumerates an integer-like key first, so a literal that mixes both
+    // kinds carries the PHP order in a non-enumerable marker (rt.assoc).
+    const keys = Array.isArray(value.__lwOrder) ? value.__lwOrder : Object.keys(value);
     const norm = [];
     let isList = true;
     for (let i = 0; i < keys.length; i++) {

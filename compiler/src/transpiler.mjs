@@ -314,6 +314,29 @@ function tx(node) {
       }
       const isAssoc = items.some((it) => it.key != null);
       if (isAssoc) {
+        // PHP preserves the INSERTION order of the keys, and a JS object does
+        // not: an integer-like key ("0", "12") is enumerated BEFORE the string
+        // keys, so `['id' => 1, 0 => 'z']` would encode as
+        // `{"0":"z","id":1}` where PHP answers `{"id":1,"0":"z"}` (a probe).
+        // A literal that mixes both kinds is therefore built through
+        // `rt.assoc()`, which records the order (a non-enumerable marker) for
+        // the encoder and the iterators. A dynamic key cannot be classified at
+        // build time, so it keeps the plain object.
+        const literalKeys = items.filter((it) => it.key != null).map((it) => it.key);
+        const isIntKey = (k) =>
+          (k.kind === 'number' && Number.isInteger(Number(k.value))) ||
+          (k.kind === 'string' && /^\d+$/.test(String(k.value)));
+        const allLiteral = literalKeys.every((k) => k.kind === 'number' || k.kind === 'string');
+        const mixed =
+          allLiteral &&
+          literalKeys.some(isIntKey) &&
+          literalKeys.some((k) => !isIntKey(k));
+        if (mixed) {
+          const pairs = items.map(
+            (it) => '[' + JSON.stringify(String(it.key.value)) + ', ' + tx(it.value) + ']'
+          );
+          return 'rt.assoc([' + pairs.join(', ') + '])';
+        }
         const pairs = items.map((it) => txOffsetKey(it.key) + ': ' + tx(it.value));
         return '{' + pairs.join(', ') + '}';
       }
