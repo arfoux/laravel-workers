@@ -1582,6 +1582,8 @@ writeTree(tmpRoot, {
   // validator.mjs + http.mjs import the image header reader (the `image` and
   // `dimensions` rules, and File::dimensions()).
   'kernel/image.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'image.mjs'), 'utf8'),
+  // The runtime imports the kernel's Collection (one class for the whole edge).
+  'kernel/collections.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'collections.mjs'), 'utf8'),
   'kernel/validation-messages.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation-messages.mjs'), 'utf8'),
   'kernel/validation-messages.data.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'validation-messages.data.mjs'), 'utf8'),
   'kernel/paginator.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'paginator.mjs'), 'utf8'),

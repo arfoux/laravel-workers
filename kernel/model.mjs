@@ -287,18 +287,46 @@ export class Model {
   }
 
   get(key) {
-    if (this.constructor.notCompiled && this.constructor.notCompiled.includes(key)) {
+    const ctor = this.constructor;
+    if (ctor.notCompiled && ctor.notCompiled.includes(key)) {
       throw new Error(
         'the model attribute "' + key + '" is not compiled (a relation or an accessor) - ' +
           'write a port handler for this route'
       );
     }
-    let value = this.attributes[key];
-    const cast = this.constructor.casts[key];
-    if (cast != null) value = applyCast(value, cast);
+    // Eloquent's getAttribute() (HasAttributes.php:415-445) resolves in this
+    // order: an attribute or a cast (through getAttributeValue), a method of
+    // the same name, then a RELATION (getRelationValue). An accessor is part
+    // of the attribute path (transformModelValue runs it first, :527-560).
     const accessor = 'get' + studly(key) + 'Attribute';
-    if (typeof this[accessor] === 'function') value = this[accessor](value);
-    return value;
+    const hasAccessor = typeof this[accessor] === 'function';
+    const hasAttribute = Object.prototype.hasOwnProperty.call(this.attributes, key);
+    const hasCast = ctor.casts && Object.prototype.hasOwnProperty.call(ctor.casts, key);
+    if (hasAttribute || hasCast || hasAccessor) {
+      let value = this.attributes[key];
+      const cast = ctor.casts ? ctor.casts[key] : null;
+      if (cast != null) value = applyCast(value, cast);
+      if (hasAccessor) value = this[accessor](value);
+      return value;
+    }
+    // A declared relation: Eloquent's getRelationValue() answers the CACHED
+    // relation and otherwise hits the database (:425-435). The kernel has no
+    // ambient `db`, so an unloaded relation cannot load itself - it stops
+    // loudly and names the two supported paths instead of answering null.
+    if (ctor.relations && Object.prototype.hasOwnProperty.call(ctor.relations, key)) {
+      if (!this.relationLoaded(key)) {
+        throw new Error(
+          'the relation "' + key + '" is not loaded - use related(db, "' + key + '") or with("' + key + '")'
+        );
+      }
+      return this.getRelation(key);
+    }
+    // Anything else: Laravel's getAttribute() answers NULL
+    // (HasAttributes.php:415-445 - getRelationValue() returns null when the
+    // key is not a relation). The dump-declared uncompiled keys were already
+    // rejected above, so a silent null here is the app's own null, not a
+    // hidden construct.
+    return null;
   }
 
   set(key, value) {
@@ -334,6 +362,15 @@ export class Model {
   forceFill(attributes = {}) {
     for (const key of Object.keys(attributes || {})) this.set(key, attributes[key]);
     return this;
+  }
+
+  /**
+   * `Model::toArray()` (Model.php:2225-2240): the attributes plus the LOADED
+   * relations. The edge answers the same shape `toJSON()` encodes (the dates
+   * already serialised), because a JS caller has no Carbon to format.
+   */
+  toArray() {
+    return this.toJSON();
   }
 
   toJSON() {
@@ -631,6 +668,9 @@ export class Model {
   async related(db, name) {
     const rel = (this.constructor.relations || {})[name];
     if (!rel) throw new Error('unknown relation "' + name + '" on ' + this.constructor.name);
+    // Eloquent's getRelationValue() (HasAttributes.php:425-435): a relation
+    // that is ALREADY loaded answers from the cache - no query.
+    if (this.relationLoaded(name)) return this.getRelation(name);
     await loadRelation(db, this.constructor, [this], name, rel);
     return this.getRelation(name);
   }

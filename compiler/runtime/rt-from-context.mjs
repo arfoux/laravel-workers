@@ -7,12 +7,16 @@ import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
+import { Collection } from '../../kernel/collections.mjs';
 
 // The Collection marker: the runtime's Collection class is created per rt (a
 // view renders with its OWN rt - buildRt() runs again for it), so an
 // `instanceof` check cannot see a Collection that came from another rt (the
 // controller's). The marker travels with the instance.
-const IS_COLLECTION = Symbol('lw.collection');
+// The registry symbol: the kernel's Collection (kernel/collections.mjs) marks
+// its instances with the SAME symbol, so a collection built by the controller's
+// rt is still recognised inside a view's own rt.
+const IS_COLLECTION = Symbol.for('lw.collection');
 
 // env() -> the config key: the build-time config dump is the padanan for env()
 // at the edge (there is no .env there). Keep in sync with tools/config-dump.php.
@@ -1491,102 +1495,12 @@ export function buildRt(context, opts = {}) {
   rt.nl2br = (s) => String(s == null ? '' : s).replace(/\r\n|\r|\n/g, '<br />\n');
 
   // ---- Collection wrapper (rt.collect) ----
-  class Collection {
-    constructor(items) {
-      this.items = Array.isArray(items) ? items.slice() : [];
-      // The marker (see IS_COLLECTION): a view renders with its OWN rt, so a
-      // Collection that came from the controller's rt must still be seen.
-      this[IS_COLLECTION] = true;
-    }
-    count() { return this.items.length; }
-    isEmpty() { return this.items.length === 0; }
-    isNotEmpty() { return this.items.length !== 0; }
-    first(pred) {
-      if (typeof pred === 'function') {
-        for (const v of this.items) if (pred(v)) return v;
-        return null;
-      }
-      return this.items.length ? this.items[0] : null;
-    }
-    last(pred) {
-      if (typeof pred === 'function') {
-        for (let i = this.items.length - 1; i >= 0; i--) if (pred(this.items[i])) return this.items[i];
-        return null;
-      }
-      return this.items.length ? this.items[this.items.length - 1] : null;
-    }
-    firstWhere(key, val) {
-      for (const v of this.items) {
-        if (v != null && typeof v === 'object' && v[key] == val) return v;
-        if (v != null && v[key] === val) return v;
-      }
-      return null;
-    }
-    get(idx, def) {
-      const i = Number(idx);
-      if (Number.isInteger(i) && i >= 0 && i < this.items.length) return this.items[i];
-      if (Object.prototype.hasOwnProperty.call(this.items, idx)) return this.items[idx];
-      return def === undefined ? null : def;
-    }
-    pluck(key) {
-      return new Collection(this.items.map((v) => (v == null ? null : v[key])));
-    }
-    filter(fn) {
-      if (typeof fn === 'function') return new Collection(this.items.filter(fn));
-      return new Collection(this.items.filter((v) => !!v));
-    }
-    map(fn) { return new Collection(this.items.map(fn)); }
-    each(fn) { this.items.forEach(fn); return this; }
-    take(n) {
-      const c = Number(n);
-      if (!Number.isFinite(c)) return new Collection(this.items.slice());
-      if (c < 0) return new Collection(this.items.slice(c));
-      return new Collection(this.items.slice(0, c));
-    }
-    slice(s, n) {
-      const start = Number(s) | 0;
-      if (n === undefined || n === null) return new Collection(this.items.slice(start));
-      const len = Number(n) | 0;
-      return new Collection(this.items.slice(start, start + len));
-    }
-    contains(valOrFn) {
-      if (typeof valOrFn === 'function') return this.items.some(valOrFn);
-      return this.items.includes(valOrFn);
-    }
-    has(key) {
-      const k = Number(key);
-      if (Number.isInteger(k)) return k >= 0 && k < this.items.length;
-      return Object.prototype.hasOwnProperty.call(this.items, key);
-    }
-    sum(key) {
-      const vals = key == null ? this.items : this.items.map((v) => (v == null ? 0 : v[key]));
-      let s = 0;
-      for (const v of vals) {
-        const num = Number(v);
-        if (v != null && !Number.isNaN(num)) s += num;
-      }
-      return s;
-    }
-    avg(key) {
-      if (this.items.length === 0) return null;
-      const vals = key == null ? this.items : this.items.map((v) => (v == null ? null : v[key]));
-      let s = 0;
-      let c = 0;
-      for (const v of vals) {
-        if (v == null) continue;
-        const num = Number(v);
-        if (!Number.isNaN(num)) { s += num; c++; }
-      }
-      if (c === 0) return null;
-      return s / c;
-    }
-    keys() { return new Collection(this.items.map((_, i) => i)); }
-    values() { return new Collection(this.items.slice()); }
-    toArray() { return this.items.slice(); }
-    toJson() { return JSON.stringify(this.items); }
-    all() { return this.items.slice(); }
-  }
-  rt.collect = (arr) => new Collection(Array.isArray(arr) ? arr : arr == null ? [] : [arr]);
+  // ONE Collection for the whole edge: the kernel's (probed against Laravel,
+  // kernel/collections.mjs). The runtime used to carry a private subset here,
+  // so `collect()` inside a compiled route and inside a view were two
+  // different classes with two different answers (the inline one had no
+  // groupBy/keyBy/where, and its implode()/chunk() disagreed with Laravel).
+  rt.collect = (arr) => new Collection(arr == null ? [] : arr);
   rt.Collection = Collection;
 
   // ---- rt.now() minimal Carbon stub (UTC) ----
