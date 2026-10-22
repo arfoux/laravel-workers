@@ -906,10 +906,33 @@ function txModelChain(chain, node) {
   if (MODEL_STATIC_START.has(first.name)) {
     expr = 'rt.model(' + clsLit + ').' + first.name + '(' + firstArgs + ')';
   } else if (MODEL_STATIC_TERMINAL.has(first.name)) {
-    if (segments.length > 1) {
+    // `Post::paginate(2)->links()` is legal Laravel: paginate() answers the
+    // LengthAwarePaginator, whose own methods render the pagination view. Any
+    // other terminal answers a model or a scalar and cannot be chained.
+    const paginatorChain = first.name === 'paginate';
+    if (segments.length > 1 && !paginatorChain) {
       throw mkErr('LW003', root + '::' + first.name + '() cannot be chained — ' + PORT_HINT, node.loc, PORT_HINT);
     }
     expr = txAwait('rt.model(' + clsLit + ').' + first.name + '(' + firstArgs + ')', first.node);
+    if (paginatorChain) {
+      // The handler renders the pagination view, so the build must compile
+      // it: the flag was set for the ASSIGNMENT form only, and the inline form
+      // compiled green then threw "view not compiled" at request time.
+      if (CTX) CTX.usedPaginator = true;
+      for (let i = 1; i < segments.length; i++) {
+        const seg = segments[i];
+        if (!PAGINATOR_METHODS.has(seg.name)) {
+          throw mkErr(
+            'LW003',
+            'the paginator method ->' + seg.name + '() is not compiled (links() needs the pagination view) - ' + PORT_HINT,
+            seg.node.loc,
+            PORT_HINT
+          );
+        }
+        expr += '.' + seg.name + '(' + (seg.node.arguments || []).map(tx).join(', ') + ')';
+      }
+      return expr;
+    }
   } else {
     throw mkErr('LW003', 'unsupported static call ' + root + '::' + first.name + '() — only find, findOrFail, all, where, whereIn, create transpile at the edge', node.loc, PORT_HINT);
   }
@@ -1877,6 +1900,18 @@ function txCall(node) {
     if ((cls === 'Gate' || cls === 'Illuminate\\Support\\Facades\\Gate') && CTX && CTX.controller) {
       return txGate(node, meth);
     }
+    // `Collection::make([...])` is the facade-free spelling of `collect()`:
+    // Laravel's helper builds the same object (Illuminate/Foundation/
+    // helpers.php), and the runtime answers the kernel Collection.
+    if (cls === 'Collection' || cls === 'Illuminate\\Support\\Collection') {
+      if (meth === 'make' || meth === 'wrap') return 'rt.collect(' + args + ')';
+      throw mkErr(
+        'LW003',
+        'Collection::' + meth + '() is not compiled (only make()/wrap() answer the kernel Collection) - ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
     // The facades whose work is a class the build cannot compile: the message
     // says why (the listeners / the mailable / the job), not "unknown class".
     throw mkErr('LW003', 'unknown class/static ' + cls + '::' + meth, node.loc);
@@ -1929,6 +1964,39 @@ function txCall(node) {
     }
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
+    // An INLINE chain whose receiver is a Collection the runtime builds
+    // (`collect([...])->sole()`, `$p->getCollection()->mapWithKeys(...)`): the
+    // receiver is a call, so it has no declared kind - without this check the
+    // call fell through to the generic emit and a method the kernel Collection
+    // LACKS compiled green and threw "is not a function" at request time.
+    if (collectionProducerOf(what.what)) {
+      if (!COLLECTION_METHODS.has(meth)) {
+        throw mkErr(
+          'LW003',
+          'the collection method ->' + meth + '() is not compiled (the kernel Collection has no such method) - ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return obj + '.' + meth + '(' + args + ')';
+    }
+    // An INLINE paginator chain (`return Post::paginate(2)->links();`): the
+    // handler renders the pagination view, and that view is only compiled when
+    // the build knows the route uses a paginator. The flag used to be set for
+    // the ASSIGNMENT form only, so the inline form compiled green and threw
+    // "view not compiled" at request time (a 500 where Laravel answers 200).
+    if (CTX && modelExprKind(what.what) === 'paginator') {
+      CTX.usedPaginator = true;
+      if (!PAGINATOR_METHODS.has(meth)) {
+        throw mkErr(
+          'LW003',
+          'the paginator method ->' + meth + '() is not compiled (links() needs the pagination view) - ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return obj + '.' + meth + '(' + args + ')';
+    }
     // A chained facade call (`Mail::to($u)->send($m)`): the terminal method is
     // async at the edge, so the call must be awaited - a floating promise
     // means the mail can leave after the response (and a rejection is
@@ -2398,12 +2466,40 @@ function modelReceiverKind(node) {
   return null;
 }
 
+// A call that answers a kernel Collection: `collect([...])`,
+// `Collection::make([...])`, `$x->collect()` (a list) and
+// `$paginator->getCollection()`. The runtime answers the kernel Collection, so
+// the method surface is COLLECTION_METHODS - the same allowlist the relation
+// read uses. Without this the receiver had no kind, so the call fell through
+// to the unknown-variable branch and a method the kernel HAS (`sole()`,
+// `mapWithKeys()`) was refused with LW002 - a false refusal, not a real gap.
+function collectionProducerOf(node) {
+  if (!node || node.kind !== 'call') return false;
+  const what = node.what;
+  if (!what) return false;
+  if (what.kind === 'name' && what.name === 'collect') return true;
+  if (what.kind === 'staticlookup') {
+    const cls = String((what.what && what.what.name) || '').replace(/^\\/, '');
+    const m = what.offset && what.offset.name;
+    if ((cls === 'Collection' || cls === 'Illuminate\\Support\\Collection') && m === 'make') return true;
+    return false;
+  }
+  if (what.kind === 'propertylookup') {
+    const m = what.offset && what.offset.name;
+    return m === 'collect' || m === 'getCollection';
+  }
+  return false;
+}
 // The kind of a model expression:
 //   builder - Post::where(...)          (the query builder)
 //   model   - Post::find(...)/first()   (a model instance)
 //   list    - Post::all()/get()         (a list of models)
 //   scalar  - count()/pluck()/value()   (a value)
 function modelExprKind(node) {
+  // A Collection expression: the runtime answers the kernel Collection, so its
+  // methods resolve against COLLECTION_METHODS (never the unknown-variable
+  // refusal).
+  if (collectionProducerOf(node)) return 'collection';
   // A DECLARED relation read as a property (`$post->comments`): a hasMany is a
   // Collection of models, a belongsTo is one model. The compiled read is the
   // awaited runtime load, and the variable it lands in must be typed so the

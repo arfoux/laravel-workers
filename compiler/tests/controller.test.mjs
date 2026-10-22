@@ -2460,3 +2460,60 @@ test('extract: the classes the body instantiates are reported (a mailable that d
   assert.ok(mail, 'the instantiated mailable is reported');
   assert.equal(mail.alias, 'OrderMail');
 });
+
+test('emit: a Collection chain resolves against the kernel Collection surface', () => {
+  // `collect([...])` answers the kernel Collection, so its methods are the
+  // allowlist's - the receiver is a CALL, so it has no declared kind, and the
+  // call used to fall through to the unknown-variable refusal: `sole()` and
+  // `mapWithKeys()` were refused with LW002 even though the kernel has them.
+  const meta = {
+    routeUri: '/x',
+    routeParams: [],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+  };
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n    }\n}\n';
+  const ok = emitController(src("return collect([1, 2])->sole();"), 'demo', meta);
+  assert.deepEqual(ok.errors, []);
+  assert.match(ok.code, /rt\.collect\(\[1, 2\]\)\.sole\(\)/);
+  // `Collection::make()` is the facade-free spelling of the same helper.
+  const made = emitController(src("return \\Illuminate\\Support\\Collection::make([1, 2])->count();"), 'demo', meta);
+  assert.deepEqual(made.errors, []);
+  assert.match(made.code, /rt\.collect\(\[1, 2\]\)\.count\(\)/);
+  // A method the kernel Collection lacks is still a build error: the inline
+  // chain must not compile to a call that throws at request time.
+  const bad = emitController(src('return collect([1, 2])->sliding(2);'), 'demo', meta);
+  assert.equal(bad.code, null);
+  assert.equal(bad.errors[0].code, 'LW003');
+  assert.match(bad.errors[0].message, /sliding/);
+});
+
+test('emit: an inline paginator chain compiles the pagination view', () => {
+  // `Post::paginate(2)->links()` is legal Laravel (paginate() answers the
+  // LengthAwarePaginator). `links()` renders the pagination view, so the
+  // handler must import it: the usedPaginator flag was set for the ASSIGNMENT
+  // form only, and the inline form threw "view not compiled" at request time.
+  const meta = {
+    routeUri: '/x',
+    routeParams: [],
+    models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }],
+    views: [],
+    paginationView: 'pagination::tailwind',
+  };
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n    }\n}\n';
+  const ok = emitController(src('return \\App\\Models\\Post::paginate(2)->links();'), 'demo', meta);
+  assert.deepEqual(ok.errors, []);
+  assert.match(ok.code, /paginate\(2\)\)\.links\(\)/);
+  assert.match(ok.code, /pagination::tailwind/);
+  // The paginator's own surface is still the allowlist's.
+  const bad = emitController(src('return \\App\\Models\\Post::paginate(2)->sliding(2);'), 'demo', meta);
+  assert.equal(bad.code, null);
+  assert.equal(bad.errors[0].code, 'LW003');
+  assert.match(bad.errors[0].message, /sliding/);
+});

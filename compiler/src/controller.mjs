@@ -750,7 +750,11 @@ export function emitController(source, methodName, meta = {}) {
     // model query - the transpiler compiles it (rt.queuePush).
     const isJobClass =
       meta.classes && Array.isArray(meta.classes.jobs) && meta.classes.jobs.includes(c.fqcn);
-    if (!modelAliases.has(c.alias) && !isJobClass) {
+    // `Collection::make([...])` / `Collection::wrap(...)`: the facade-free
+    // spelling of `collect()`, compiled to the kernel Collection (the
+    // transpiler maps it). It is not a model, so it must not be refused here.
+    const isCollectionClass = c.fqcn === 'Collection' || c.fqcn === 'Illuminate\\Support\\Collection';
+    if (!modelAliases.has(c.alias) && !isJobClass && !isCollectionClass) {
       if (isFacadeClass(c.fqcn)) {
         errors.push(
           lwErr(
