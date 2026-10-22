@@ -12,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { emitController } from '../src/controller.mjs';
+import { buildRt } from '../runtime/rt-from-context.mjs';
 
 const RELATIONS = {
   Post: [{ name: 'comments', type: 'hasMany', related: 'App\\Models\\Comment', foreignKey: 'post_id' }],
@@ -70,6 +71,46 @@ test('relation-property: a belongsTo read compiles and stays a single model', ()
   assert.deepEqual(res.errors, []);
   assert.match(res.code, /await rt\.modelRelation\(v_comment, "post"\)/);
   assert.match(res.code, /rt\.prop\(v_post, "title"\)/);
+});
+
+test('relation-property: an INLINE chain awaits the load before the call', async () => {
+  // `$post->comments->count()` used to compile to
+  //   `await rt.modelRelation(v_post, "comments").count()`
+  // which awaits the CALL on the un-awaited promise: `.count` is undefined, so
+  // the route threw "count is not a function" - a 500 where Laravel answers 2.
+  const res = emitController(
+    source(`$post = \\App\\Models\\Post::find(1);
+        return $post->comments->count();`),
+    'demo',
+    meta([{ alias: 'Post', fqcn: 'App\\Models\\Post', notCompiled: ['comments'], relations: RELATIONS.Post }])
+  );
+  assert.deepEqual(res.errors, []);
+  assert.match(res.code, /\(await rt\.modelRelation\(v_post, "comments"\)\)\.count\(\)/);
+
+  // The emitted expression, run against the kernel's own Collection.
+  const expr = res.code.match(/return (\(await rt\.modelRelation[^;]+);/)[1];
+  const { Model } = await import('../../kernel/model.mjs');
+  const { Collection } = await import('../../kernel/collections.mjs');
+  const rt = buildRt({}, { http: {}, db: {} });
+  const post = new Model({ id: 1 });
+  post.related = async () => new Collection([new Model({ id: 1 }), new Model({ id: 2 })]);
+  const run = new Function('rt', 'v_post', 'return (async () => ' + expr + ')();');
+  assert.equal(await run(rt, post), 2);
+});
+
+test('relation-property: an inline chain refuses a method the kernel lacks', () => {
+  // `sliding()` is not on the kernel Collection, so the compiled chain would
+  // throw at request time. The build stops instead (the inline chain used to
+  // skip the allowlist entirely).
+  const res = emitController(
+    source(`$post = \\App\\Models\\Post::find(1);
+        return $post->comments->sliding(2);`),
+    'demo',
+    meta([{ alias: 'Post', fqcn: 'App\\Models\\Post', notCompiled: ['comments'], relations: RELATIONS.Post }])
+  );
+  assert.equal(res.errors.length, 1);
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /sliding/);
 });
 
 test('relation-property: a method the dump does NOT declare still fails loud', () => {

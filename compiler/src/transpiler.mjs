@@ -238,7 +238,11 @@ function tx(node) {
           // the awaited runtime load - the same query, the same Collection.
           const declared = alias && CTX.modelRelations ? CTX.modelRelations.get(alias) : null;
           if (declared && Object.prototype.hasOwnProperty.call(declared, name)) {
-            return 'await rt.modelRelation(' + vname(node.what.name) + ', ' + JSON.stringify(name) + ')';
+            // The PARENTHESES are load-bearing: `await rt.modelRelation(x).m()`
+            // awaits the method call on the un-awaited promise (`.m` is
+            // undefined -> a TypeError at request time), while
+            // `(await rt.modelRelation(x)).m()` awaits the load first.
+            return '(await rt.modelRelation(' + vname(node.what.name) + ', ' + JSON.stringify(name) + '))';
           }
           const names = alias && CTX.modelNotCompiled ? CTX.modelNotCompiled.get(alias) : null;
           if (names && names.includes(name)) {
@@ -2146,6 +2150,40 @@ function txCall(node) {
           node.loc,
           PORT_HINT
         );
+      }
+    }
+    // A method call on a PROPERTY chain (`$post->comments->sum('id')`): the
+    // receiver is a declared relation read, so the call lands on the kernel's
+    // Collection (hasMany/hasOne) or on a model (belongsTo). Without this the
+    // chain skipped the allowlist and a method the kernel lacks compiled and
+    // then threw "is not a function" at request time - a silent 500.
+    if (what.what && what.what.kind === 'propertylookup' && what.what.what && what.what.what.kind === 'variable') {
+      const ownerVar = vname(what.what.what.name);
+      const ownerKind = CTX && CTX.modelVars ? CTX.modelVars.get(ownerVar) : null;
+      const alias = CTX && CTX.modelAlias ? CTX.modelAlias.get(ownerVar) : null;
+      const declared = alias && CTX.modelRelations ? CTX.modelRelations.get(alias) : null;
+      const relName = what.what.offset && what.what.offset.name;
+      const rel = declared && typeof relName === 'string' ? declared[relName] : null;
+      if ((ownerKind === 'model' || ownerKind === 'list') && rel) {
+        if (rel.type === 'belongsTo') {
+          if (!MODEL_INSTANCE_METHODS.has(meth)) {
+            throw mkErr(
+              'LW003',
+              'the model method ->' + meth + '() is not compiled on $' + String(what.what.what.name).replace(/^v_/, '') +
+                '->' + relName + ' - ' + PORT_HINT,
+              node.loc,
+              PORT_HINT
+            );
+          }
+        } else if (!COLLECTION_METHODS.has(meth)) {
+          throw mkErr(
+            'LW003',
+            'the collection method ->' + meth + '() is not compiled (the relation "' + relName +
+              '" is a Collection at the edge) - ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
       }
     }
     return expr;
