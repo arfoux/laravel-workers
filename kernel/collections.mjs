@@ -343,6 +343,26 @@ const sortEntries = (collection, compare) => {
 };
 
 export class Collection {
+  /**
+   * `Collection::wrap($value)` (`EnumeratesValues::wrap()` +
+   * `Arr::wrap()`, Illuminate/Collections/Traits/EnumeratesValues.php:134 and
+   * Illuminate/Collections/Arr.php:1336):
+   *
+   *   an Enumerable -> its items;  null -> [];  an array -> as it is;
+   *   anything else -> a ONE-ELEMENT array.
+   *
+   * This is NOT `collect()`: `collect()` runs getArrayableItems(), which turns
+   * an Arrayable (a model) into its attributes, while `wrap()` keeps the object
+   * as the single item. `Collection::wrap($post)->count()` is 1, and
+   * `collect($post)->count()` is the number of attributes.
+   */
+  static wrap(value) {
+    if (value === null || value === undefined) return new Collection([]);
+    if (value instanceof Collection) return new Collection(value);
+    if (Array.isArray(value)) return new Collection(value);
+    return new Collection([value]);
+  }
+
   constructor(items = [], keys = null) {
     // A plain object is a PHP array with keys: keep them (a keyed collection
     // answers `all()` as the same object and `has('a')` is true).
@@ -350,13 +370,21 @@ export class Collection {
     if (items !== null && items !== undefined && !Array.isArray(items) && !(items instanceof Collection) && typeof items === 'object') {
       sourceKeys = sourceKeys || Object.keys(items);
     }
+    // `Enumerable::getArrayableItems()` (EnumeratesValues.php) ends with
+    // `(array) $items`, so a SCALAR wraps into a one-element array:
+    // `collect(5)` answers `[5]` and `collect('ab')` answers `['ab']` in
+    // Laravel (measured). The constructor used `Object.values()` there,
+    // which turned a string into its CHARACTERS and a number into `[]` -
+    // a silently wrong count for `collect($n)->count()`.
     this.items = items === null || items === undefined
       ? []
       : Array.isArray(items)
         ? items
         : items instanceof Collection
           ? items.items.slice()
-          : Object.values(items);
+          : typeof items === 'object'
+            ? Object.values(items)
+            : [items];
     // PHP's array KEYS. A list has none (the index is the key); a keyed
     // collection (`groupBy`, `keyBy`, `pluck($v, $k)`) carries them, and
     // Laravel's `all()`/`toArray()`/json_encode answer an OBJECT for it.

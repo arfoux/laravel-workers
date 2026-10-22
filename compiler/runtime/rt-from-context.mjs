@@ -395,8 +395,12 @@ export function buildRt(context, opts = {}) {
     }
     if (hooks.includes('after')) {
       // Laravel registers the hook's RETURN VALUE on the validator
-      // (FormRequest.php:114): `$validator->after($this->after(...))`.
-      const callback = await instance.after(rt);
+      // (FormRequest.php:114): `$validator->after($this->after(...))`, and it
+      // calls the hook through the container with `['validator' => $validator]`
+      // (FormRequest.php:112-115) - so `after(Validator $v)` receives it.
+      // Without the argument the compiled hook's `$v` was undefined and the
+      // request died with a TypeError where Laravel answers 422.
+      const callback = await instance.after(rt, validator);
       if (callback) validator.after(callback);
     }
     instance.setValidator(validator);
@@ -1651,6 +1655,10 @@ export function buildRt(context, opts = {}) {
   // different classes with two different answers (the inline one had no
   // groupBy/keyBy/where, and its implode()/chunk() disagreed with Laravel).
   rt.collect = (arr) => new Collection(arr == null ? [] : arr);
+  // `Collection::wrap($value)` is NOT `collect($value)`: wrap() applies
+  // Arr::wrap (a non-array becomes ONE item), while collect() runs
+  // getArrayableItems() (an Arrayable becomes its attributes).
+  rt.collectionWrap = (value) => Collection.wrap(value);
   rt.Collection = Collection;
 
   // ---- rt.now() minimal Carbon stub ----

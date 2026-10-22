@@ -1903,8 +1903,17 @@ function txCall(node) {
     // `Collection::make([...])` is the facade-free spelling of `collect()`:
     // Laravel's helper builds the same object (Illuminate/Foundation/
     // helpers.php), and the runtime answers the kernel Collection.
+    //
+    // `Collection::wrap()` is NOT the same call: it runs Arr::wrap
+    // (EnumeratesValues.php:134 + Arr.php:1336) - null becomes [], an array
+    // stays as it is, and ANYTHING ELSE becomes a ONE-ELEMENT array, where
+    // collect() runs getArrayableItems() (an Arrayable turns into its
+    // attributes). `Collection::wrap($post)->count()` is 1 while
+    // `collect($post)->count()` is the attribute count, so the two spellings
+    // must not share an emission.
     if (cls === 'Collection' || cls === 'Illuminate\\Support\\Collection') {
-      if (meth === 'make' || meth === 'wrap') return 'rt.collect(' + args + ')';
+      if (meth === 'make') return 'rt.collect(' + args + ')';
+      if (meth === 'wrap') return 'rt.collectionWrap(' + args + ')';
       throw mkErr(
         'LW003',
         'Collection::' + meth + '() is not compiled (only make()/wrap() answer the kernel Collection) - ' + PORT_HINT,

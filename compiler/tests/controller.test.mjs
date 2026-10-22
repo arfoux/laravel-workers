@@ -2483,12 +2483,39 @@ test('emit: a Collection chain resolves against the kernel Collection surface', 
   const made = emitController(src("return \\Illuminate\\Support\\Collection::make([1, 2])->count();"), 'demo', meta);
   assert.deepEqual(made.errors, []);
   assert.match(made.code, /rt\.collect\(\[1, 2\]\)\.count\(\)/);
+  // `Collection::wrap()` is NOT `collect()`: Arr::wrap turns a non-array into
+  // ONE item (EnumeratesValues.php:134 + Arr.php:1336), so `wrap('a')` answers
+  // `['a']` while `collect()` runs getArrayableItems(). Emitting both as
+  // rt.collect() made `Collection::wrap('a')->count()` answer 0 where Laravel
+  // answers 1.
+  const wrapped = emitController(src("return \\Illuminate\\Support\\Collection::wrap('a')->count();"), 'demo', meta);
+  assert.deepEqual(wrapped.errors, []);
+  assert.match(wrapped.code, /rt\.collectionWrap\("a"\)\.count\(\)/);
+  assert.doesNotMatch(wrapped.code, /rt\.collect\("a"\)/);
   // A method the kernel Collection lacks is still a build error: the inline
   // chain must not compile to a call that throws at request time.
   const bad = emitController(src('return collect([1, 2])->sliding(2);'), 'demo', meta);
   assert.equal(bad.code, null);
   assert.equal(bad.errors[0].code, 'LW003');
   assert.match(bad.errors[0].message, /sliding/);
+});
+
+test('emit: wrap() and collect() answer Laravel values for a scalar', async () => {
+  // Measured in Laravel 13: collect('ab')->count() is 1 (getArrayableItems ends
+  // with `(array) $items`) and Collection::wrap('ab')->count() is 1 (Arr::wrap
+  // wraps a non-array). The kernel used to turn a string into its CHARACTERS
+  // (Object.values) and to answer 0 for a number, so both spellings were
+  // silently wrong for a scalar argument.
+  const { Collection } = await import('../../kernel/collections.mjs');
+  assert.equal(Collection.wrap('ab').count(), 1);
+  assert.deepEqual(Collection.wrap('ab').all(), ['ab']);
+  assert.equal(Collection.wrap(null).count(), 0);
+  assert.equal(new Collection('ab').count(), 1);
+  assert.equal(new Collection(5).count(), 1);
+  assert.deepEqual(new Collection([1, 2]).all(), [1, 2]);
+  // wrap() keeps an OBJECT as one item (Arr::wrap); collect() does not.
+  const model = { id: 7 };
+  assert.deepEqual(Collection.wrap(model).all(), [model]);
 });
 
 test('emit: an inline paginator chain compiles the pagination view', () => {
