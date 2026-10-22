@@ -560,7 +560,8 @@ const PAGINATOR_METHODS = new Set([
 // sync. A method that is not here (a relation, for example) is not compiled:
 // the build stops instead of answering a 500 at the edge.
 const MODEL_INSTANCE_METHODS = new Set([
-  'get', 'set', 'fill', 'forceFill', 'toJSON', 'trashed', 'increment',
+  'get', 'set', 'fill', 'forceFill', 'toJSON', 'toArray', 'trashed', 'increment',
+  'getKey', 'getKeyName', 'isDirty', 'getDirty', 'syncOriginal',
   'save', 'delete', 'forceDelete', 'restore', 'refresh',
   'load', 'loadCount', 'loadAggregate',
   'setRelation', 'getRelation', 'relationLoaded',
@@ -622,7 +623,14 @@ const STORAGE_FACADE_RE = /^rt\.storage\(\)$/;
 // `rt.mail().to($u).send($m)` — the send is async at the edge.
 const MAIL_FACADE_RE = /^rt\.mail\(\)/;
 // Eloquent instance writes — they need the D1 binding and are async.
-const INSTANCE_DB_METHODS = new Set(['save', 'delete', 'forceDelete', 'restore', 'push', 'refresh']);
+// The instance methods whose compiled call takes the database binding. `push`
+// is NOT here: Laravel 13's Model::push() saves a single-model relation but
+// NOT a loaded Collection (measured: `setRelation('comments', collect([...]))`
+// then `push()` leaves the child unsaved, while a plain-model relation is
+// saved). The edge would have to reproduce that inconsistency byte for byte,
+// and a "push" that silently drops a Collection's writes is exactly the
+// wrong-answer class this repo refuses - so the call fails loud instead.
+const INSTANCE_DB_METHODS = new Set(['save', 'delete', 'forceDelete', 'restore', 'refresh']);
 // Session store mutation methods that touch the handler and are therefore async
 // on the compiled Store (kernel/session.mjs). regenerateToken() stays sync.
 const SESSION_STORE_RE = /(?:^|\.)session\(\)$/;
@@ -2949,6 +2957,7 @@ export {
   // kernel lacks compiles green and throws "is not a function" at request
   // time - the silent 500 this repo treats as the worst answer).
   MODEL_INSTANCE_METHODS,
+  INSTANCE_DB_METHODS,
   PAGINATOR_METHODS,
   COLLECTION_METHODS,
 };

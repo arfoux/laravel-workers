@@ -406,6 +406,21 @@ export class Model {
     return null;
   }
 
+  /**
+   * `Model::getKeyName()` (Model.php:1877-1880): the primary key's column name.
+   */
+  getKeyName() {
+    return this.constructor.primaryKey;
+  }
+
+  /**
+   * `Model::getKey()` (Model.php:1866-1869): `getAttribute($this->getKeyName())`.
+   * The kernel answers the same value through its own `get()`.
+   */
+  getKey() {
+    return this.get(this.getKeyName());
+  }
+
   set(key, value) {
     const mutator = 'set' + studly(key) + 'Attribute';
     let next = value;
