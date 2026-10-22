@@ -326,6 +326,10 @@ test('search answers the first key, or false', () => {
   assert.equal(collect([1]).search(9), false);
   assert.equal(collect([0, 1]).search(false), 0);
   assert.equal(collect({ a: 1, b: 2 }).search((v, k) => k === 'b'), 'b');
+  // A probe: the callback result is tested with PHP's bool cast ('0' and 0
+  // are false, 'a' is true).
+  assert.equal(collect([1, 2]).search(() => '0'), false);
+  assert.equal(collect([1, 2]).search(() => 'a'), 0);
 });
 
 test('transform mutates in place and returns the same instance', () => {
@@ -359,8 +363,8 @@ test('diff/intersect keep the keys and compare as strings', () => {
   assert.deepEqual(collect([null, 0]).diff(['']).all(), { 1: 0 });
   assert.deepEqual(collect([1, 2, 3]).diff([1], [3]).all(), { 1: 2, 2: 3 });
   assert.deepEqual(collect([1, 2, 3]).intersect([2]).all(), { 1: 2 });
-  assert.deepEqual(collect([1, 2]).intersect(['1']).all(), { 0: 1 });
-  assert.deepEqual(collect([null, 0]).intersect(['']).all(), { 0: null });
+  assert.deepEqual(collect([1, 2]).intersect(['1']).all(), [1]);
+  assert.deepEqual(collect([null, 0]).intersect(['']).all(), [null]);
   assert.deepEqual(collect([1, 2, 3]).intersect([3], [1]).all(), { 2: 3 });
 });
 

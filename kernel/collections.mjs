@@ -569,7 +569,7 @@ export class Collection {
   }
 
   /**
-   * `hasAny($key)` (Collection::hasAny(), :1570-1582): true when ANY of the
+   * `hasAny($key)` (Collection::hasAny(), :624-633): true when ANY of the
    * keys is present; an array OR variadic arguments (a probe:
    * `hasAny('a', 'b')` works), false on an empty collection, and PHP key
    * coercion (a probe: `hasAny(['0'])` finds position 0 of a list).
@@ -618,7 +618,7 @@ export class Collection {
   }
 
   /**
-   * `prepend($value, $key = null)` (Collection::prepend(), :1420-1429): MUTATES
+   * `prepend($value, $key = null)` (Collection::prepend(), :1064-1069): MUTATES
    * and returns `$this` (a probe: `$c->prepend(0) === $c`).
    * Without a key this is `array_unshift()`: integer keys are renumbered from
    * 0, string keys survive (a probe: `['a' => 1]` prepended answers
@@ -649,7 +649,7 @@ export class Collection {
   }
 
   /**
-   * `transform(callable $callback)` (Collection::transform(), :1118-1123):
+   * `transform(callable $callback)` (Collection::transform(), :1824-1829):
    * `$this->items = $this->map($callback)->all()`, so it MUTATES in place and
    * answers the SAME instance (a probe: `$c->transform($fn) === $c`), keeping
    * the keys (a probe: `['a' => 1]` stays `['a' => 2]`).
@@ -660,7 +660,7 @@ export class Collection {
   }
 
   /**
-   * `getOrPut($key, $value)` (Collection::getOrPut(), :1490-1500): the existing
+   * `getOrPut($key, $value)` (Collection::getOrPut(), :515-524): the existing
    * value, or the value (a closure is CALLED, `value()`) STORED and returned -
    * so it mutates (a probe: `collect(['a' => 1])->getOrPut('b', 2)` leaves
    * `['a' => 1, 'b' => 2]`). A stored null/false IS present (a probe:
@@ -684,7 +684,7 @@ export class Collection {
   }
 
   /**
-   * `mapWithKeys(callable $callback)` (Collection::mapWithKeys(), :1390-1395;
+   * `mapWithKeys(callable $callback)` (Collection::mapWithKeys(), :880-883;
    * `Arr::mapWithKeys()`): the callback answers `[key => value]` pairs (one or
    * many), and a LATER key wins - a probe: `['a' => 1, 'b' => 2]` mapped to
    * `[$k.'!' => $v]` answers `['a!' => 1, 'b!' => 2]`, and mapping `[1, 2, 3]`
@@ -749,7 +749,7 @@ export class Collection {
   }
 
   /**
-   * `only($keys)` (Collection::only(), :1590-1603; `Arr::only()`): array OR
+   * `only($keys)` (Collection::only(), :988-1001; `Arr::only()`): array OR
    * variadic keys, ORIGINAL order kept (a probe: `only(['c', 'a'])` answers
    * `['a' => 1, 'c' => 3]`), missing keys dropped, and a null argument answers
    * a copy. Keys use PHP's coercion (a probe: `only(['0', '2'])` on a list
@@ -787,7 +787,7 @@ export class Collection {
   }
 
   /**
-   * `except($keys)` (Collection::except(), :1608-1622; `Arr::except()`): array
+   * `except($keys)` (Collection::except(), :404-417; `Arr::except()`): array
    * OR variadic keys, ORIGINAL order kept (a probe: `except(['b'])` answers
    * `['a' => 1, 'c' => 3]`), a null argument answers a copy.
    */
@@ -814,7 +814,7 @@ export class Collection {
   }
 
   /**
-   * `concat($source)` (Collection::concat(), :1655-1664): a NEW collection
+   * `concat($source)` (Collection::concat(), :1112-1121): a NEW collection
    * holding this collection's entries, then each source VALUE pushed with
    * `$array[]`. The receiver's keys survive, the SOURCE's keys do NOT (a
    * probe: `['a' => 1]->concat(['b' => 2])` answers `['a' => 1, 0 => 2]`, and
@@ -831,7 +831,7 @@ export class Collection {
   }
 
   /**
-   * `flip()` (Collection::flip(), :1200-1205): `array_flip()` - values become
+   * `flip()` (Collection::flip(), :464-467): `array_flip()` - values become
    * keys and keys become values (a probe: `['a' => 1, 'b' => 2]` answers
    * `[1 => 'a', 2 => 'b']`). A repeated value keeps its first position and
    * the LAST key wins (a probe: `[1, 1, 2]` answers `[1 => 1, 2 => 2]`).
@@ -863,7 +863,7 @@ export class Collection {
   }
 
   /**
-   * `search($value, $strict = false)` (Collection::search(), :1760-1770): the
+   * `search($value, $strict = false)` (Collection::search(), :1216-1223): the
    * key of the first match, or `false`. Without `$strict` the comparison is
    * PHP's `==` (a probe: `[1, 2]->search('2')` answers 1, and
    * `[0, 1]->search(false)` answers 0). A callable searches with the callback
@@ -872,7 +872,9 @@ export class Collection {
   search(value, strict = false) {
     if (typeof value === 'function') {
       for (let i = 0; i < this.items.length; i++) {
-        if (value(this.items[i], keyAt(this, i))) return keyAt(this, i);
+        // array_find_key() tests the callback result with PHP's bool cast
+        // (a probe: '0' is false there, unlike JS).
+        if (phpTruthy(value(this.items[i], keyAt(this, i)))) return keyAt(this, i);
       }
       return false;
     }
@@ -884,7 +886,7 @@ export class Collection {
   }
 
   /**
-   * `join($glue, $finalGlue = '')` (Collection::join(), :1830-1850): with no
+   * `join($glue, $finalGlue = '')` (Collection::join(), :765-786): with no
    * final glue this is `implode($glue)`. With one, 0 items answer '', ONE item
    * answers the item ITSELF (a probe: the int 1, not '1'), and 2+ items join
    * all but the last with `$glue`, then `$finalGlue`, then the last - so the
@@ -901,7 +903,7 @@ export class Collection {
   }
 
   /**
-   * `collapse()` (Collection::collapse(), :120-126; `Arr::collapse()`): one
+   * `collapse()` (Collection::collapse(), :153-156; `Arr::collapse()`): one
    * level of arrays and Collections, `array_merge`-style - numeric keys are
    * renumbered from 0, string keys are kept with a LATER value winning (a
    * probe: `[['a' => 1], ['a' => 2, 'b' => 3]]` answers
@@ -933,7 +935,7 @@ export class Collection {
   }
 
   /**
-   * `dot()` (Collection::dot(), :160-165; `Arr::dot()`): flattens nested
+   * `dot()` (Collection::dot(), :1837-1840; `Arr::dot()`): flattens nested
    * ARRAYS into dot keys (a probe: `['a' => ['b' => 1]]` answers
    * `['a.b' => 1]`). An empty array stays a value (a probe: `['a' => []]`
    * answers `['a' => []]`), and a Collection value is NOT recursed (a probe:
@@ -945,11 +947,15 @@ export class Collection {
     const walk = (entries, prefix) => {
       for (const entry of entries) {
         const newKey = prefix + String(entry.key);
-        if (Array.isArray(entry.value) && entry.value.length > 0) {
-          walk(entry.value.map((item, index) => ({ key: index, value: item })), newKey + '.');
+        const value = entry.value;
+        const isList = Array.isArray(value);
+        const isKeyed = value !== null && typeof value === 'object' && !(value instanceof Collection);
+        const empty = isList ? value.length === 0 : isKeyed ? Object.keys(value).length === 0 : false;
+        if ((isList || isKeyed) && !empty) {
+          walk(entriesOf(value), newKey + '.');
         } else {
           keys.push(arrayKey(newKey));
-          values.push(entry.value);
+          values.push(value);
         }
       }
     };
@@ -958,7 +964,7 @@ export class Collection {
   }
 
   /**
-   * `undot()` (Collection::undot(), :167-172; `Arr::undot()`/`Arr::set()`):
+   * `undot()` (Collection::undot(), :1847-1850; `Arr::undot()`/`Arr::set()`):
    * the inverse of dot(), numeric segments become integer keys (a probe:
    * `['0.a' => 1, '1' => 3]` answers `[0 => ['a' => 1], 1 => 3]`).
    */
@@ -969,7 +975,15 @@ export class Collection {
       let node = root;
       for (let i = 0; i < parts.length - 1; i++) {
         const segment = String(arrayKey(parts[i]));
-        if (node[segment] === null || typeof node[segment] !== 'object' || Array.isArray(node[segment])) {
+        const existing = node[segment];
+        // `Arr::set()`: a missing/null/non-array node becomes an array. A
+        // Collection is an OBJECT in PHP, so it is replaced too.
+        if (
+          existing === null ||
+          existing === undefined ||
+          typeof existing !== 'object' ||
+          existing instanceof Collection
+        ) {
           node[segment] = {};
         }
         node = node[segment];
@@ -980,7 +994,7 @@ export class Collection {
   }
 
   /**
-   * `pad($size, $value)` (Collection::pad(), :1560-1565; `array_pad()`): a
+   * `pad($size, $value)` (Collection::pad(), :1917-1920; `array_pad()`): a
    * NEGATIVE size pads at the FRONT (a probe: `[1, 2]->pad(-4, 0)` answers
    * `[0, 0, 1, 2]`), a size within the count answers a copy. Integer keys are
    * renumbered in result order, string keys survive (a probe:
@@ -1006,7 +1020,7 @@ export class Collection {
   }
 
   /**
-   * `nth($step, $offset = 0)` (Collection::nth(), :1160-1178): every `$step`th
+   * `nth($step, $offset = 0)` (Collection::nth(), :961-980): every `$step`th
    * item from `$offset`, REINDEXED (a probe: `[1..5]->nth(2)` answers `[1, 3,
    * 5]`, `nth(2, 1)` answers `[2, 4]`). A step below 1 throws (a probe:
    * "Step value must be at least 1.").
@@ -1023,7 +1037,7 @@ export class Collection {
   }
 
   /**
-   * `split($numberOfGroups)` (Collection::split(), :1900-1930): the first
+   * `split($numberOfGroups)` (Collection::split(), :1395-1428): the first
    * `count % groups` groups get one extra item (a probe: 7 items into 3
    * answers `[[1, 2, 3], [4, 5], [6, 7]]`; 3 into 5 answers three groups of
    * one). `array_slice()` semantics: numeric keys are reindexed, string keys
@@ -1055,7 +1069,7 @@ export class Collection {
   }
 
   /**
-   * `splitIn($numberOfGroups)` (Collection::splitIn(), :1935-1945): NOT the
+   * `splitIn($numberOfGroups)` (Collection::splitIn(), :1438-1445): NOT the
    * same keys as split() - it is `chunk(ceil(count / groups))`, and `chunk()`
    * PRESERVES keys (a probe: 5 items into 2 answers `[[1, 2, 3], [3 => 4,
    * 4 => 5]]`). Fewer than 1 group throws.
@@ -1076,7 +1090,7 @@ export class Collection {
 
   /**
    * `duplicates($callback = null, $strict = false)` (Collection::duplicates(),
-   * :340-365): the items whose value (or callback value) already appeared,
+   * :349-368): the items whose value (or callback value) already appeared,
    * KEYED by the original key (a probe: `[1, 2, 1, 2, 3]` answers
    * `[2 => 1, 3 => 2]`, and `['a' => 1, 'b' => 1]` answers `['b' => 1]`).
    * Without `$strict` the comparison is `==` (a probe: `[1, '1']` answers
@@ -1100,7 +1114,7 @@ export class Collection {
   }
 
   /**
-   * `diff($items)` (Collection::diff(), :1250-1258; `array_diff()`): keeps the
+   * `diff($items)` (Collection::diff(), :277-280; `array_diff()`): keeps the
    * items absent from `$items`, KEYS PRESERVED (a probe: `[1, 2, 3]->diff([2])`
    * answers `[0 => 1, 2 => 3]`). The comparison is PHP's STRING cast, not
    * `==` (a probe: `[1, 2]->diff(['1'])` answers `[1 => 2]`, and
@@ -1121,7 +1135,7 @@ export class Collection {
   }
 
   /**
-   * `intersect($items)` (Collection::intersect(), :1268-1276;
+   * `intersect($items)` (Collection::intersect(), :663-666;
    * `array_intersect()`): keeps the items present in `$items`, KEYS PRESERVED
    * (a probe: `[1, 2, 3]->intersect([2])` answers `[1 => 2]`), compared by
    * PHP's STRING cast (a probe: `[1, 2]->intersect(['1'])` answers
@@ -1143,7 +1157,7 @@ export class Collection {
   }
 
   /**
-   * `zip(...$arrays)` (Collection::zip(), :1955-1970): each result row is a
+   * `zip(...$arrays)` (Collection::zip(), :1899-1906): each result row is a
    * Collection of the values at that position, `array_map()`-style NULL padding
    * for shorter inputs (a probe: `[1, 2, 3]->zip([4])` answers
    * `[[1, 4], [2, null], [3, null]]`, and `[]->zip([1])` answers `[[null, 1]]`).
@@ -1161,7 +1175,7 @@ export class Collection {
   }
 
   /**
-   * `combine($values)` (Collection::combine(), :1980-1985; `array_combine()`):
+   * `combine($values)` (Collection::combine(), :936-939; `array_combine()`):
    * this collection's VALUES become the keys (a probe:
    * `[10, 20]->combine(['x', 'y'])` answers `[10 => 'x', 20 => 'y']`).
    * Unequal counts throw (a probe: "array_combine(): Argument #1 ($keys) and
@@ -1178,7 +1192,7 @@ export class Collection {
   }
 
   /**
-   * `crossJoin(...$lists)` (Collection::crossJoin(), :2000-2006;
+   * `crossJoin(...$lists)` (Collection::crossJoin(), :264-269;
    * `Arr::crossJoin()`): the cartesian product as plain ARRAYS, this
    * collection first (a probe: `[1, 2]->crossJoin(['a', 'b'])` answers
    * `[[1, 'a'], [1, 'b'], [2, 'a'], [2, 'b']]`). Any empty list empties the
@@ -1202,7 +1216,7 @@ export class Collection {
   }
 
   /**
-   * `sort($callback = null)` (Collection::sort(), :2100-2110): a NEW
+   * `sort($callback = null)` (Collection::sort(), :1567-1576): a NEW
    * collection, KEYS PRESERVED (`asort()`; a probe: `[3, 1, 2]` answers
    * `[1 => 1, 2 => 2, 0 => 3]`). Without a callback the comparison is PHP's
    * SORT_REGULAR, NOT JS's: numeric strings compare numerically (`'9' <
@@ -1227,7 +1241,7 @@ export class Collection {
   }
 
   /**
-   * `sortDesc($options = SORT_REGULAR)` (Collection::sortDesc(), :2115-2122):
+   * `sortDesc($options = SORT_REGULAR)` (Collection::sortDesc(), :1584-1591):
    * a NEW collection, KEYS PRESERVED (`arsort()`; a probe: `[3, 1, 2]`
    * answers `[0 => 3, 2 => 2, 1 => 1]`).
    *
@@ -1326,7 +1340,7 @@ export class Collection {
   }
 
   /**
-   * `countBy($callback = null)` (Collection::countBy() ->
+   * `countBy($callback = null)` (Collection::countBy(), :1946-1949 ->
    * `LazyCollection::countBy()`): a Collection KEYED by the counted value
    * (or callback value) with integer counts, in first-seen order - a probe:
    * `[1, 2, 2, 3, 3, 3]` answers `[1 => 1, 2 => 2, 3 => 3]` and
@@ -1345,7 +1359,7 @@ export class Collection {
   }
 
   /**
-   * `median($key = null)` (Collection::median(), :98-116): nulls are rejected,
+   * `median($key = null)` (Collection::median(), :98-119): nulls are rejected,
    * the rest sorted, the middle item for an ODD count (a probe: `[5, 3, 1]`
    * answers 3) and the average of the two middle items for an EVEN one (a
    * probe: `[4, 1, 3, 2]` answers 2.5); an empty collection answers null (a
@@ -1362,7 +1376,7 @@ export class Collection {
   }
 
   /**
-   * `mode($key = null)` (Collection::mode(), :127-151): the most frequent
+   * `mode($key = null)` (Collection::mode(), :127-146): the most frequent
    * value(s) as a plain ARRAY, in first-seen order - a probe: `[1, 1, 2, 3, 3]`
    * answers `[1, 3]`, `[1, 1, 2, 2, 3]` answers `[1, 2]`, every value once
    * answers all of them, and an empty collection answers null. Keys follow
