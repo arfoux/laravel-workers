@@ -19,7 +19,7 @@ import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import { compilePolicies } from './compiler/src/policy.mjs';
-import { compileClasses } from './compiler/src/classes.mjs';
+import { compileClasses, compileOneMethod } from './compiler/src/classes.mjs';
 import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
@@ -1245,6 +1245,16 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // binding is not hoisted, so `static relations` may only name one after
       // the declaration ran).
       const relationLines = [];
+      // The compiled accessors + the ones that did not compile (the build
+      // reports them and the routes that read them stay blocked).
+      const accessorLines = [];
+      const accessorErrors = [];
+      const accessorWork = [];
+      // fqcn -> the accessor attribute names the edge now CARRIES (compiled):
+      // they leave `notCompiled`, so a property read of one compiles.
+      const compiledAccessors = new Map();
+      // varName/fqcn/names: `.notCompiled` waits for the accessor pass.
+      const notCompiledWork = [];
       for (const [, fqcns] of aliasToFqcns) {
         for (const fqcn of fqcns) {
           if (classVarNames.has(fqcn)) continue;
@@ -1269,7 +1279,14 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           modelLines.push(`${varName}.softDeletes = ${d.softDeletes ? 'true' : 'false'};`);
           modelLines.push(`${varName}.hidden = ${JSON.stringify(d.hidden || [])};`);
           modelLines.push(`${varName}.appends = ${JSON.stringify(d.appends || [])};`);
-          modelLines.push(`${varName}.notCompiled = ${JSON.stringify(d.notCompiled || [])};`);
+          // Emitted after the accessor pass: an accessor the edge COMPILES leaves the
+          // list, so the kernel does not refuse the read at request time.
+          notCompiledWork.push([varName, fqcn, d.notCompiled || []]);
+          // The model's ACCESSORS (`getFullNameAttribute`): compiled in the
+          // second pass, once every model class is declared.
+          for (const acc of Array.isArray(d.accessors) ? d.accessors : []) {
+            accessorWork.push([varName, fqcn, acc]);
+          }
           // The declared relations (dumped from the model's own return types):
           // `static relations = { comments: { type, model, foreignKey, ... } }`
           // - the kernel loads one lazily when it is read as a property.
@@ -1292,6 +1309,59 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             rel.foreignKey
           )}${rel.type === 'belongsTo' ? `, ownerKey: ${JSON.stringify(rel.ownerKey)}` : `, localKey: ${JSON.stringify(rel.localKey)}`} } });`
         );
+      }
+      // The model surface the accessor bodies compile against (the same maps
+      // the controller path uses - built here because the model file is written
+      // before those are declared).
+      const accModelFqcns = new Set();
+      const accNotCompiled = new Map();
+      const accRelations = new Map();
+      const accClassFqcns = {};
+      for (const [alias, fqcns] of aliasToFqcns) {
+        for (const fqcn of fqcns) {
+          const d = modelDump.get(fqcn);
+          if (!d || !d.model) continue;
+          accModelFqcns.add(fqcn);
+          accClassFqcns[alias] = fqcn;
+          accClassFqcns[fqcn] = fqcn;
+          if (Array.isArray(d.notCompiled) && d.notCompiled.length) {
+            accNotCompiled.set(alias, d.notCompiled);
+            accNotCompiled.set(fqcn, d.notCompiled);
+          }
+          if (Array.isArray(d.relations) && d.relations.length) {
+            const byName = {};
+            for (const rel of d.relations) {
+              byName[rel.name] = { type: rel.type, related: rel.related, foreignKey: rel.foreignKey };
+            }
+            accRelations.set(alias, byName);
+            accRelations.set(fqcn, byName);
+          }
+        }
+      }
+      for (const [varName, fqcn, acc] of accessorWork) {
+        const compiledAcc = compileOneMethod(fqcn, acc.file, acc.method, {
+          models: accModelFqcns,
+          modelNotCompiled: accNotCompiled,
+          modelClassFqcns: accClassFqcns,
+          modelRelations: accRelations,
+          // The class constants are dumped later in the build, so an accessor
+          // that reads one fails loud (a precise reason) instead of guessing.
+          constants: {},
+          classes: new Set(Object.keys(classesDump.classes || {})),
+        });
+        if (compiledAcc.error) {
+          accessorErrors.push(`${fqcn}::${acc.method}() — ${compiledAcc.error}`);
+          continue;
+        }
+        modelLines.push(`${varName}.prototype[${JSON.stringify(acc.method)}] = ${compiledAcc.js};`);
+        const names = compiledAccessors.get(fqcn) || [];
+        names.push(acc.name);
+        compiledAccessors.set(fqcn, names);
+      }
+      for (const e of accessorErrors) console.log(`  ! accessor ${e}`);
+      for (const [varName, fqcn, names] of notCompiledWork) {
+        const stillRefused = names.filter((n) => !(compiledAccessors.get(fqcn) || []).includes(n));
+        modelLines.push(`${varName}.notCompiled = ${JSON.stringify(stillRefused)};`);
       }
       modelLines.push('');
       const mapPairs = [];
@@ -1632,7 +1702,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
                 // The methods the app declares on the model (the relations, the
                 // accessors): the compiler rejects them (a relation read as a
                 // property used to answer null - a wrong answer, silently).
-                notCompiled: d.notCompiled || [],
+                notCompiled: (d.notCompiled || []).filter(
+                  (n) => !(compiledAccessors.get(fqcn) || []).includes(n)
+                ),
                 // The relations the model declares: a property read of one is
                 // COMPILED (a lazy load), not refused. A relation whose model
                 // is not compiled is dropped here, so it stays refused.

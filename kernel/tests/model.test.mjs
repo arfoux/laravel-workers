@@ -72,7 +72,9 @@ class User extends Model {
   static table = 'users';
   static primaryKey = 'id';
 
-  getFullNameAttribute(value) {
+  // The kernel hands the runtime in first (a compiled accessor is
+  // `function (rt, value)`: its body reads `rt.prop(this, ...)`).
+  getFullNameAttribute(rt, value) {
     if (value == null) return 'Anonymous';
     return value + ' (accessor)';
   }

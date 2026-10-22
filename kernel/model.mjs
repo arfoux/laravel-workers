@@ -160,6 +160,15 @@ function jsonEquivalent(a, b) {
 // stamps this next to the clock (`Model.timezone = ctx['app.timezone']`); the
 // default is Laravel's own default.
 const modelTimezone = { value: 'UTC' };
+// The runtime a compiled ACCESSOR body needs (`getFullNameAttribute($value)` is
+// compiled to `function (rt, v_value) {...}`: it reads `rt.prop(this, 'title')`).
+// The models are built by the kernel, which has no runtime of its own, so the
+// runtime registers itself once (the same shape as setModelTimezone).
+let modelRuntime = null;
+export function setModelRuntime(rt) {
+  modelRuntime = rt || null;
+}
+
 export function setModelTimezone(tz) {
   modelTimezone.value = tz ? String(tz) : 'UTC';
 }
@@ -374,7 +383,7 @@ export class Model {
       let value = this.attributes[key];
       const cast = ctor.casts ? ctor.casts[key] : null;
       if (cast != null) value = applyCast(value, cast);
-      if (hasAccessor) value = this[accessor](value);
+      if (hasAccessor) value = this[accessor](modelRuntime, value);
       return value;
     }
     // A declared relation: Eloquent's getRelationValue() answers the CACHED

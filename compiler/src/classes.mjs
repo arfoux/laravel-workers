@@ -628,7 +628,7 @@ function compileMethod(fqcn, methodNode, opts) {
   // (JsonResource::resolve -> toArray($request)) on the SYNCHRONOUS response
   // path, so an `async` body would hand a Promise to the payload. A resource
   // body that needs an await is refused instead of leaking one.
-  const syncMethod = !!opts.resource;
+  const syncMethod = !!opts.resource || !!opts.sync;
   if (syncMethod && /\bawait\b/.test(String(emitted.code || ''))) {
     return {
       error:
@@ -1138,4 +1138,47 @@ function emitRegistry(entries, listeners) {
   return lines.join('\n');
 }
 
-export default { compileClasses };
+/**
+ * Compile ONE method of a PHP class file (an Eloquent accessor, for instance).
+ *
+ * The models are not "compiled classes" (the registry is for events, listeners,
+ * services and mailables), but an accessor's BODY is app code the edge must run:
+ * `getFullNameAttribute($value)` is called by the kernel's Model::get() when the
+ * attribute is read. So its body goes through the same method compiler.
+ *
+ * @param {string} fqcn the class the method belongs to (for the messages)
+ * @param {string} file the PHP file
+ * @param {string} methodName the method to compile
+ * @param {object} opts the same options compileClasses takes
+ * @returns {{ js?: string, params?: string[], error?: string, code?: string }}
+ */
+export function compileOneMethod(fqcn, file, methodName, opts = {}) {
+  const parsed = parseClassFile(file);
+  if (parsed.error) return { error: parsed.error, code: 'LW002' };
+  const classNode = (parsed.classes || []).find((c) => nodeName(c.name) === shortName(fqcn));
+  if (!classNode) return { error: 'the class ' + fqcn + ' was not found in ' + file, code: 'LW002' };
+  const method = classMembers(classNode).find(
+    (m) => m && m.kind === 'method' && nodeName(m.name) === methodName
+  );
+  if (!method) return { error: 'the method ' + fqcn + '::' + methodName + '() was not found', code: 'LW002' };
+  return compileMethod(fqcn, method, {
+    models: opts.models instanceof Set ? opts.models : new Set(),
+    modelNotCompiled: opts.modelNotCompiled instanceof Map ? opts.modelNotCompiled : new Map(),
+    modelClassFqcns: opts.modelClassFqcns || {},
+    modelRelations: opts.modelRelations instanceof Map ? opts.modelRelations : new Map(),
+    constants: opts.constants || {},
+    classes: opts.classes instanceof Set ? opts.classes : new Set(),
+    classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(),
+    imports: parsed.imports,
+    // The model's own surface: an accessor reads `$this->attributes`, calls its
+    // own helpers, and the model's methods are not compiled - a helper call is
+    // a build error (it does not exist at the edge).
+    classMethods: new Set(),
+    thisVar: 'this',
+    // An accessor is called by the kernel's Model::get() on the synchronous
+    // read path, so its body must not await (a Promise would be the value).
+    sync: true,
+  });
+}
+
+export default { compileClasses, compileOneMethod };

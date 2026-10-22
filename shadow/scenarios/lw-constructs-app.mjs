@@ -87,6 +87,14 @@ export default {
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {
+      // An ACCESSOR read as a property: Eloquent runs the app's own
+      // `getHeadlineAttribute($value)` when the attribute is read.
+      label: 'GET /accessor-demo (an accessor as a property)',
+      method: 'GET',
+      uri: '/accessor-demo',
+      jar: true,
+    },
+    {
       // A hasMany relation read as a PROPERTY (`$post->comments`): Eloquent
       // loads it lazily - the edge must query the comments of that post.
       label: 'GET /relation-demo (hasMany as a property)',

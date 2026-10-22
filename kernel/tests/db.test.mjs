@@ -546,8 +546,9 @@ class CastModel extends Model {
   static casts = { meta: 'json', price: 'decimal:2', secret: 'int' };
   static hidden = ['secret'];
   static appends = ['label'];
-  getLabelAttribute() { return (this.attributes.name || '') + '!'; }
-  getFirstNameAttribute(value) { return String(value || '').toUpperCase(); }
+  // A compiled accessor is `function (rt, value)`: the kernel hands the runtime in.
+  getLabelAttribute(rt) { return (this.attributes.name || '') + '!'; }
+  getFirstNameAttribute(rt, value) { return String(value || '').toUpperCase(); }
   setFirstNameAttribute(value) { return String(value).trim(); }
 }
 

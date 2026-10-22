@@ -6,7 +6,7 @@ import { str as strHelpers } from '../../kernel/str.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
-import { setModelTimezone, phpDateString } from '../../kernel/model.mjs';
+import { setModelRuntime, setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
 import { JsonResource, resourceResponse } from '../../kernel/resources.mjs';
 import { Collection } from '../../kernel/collections.mjs';
@@ -2271,6 +2271,10 @@ export function buildRt(context, opts = {}) {
     }
     return model.related(db, name);
   };
+
+  // The runtime the compiled model ACCESSORS run against (`getXAttribute` is a
+  // compiled `function (rt, value)`; the kernel's Model::get() calls it).
+  setModelRuntime(rt);
 
   rt.model = (name) => {
     const key = String(name);

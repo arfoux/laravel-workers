@@ -111,6 +111,32 @@ foreach (array_slice($argv, 1) as $fqcn) {
     }
     $entry['notCompiled'] = array_values(array_unique($notCompiled));
 
+    // The ACCESSORS (`public function getFullNameAttribute($value)`): the app's
+    // own method, so the compiled rung has to carry it - Eloquent calls it
+    // whenever the attribute is read (HasAttributes::getAttributeValue ->
+    // transformModelValue). The build compiles the body and attaches it to the
+    // generated model class; the dump names it and its file.
+    $accessors = [];
+    foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
+        if ($m->getDeclaringClass()->getName() !== $fqcn || $m->isStatic()) {
+            continue;
+        }
+        if (!preg_match('/^get(.+)Attribute$/', $m->getName(), $mm)) {
+            continue;
+        }
+        if ($m->getNumberOfParameters() !== 1) {
+            // Eloquent's accessor takes exactly the value; anything else is a
+            // different method that happens to share the name.
+            continue;
+        }
+        $accessors[] = [
+            'name' => lcfirst($mm[1]),
+            'method' => $m->getName(),
+            'file' => $rc->getFileName(),
+        ];
+    }
+    $entry['accessors'] = $accessors;
+
     // The RELATIONS the model declares (`public function comments(): HasMany`).
     // Eloquent loads one lazily when it is read as a property
     // (Model::getRelationValue()), so the edge must know the relation's shape
