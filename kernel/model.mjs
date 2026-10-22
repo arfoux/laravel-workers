@@ -2,6 +2,7 @@
 import { table as tableBuilder } from './db.mjs';
 import { isHashedDigest, makeSync, verifyConfiguration } from './hash.mjs';
 import { Collection } from './collections.mjs';
+import { phpJsonEncode } from './php-json.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
 
@@ -305,9 +306,9 @@ export class Model {
   // differ from the model's original. This is what "dirty" means in Eloquent:
   // an attribute that was set to the value it already had is NOT dirty.
   getDirty() {
-    const dirty = [];
+    const dirty = {};
     for (const key of Object.keys(this.attributes)) {
-      if (!this.originalIsEquivalent(key)) dirty.push(key);
+      if (!this.originalIsEquivalent(key)) dirty[key] = this.attributes[key];
     }
     return dirty;
   }
@@ -316,8 +317,8 @@ export class Model {
   // given attribute) changed since the last sync?
   isDirty(attribute) {
     const dirty = this.getDirty();
-    if (attribute === undefined) return dirty.length > 0;
-    return dirty.includes(attribute);
+    if (attribute === undefined) return Object.keys(dirty).length > 0;
+    return Object.prototype.hasOwnProperty.call(dirty, attribute);
   }
 
   // Eloquent's `originalIsEquivalent()` (HasAttributes.php:2390): is the
@@ -519,6 +520,26 @@ export class Model {
    */
   toArray() {
     return this.toJSON();
+  }
+
+  /**
+   * `Model::toJson()` (Model.php:2094): the attributes as a JSON STRING
+   * (`json_encode($this->toArray(), $options)`). PHP method names are
+   * case-insensitive, so `$post->toJSON()` is this same call - the transpiler
+   * resolves the allowlist that way and emits `toJson`.
+   *
+   * `toJSON()` stays the JS protocol hook (JSON.stringify / phpJsonEncode read
+   * it) and answers the OBJECT, which is JsonSerializable's job in PHP: Laravel
+   * itself has no `toJSON()` method.
+   */
+  toJson(options = 0) {
+    if (options !== 0) {
+      throw new Error(
+        'toJson() with json_encode flags is not compiled (the edge answers the default encoding only) - ' +
+          'write a port handler for this route'
+      );
+    }
+    return phpJsonEncode(this.toArray());
   }
 
   toJSON() {
@@ -743,7 +764,7 @@ export class Model {
     // Eloquent writes the dirty attributes only (`getDirtyForUpdate()`,
     // `HasAttributes.php:2359`).
     const data = {};
-    for (const key of this.getDirty()) {
+    for (const key of Object.keys(this.getDirty())) {
       data[key] = this._storeValue(key);
     }
 

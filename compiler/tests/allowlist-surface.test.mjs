@@ -71,3 +71,30 @@ test('allowlist: the Collection allowlist IS the kernel Collection surface', () 
   // And one it does not have is not.
   assert.equal(COLLECTION_METHODS.has('sliding'), false);
 });
+
+test('allowlist: the allowed model methods answer what Laravel answers', () => {
+  // A name in the allowlist is not enough: it must answer Laravel's VALUE.
+  // Two did not. `toJson()` answers a JSON STRING (Model.php:2094) - the
+  // kernel's `toJSON()` is the JS protocol hook and answers an OBJECT, so a
+  // compiled `$post->toJSON()` (the same call in PHP, where method names are
+  // case-insensitive) sent an object where Laravel sends a string.
+  // `getDirty()` answers a KEY => VALUE map (HasAttributes.php:2341), not the
+  // list of keys the kernel used to answer.
+  class Post extends Model {}
+  Post.table = 'posts';
+  Post.primaryKey = 'id';
+  Post.fillable = ['title', 'body'];
+  const post = new Post({ title: 'K2', body: 'B' });
+
+  assert.deepEqual(post.getDirty(), { title: 'K2', body: 'B' });
+  assert.equal(post.isDirty('title'), true);
+  assert.equal(post.isDirty('nope'), false);
+  // The string is PHP's json_encode of the same array toArray() answers.
+  assert.equal(typeof post.toJson(), 'string');
+  assert.equal(post.toJson(), JSON.stringify(post.toArray()));
+  // The protocol hook stays an object: JSON.stringify / phpJsonEncode read it,
+  // and PHP's JsonSerializable is what a model is there (Laravel has no
+  // `toJSON()` method).
+  assert.equal(typeof post.toJSON(), 'object');
+  assert.deepEqual(post.toJSON(), post.toArray());
+});

@@ -560,7 +560,7 @@ const PAGINATOR_METHODS = new Set([
 // sync. A method that is not here (a relation, for example) is not compiled:
 // the build stops instead of answering a 500 at the edge.
 const MODEL_INSTANCE_METHODS = new Set([
-  'get', 'set', 'fill', 'forceFill', 'toJSON', 'toArray', 'trashed', 'increment',
+  'get', 'set', 'fill', 'forceFill', 'toJson', 'toArray', 'trashed', 'increment',
   'getKey', 'getKeyName', 'isDirty', 'getDirty', 'syncOriginal',
   'save', 'delete', 'forceDelete', 'restore', 'refresh',
   'load', 'loadCount', 'loadAggregate',
@@ -573,6 +573,23 @@ const MODEL_INSTANCE_METHODS = new Set([
 // Model::load() (…/Model.php:880), loadCount() (…/Model.php:947) and
 // loadAggregate() (…/Model.php:934).
 const MODEL_INSTANCE_ASYNC = new Set(['increment', 'load', 'loadCount', 'loadAggregate']);
+// PHP method names are CASE-INSENSITIVE (`$post->toJSON()` IS `$post->toJson()`,
+// `$post->SAVE()` IS `$post->save()` - php.net/manual/en/functions.user-defined.php).
+// The allowlists hold the canonical spelling, so a call resolves through them
+// ignoring case and the build emits the canonical name: the compiled call then
+// reaches the method Laravel would run. Without it `->toJSON()` matched the
+// kernel's JS-protocol `toJSON()` (which answers an OBJECT) while Laravel
+// answers the JSON STRING - a green build with a wrong body.
+function canonicalModelMethod(meth) {
+  if (MODEL_INSTANCE_METHODS.has(meth) || MODEL_INSTANCE_ASYNC.has(meth) || INSTANCE_DB_METHODS.has(meth)) {
+    return meth;
+  }
+  const lower = String(meth).toLowerCase();
+  for (const name of MODEL_INSTANCE_METHODS) if (name.toLowerCase() === lower) return name;
+  for (const name of MODEL_INSTANCE_ASYNC) if (name.toLowerCase() === lower) return name;
+  for (const name of INSTANCE_DB_METHODS) if (name.toLowerCase() === lower) return name;
+  return null;
+}
 // The model methods Laravel does NOT have. Laravel's Model::__call forwards an
 // unknown method to the query builder
 // (Illuminate/Database/Eloquent/Model.php:2902 → :2917) and the builder
@@ -1983,8 +2000,9 @@ function txCall(node) {
     }
     // Eloquent instance writes ($model->save(), ->delete(), ...) need the D1
     // binding and are async at the edge.
-    if (CTX && CTX.controller && INSTANCE_DB_METHODS.has(meth)) {
-      return txAwait(obj + '.' + meth + '(rt.db()' + (args ? ', ' + args : '') + ')', node, 'model->' + meth + '()');
+    if (CTX && CTX.controller && INSTANCE_DB_METHODS.has(canonicalModelMethod(meth) || '')) {
+      const canon = canonicalModelMethod(meth);
+      return txAwait(obj + '.' + canon + '(rt.db()' + (args ? ', ' + args : '') + ')', node, 'model->' + canon + '()');
     }
     const expr = obj + '.' + meth + '(' + args + ')';
     // auth()->user() / auth()->guard()->attempt() resolve the user async (Timebox).
@@ -1998,20 +2016,21 @@ function txCall(node) {
     // A model instance: the build knows the kinds of the model variables, so
     // the Model's own surface is checked here (Laravel's Model).
     if (CTX && CTX.controller && modelReceiverKind(what.what) === 'model') {
-      if (MODEL_INSTANCE_ASYNC.has(meth)) {
+      const canon = canonicalModelMethod(meth) || meth;
+      if (MODEL_INSTANCE_ASYNC.has(canon)) {
         // Laravel's Model::increment()/load()/loadCount()/loadAggregate() hit
         // the database: the compiled side awaits them and hands them the D1
         // binding (the kernel's Model takes the connection as its first
         // argument — like save()). Without it the first PHP argument landed
         // in the db slot (increment('views') -> db = 'views'), so the counter
         // was never written.
-        return txAwait(obj + '.' + meth + '(rt.db()' + (args ? ', ' + args : '') + ')', node, 'model->' + meth + '()');
+        return txAwait(obj + '.' + canon + '(rt.db()' + (args ? ', ' + args : '') + ')', node, 'model->' + canon + '()');
       }
-      if (MODEL_LACKS[meth]) {
+      if (MODEL_LACKS[canon]) {
         // Laravel has no such Model method (a BadMethodCallException there).
         throw mkErr('LW003', MODEL_LACKS[meth] + PORT_HINT, node.loc, PORT_HINT);
       }
-      if (!MODEL_INSTANCE_METHODS.has(meth)) {
+      if (!MODEL_INSTANCE_METHODS.has(canon)) {
         throw mkErr(
           'LW003',
           'the model method ' + meth + '() is not compiled (an Eloquent relation?) - the compiled rung has the instance writes only (save, delete, ...); ' + PORT_HINT,
@@ -2019,7 +2038,7 @@ function txCall(node) {
           PORT_HINT
         );
       }
-      return expr;
+      return obj + '.' + canon + '(' + args + ')';
     }
     // A method call on a variable the compiled rung does not know. It used to
     // compile and answer a 500 at the edge (a silent gap); the build stops.
@@ -2174,7 +2193,8 @@ function txCall(node) {
       const rel = declared && typeof relName === 'string' ? declared[relName] : null;
       if ((ownerKind === 'model' || ownerKind === 'list') && rel) {
         if (rel.type === 'belongsTo') {
-          if (!MODEL_INSTANCE_METHODS.has(meth)) {
+          const canon = canonicalModelMethod(meth) || meth;
+          if (!MODEL_INSTANCE_METHODS.has(canon)) {
             throw mkErr(
               'LW003',
               'the model method ->' + meth + '() is not compiled on $' + String(what.what.what.name).replace(/^v_/, '') +
@@ -2183,6 +2203,7 @@ function txCall(node) {
               PORT_HINT
             );
           }
+          return obj + '.' + canon + '(' + args + ')';
         } else if (!COLLECTION_METHODS.has(meth)) {
           throw mkErr(
             'LW003',
