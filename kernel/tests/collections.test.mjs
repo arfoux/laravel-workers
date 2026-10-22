@@ -131,3 +131,75 @@ test('a method Laravel does not have does not exist', () => {
   assert.equal(typeof collect([1]).summ, 'undefined');
   assert.throws(() => collect([1]).summ(), TypeError);
 });
+test('firstOrFail answers the first item, or fails loud when none matches', () => {
+  // Probes: collect([1,2])->firstOrFail() = 1; firstOrFail(fn ($v) => $v > 1) = 2;
+  // collect([0,1])->firstOrFail(fn ($v) => $v === 0) = 0 (a falsy hit IS a hit);
+  // collect([null])->firstOrFail() = null (a null hit is a hit);
+  // collect(['x'=>1])->firstOrFail() = 1;
+  // collect([['name'=>'a'],['name'=>'b']])->firstOrFail('name', 'b') = {"name":"b"};
+  // ->firstOrFail('name', '=', 'a') = {"name":"a"}; ->firstOrFail('n', '!=', 1) = {"n":2}.
+  assert.equal(collect([1, 2]).firstOrFail(), 1);
+  assert.equal(collect([1, 2, 3]).firstOrFail((v) => v > 1), 2);
+  assert.equal(collect([0, 1]).firstOrFail((v) => v === 0), 0);
+  assert.equal(collect([null]).firstOrFail(), null);
+  assert.equal(collect({ x: 1 }).firstOrFail(), 1);
+  const rows = [{ name: 'a' }, { name: 'b' }];
+  assert.deepEqual(collect(rows).firstOrFail('name', 'b'), { name: 'b' });
+  assert.deepEqual(collect(rows).firstOrFail('name', '=', 'a'), { name: 'a' });
+  assert.deepEqual(collect([{ n: 1 }, { n: 2 }]).firstOrFail('n', '!=', 1), { n: 2 });
+  // A miss throws PHP's ItemNotFoundException, whose message is EMPTY (a probe:
+  // msg=[]). An empty message names nothing at the edge, so the error names the
+  // failure: the item, or the key that was looked up.
+  assert.throws(() => collect([]).firstOrFail(), { name: 'Error', message: 'Item not found.' });
+  assert.throws(() => collect([1, 2]).firstOrFail((v) => v > 9), { message: 'Item not found.' });
+  assert.throws(() => collect([]).firstOrFail('name', 'z'), {
+    message: 'Item with key `name` not found.',
+  });
+  assert.throws(() => collect(rows).firstOrFail('name', '=', 'z'), {
+    message: 'Item with key `name` not found.',
+  });
+  // A single NON-callable argument is PHP's TypeError (a probe), not a silent
+  // "first item" (which is what first('name') would answer).
+  assert.throws(() => collect(rows).firstOrFail('name'), TypeError);
+});
+
+test('sole answers the only item, or throws the none / multiple error', () => {
+  // Probes: collect([1])->sole() = 1; collect([null])->sole() = null;
+  // collect([0])->sole() = 0 (a falsy item is still an item);
+  // collect(['a'=>1])->sole() = 1.
+  assert.equal(collect([1]).sole(), 1);
+  assert.equal(collect([null]).sole(), null);
+  assert.equal(collect([0]).sole(), 0);
+  assert.equal(collect({ a: 1 }).sole(), 1);
+  // collect([1,2,3])->sole(fn ($v) => $v > 2) = 3;
+  // collect([0,1])->sole(fn ($v) => $v === 0) = 0;
+  // collect([null,1])->sole(fn ($v) => $v === null) = null.
+  assert.equal(collect([1, 2, 3]).sole((v) => v > 2), 3);
+  assert.equal(collect([0, 1]).sole((v) => v === 0), 0);
+  assert.equal(collect([null, 1]).sole((v) => v === null), null);
+  // Two arguments mean `$key = $operator`, three mean `$key $operator $value`
+  // (probes: sole('name', 'b') = {"name":"b"}; sole('name', '=', 'a') =
+  // {"name":"a"}; sole('name', '!=', 'a') = {"name":"b"}).
+  const rows = [{ name: 'a' }, { name: 'b' }];
+  assert.deepEqual(collect(rows).sole('name', 'b'), { name: 'b' });
+  assert.deepEqual(collect(rows).sole('name', '=', 'a'), { name: 'a' });
+  assert.deepEqual(collect(rows).sole('name', '!=', 'a'), { name: 'b' });
+  // No match throws PHP's ItemNotFoundException, whose message is EMPTY (a
+  // probe: msg=[]); the edge names the failure. More than one match throws
+  // MultipleItemsFoundException with its own "<count> items were found."
+  // message (probes: 2 and 3 items).
+  assert.throws(() => collect([]).sole(), { name: 'Error', message: 'Item not found.' });
+  assert.throws(() => collect([1, 2, 3]).sole((v) => v > 9), { message: 'Item not found.' });
+  assert.throws(() => collect([1, 2]).sole(), { name: 'Error', message: '2 items were found.' });
+  assert.throws(() => collect([1, 2, 3]).sole((v) => v > 1), { message: '2 items were found.' });
+  assert.throws(() => collect([1, 2, 3]).sole(), { message: '3 items were found.' });
+  // A single nullish argument filters nothing (probes: null, false, 0 and ''
+  // all reach the count check); a single non-callable, non-nullish argument is
+  // PHP's TypeError (probes: 'name', '0', 1 and a non-empty array).
+  for (const arg of [null, false, 0, '']) {
+    assert.throws(() => collect([1, 2]).sole(arg), { message: '2 items were found.' });
+  }
+  assert.throws(() => collect([1, 2]).sole([]), { message: '2 items were found.' });
+  assert.throws(() => collect(rows).sole('name'), TypeError);
+  assert.throws(() => collect([1]).sole('0'), TypeError);
+});

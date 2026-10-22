@@ -4,13 +4,13 @@
  * WHAT IT COVERS
  *   The inspection / transform / aggregate / mutator surface of Laravel's
  *   Collection and EnumeratesValues traits for *list-shaped* input: all(),
- *   toArray(), count(), isEmpty(), isNotEmpty(), first(), last(), get(), has(),
- *   put(), push(), pop(), pull(), forget(), map(), filter(), reject(), each(),
- *   values(), keys(), merge(), pluck(), implode(), contains(), every(), some(),
- *   sortBy(), sortByDesc(), sum(), avg(), max(), min(), groupBy(), keyBy(),
- *   unique(), flatten(), where(), whereIn(), whereNotNull(), slice(), take(),
- *   skip(), chunk(), reverse(), when(), unless(), whenEmpty(), whenNotEmpty(),
- *   tap(), pipe().
+ *   toArray(), count(), isEmpty(), isNotEmpty(), first(), firstOrFail(),
+ *   sole(), last(), get(), has(), put(), push(), pop(), pull(), forget(), map(),
+ *   filter(), reject(), each(), values(), keys(), merge(), pluck(), implode(),
+ *   contains(), every(), some(), sortBy(), sortByDesc(), sum(), avg(), max(),
+ *   min(), groupBy(), keyBy(), unique(), flatten(), where(), whereIn(),
+ *   whereNotNull(), slice(), take(), skip(), chunk(), reverse(), when(),
+ *   unless(), whenEmpty(), whenNotEmpty(), tap(), pipe().
  *
  * REPRESENTATION — WHY A PLAIN ARRAY
  *   `items` is a plain ARRAY, exactly like the runtime's existing Collection
@@ -334,6 +334,87 @@ export class Collection {
     }
     const index = this.items.findIndex((item, key) => predicate(item, key));
     return index === -1 ? fallback : this.items[index];
+  }
+
+  /**
+   * `firstOrFail($key = null, $operator = null, $value = null)`
+   * (Collection::firstOrFail(), :1509-1524): the first item, or a thrown
+   * `ItemNotFoundException`. More than one argument is a `where()` filter
+   * (`operatorForWhere()`: two arguments mean `$key = $operator`, three mean
+   * `$key $operator $value`); one argument is a callback, and a NON-callable
+   * there is a TypeError in PHP (a probe), never a silent "first item".
+   *
+   * PHP's exception carries an EMPTY message (a probe: `msg=[]`, code 0), which
+   * names nothing at the edge, so the thrown error names the failure instead.
+   */
+  firstOrFail(key = null, operator = null, value = null) {
+    const placeholder = Symbol('Collection.firstOrFail');
+    const filtered = arguments.length > 1 && typeof key !== 'function';
+    let item;
+    if (filtered) {
+      const test = operatorForWhere(arguments.length === 2 ? '=' : String(operator));
+      const expected = arguments.length === 2 ? operator : value;
+      item = this.first((entry) => {
+        const actual = entry === null || entry === undefined ? null : entry[key];
+        return test(actual, expected);
+      }, placeholder);
+    } else {
+      if (key !== null && key !== undefined && typeof key !== 'function') {
+        throw new TypeError(
+          'Collection.firstOrFail(): a single argument must be a callback (Laravel calls first($callback) here) — ' +
+            'pass a key and a value for a key lookup'
+        );
+      }
+      item = this.first(key, placeholder);
+    }
+    if (item === placeholder) {
+      throw new Error(filtered ? 'Item with key `' + String(key) + '` not found.' : 'Item not found.');
+    }
+    return item;
+  }
+
+  /**
+   * `sole($key = null, $operator = null, $value = null)`
+   * (Collection::sole(), :1458-1477): the only item, or a thrown
+   * `ItemNotFoundException` / `MultipleItemsFoundException`. More than one
+   * argument is a `where()` filter (`operatorForWhere()`: two arguments mean
+   * `$key = $operator`, three mean `$key $operator $value`); a callable is a
+   * filter callback; a nullish single argument filters nothing. A single
+   * non-callable, non-nullish argument is PHP's TypeError (a probe), never a
+   * silent "first item".
+   * PHP's ItemNotFoundException carries an EMPTY message (a probe: `msg=[]`),
+   * which names nothing at the edge, so the thrown error names the failure.
+   * MultipleItemsFoundException's own message is "<count> items were found."
+   * (a probe).
+   */
+  sole(key = null, operator = null, value = null) {
+    let predicate = null;
+    if (typeof key === 'function') {
+      // operatorForWhere() returns a callable first argument unchanged, even
+      // when more arguments follow (a probe: sole($fn, 'x', 'y') filters $fn).
+      predicate = key;
+    } else if (arguments.length > 1) {
+      const test = operatorForWhere(arguments.length === 2 ? '=' : String(operator));
+      const expected = arguments.length === 2 ? operator : value;
+      predicate = (item) => {
+        const actual = key === null || key === undefined ? item : readProp(item, key);
+        return test(actual, expected);
+      };
+    } else if (!(key === null || key === undefined || key === false || key === 0 || key === '' ||
+      (Array.isArray(key) && key.length === 0))) {
+      // `$filter == null` is false for these, so Laravel calls filter($key) -
+      // which is typed ?callable and throws (a probe: sole('name') is a TypeError).
+      throw new TypeError(
+        'Collection.sole(): a single argument must be a callback (Laravel calls filter($callback) here) — ' +
+          'pass a key and a value for a key lookup'
+      );
+    }
+    const items = predicate === null
+      ? this.items
+      : this.items.filter((item, index) => predicate(item, index));
+    if (items.length === 0) throw new Error('Item not found.');
+    if (items.length > 1) throw new Error(items.length + ' items were found.');
+    return items[0];
   }
 
   last(predicate = null, fallback = null) {
