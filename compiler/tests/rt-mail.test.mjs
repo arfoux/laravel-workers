@@ -43,6 +43,25 @@ function makeRt() {
             deps: [],
             methods: {},
           },
+          // Declares the Mailable surface (`public $view`) AND calls the fluent
+          // setters: PHP keeps the property and the method apart, JS cannot.
+          'App\\Mail\\BothMail': {
+            base: 'mailable',
+            ctor: (args, deps) => {
+              const __self = {};
+              Object.assign(__self, { "__view": "mail.declared", "__subject": "Declared subject" });
+              return __self;
+            },
+            deps: [],
+            methods: {
+              build: async function () {
+                this.subject('Fluent subject');
+                this.view('mail.order');
+                this.with({ id: 7 });
+                return this;
+              },
+            },
+          },
           // A mailable with no view at all.
           'App\\Mail\\NoViewMail': {
             base: 'mailable',
@@ -107,6 +126,21 @@ test('rt-mail: the property form carries the view (a public field, no build())',
   assert.equal(mailer.outbox.length, 1);
   assert.equal(mailer.outbox[0].subject, 'Property subject');
   assert.equal(mailer.outbox[0].html, '<p>Property</p>');
+});
+
+test('rt-mail: a mailable may declare $view AND call view() (PHP keeps them apart)', async () => {
+  // PHP has separate namespaces for a property and a method, so a mailable
+  // that declares `public $view` may still call `$this->view('x')`. JS has one
+  // namespace: an own `view` property would shadow Mailable.prototype.view()
+  // and the fluent call would throw "view is not a function" (probed). The
+  // declared surface lands in the kernel's private fields instead.
+  const { rt, mailer } = makeRt();
+  const mailable = rt.newClass('App\\Mail\\BothMail', []);
+  await rt.mail().to('buyer@example.com').send(mailable);
+  assert.equal(mailer.outbox.length, 1);
+  // The fluent setter ran and the mail is not empty.
+  assert.equal(mailer.outbox[0].subject, 'Fluent subject');
+  assert.equal(mailer.outbox[0].html, '<p>Order 7</p>');
 });
 
 test('rt-mail: the recipients are the mailable\'s + the pending\'s (Laravel appends them)', async () => {

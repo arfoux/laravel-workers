@@ -135,8 +135,14 @@ class EmptyCtor
   assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
   const mod = await compiledModule(res.code);
   const instance = mod.classes['App\\Mail\\EmptyCtor'].ctor([], {});
-  assert.equal(instance.view, 'mail.order');
-  assert.equal(instance.subject, 'Hello');
+  // A mailable's declared surface lands in the kernel's PRIVATE fields: an own
+  // `view` property would shadow Mailable.prototype.view() (PHP keeps the
+  // property and the method apart; JS cannot).
+  assert.equal(instance.__view, 'mail.order');
+  assert.equal(instance.__subject, 'Hello');
+  // No plain `view` own property: the prototype's fluent method stays
+  // reachable (rt.newClass merges this object onto the kernel's Mailable).
+  assert.equal(Object.prototype.hasOwnProperty.call(instance, 'view'), false);
 });
 test('classes: a listener that takes a service fails loud', () => {
   const file = classFile('WithService', `<?php

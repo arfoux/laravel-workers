@@ -138,6 +138,23 @@ function literalOf(node) {
   }
 }
 
+// The PUBLIC fields of Illuminate\Mail\Mailable (the kernel's private fields,
+// kernel/mailable.mjs): a mailable's declared property of one of these names
+// goes into the private field, never onto the plain name.
+const MAILABLE_FIELDS = new Set([
+  'subject',
+  'from',
+  'to',
+  'cc',
+  'bcc',
+  'replyTo',
+  'view',
+  'textView',
+  'viewData',
+  'html',
+  'text',
+]);
+
 function compileConstructor(fqcn, classNode, opts) {
   const ctor = findMethod(classNode, '__construct');
   const props = [];
@@ -173,8 +190,21 @@ function compileConstructor(fqcn, classNode, opts) {
       declared.push({ name: pname, js: lit.js });
     }
   }
+  // PHP keeps a property and a method in SEPARATE namespaces, so a mailable may
+  // declare `public $view` AND call `$this->view('x')`. JavaScript has one
+  // namespace: an own `view` property would shadow `Mailable.prototype.view()`
+  // and the fluent call would throw "view is not a function". The kernel keeps
+  // its values in private fields (`__view`, `__subject`, ...) and its payload
+  // reads them FIRST, so a mailable's declared surface lands there.
   const declaredJs = declared.length
-    ? 'Object.assign(__self, { ' + declared.map((d) => JSON.stringify(d.name) + ': ' + d.js).join(', ') + ' });\n'
+    ? 'Object.assign(__self, { ' +
+      declared
+        .map((d) => {
+          const key = opts.mailable && MAILABLE_FIELDS.has(d.name) ? '__' + d.name : d.name;
+          return JSON.stringify(key) + ': ' + d.js;
+        })
+        .join(', ') +
+      ' });\n'
     : '';
   if (!ctor) {
     return {
