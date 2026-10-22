@@ -289,6 +289,8 @@ function analyzeParams(method, uses = null, nsName = null) {
       defaultOk: true,
       variadic: !!p.variadic,
       byRef: !!p.byref,
+      // `?int $n` accepts null; a bare `int $n` throws PHP 8's TypeError.
+      nullable: !!(p.type && p.type.kind === 'nullabletype'),
     };
     const tn = typeName(p.type);
     if (p.type) {
@@ -863,9 +865,12 @@ export function emitController(source, methodName, meta = {}) {
     const segName = seg < routeParams.length ? routeParams[seg] : p.name;
     seg++;
     const def = p.hasDefault ? JSON.stringify(p.default === undefined ? null : p.default) : 'null';
+    // `?int $n` accepts null; a bare `int $n` throws (PHP 8's TypeError), so
+    // the runtime needs the nullability to answer what Laravel answers.
+    const nullable = !!p.nullable;
     return (
       `    let ${vname(p.name)} = rt.param(ctx.params, ${JSON.stringify(segName)}, ` +
-      `${JSON.stringify(p.type)}, ${p.hasDefault ? 'true' : 'false'}, ${def});`
+      `${JSON.stringify(p.type)}, ${p.hasDefault ? 'true' : 'false'}, ${def}, ${nullable ? 'true' : 'false'});`
     );
   });
 

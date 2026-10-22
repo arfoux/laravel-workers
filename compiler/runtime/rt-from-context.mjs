@@ -1970,9 +1970,24 @@ export function buildRt(context, opts = {}) {
         JSON.stringify(value) + ' is not ' + (type === 'int' ? 'an integer' : 'a number') +
         ' (PHP 8 throws a TypeError here, so Laravel answers 500)'
     );
-  rt.param = (params, name, type, hasDefault, def) => {
+  rt.param = (params, name, type, hasDefault, def, nullable) => {
     const v = params && typeof params === 'object' ? params[name] : undefined;
-    if (v === undefined || v === null) return hasDefault ? def : null;
+    // A missing segment takes the default (Laravel's own rule: the route would
+    // not match without the segment). A NULL value is different: PHP passes it
+    // to the parameter, so a non-nullable scalar type throws a TypeError
+    // (`f(null)` for `int $n` is "must be of type int, null given") - the
+    // compiled rung used to answer null, a 200 where Laravel answers 500.
+    if (v === undefined) return hasDefault ? def : null;
+    if (v === null) {
+      if (nullable) return null;
+      if (type === 'int' || type === 'float' || type === 'string') {
+        throw new TypeError(
+          'Argument #1 ($' + name + ') must be of type ' + type + ', null given (PHP 8 throws a ' +
+            'TypeError here, so Laravel answers 500)'
+        );
+      }
+      return hasDefault ? def : null;
+    }
     if (type === 'int' || type === 'float') {
       if (typeof v === 'number') return type === 'int' ? Math.trunc(v) : v;
       const s = String(v);

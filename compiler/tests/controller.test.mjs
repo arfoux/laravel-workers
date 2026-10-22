@@ -217,15 +217,15 @@ test('emit: model chains, view(), compact() and params', () => {
 
 test('emit: findOrFail is awaited and params come from route segments', () => {
   const code = emitOk('show', { ...META_BASE, routeUri: '/posts/{id}', routeParams: ['id'] });
-  assert.match(code, /let v_id = rt\.param\(ctx\.params, "id", "string", false, null\);/);
+  assert.match(code, /let v_id = rt\.param\(ctx\.params, "id", "string", false, null, false\);/);
   assert.match(code, /let v_post;\n\s+v_post = \(await rt\.model\("Post"\)\.findOrFail\(v_id\)\);/);
   assert.match(code, /return rt\.view\("posts\.show", \{\s*"post": v_post\s*\}\);/);
 });
 
 test('emit: typed params with defaults use rt.param', () => {
   const code = emitOk('page', { ...META_BASE, routeUri: '/p/{slug}', routeParams: ['slug'] });
-  assert.match(code, /let v_slug = rt\.param\(ctx\.params, "slug", "string", false, null\);/);
-  assert.match(code, /let v_page = rt\.param\(ctx\.params, "page", "int", true, 1\);/);
+  assert.match(code, /let v_slug = rt\.param\(ctx\.params, "slug", "string", false, null, false\);/);
+  assert.match(code, /let v_page = rt\.param\(ctx\.params, "page", "int", true, 1, false\);/);
   assert.match(code, /\{ "posts": v_posts, "slug": v_slug, "page": v_page \}/);
 });
 

@@ -198,3 +198,14 @@ test('rt.param coerces like PHP 8 and throws where PHP throws', () => {
   // at build time; a default answers the default).
   assert.equal(rt.param({}, 'n', 'int', true, 5), 5);
 });
+
+test('rt.param accepts null only for a nullable type (PHP 8 TypeError otherwise)', () => {
+  const rt = buildRt({}, { strict: false });
+  // `?int $n` accepts null.
+  assert.equal(rt.param({ n: null }, 'n', 'int', false, null, true), null);
+  // A bare `int $n` throws: PHP's "must be of type int, null given".
+  assert.throws(() => rt.param({ n: null }, 'n', 'int', false, null, false), TypeError);
+  assert.throws(() => rt.param({ n: null }, 'n', 'string', false, null, false), TypeError);
+  // A missing segment (not null) still takes the default.
+  assert.equal(rt.param({}, 'n', 'int', true, 7, false), 7);
+});
