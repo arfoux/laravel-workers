@@ -84,14 +84,21 @@ test('allowlist: the allowed model methods answer what Laravel answers', () => {
   Post.table = 'posts';
   Post.primaryKey = 'id';
   Post.fillable = ['title', 'body'];
-  const post = new Post({ title: 'K2', body: 'B' });
+  const post = new Post({ title: 'K2', body: 'a/b' });
 
-  assert.deepEqual(post.getDirty(), { title: 'K2', body: 'B' });
+  assert.deepEqual(post.getDirty(), { title: 'K2', body: 'a/b' });
   assert.equal(post.isDirty('title'), true);
   assert.equal(post.isDirty('nope'), false);
-  // The string is PHP's json_encode of the same array toArray() answers.
+  // `isDirty($attributes = null)` reads func_get_args() (HasAttributes.php:
+  // 2262-2267): the array form AND the varargs form are legal, and either
+  // attribute being dirty answers true.
+  assert.equal(post.isDirty(['title', 'body']), true);
+  assert.equal(post.isDirty('title', 'nope'), true);
+  assert.equal(post.isDirty('nope', 'nada'), false);
+  // The string is PHP's json_encode, not JSON.stringify: the expectation is a
+  // LITERAL, so a swap back to JSON.stringify fails (PHP escapes the slash).
   assert.equal(typeof post.toJson(), 'string');
-  assert.equal(post.toJson(), JSON.stringify(post.toArray()));
+  assert.equal(post.toJson(), '{"title":"K2","body":"a\\/b"}');
   // The protocol hook stays an object: JSON.stringify / phpJsonEncode read it,
   // and PHP's JsonSerializable is what a model is there (Laravel has no
   // `toJSON()` method).

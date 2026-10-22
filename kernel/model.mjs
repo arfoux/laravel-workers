@@ -315,10 +315,18 @@ export class Model {
 
   // Eloquent's `isDirty()` (HasAttributes.php:2262): has the model (or the
   // given attribute) changed since the last sync?
-  isDirty(attribute) {
+  // `isDirty($attributes = null)` reads `func_get_args()`
+  // (HasAttributes.php:2262-2267), so BOTH `isDirty(['title','body'])` and
+  // `isDirty('title','body')` are legal and either one true answers true.
+  // The single-argument form answered false for the second spelling.
+  isDirty(...args) {
     const dirty = this.getDirty();
-    if (attribute === undefined) return Object.keys(dirty).length > 0;
-    return Object.prototype.hasOwnProperty.call(dirty, attribute);
+    const list = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+    if (!list.length) return Object.keys(dirty).length > 0;
+    for (const name of list) {
+      if (Object.prototype.hasOwnProperty.call(dirty, name)) return true;
+    }
+    return false;
   }
 
   // Eloquent's `originalIsEquivalent()` (HasAttributes.php:2390): is the
