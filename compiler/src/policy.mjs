@@ -208,6 +208,14 @@ export function compilePolicies(dump, opts = {}) {
   const meta = {};
   const entries = [];
   const errors = [];
+  // The GLOBAL Gate::define() abilities, under a reserved key: a subject-less
+  // `Gate::allows('x')` resolves here (the policy map is per model).
+  meta.__global__ = {
+    definitions: (globals && globals.definitions) || {},
+    definedAbilities: Array.isArray(globals.abilities) ? globals.abilities : [],
+    globalBefore: Number(globals.before) || 0,
+    globalAfter: Number(globals.after) || 0,
+  };
 
   for (const entry of models) {
     const modelMeta = {

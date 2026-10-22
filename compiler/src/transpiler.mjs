@@ -1084,7 +1084,11 @@ function txGate(node, meth) {
       PORT_HINT
     );
   }
-  if (argNodes.length !== 2) {
+  // `Gate::allows('x')` (one argument) is a GLOBAL ability check: Laravel's
+  // second argument defaults to `[]`, so there is no subject at all. A policy
+  // check needs the subject, and the branch below requires it.
+  const globalOnly = argNodes.length === 1;
+  if (argNodes.length !== 2 && !globalOnly) {
     throw mkErr(
       'LW002',
       'Gate::' + meth + '() takes an ability and a subject — ' + PORT_HINT,
@@ -1102,7 +1106,10 @@ function txGate(node, meth) {
     );
   }
   const ability = String(abilityNode.value);
-  if (ability.indexOf('-') !== -1) {
+  // A POLICY ability is camelized into a method name (Str::camel), so a dashed
+  // name cannot be compiled. A GLOBAL Gate::define() key is used VERBATIM
+  // (`can-publish` stays `can-publish`), so the dash is fine there.
+  if (ability.indexOf('-') !== -1 && !globalOnly) {
     throw mkErr(
       'LW002',
       'the Gate ability "' + ability + '" is not supported — Laravel camelizes a dashed ability (Str::camel); use the camel name — ' + PORT_HINT,
@@ -1110,6 +1117,58 @@ function txGate(node, meth) {
       PORT_HINT
     );
   }
+  // A subject-less check is a GLOBAL ability: answer it before the subject
+  // resolution (Laravel's second argument defaults to `[]`).
+  if (globalOnly) {
+    const globals = (CTX && CTX.policies && CTX.policies.get('__global__')) || null;
+    const def = globals && globals.definitions ? globals.definitions[ability] : null;
+    if (!globals || (globals.definedAbilities || []).indexOf(ability) === -1) {
+      throw mkErr(
+        'LW002',
+        'the Gate ability "' + ability + '" is not defined — Laravel answers false for an undefined ability, ' +
+          'which at the edge would hide the missing Gate::define() — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    if (globals.globalBefore || globals.globalAfter) {
+      throw mkErr(
+        'LW002',
+        'the app registers a global Gate::before()/after() callback — the compiled rung cannot run it — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    if (!def || def.kind !== 'string' || !def.callback) {
+      throw mkErr(
+        'LW002',
+        'the ability "' + ability + '" is defined with Gate::define() and a CLOSURE — the edge cannot run a ' +
+          'closure that lives in a service provider; register the ability as a string callback ' +
+          "('App\\Policies\\X@method') or write a port handler for this route instead",
+        node.loc,
+        PORT_HINT
+      );
+    }
+    const cls = String(def.callback).split('@')[0];
+    if (!(CTX.classes && CTX.classes.has(cls))) {
+      throw mkErr(
+        'LW002',
+        'the ability "' + ability + '" is registered to ' + def.callback + ', but the class ' + cls +
+          ' is not compiled (the build compiles the app classes it reaches) — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    CTX.usedGate = true;
+    const globalCall = 'rt.gateGlobal(' + JSON.stringify(ability) + ', null)';
+    // `txAwait` wraps the WHOLE expression as `(await <expr>)`, so the
+    // negation must sit INSIDE the await: `(await !promise)` would negate the
+    // promise (always false) and then await a boolean.
+    return meth === 'denies'
+      ? txAwait('!(await ' + globalCall + ')', node, 'Gate::denies()')
+      : txAwait(globalCall, node, 'Gate::allows()');
+  }
+
   // The subject: a model instance (a variable that holds one) or Model::class.
   const subjectNode = argNodes[1];
   let subjectExpr = null;
@@ -1162,7 +1221,19 @@ function txGate(node, meth) {
   // The policy metadata (the build dumped it: the policy, its abilities, the
   // guest rules, the global Gate callbacks).
   const policies = CTX && CTX.policies ? CTX.policies : new Map();
-  const pol = policies.get(subjectFqcn);
+  // A one-argument check has no subject: the ability must be a global
+  // Gate::define() one. The policy metadata still carries the global lists
+  // (`definedAbilities`/`definitions`), so the same lookup answers it.
+  const pol = policies.get(subjectFqcn || '__global__') || (globalOnly ? policies.get('__global__') : null);
+  if (!pol && globalOnly) {
+    throw mkErr(
+      'LW003',
+      'Gate::' + meth + '("' + ability + '") has no subject, so it must be a global Gate::define() ability - ' +
+        'the build did not dump one - ' + PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
   if (!pol) {
     throw mkErr(
       'LW003',
@@ -1204,12 +1275,42 @@ function txGate(node, meth) {
     );
   }
   if ((pol.definedAbilities || []).indexOf(ability) !== -1) {
-    throw mkErr(
-      'LW002',
-      'the ability "' + ability + '" is defined with Gate::define() — the compiled rung compiles the policy methods only — ' + PORT_HINT,
-      node.loc,
-      PORT_HINT
-    );
+    // A GLOBAL Gate::define() ability. A `'Class@method'` string callback is
+    // compiled (the kernel's gate calls it); a CLOSURE is app code the build
+    // cannot take, so the route stays blocked with a reason that says so.
+    const def = (pol.definitions || {})[ability] || null;
+    if (!def || def.kind !== 'string' || !def.callback) {
+      throw mkErr(
+        'LW002',
+        'the ability "' + ability + '" is defined with Gate::define() and a CLOSURE — the edge cannot run a ' +
+          'closure that lives in a service provider; register the ability as a string callback ' +
+          "('App\\Policies\\X@method') or write a port handler for this route instead",
+        node.loc,
+        PORT_HINT
+      );
+    }
+    // The compiled class must be one the build has: the kernel needs its
+    // method, and the class must be in the compiled set.
+    const cls = String(def.callback).split('@')[0];
+    if (!(CTX.classes && CTX.classes.has(cls))) {
+      throw mkErr(
+        'LW002',
+        'the ability "' + ability + '" is registered to ' + def.callback + ', but the class ' + cls +
+          ' is not compiled (the build compiles the app classes it reaches) — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    CTX.usedGate = true;
+    // The kernel's gate answers a GLOBAL ability through `rt.gateGlobal`: the
+    // callback is a compiled class method, so the runtime needs the class
+    // registry (`classes`) and the ability's definition. It is ASYNC (it
+    // resolves the user and builds the class), so the call is awaited exactly
+    // like the policy path below - an un-awaited promise is always truthy and
+    // would allow every check.
+    const globalCall =
+      'rt.gateGlobal(' + JSON.stringify(ability) + ', ' + (subjectExpr || 'null') + ')';
+    return txAwait(deny ? '!' + globalCall : globalCall, node, deny ? 'Gate::denies()' : 'Gate::allows()');
   }
   if (pol.hasMagicCall) {
     throw mkErr(

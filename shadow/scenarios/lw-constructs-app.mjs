@@ -338,6 +338,16 @@ export default {
       },
     },
     {
+      // A GLOBAL Gate::define() ability with a STRING callback
+      // (`[AbilityGate::class, 'canPublish']`): the build compiles the class and
+      // the kernel's gate runs it. A guest reaches the callback (its first
+      // parameter is nullable), so it answers "denied" - Laravel's own answer.
+      label: 'GET /gate-global-demo (a global Gate::define ability)',
+      method: 'GET',
+      uri: '/gate-global-demo',
+      expectBody: 'denied',
+    },
+    {
       // A TYPED route parameter: PHP 8 coerces the numeric segment ("42" ->
       // 42) and throws a TypeError for a non-numeric one (a 500).
       label: 'GET /int-param-demo/42 (a typed int parameter)',

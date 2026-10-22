@@ -751,6 +751,38 @@ export function buildRt(context, opts = {}) {
     return deny ? !allowed : allowed;
   };
 
+  // ---- rt.gateGlobal: a Gate::define('x', 'Class@method') ability ----
+  // The dump records the definition (the class + method + the guest rule), and
+  // the build compiled the class; the kernel's Gate runs it in Laravel's order
+  // (before -> the ability -> after, Gate.php:428-453). A CLOSURE never
+  // reaches here: the build refuses it.
+  const gateDefinitions = (opts && opts.gateDefinitions && typeof opts.gateDefinitions === 'object')
+    ? opts.gateDefinitions
+    : {};
+  rt.gateGlobal = async (ability, subject) => {
+    const def = gateDefinitions[String(ability)];
+    if (!def) {
+      throw new Error('gate: no definition for the ability ' + String(ability) + ' — the build did not dump it');
+    }
+    const user = (await rt.auth().user()) ?? null;
+    // canBeCalledWithUser(): a guest reaches the callback only when its first
+    // parameter allows it.
+    if (user === null && def.guestAllowed === false) return false;
+    const [cls, method] = String(def.callback).split('@');
+    // The compiled class registry (`opts.classes`): the same map `newClass`
+    // reads. The instance is built through it (the ctor's deps included).
+    if (!classesMap[String(cls)]) {
+      throw new Error('gate: the class ' + cls + ' is not compiled — the build did not include it');
+    }
+    const instance = await rt.newClass(cls, []);
+    const fn = instance[method || '__invoke'];
+    if (typeof fn !== 'function') {
+      throw new Error('gate: ' + cls + ' has no method ' + (method || '__invoke') + '()');
+    }
+    const result = await fn.call(instance, user, ...(subject === null || subject === undefined ? [] : [subject]));
+    return rt.truthy(result);
+  };
+
   // ---- rt.url / rt.route ----
   const runtime = !!(opts && opts.runtime);
   const origin = (opts && typeof opts.origin === 'string' && opts.origin) ? String(opts.origin).replace(/\/+$/, '') : '';

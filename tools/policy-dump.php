@@ -138,12 +138,52 @@ $beforeCallbacks = $readProp($gate, 'beforeCallbacks');
 $afterCallbacks = $readProp($gate, 'afterCallbacks');
 $abilities = $readProp($gate, 'abilities');
 
+// The STRING callbacks Gate::define('x', 'Class@method') registers: those can
+// be compiled (a class the build knows), unlike a closure.
+$stringCallbacks = $readProp($gate, 'stringCallbacks');
+$stringCallbacks = is_array($stringCallbacks) ? $stringCallbacks : [];
+
+// For a string callback, the guest rule is the METHOD's first parameter
+// (Gate::methodAllowsGuests(), :489-... -> parameterAllowsGuests(), :529-533).
+$guestAllowedFor = function (string $target): bool {
+    $parts = explode('@', $target, 2);
+    $class = $parts[0];
+    $method = $parts[1] ?? '__invoke';
+    if (! class_exists($class)) return false;
+    try {
+        $m = new ReflectionMethod($class, $method);
+    } catch (Throwable $e) {
+        return false;
+    }
+    $params = $m->getParameters();
+    if (! $params) return true;
+    $p = $params[0];
+    return ($p->hasType() && $p->allowsNull()) || ($p->isDefaultValueAvailable() && $p->getDefaultValue() === null);
+};
+
+$globalAbilities = [];
+if (is_array($abilities)) {
+    foreach ($abilities as $name => $callback) {
+        $target = $stringCallbacks[$name] ?? null;
+        $globalAbilities[(string) $name] = [
+            // A string callback ('Class@method') can be compiled; a closure
+            // cannot (app code the build cannot take) - the build refuses it.
+            'callback' => $target !== null ? (string) $target : null,
+            'kind' => $target !== null ? 'string' : 'closure',
+            'guestAllowed' => $target !== null ? $guestAllowedFor((string) $target) : true,
+        ];
+    }
+}
+
 $globals = [
     // Gate::before() / Gate::after() callbacks — they run for EVERY ability.
+    // Both are closures: the edge cannot run them, so a count > 0 blocks the
+    // route that checks the Gate.
     'before' => is_array($beforeCallbacks) ? count($beforeCallbacks) : 0,
     'after' => is_array($afterCallbacks) ? count($afterCallbacks) : 0,
-    // Gate::define() abilities — a closure, not a policy method.
+    // Gate::define() abilities: the name + whether it is compilable.
     'abilities' => is_array($abilities) ? array_values(array_map('strval', array_keys($abilities))) : [],
+    'definitions' => $globalAbilities,
 ];
 
 $models = [];

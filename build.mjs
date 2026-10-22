@@ -903,6 +903,38 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         );
       }
 
+      // The GLOBAL Gate abilities' callback classes (`Gate::define('x',
+      // 'App\\Policies\\Y@method')`) are app classes too: the kernel's gate
+      // instantiates them, so they join the compiled set.
+      const gateCallbackClasses = Object.values(
+        (policyDump.globals && policyDump.globals.definitions) || {}
+      )
+        .filter((d) => d && d.kind === 'string' && d.callback)
+        .map((d) => String(d.callback).split('@')[0]);
+      if (gateCallbackClasses.length) {
+        const seen = new Set(Object.keys(classesDump.classes || {}));
+        for (const fqcn of gateCallbackClasses) {
+          if (!seen.has(fqcn)) {
+            try {
+              const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'class-dump.php'), fqcn], {
+                cwd: appDir,
+                env: { ...process.env, LW_APP_ROOT: appDir },
+              }).toString('utf8');
+              const extra = JSON.parse(raw);
+              for (const [k, v] of Object.entries(extra.classes || {})) classesDump.classes[k] = v;
+            } catch (e) {
+              console.log(
+                `  the Gate callback class ${fqcn} was not dumped — its routes stay blocked: ${String(
+                  e.stderr || e.message || ''
+                )
+                  .trim()
+                  .slice(0, 200)}`
+              );
+            }
+          }
+        }
+      }
+
       // The models the policies mention (the user, the subject) need their
       // metadata too: a relation read inside a policy must fail loud.
       const policyModelFqcns = new Set();
@@ -1477,6 +1509,14 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           formRequests,
           // The Gate metadata (the policies, their abilities, the guest rules).
           policies: policiesMeta,
+          // The GLOBAL Gate::define() abilities: the compilable ones (a
+          // 'Class@method' string callback) reach the kernel's gate; a closure
+          // never gets here (the transpiler refuses the call).
+          gateDefinitions: Object.fromEntries(
+            Object.entries((policyDump.globals || {}).definitions || {}).filter(
+              ([, d]) => d && d.kind === 'string' && d.callback
+            )
+          ),
           classes: classesMeta,
           // The object store: the app's default disk (the compiled rung has ONE
           // store — the padanan for it) + the configured disk names.
