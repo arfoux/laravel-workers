@@ -778,8 +778,8 @@ test('Model with() eager-loads declared hasMany relations', async () => {
   });
   const posts = await Post.query(db).with('comments').get();
   assert.equal(posts.length, 2);
-  assert.deepEqual(posts[0].getRelation('comments').map((c) => c.get('body')), ['x', 'y']);
-  assert.deepEqual(posts[1].getRelation('comments').map((c) => c.get('body')), ['z']);
+  assert.deepEqual(posts[0].getRelation('comments').all().map((c) => c.get('body')), ['x', 'y']);
+  assert.deepEqual(posts[1].getRelation('comments').all().map((c) => c.get('body')), ['z']);
   assert.deepEqual(posts[0].toJSON().comments.map((c) => c.id), [10, 11]);
 });
 
@@ -824,7 +824,7 @@ test('Model related()/load() resolve declared relations lazily', async () => {
   const p = new Post({ id: 1 });
   assert.equal(p.relationLoaded('comments'), false);
   const rel = await p.related(db, 'comments');
-  assert.deepEqual(rel.map((c) => c.get('id')), [10]);
+  assert.deepEqual(rel.all().map((c) => c.get('id')), [10]);
   assert.equal(p.relationLoaded('comments'), true);
   await assert.rejects(() => p.related(db, 'nope'), /unknown relation/);
   const p2 = new Post({ id: 1 });

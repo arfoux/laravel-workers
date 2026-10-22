@@ -709,6 +709,11 @@ export function emitController(source, methodName, meta = {}) {
   // The model methods the app declares (the relations, the accessors): a
   // read of one is not compiled (it used to answer null - silently wrong).
   const modelNotCompiled = new Map();
+  // alias -> { relationName: { type, related } }: a relation the model
+  // DECLARES (dumped from its own return type). Reading it as a property is a
+  // lazy load the kernel can run, so the compiler emits that instead of the
+  // LW003 refusal.
+  const modelRelations = new Map();
   for (const m of meta.models || []) {
     modelAliases.add(m.alias);
     if (m.fqcn) {
@@ -719,6 +724,17 @@ export function emitController(source, methodName, meta = {}) {
     if (Array.isArray(m.notCompiled) && m.notCompiled.length) {
       modelNotCompiled.set(m.alias, m.notCompiled);
       if (m.fqcn) modelNotCompiled.set(m.fqcn, m.notCompiled);
+    }
+    // The DECLARED relations: a property read of one is a lazy load the
+    // kernel answers (`Model::getRelationValue()` queries when the relation is
+    // not loaded), so it is compiled - not refused like the other app methods.
+    if (Array.isArray(m.relations) && m.relations.length) {
+      const byName = {};
+      for (const rel of m.relations) {
+        byName[rel.name] = { type: rel.type, related: rel.related, foreignKey: rel.foreignKey };
+      }
+      modelRelations.set(m.alias, byName);
+      if (m.fqcn) modelRelations.set(m.fqcn, byName);
     }
   }
   for (const c of info.classes) {
@@ -804,6 +820,7 @@ export function emitController(source, methodName, meta = {}) {
   const emitted = transpileControllerMethod((info.methodNode.body && info.methodNode.body.children) || [], {
     models: modelAliases,
     modelNotCompiled,
+    modelRelations,
     modelClassFqcns,
     // The dumped policies (the Gate check reads them: the abilities, the guest
     // rules, the global Gate callbacks).

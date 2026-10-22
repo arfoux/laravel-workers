@@ -110,6 +110,60 @@ foreach (array_slice($argv, 1) as $fqcn) {
         $notCompiled[] = $mname;
     }
     $entry['notCompiled'] = array_values(array_unique($notCompiled));
+
+    // The RELATIONS the model declares (`public function comments(): HasMany`).
+    // Eloquent loads one lazily when it is read as a property
+    // (Model::getRelationValue()), so the edge must know the relation's shape
+    // at BUILD time: the compiled read becomes a query. A relation is
+    // recognised by its declared RETURN TYPE (a Relation subclass) and its
+    // keys come from the relation object's own getters - calling the method on
+    // a fresh instance touches no database.
+    $relations = [];
+    foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
+        if ($m->isStatic() || $m->getDeclaringClass()->getName() !== $fqcn) {
+            continue;
+        }
+        $returnType = $m->getReturnType();
+        if (!$returnType instanceof ReflectionNamedType || $returnType->isBuiltin()) {
+            continue;
+        }
+        $typeName = $returnType->getName();
+        if (!class_exists($typeName) || !is_subclass_of($typeName, 'Illuminate\\Database\\Eloquent\\Relations\\Relation')) {
+            continue;
+        }
+        // Only the shapes the kernel's loader answers: hasMany and belongsTo.
+        // A morph / hasOne / through relation is LEFT OUT on purpose - reading
+        // it stays a build error instead of answering the wrong shape.
+        $kind = null;
+        if (is_a($typeName, 'Illuminate\\Database\\Eloquent\\Relations\\HasMany', true)) {
+            $kind = 'hasMany';
+        } elseif (is_a($typeName, 'Illuminate\\Database\\Eloquent\\Relations\\BelongsTo', true)) {
+            $kind = 'belongsTo';
+        }
+        if ($kind === null) {
+            continue;
+        }
+        try {
+            $relation = $m->invoke($instance);
+        } catch (Throwable $e) {
+            // The relation needs state the build does not have: leave it out
+            // (the read keeps failing loud).
+            continue;
+        }
+        $rel = [
+            'name' => $m->getName(),
+            'type' => $kind,
+            'related' => get_class($relation->getRelated()),
+            'foreignKey' => $relation->getForeignKeyName(),
+        ];
+        if ($kind === 'belongsTo') {
+            $rel['ownerKey'] = $relation->getOwnerKeyName();
+        } else {
+            $rel['localKey'] = $relation->getLocalKeyName();
+        }
+        $relations[] = $rel;
+    }
+    $entry['relations'] = $relations;
     } catch (Throwable $e) {
         $entry['error'] = get_class($e) . ': ' . $e->getMessage();
     }

@@ -90,12 +90,12 @@ test('related() answers the hasMany rows filtered by the foreign key', async () 
   const post = new Post({ id: 7 });
   const comments = await post.related({}, 'comments');
 
-  // Laravel's hasMany answers an Illuminate\Database\Eloquent\Collection
-  // (HasMany extends HasOneOrMany; getResults() -> Collection). The kernel's
-  // relation value is a plain array of models.
-  assert.ok(Array.isArray(comments), 'hasMany answers a collection (array of models)');
+  // Laravel's hasMany answers an Illuminate\\Database\\Eloquent\\Collection
+  // (HasMany::getResults(), :433-440) - so ->count(), ->pluck() and ->isEmpty()
+  // are the app's normal calls. The kernel answers the same Collection.
+  assert.equal(typeof comments.count, 'function', 'hasMany answers a Collection');
   assert.deepEqual(
-    comments.map((c) => c.get('body')),
+    comments.all().map((c) => c.get('body')),
     ['first', 'second']
   );
   assert.equal(counter.queries, 1);

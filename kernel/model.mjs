@@ -948,7 +948,7 @@ async function loadRelation(db, ModelClass, rows, name, rel) {
   const fk = rel.foreignKey || defaultForeignKey(ModelClass);
   const ids = idsOf((r) => r.get(lk));
   if (!ids.length) {
-    for (const r of rows) r.setRelation(name, type === 'hasOne' ? null : []);
+    for (const r of rows) r.setRelation(name, type === 'hasOne' ? null : new Collection([]));
     return;
   }
   const children = await Related.query(db).whereIn(fk, ids).get();
@@ -960,7 +960,10 @@ async function loadRelation(db, ModelClass, rows, name, rel) {
   }
   for (const r of rows) {
     const list = grouped.get(String(r.get(lk))) || [];
-    r.setRelation(name, type === 'hasOne' ? (list[0] || null) : list);
+    // Eloquent's HasMany::getResults() answers a COLLECTION
+    // (HasMany.php:433-440), not a plain array: `$post->comments->count()`,
+    // `->pluck()`, `->isEmpty()` are the app's normal calls.
+    r.setRelation(name, type === 'hasOne' ? list[0] || null : new Collection(list));
   }
 }
 
@@ -973,7 +976,17 @@ async function loadCounts(db, ModelClass, rows, names) {
     await loadRelation(db, ModelClass, rows, name, rel);
     for (const r of rows) {
       const value = r.getRelation(name);
-      const count = Array.isArray(value) ? value.length : (value == null ? 0 : 1);
+      // A hasMany answers a Collection now (Eloquent's HasMany::getResults()),
+      // a belongsTo a model or null: count the Collection, never treat it as
+      // one row.
+      const count =
+        value == null
+          ? 0
+          : Array.isArray(value)
+            ? value.length
+            : typeof value.count === 'function'
+              ? value.count()
+              : 1;
       if (r._relations) delete r._relations[name];
       r.attributes[name + '_count'] = count;
       r.setRelation(name + '_count', count);

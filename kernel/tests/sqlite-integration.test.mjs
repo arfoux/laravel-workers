@@ -110,9 +110,9 @@ test('sqlite: eager loading runs real batch whereIn', { skip }, async () => {
   const db = fixture();
   const posts = await Post.query(db).orderBy('id').with('comments').get();
   assert.deepEqual(ids(posts), [1, 2, 3]);
-  assert.deepEqual(posts[0].getRelation('comments').map((c) => c.get('body')), ['x', 'y']);
-  assert.deepEqual(posts[1].getRelation('comments').map((c) => c.get('body')), ['z']);
-  assert.deepEqual(posts[2].getRelation('comments'), []);
+  assert.deepEqual(posts[0].getRelation('comments').all().map((c) => c.get('body')), ['x', 'y']);
+  assert.deepEqual(posts[1].getRelation('comments').all().map((c) => c.get('body')), ['z']);
+  assert.deepEqual(posts[2].getRelation('comments').all(), []);
 });
 
 test('sqlite: belongsTo eager loading', { skip }, async () => {

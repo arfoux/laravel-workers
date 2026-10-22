@@ -1,5 +1,6 @@
 // compiler/src/transpiler.mjs
 import parser from 'php-parser';
+import { Collection } from '../../kernel/collections.mjs';
 import { STR_METHODS } from '../../kernel/str.mjs';
 import { ADAPTER_ASYNC } from '../../kernel/service-adapters.mjs';
 
@@ -231,6 +232,14 @@ function tx(node) {
         const kind = CTX.modelVars.get(mv);
         if (kind === 'model' || kind === 'list') {
           const alias = CTX.modelAlias ? CTX.modelAlias.get(mv) : null;
+          // A DECLARED relation (`$post->comments`): Eloquent loads it lazily
+          // when it is read as a property (Model::getRelationValue() hits the
+          // database when the relation is not loaded), so the compiled read is
+          // the awaited runtime load - the same query, the same Collection.
+          const declared = alias && CTX.modelRelations ? CTX.modelRelations.get(alias) : null;
+          if (declared && Object.prototype.hasOwnProperty.call(declared, name)) {
+            return 'await rt.modelRelation(' + vname(node.what.name) + ', ' + JSON.stringify(name) + ')';
+          }
           const names = alias && CTX.modelNotCompiled ? CTX.modelNotCompiled.get(alias) : null;
           if (names && names.includes(name)) {
             throw mkErr(
@@ -1050,6 +1059,14 @@ const VALIDATOR_METHODS = new Map([
 // The Validator type as the app writes it (Illuminate\Validation\Validator or
 // Illuminate\Contracts\Validation\Validator - the contract is what the
 // framework type-hints).
+// The methods the kernel's Collection answers: a relation read (`$post->comments`)
+// IS a Collection at the edge (Eloquent's HasMany::getResults() answers one), so
+// those calls are plain synchronous method calls on it. The set comes from the
+// kernel class itself - a method it does not have stays a build error.
+const COLLECTION_METHODS = new Set(
+  Object.getOwnPropertyNames(Collection.prototype).filter((n) => n !== 'constructor')
+);
+
 const VALIDATOR_TYPES = new Set([
   'Illuminate\\Validation\\Validator',
   'Illuminate\\Contracts\\Validation\\Validator',
@@ -2086,6 +2103,19 @@ function txCall(node) {
             PORT_HINT
           );
         }
+      } else if (kind === 'collection') {
+        // A relation read is the kernel's Collection: its own methods are plain
+        // synchronous calls (Eloquent answers a Collection there too). A method
+        // the kernel Collection does not have stays a build error - never a
+        // silent `undefined is not a function` at request time.
+        if (!COLLECTION_METHODS.has(meth)) {
+          throw mkErr(
+            'LW003',
+            'the collection method ->' + meth + '() is not compiled - ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
       } else if (kind === 'list' || kind === 'scalar') {
         throw mkErr(
           'LW003',
@@ -2307,6 +2337,20 @@ function modelReceiverKind(node) {
 //   list    - Post::all()/get()         (a list of models)
 //   scalar  - count()/pluck()/value()   (a value)
 function modelExprKind(node) {
+  // A DECLARED relation read as a property (`$post->comments`): a hasMany is a
+  // Collection of models, a belongsTo is one model. The compiled read is the
+  // awaited runtime load, and the variable it lands in must be typed so the
+  // next call (`$comments->count()`) resolves against the Collection surface.
+  if (CTX && CTX.modelVars && node && node.kind === 'propertylookup' && node.what && node.what.kind === 'variable') {
+    const ownerKind = CTX.modelVars.get(vname(node.what.name));
+    const alias = CTX.modelAlias ? CTX.modelAlias.get(vname(node.what.name)) : null;
+    const declared = alias && CTX.modelRelations ? CTX.modelRelations.get(alias) : null;
+    const name = node.offset && node.offset.name;
+    if ((ownerKind === 'model' || ownerKind === 'list') && declared && typeof name === 'string') {
+      const rel = declared[name];
+      if (rel) return rel.type === 'belongsTo' ? 'model' : 'collection';
+    }
+  }
   if (!CTX || !CTX.models) return null;
   const chain = modelChain(node);
   if (!chain) return null;
@@ -2798,6 +2842,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     // The model methods the app declares (alias -> [names]): a relation or an
     // accessor read as a property is not compiled.
     modelNotCompiled: opts.modelNotCompiled || new Map(),
+    // alias -> { relationName: { type, related } }: the DECLARED relations (a
+    // property read of one is a lazy load, not a refusal).
+    modelRelations: opts.modelRelations || new Map(),
     // class constants dumped at build time: { FQCN: { NAME: value } }
     constants: opts.constants || {},
     // FormRequest rules per request variable: Map<varName, { rules, messages, attributes }>

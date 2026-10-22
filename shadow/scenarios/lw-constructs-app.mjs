@@ -38,6 +38,14 @@ export default {
         "INSERT INTO posts (id, title, body, published, user_id, created_at, updated_at) " +
         "VALUES (3, 'Third Post', 'Third body', 1, 1, '2025-04-01 00:00:00', '2025-04-01 00:00:00')",
     },
+    {
+      // The hasMany fixture: two comments on post 1, one on post 2.
+      sql:
+        "INSERT INTO comments (id, post_id, body, created_at, updated_at) VALUES " +
+        "(1, 1, 'First comment', '2025-06-01 01:00:00', '2025-06-01 01:00:00'), " +
+        "(2, 1, 'Second comment', '2025-06-01 02:00:00', '2025-06-01 02:00:00'), " +
+        "(3, 2, 'Third comment', '2025-05-01 01:00:00', '2025-05-01 01:00:00')",
+    },
   ],
   steps: [
     // The first request bootstraps the session (and the CSRF token): it uses the
@@ -79,6 +87,21 @@ export default {
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {
+      // A hasMany relation read as a PROPERTY (`$post->comments`): Eloquent
+      // loads it lazily - the edge must query the comments of that post.
+      label: 'GET /relation-demo (hasMany as a property)',
+      method: 'GET',
+      uri: '/relation-demo',
+      jar: true,
+    },
+    {
+      // The inverse (`$comment->post`): a BelongsTo - one model.
+      label: 'GET /belongs-to-demo (belongsTo as a property)',
+      method: 'GET',
+      uri: '/belongs-to-demo',
+      jar: true,
+    },
+    {
       // An API RESOURCE: the controller answers `new PostResource($post)` and
       // Laravel's Router wraps it in a ResourceResponse - `{"data": {...},
       // "meta": {...}}` (JsonResource::toArray + with()).
@@ -94,6 +117,15 @@ export default {
       label: 'GET /posts-paginated-json (response()->json($paginator))',
       method: 'GET',
       uri: '/posts-paginated-json',
+      jar: true,
+    },
+    {
+      // The query page, on the COMPILED controller: the paginator reads
+      // `?page=2` from the request (Laravel's Paginator::resolveCurrentPage()).
+      label: 'GET /posts-paginated-json?page=2 (the compiled paginator reads the query)',
+      method: 'GET',
+      uri: '/posts-paginated-json',
+      query: { page: '2' },
       jar: true,
     },
     {
@@ -156,11 +188,18 @@ export default {
     },
     {
       // The second page: the page comes from the request (`?page=2`).
-      label: 'GET /posts-paginated?page=2 (the second page)',
+      //
+      // This route is SNAPSHOTTED at build time (it answers HTML), so the page
+      // it serves is the one the build rendered - a static page cannot read the
+      // request's query. The query-page parity is proven on the COMPILED
+      // controller instead (`/posts-paginated-json?page=2`, below).
+      label: 'GET /posts-paginated?page=2 (the second page, a build-time snapshot)',
       method: 'GET',
       uri: '/posts-paginated',
       query: { page: '2' },
       jar: true,
+      expect: 'diverges',
+      why: 'a build-time snapshot: the page is baked in, the query is not read (the compiled controller proves it below)',
     },
     {
       // The pagination links: the view renders the paginator (the compiled
@@ -249,7 +288,16 @@ export default {
       jar: true,
       form: { _token: '@token', title: 'Shadow Post', body: 'From the shadow harness', published: '1' },
     },
-    { label: 'GET /posts (list after create)', method: 'GET', uri: '/posts', jar: true },
+    {
+      // The same snapshot: the row the previous step CREATED exists only at
+      // request time, so a page rendered at build time cannot show it.
+      label: 'GET /posts (list after create, a build-time snapshot)',
+      method: 'GET',
+      uri: '/posts',
+      jar: true,
+      expect: 'diverges',
+      why: 'a build-time snapshot cannot show a row created during the run',
+    },
     {
       label: 'POST /posts (the FormRequest hook prepares the input)',
       method: 'POST',

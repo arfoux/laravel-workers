@@ -2254,6 +2254,24 @@ export function buildRt(context, opts = {}) {
     facadeCache.set(M, facade);
     return facade;
   };
+  // A DECLARED relation read as a property (`$post->comments`): Eloquent's
+  // Model::getRelationValue() answers the CACHED relation and otherwise queries
+  // the database - the kernel's Model::related() does exactly that (it loads
+  // through the model's own `static relations` and caches the result).
+  rt.modelRelation = async (model, name) => {
+    if (!model || typeof model.related !== 'function') {
+      throw new Error('rt.modelRelation: ' + JSON.stringify(name) + ' needs a model instance');
+    }
+    if (!db) {
+      throw new Error(
+        'rt.modelRelation: the relation "' +
+          String(name) +
+          '" needs the database binding (env.DB) — the edge cannot load it'
+      );
+    }
+    return model.related(db, name);
+  };
+
   rt.model = (name) => {
     const key = String(name);
     const M = modelsMap[key];
