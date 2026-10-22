@@ -1320,3 +1320,37 @@ class NoDefault
   assert.equal(res.errors.length, 1);
   assert.match(res.errors[0].message, /interface without a concrete binding/);
 });
+
+test('classes: a property with no default is null, but a TYPED one is refused', async () => {
+  // PHP initialises an UNTYPED property to null (`public $view;` is
+  // `$view = null`), so the compiled field is null too - not `undefined`,
+  // which would drop the key from json_encode.
+  const untyped = classFile('Untyped', `<?php
+namespace App\\Mail;
+class Untyped
+{
+    public $view;
+    public function __construct() {}
+}
+`);
+  const res = compileClasses({ events: {}, classes: { 'App\\Mail\\Untyped': { file: untyped, kind: 'mailable' } } }, OPTIONS);
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /"__view": null/);
+
+  // A TYPED property with no default is NOT null in PHP: it stays
+  // uninitialized and reading it throws ("Typed property X::$sent must not be
+  // accessed before initialization"). The compiled rung has no uninitialized
+  // state, so it must refuse rather than answer null.
+  const typed = classFile('Typed', `<?php
+namespace App\\Mail;
+class Typed
+{
+    public int $sent;
+    public function __construct() {}
+}
+`);
+  const bad = compileClasses({ events: {}, classes: { 'App\\Mail\\Typed': { file: typed, kind: 'mailable' } } }, OPTIONS);
+  assert.equal(bad.errors.length, 1, JSON.stringify(bad.errors));
+  assert.equal(bad.errors[0].code, 'LW002');
+  assert.match(bad.errors[0].message, /typed property \$sent/);
+});

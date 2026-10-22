@@ -177,7 +177,22 @@ function compileConstructor(fqcn, classNode, opts) {
       const pname = nodeName(prop.name);
       if (!pname) continue;
       if (prop.value === undefined || prop.value === null) {
-        // PHP initialises a property with no default to NULL (`public $view;`
+        if (prop.type) {
+          // PHP does not initialise a TYPED property: `public int $sent;`
+          // stays uninitialized and READING it throws (php.net/manual/en/
+          // language.oop5.properties.php - a typed property "must not be
+          // accessed before initialization"). The compiled rung has no
+          // uninitialized state, so it would answer null and `$sent + 1`
+          // would render 1 where Laravel answers 500.
+          return {
+            error:
+              'the typed property $' + pname + ' of ' + fqcn + ' has no default - PHP leaves it uninitialized and ' +
+              'reading it throws "Typed property ' + fqcn + '::$' + pname + ' must not be accessed before ' +
+              'initialization"; the compiled rung cannot model uninitialized state',
+            code: 'LW002',
+          };
+        }
+        // An UNTYPED property with no default IS null in PHP (`public $view;`
         // is `$view = null`), so the compiled field is null too: `json_encode`
         // keeps the key and the mailer's `!view` test sees the same falsy value.
         declared.push({ name: pname, js: 'null' });
