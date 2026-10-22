@@ -139,15 +139,33 @@ const phpSlice = (items, offset, length) => {
   return items.slice(off, end);
 };
 
-/** Stable sort (PHP 8's uasort is stable), keys replaced by positions. */
-const sortBySpec = (items, spec, descending) => {
-  const decorated = items.map((item, index) => ({ item, index, key: valueOf(spec, item, index) }));
+/**
+ * Stable sort (PHP 8's uasort is stable), PHP's array KEYS preserved.
+ *
+ * Laravel's Collection::sortBy() builds `$results` keyed by the ORIGINAL key and
+ * returns `newInstance($results)` (Collection.php:1601-1625), so
+ * `collect(['a' => 3, 'b' => 1])->sortBy(fn ($v) => $v)->all()` is
+ * `['b' => 1, 'a' => 3]` - NOT a reindexed list (probed with Laravel 13).
+ * The keys come back with the items so the caller can rebuild the collection.
+ */
+const sortBySpec = (items, keys, spec, descending) => {
+  const source = keys || items.map((_, index) => index);
+  const decorated = items.map((item, index) => ({
+    item,
+    index,
+    key: valueOf(spec, item, source[index]),
+  }));
   decorated.sort((a, b) => {
     const cmp = phpCompare(a.key, b.key);
     if (cmp === 0) return a.index - b.index;
     return descending ? -cmp : cmp;
   });
-  return decorated.map((entry) => entry.item);
+  return {
+    items: decorated.map((entry) => entry.item),
+    // A LIST stays a list (no keys to carry): only a keyed collection keeps
+    // its keys, exactly like PHP's array.
+    keys: keys ? decorated.map((entry) => source[entry.index]) : null,
+  };
 };
 
 const likeMatch = (actual, pattern) => {
@@ -1306,11 +1324,13 @@ export class Collection {
   }
 
   sortBy(callback) {
-    return new Collection(sortBySpec(this.items, callback, false));
+    const sorted = sortBySpec(this.items, this.phpKeys, callback, false);
+    return new Collection(sorted.items, sorted.keys);
   }
 
   sortByDesc(callback) {
-    return new Collection(sortBySpec(this.items, callback, true));
+    const sorted = sortBySpec(this.items, this.phpKeys, callback, true);
+    return new Collection(sorted.items, sorted.keys);
   }
 
   // ---- aggregation ------------------------------------------------------

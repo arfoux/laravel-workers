@@ -517,3 +517,18 @@ test('sort/sortDesc use PHP order and keep the keys', () => {
   // given") - never a silent reverse.
   assert.throws(() => collect([1, 2]).sortDesc((a, b) => a - b), TypeError);
 });
+
+// ---- sortBy keeps PHP's keys (probed) -----------------------------------
+//
+// Laravel's Collection::sortBy() keys `$results` by the ORIGINAL key and
+// returns `newInstance($results)` (Collection.php:1601-1625), so a keyed
+// collection stays keyed. Probed with the vendored Laravel 13:
+//   collect(['a' => 3, 'b' => 1, 'c' => 2])->sortBy(fn ($v) => $v)->all()
+//     => {"b":1,"c":2,"a":3}
+// A LIST stays a list (there are no keys to carry).
+test('collections: sortBy/sortByDesc keep the original keys', () => {
+  const keyed = new Collection({ a: 3, b: 1, c: 2 });
+  assert.deepEqual(keyed.sortBy((v) => v).all(), { b: 1, c: 2, a: 3 });
+  assert.deepEqual(keyed.sortByDesc((v) => v).all(), { a: 3, c: 2, b: 1 });
+  assert.deepEqual(new Collection([3, 1]).sortBy((v) => v).all(), [1, 3]);
+});
