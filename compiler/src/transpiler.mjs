@@ -2937,4 +2937,18 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
 
 export default transpile;
 
-export { REQUEST_CALL, REQUEST_NO_CHAIN, REQUEST_ASYNC, REQUEST_DENY, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES };
+export {
+  REQUEST_CALL,
+  REQUEST_NO_CHAIN,
+  REQUEST_ASYNC,
+  REQUEST_DENY,
+  VALIDATOR_TYPES,
+  RESOURCE_REQUEST_TYPES,
+  // The allowlists a compiled method call is checked against: each name
+  // MUST exist on the kernel object it is compiled to call (a name the
+  // kernel lacks compiles green and throws "is not a function" at request
+  // time - the silent 500 this repo treats as the worst answer).
+  MODEL_INSTANCE_METHODS,
+  PAGINATOR_METHODS,
+  COLLECTION_METHODS,
+};
