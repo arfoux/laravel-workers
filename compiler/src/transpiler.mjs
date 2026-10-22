@@ -1165,6 +1165,10 @@ function txGate(node, meth) {
       );
     }
     CTX.usedGate = true;
+    // The kernel builds the callback CLASS (the compiled registry), so the
+    // handler must import it: without this the emitted module has no
+    // LW_CLASSES and `rt.gateGlobal` answers "the class is not compiled".
+    CTX.usedClasses = true;
     const globalCall = 'rt.gateGlobal(' + JSON.stringify(ability) + ', null)';
     // `txAwait` wraps the WHOLE expression as `(await <expr>)`, so the
     // negation must sit INSIDE the await: `(await !promise)` would negate the
@@ -1420,6 +1424,30 @@ function txCall(node) {
       }
       CTX.usedEvents = true;
       return txAwait('rt.event.dispatch(' + tx(arg) + ')', node, 'Event::dispatch()');
+    }
+    // `Job::dispatch(...)` on a compiled JOB class (app/Jobs): Laravel queues
+    // it - the `database` driver writes a `jobs` row and a worker consumes it;
+    // the `sync` driver runs it inline. The edge writes the D1 row
+    // (`rt.queuePush`) and the cron trigger drains it, so the job runs AFTER
+    // the response (Laravel's `database`/`redis` behaviour, not `sync`'s).
+    if (meth0 === 'dispatch') {
+      const jobFqcn = CTX.jobs && CTX.jobs.has(cls0)
+        ? cls0
+        : CTX.classFqcns && CTX.classFqcns.get(cls0) && CTX.jobs && CTX.jobs.has(CTX.classFqcns.get(cls0))
+          ? CTX.classFqcns.get(cls0)
+          : null;
+      if (jobFqcn) {
+        CTX.usedQueue = true;
+        // The constructor arguments become the row's payload: the consumer
+        // builds the class with them and calls handle().
+        const argNodes0 = node.arguments || [];
+        const argsJs = argNodes0.map((a) => tx(a)).join(', ');
+        return txAwait(
+          'rt.queuePush(' + JSON.stringify(jobFqcn) + ', [' + argsJs + '])',
+          node,
+          'Job::dispatch()'
+        );
+      }
     }
     // Laravel's Mailer::send() has TWO shapes: a Mailable INSTANCE (it is sent
     // as it is - Mailer::send() sends the mailable) and a VIEW NAME (Laravel
@@ -2710,6 +2738,8 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     // The app classes the build compiled (the event classes + the listeners):
     // `new X(...)` and the event dispatch.
     classes: opts.classes instanceof Set ? opts.classes : new Set(opts.classes || []),
+    // The JOB classes (app/Jobs): `Job::dispatch()` writes a queue row.
+    jobs: opts.jobs instanceof Set ? opts.jobs : new Set(opts.jobs || []),
     // The alias of each compiled class (the FQCN): `new PostPublished($id)`.
     classFqcns: opts.classFqcns instanceof Map ? opts.classFqcns : new Map(Object.entries(opts.classFqcns || {})),
     // The services the constructor injected (`$this->mailer`): their async
@@ -2768,6 +2798,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     formRequests: opts.formRequests || new Map(),
     // Did this method use the Gate? (the handler then imports the policies)
     usedGate: false,
+    usedQueue: false,
     usedClasses: false,
     // Did this method use a paginator? (the handler then imports the
     // pagination view).
@@ -2790,6 +2821,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   const lines = [];
   if (declared.length) lines.push(indent + 'let ' + declared.join(', ') + ';');
   let usedGate = false;
+  let usedQueue = false;
   let usedClasses = false;
   let usedPaginator = false;
   let usedEvents = false;
@@ -2797,6 +2829,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
   try {
     walkChildren(bodyChildren || [], lines, indent, {});
       usedGate = !!CTX.usedGate;
+      usedQueue = !!CTX.usedQueue;
     usedClasses = !!CTX.usedClasses;
     usedPaginator = !!CTX.usedPaginator;
     usedEvents = !!CTX.usedEvents;
@@ -2808,7 +2841,7 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     CTX = null;
     CLOSURE_DEPTH = 0;
   }
-  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator, usedEvents, usedClasses, instantiated };
+  return { code: lines.join('\n'), errors: [], usedGate, usedPaginator, usedEvents, usedClasses, usedQueue, instantiated };
 }
 
 export default transpile;

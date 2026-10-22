@@ -730,7 +730,11 @@ export function emitController(source, methodName, meta = {}) {
       errors.push(lwErr('LW002', RULE_OBJECT_REASON + PORT_HINT, null, PORT_HINT));
       continue;
     }
-    if (!modelAliases.has(c.alias)) {
+    // A JOB class (`App\Jobs\X`): `X::dispatch()` is a queue push, not a
+    // model query - the transpiler compiles it (rt.queuePush).
+    const isJobClass =
+      meta.classes && Array.isArray(meta.classes.jobs) && meta.classes.jobs.includes(c.fqcn);
+    if (!modelAliases.has(c.alias) && !isJobClass) {
       if (isFacadeClass(c.fqcn)) {
         errors.push(
           lwErr(
@@ -807,6 +811,8 @@ export function emitController(source, methodName, meta = {}) {
     // The compiled classes (the event classes + their listeners): `new X(...)`
     // and the event dispatch.
     classes: (meta.classes && meta.classes.fqcns) || [],
+    // The job classes: `Job::dispatch()` is a queue push, not a static call.
+    jobs: (meta.classes && meta.classes.jobs) || [],
     classFqcns: (meta.classes && meta.classes.aliases) || {},
     // The event classes that did not compile, with the reason: a dispatch of
     // one of them would be a silent no-op, so the build stops and names it.
@@ -914,7 +920,9 @@ export function emitController(source, methodName, meta = {}) {
   lines.push("import { models as LW_MODELS, routeMap as LW_ROUTE_MAP } from '../models.generated.mjs';");
   // The Gate check reads the compiled policies (the abilities, the guest rules).
   if (emitted.usedGate) {
-    lines.push("import { policies as LW_POLICIES } from '../policies.generated.mjs';");
+    lines.push(
+      "import { policies as LW_POLICIES, gateDefinitions as LW_GATE_DEFINITIONS } from '../policies.generated.mjs';"
+    );
   }
   // The compiled classes (the listeners, the services, the mailables): the
   // runtime builds the instances.
@@ -937,6 +945,7 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    views: VIEWS,');
   if (emitted.usedGate) {
     lines.push('    policies: LW_POLICIES,');
+    lines.push('    gateDefinitions: LW_GATE_DEFINITIONS,');
   }
   if (emitted.usedEvents || emitted.usedClasses || usesFormRequestClass) {
     lines.push('    classes: LW_CLASSES,');
@@ -993,7 +1002,7 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('}');
   lines.push('');
 
-  return { code: lines.join('\n'), errors: [] };
+  return { code: lines.join('\n'), errors: [], usedQueue: !!emitted.usedQueue };
 }
 
 export default { extractController, emitController };

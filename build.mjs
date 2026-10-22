@@ -410,6 +410,11 @@ const corsPathFor = (uri) => {
   return null;
 };
 
+// The routes that dispatch a queued job, and the cron triggers the schedule
+// produced: the queue check at the end reads both.
+const queuePushes = [];
+let cronTriggers = [];
+
 // ---------- 3b-bis. the app's schedule -> Cloudflare Cron Triggers ----------
 // The edge cannot run an artisan command, but it can *trigger* it: the schedule
 // becomes a cron trigger (the padanan — Free allows 5 triggers per account) and
@@ -442,6 +447,7 @@ const corsPathFor = (uri) => {
   // The Cloudflare cron trigger list (5 triggers per account on Free).
   const triggers = events.filter((e) => e && e.cron_triggerable && e.expression).map((e) => e.expression);
   const uniqueTriggers = [...new Set(triggers)];
+  cronTriggers = uniqueTriggers;
   writeFileSync(
     join(dist, 'cron.json'),
     JSON.stringify({ crons: uniqueTriggers, events: events.map((e) => ({ name: e.name, expression: e.expression })) }, null, 2) + '\n'
@@ -842,6 +848,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
     if (prepared.length) {
       // phase B: model metadata (one PHP dump for every referenced class)
       const aliasToFqcns = new Map(); // alias -> Set(fqcn)
+
       for (const p of prepared) {
         for (const c of p.meta.classes || []) {
           const set = aliasToFqcns.get(c.alias) || new Set();
@@ -1337,6 +1344,13 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       }
       const classesMeta = {
         fqcns: Object.keys(classesCompile.meta),
+        // The JOB classes (app/Jobs): `Job::dispatch()` writes a queue row and
+        // the cron consumer runs the class's handle(), so the transpiler must
+        // know which classes are jobs (a plain `dispatch()` on anything else
+        // is not a queue push).
+        jobs: Object.keys(classesDump.classes || {}).filter(
+          (fqcn) => (classesDump.classes[fqcn] || {}).kind === 'job'
+        ),
         aliases: Object.fromEntries(classAliases),
         blocked: blockedClasses,
         // The compiled classes' own methods (FQCN -> { methods, base }): a
@@ -1382,7 +1396,15 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           console.log(`  controller ${p.route}: skipped — model alias "${ambiguous.alias}" is ambiguous between namespaces`);
           continue;
         }
+        // A JOB class is not a model: `Job::dispatch()` is a queue push the
+        // transpiler compiles, so it must not be judged by the model dump.
+        const jobFqcns = new Set(
+          Object.keys(classesDump.classes || {}).filter(
+            (fqcn) => (classesDump.classes[fqcn] || {}).kind === 'job'
+          )
+        );
         const badModel = (p.meta.classes || []).find((c) => {
+          if (jobFqcns.has(c.fqcn)) return false;
           const d = modelDump.get(c.fqcn);
           return !d || !d.model;
         });
@@ -1589,6 +1611,13 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             ],
             { cwd: appDir }
           );
+          // A handler that queues a job writes a `lw_jobs` row the CRON
+          // TRIGGER drains. With no trigger the job would never run, so the
+          // build refuses it below (the route itself is fine - the deployment
+          // is not).
+          if (readFileSync(outPath, 'utf8').includes('rt.queuePush(')) {
+            queuePushes.push(p.route);
+          }
           if (isExtraVerb) {
             verbControllers.push({ route: p.route, verb: p.verb, slug, fqcn: p.fqcn, method: p.method });
             console.log(`  controller ${p.verb} ${p.route} -> dist/src/controllers/${slug}.mjs (${p.fqcn}@${p.method})`);
@@ -1982,6 +2011,18 @@ if (strict && blocked) {
     'coverage check failed (--strict)' +
       (scaffold ? ' — port stubs were scaffolded + registered; implement them, then re-run' : '') +
       stubNote
+  );
+}
+
+// A queued job with no cron trigger never runs: the route would answer 200 and
+// the work would silently never happen (Laravel runs it). This runs LAST -
+// `queuePushes` is filled while the controllers are emitted.
+if (queuePushes.length && !(cronTriggers && cronTriggers.length)) {
+  fail(
+    'the route(s) ' + queuePushes.join(', ') + ' dispatch a queued job, but the worker has no cron trigger - ' +
+      'a Worker has no long-lived queue consumer, so the job would never run. Add a cron trigger ' +
+      '(wrangler.toml `[triggers] crons = ["*/1 * * * *"]`) or dispatch the job inline ' +
+      "(Laravel's sync driver) instead"
   );
 }
 

@@ -400,7 +400,7 @@ test('emit: Gate::allows() compiles to an awaited rt.gate() call', () => {
   });
   assert.match(code, /\(await rt\.gate\("update", v_post, "App\\\\Models\\\\Post", false\)\)/);
   // The handler imports the compiled policies.
-  assert.match(code, /import \{ policies as LW_POLICIES \} from '\.\.\/policies\.generated\.mjs';/);
+  assert.match(code, /import \{ policies as LW_POLICIES, gateDefinitions as LW_GATE_DEFINITIONS \} from '\.\.\/policies\.generated\.mjs';/);
   assert.match(code, /policies: LW_POLICIES,/);
 });
 
@@ -1687,6 +1687,10 @@ writeTree(tmpRoot, {
     '      update: { guest: false, fn: async (rt, v_user, v_post) => { return rt.strictEq(rt.prop(v_user, "id"), rt.prop(v_post, "user_id"), false, false); } },',
     '    },',
     '  },',
+    '};',
+    // The GLOBAL Gate::define() abilities (the same shape build.mjs writes).
+    'export const gateDefinitions = {',
+    '  "can-publish": { callback: "App\\\\Policies\\\\AbilityGate@canPublish", kind: "string", guestAllowed: true },',
     '};',
     'export default policies;',
     '',

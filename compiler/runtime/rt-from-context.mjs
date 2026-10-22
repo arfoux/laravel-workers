@@ -6,7 +6,7 @@ import { str as strHelpers } from '../../kernel/str.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
-import { setModelTimezone } from '../../kernel/model.mjs';
+import { setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
 import { Collection } from '../../kernel/collections.mjs';
 
@@ -752,6 +752,99 @@ export function buildRt(context, opts = {}) {
     return deny ? !allowed : allowed;
   };
 
+  // ---- the queue: `Job::dispatch()` writes a D1 row ----
+  //
+  // Laravel's `database` queue driver writes a row into `jobs` and a worker
+  // consumes it later; `sync` runs the job inline. The edge has no long-lived
+  // worker, so the row goes into `lw_jobs` and the CRON TRIGGER drains it
+  // (`scheduled()` in src/worker.mjs) - the job runs AFTER the response, which
+  // is the `database` behaviour. The build refuses the push when the worker has
+  // no cron trigger (the job would never run).
+  const QUEUE_TABLE = 'lw_jobs';
+  const queueReady = new WeakMap();
+  async function ensureQueueTable(db) {
+    let ready = queueReady.get(db);
+    if (!ready) {
+      ready = (async () => {
+        try {
+          await db.prepare('SELECT 1 FROM "' + QUEUE_TABLE + '" LIMIT 1').first();
+        } catch {
+          await db
+            .prepare(
+              'CREATE TABLE IF NOT EXISTS "' + QUEUE_TABLE + '" (' +
+                '"id" INTEGER PRIMARY KEY AUTOINCREMENT, "job" TEXT NOT NULL, ' +
+                '"payload" TEXT NOT NULL, "attempts" INTEGER NOT NULL DEFAULT 0, ' +
+                '"available_at" INTEGER NOT NULL, "created_at" TEXT NOT NULL)'
+            )
+            .run();
+        }
+      })();
+      queueReady.set(db, ready);
+    }
+    return ready;
+  }
+  rt.queuePush = async (fqcn, args) => {
+    const db = opts && opts.db ? opts.db : null;
+    if (!db) throw new Error('Job::dispatch(): no database binding (env.DB) — the queue row has nowhere to go');
+    await ensureQueueTable(db);
+    const now = clockDate();
+    const res = await db
+      .prepare(
+        'INSERT INTO "' + QUEUE_TABLE + '" ("job", "payload", "attempts", "available_at", "created_at") ' +
+          'VALUES (?, ?, 0, ?, ?)'
+      )
+      .bind(String(fqcn), JSON.stringify(args || []), Math.floor(now.getTime() / 1000), phpDateString(now))
+      .run();
+    // Laravel's `dispatch()` answers the pending dispatch (an object), not a
+    // boolean; the compiled call sites only ever chain `->onQueue()` etc.,
+    // which the build refuses, so the id is the honest answer.
+    return Number((res && res.meta && res.meta.last_row_id) || 0);
+  };
+  // The consumer: run up to `limit` due rows through the compiled job classes.
+  // `handlers` maps a job FQCN to `{ ctor, handle }` (the compiled class).
+  rt.queueDrain = async (db, handlers, limit = 10) => {
+    if (!db || !handlers) return { ran: 0, failed: 0 };
+    await ensureQueueTable(db);
+    const nowS = Math.floor(clockDate().getTime() / 1000);
+    const rows = await db
+      .prepare('SELECT "id", "job", "payload", "attempts" FROM "' + QUEUE_TABLE + '" WHERE "available_at" <= ? ORDER BY "id" LIMIT ?')
+      .bind(nowS, Number(limit) || 10)
+      .all();
+    let ran = 0;
+    let failed = 0;
+    for (const row of (rows && rows.results) || []) {
+      const entry = handlers[String(row.job)];
+      if (!entry) {
+        // An unknown job cannot run: drop it (a row that never runs would block
+        // the queue forever) and count it as failed.
+        await db.prepare('DELETE FROM "' + QUEUE_TABLE + '" WHERE "id" = ?').bind(row.id).run();
+        failed++;
+        continue;
+      }
+      try {
+        const args = JSON.parse(String(row.payload || '[]'));
+        const instance = await entry.build(rt, args);
+        await instance.handle();
+        await db.prepare('DELETE FROM "' + QUEUE_TABLE + '" WHERE "id" = ?').bind(row.id).run();
+        ran++;
+      } catch (e) {
+        failed++;
+        const attempts = Number(row.attempts || 0) + 1;
+        if (attempts >= 3) {
+          await db.prepare('DELETE FROM "' + QUEUE_TABLE + '" WHERE "id" = ?').bind(row.id).run();
+        } else {
+          // The retry backoff is Laravel's default (0): the row is due again
+          // immediately, with the attempt counted.
+          await db
+            .prepare('UPDATE "' + QUEUE_TABLE + '" SET "attempts" = ?, "available_at" = ? WHERE "id" = ?')
+            .bind(attempts, nowS, row.id)
+            .run();
+        }
+      }
+    }
+    return { ran, failed };
+  };
+
   // ---- rt.gateGlobal: a Gate::define('x', 'Class@method') ability ----
   // The dump records the definition (the class + method + the guest rule), and
   // the build compiled the class; the kernel's Gate runs it in Laravel's order
@@ -780,7 +873,16 @@ export function buildRt(context, opts = {}) {
     if (typeof fn !== 'function') {
       throw new Error('gate: ' + cls + ' has no method ' + (method || '__invoke') + '()');
     }
-    const result = await fn.call(instance, user, ...(subject === null || subject === undefined ? [] : [subject]));
+    // The compiled methods take `rt` as their FIRST argument (the class
+    // compiler emits `async function (rt, $user, ...)`), so the gate hands it
+    // over before the user - otherwise `rt` is the user and every `rt.*` call
+    // inside the ability throws.
+    const result = await fn.call(
+      instance,
+      rt,
+      user,
+      ...(subject === null || subject === undefined ? [] : [subject])
+    );
     return rt.truthy(result);
   };
 

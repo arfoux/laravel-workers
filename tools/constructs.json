@@ -388,6 +388,28 @@
       "reason": "the job would never run at the edge"
     },
     {
+      "id": "job_dispatch",
+      "label": "`Job::dispatch()` on a compiled job class",
+      "php": "\\App\\Jobs\\SendWelcomeNote::dispatch('hi');",
+      "check": "compiler",
+      "expect": "ok",
+      "classes": {
+        "fqcns": [
+          "App\\Jobs\\SendWelcomeNote"
+        ],
+        "jobs": [
+          "App\\Jobs\\SendWelcomeNote"
+        ],
+        "aliases": {
+          "SendWelcomeNote": "App\\Jobs\\SendWelcomeNote"
+        },
+        "blocked": {}
+      },
+      "note": "A job class the build compiles (app/Jobs): `dispatch()` writes a row into the D1 `lw_jobs` table and the CRON TRIGGER drains it, so the job runs after the response (Laravel's `database` driver). The build refuses the push when the worker has no cron trigger - the job would never run. The `Queue` FACADE (`Queue::push`) stays refused: it takes a class-name string the edge cannot resolve to a compiled class.",
+      "batch": "M63",
+      "status": "done"
+    },
+    {
       "id": "storage_disk",
       "label": "`Storage::disk()` (the default disk)",
       "php": "\\Illuminate\\Support\\Facades\\Storage::disk('local')->put('a.txt', 'x');",

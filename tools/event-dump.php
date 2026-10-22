@@ -180,6 +180,15 @@ $addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$
 // renders its own view). The dump also carries the VIEW the mailable renders
 // (the build compiles that view too - a mailable's view is not reached from
 // a route).
+// The JOBS (app/Jobs): `Job::dispatch()` writes a row and the cron consumer
+// runs the class's handle() - the class must be compiled for that to exist.
+// A job is a plain class with a handle(), so the same class compiler covers it.
+foreach (glob($appRoot . '/app/Jobs/*.php') ?: [] as $jobFile) {
+    $fqcn = 'App\\Jobs\\' . basename($jobFile, '.php');
+    if (!class_exists($fqcn)) continue;
+    $addClass($fqcn, 'job');
+}
+
 // The FormRequests (app/Http/Requests): the build compiles them too, so the
 // hooks Laravel runs on them (prepareForValidation) are compiled and run.
 foreach (glob($appRoot . '/app/Http/Requests/*.php') ?: [] as $requestFile) {

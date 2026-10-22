@@ -336,10 +336,24 @@ export default {
       // (`[AbilityGate::class, 'canPublish']`): the build compiles the class and
       // the kernel's gate runs it. A guest reaches the callback (its first
       // parameter is nullable), so it answers "denied" - Laravel's own answer.
-      label: 'GET /gate-global-demo (a global Gate::define ability)',
-      method: 'GET',
+      label: 'POST /gate-global-demo (a global Gate::define ability)',
+      method: 'POST',
       uri: '/gate-global-demo',
-      expectBody: 'denied',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'allowed',
+    },
+    {
+      // A QUEUED job: Laravel's `database` driver writes a `jobs` row and a
+      // worker consumes it later; the edge writes `lw_jobs` and the cron
+      // trigger drains it. The route's own answer is the same on both sides
+      // (the work happens after the response).
+      label: 'POST /queue-demo (a queued job)',
+      method: 'POST',
+      uri: '/queue-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'queued',
     },
     {
       // A TYPED route parameter: PHP 8 coerces the numeric segment ("42" ->

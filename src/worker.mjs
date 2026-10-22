@@ -15,7 +15,9 @@ import { routeTable, handlers, builtAt } from './routes.generated.mjs';
 import { events as scheduleEvents } from './schedule.generated.mjs';
 import config from './config.generated.mjs';
 import { models } from './models.generated.mjs';
+import { classes as LW_CLASSES } from './classes.generated.mjs';
 import { renderErrorView } from './error-renderer.mjs';
+import { buildRt } from './runtime/rt-from-context.mjs';
 
 const table = normalizeTable(routeTable);
 
@@ -97,6 +99,38 @@ async function runSchedule(env, now = new Date()) {
   return { due: due.map((e) => e.name), queued };
 }
 
+// The queue consumer (COMPILED.md M63): `Job::dispatch()` writes a row into
+// `lw_jobs`, and the CRON TRIGGER drains it here. A Worker has no long-lived
+// worker process, so a cron trigger is the only way a queued job ever runs -
+// the build refuses a push when the worker has none.
+function jobHandlers() {
+  const out = {};
+  for (const [fqcn, entry] of Object.entries(LW_CLASSES || {})) {
+    if (!entry || !entry.methods || typeof entry.methods.handle !== 'function') continue;
+    out[fqcn] = {
+      build: async (rt, args) => {
+        const instance = entry.ctor ? await entry.ctor(args, {}) : {};
+        // The compiled methods live beside the ctor: bind them to the instance
+        // so `$this->...` inside handle() reaches the constructor's properties.
+        for (const [name, fn] of Object.entries(entry.methods || {})) {
+          instance[name] = fn.bind(instance);
+        }
+        return instance;
+      },
+    };
+  }
+  return out;
+}
+
+async function drainQueue(env, limit = 10) {
+  const db = env && env.DB ? env.DB : null;
+  if (!db) return { ran: 0, failed: 0 };
+  const handlersByJob = jobHandlers();
+  if (!Object.keys(handlersByJob).length) return { ran: 0, failed: 0 };
+  const rt = buildRt(null, { strict: false, runtime: true, db, models, config });
+  return rt.queueDrain(db, handlersByJob, limit);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -155,9 +189,11 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // The Cloudflare Cron Trigger entry point (`scheduled`).
+  // The Cloudflare Cron Trigger entry point (`scheduled`): the schedule fires
+  // AND the queued jobs are drained (the only consumer a Worker has).
   async scheduled(env, ctx) {
     const out = await runSchedule(env, new Date());
-    return { ok: true, ...out };
+    const jobs = await drainQueue(env);
+    return { ok: true, ...out, jobs };
   },
 };
