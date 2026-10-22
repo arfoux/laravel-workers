@@ -168,3 +168,33 @@ test('a UTC app still renders UTC (the fast path)', () => {
   assert.equal(rt.now().format('Y-m-d H:i:s'), '2025-10-23 00:00:00');
   assert.equal(rt.now().timezoneName, 'UTC');
 });
+
+// ---- a typed route parameter (audit row A59) -------------------------------
+//
+// PHP 8's coercive typing, probed with PHP 8.3 for a scalar parameter whose
+// value arrives as a string (a route segment):
+//   int('12') = 12, int('12.5') = 12 (a deprecation, not an error),
+//   int(' 7 ') = 7, int('abc')/int('12abc')/int('') = TypeError,
+//   float('abc') = TypeError, string('abc') = 'abc'.
+// The edge used intval()/floatval(), which answer 0 for "abc" - a 200 with a
+// wrong value where Laravel answers 500.
+
+test('rt.param coerces like PHP 8 and throws where PHP throws', () => {
+  const rt = buildRt({}, { strict: false });
+  const p = (v, type) => rt.param({ n: v }, 'n', type, false, null);
+
+  assert.equal(p('12', 'int'), 12);
+  assert.equal(p('12.5', 'int'), 12);
+  assert.equal(p(' 7 ', 'int'), 7);
+  assert.equal(p('12.5', 'float'), 12.5);
+  assert.equal(p('abc', 'string'), 'abc');
+
+  // A non-numeric segment is a TypeError in PHP 8 (a 500), not a silent 0.
+  for (const bad of ['abc', '12abc', '']) {
+    assert.throws(() => p(bad, 'int'), TypeError, 'int(' + JSON.stringify(bad) + ')');
+    assert.throws(() => p(bad, 'float'), TypeError, 'float(' + JSON.stringify(bad) + ')');
+  }
+  // A missing segment with no default is null (the compiler refuses that shape
+  // at build time; a default answers the default).
+  assert.equal(rt.param({}, 'n', 'int', true, 5), 5);
+});

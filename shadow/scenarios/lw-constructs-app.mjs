@@ -338,6 +338,21 @@ export default {
       },
     },
     {
+      // A TYPED route parameter: PHP 8 coerces the numeric segment ("42" ->
+      // 42) and throws a TypeError for a non-numeric one (a 500).
+      label: 'GET /int-param-demo/42 (a typed int parameter)',
+      method: 'GET',
+      uri: '/int-param-demo/42',
+      expectBody: 'n=42',
+    },
+    {
+      label: 'GET /int-param-demo/abc (a typed int parameter, TypeError)',
+      method: 'GET',
+      uri: '/int-param-demo/abc',
+      expect: 'diverges',
+      divergence: 'the 500 error page is a Laravel framework asset; the compiled side answers a status-only page (the status is the same)',
+    },
+    {
       // The upload (a multipart body): the file's metadata, the store (the
       // app's default disk) and the bytes that come back from it. The name is
       // fixed (`storeAs`), so the path is the same on both sides - the random

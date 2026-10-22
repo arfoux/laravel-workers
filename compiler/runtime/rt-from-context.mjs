@@ -1957,11 +1957,29 @@ export function buildRt(context, opts = {}) {
 
   // rt.param: route parameter → PHP method argument coercion (Laravel matches by position;
   // controllers bind after checking the route segment name).
+  // PHP 8's coercive typing for a SCALAR parameter (a route segment arrives as
+  // a string): a numeric string converts, and anything else is a TypeError -
+  // a 500 - not a silent 0. Probed against PHP 8.3:
+  //   int('12') = 12, int('12.5') = 12 (a deprecation, not an error),
+  //   int(' 7 ') = 7, int('abc')/int('12abc')/int('') = TypeError,
+  //   float('abc') = TypeError, string('abc') = 'abc'.
+  const PHP_NUMERIC_STRING = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*$/;
+  const phpTypeError = (name, type, value) =>
+    new TypeError(
+      'Argument #1 ($' + name + ') must be of type ' + type + ', string given: the route segment ' +
+        JSON.stringify(value) + ' is not ' + (type === 'int' ? 'an integer' : 'a number') +
+        ' (PHP 8 throws a TypeError here, so Laravel answers 500)'
+    );
   rt.param = (params, name, type, hasDefault, def) => {
     const v = params && typeof params === 'object' ? params[name] : undefined;
     if (v === undefined || v === null) return hasDefault ? def : null;
-    if (type === 'int') return rt.intval(v);
-    if (type === 'float') return rt.floatval(v);
+    if (type === 'int' || type === 'float') {
+      if (typeof v === 'number') return type === 'int' ? Math.trunc(v) : v;
+      const s = String(v);
+      if (!PHP_NUMERIC_STRING.test(s)) throw phpTypeError(name, type, v);
+      const n = Number(s);
+      return type === 'int' ? Math.trunc(n) : n;
+    }
     if (type === 'bool') return rt.truthy(v);
     if (type === 'raw') return v;
     return String(v);
