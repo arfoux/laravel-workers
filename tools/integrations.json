@@ -1,0 +1,69 @@
+{
+  "$comment": "The integrations (COMPILED.md §8b M68): one verdict per Laravel docs page. Every row must answer three things - what the EDGE can do, what it cannot (the refusal), and the PORT that carries the difference. tools/docs-check.mjs fails when a row is missing any of them or when the set drifts from PAGES.",
+  "pages": [
+    {
+      "id": "passport",
+      "docs": "passport",
+      "verdict": "refuse",
+      "edge": "the OAuth2 endpoints are ordinary routes: a D1 table for the clients/tokens plus the existing session + cookie layers answers authorize/token/refresh.",
+      "refusal": "the Passport package itself is not compiled: its service provider binds the League OAuth2 server and a Passport facade, and the build does not compile vendor service providers - a compiled route that resolves Passport\\Passport is refused (LW002) with that reason.",
+      "port": "a port handler for the OAuth routes over a D1 `oauth_clients`/`oauth_tokens` pair; the JWT (RS256) is signed with WebCrypto and the key comes from the worker secret."
+    },
+    {
+      "id": "sanctum",
+      "docs": "sanctum",
+      "verdict": "port",
+      "edge": "token auth is a table lookup: the session/guard layers already exist, and `personal_access_tokens` is a D1 table with a hashed token column.",
+      "refusal": "the Sanctum package is not compiled (its service provider registers the guard + the middleware); a compiled route that calls `Sanctum::` or resolves the package is refused (LW002).",
+      "port": "a port handler that reads `Authorization: Bearer` and looks the hashed token up in D1; the SPA half already works through the compiled session guard."
+    },
+    {
+      "id": "socialite",
+      "docs": "socialite",
+      "verdict": "port",
+      "edge": "the OAuth dance is two fetches (the authorize redirect and the token exchange) plus the session - all of which the edge has.",
+      "refusal": "the Socialite package is not compiled (its provider classes are vendor code with a manager binding); resolving `Socialite::` is refused (LW002).",
+      "port": "a port handler per provider: build the authorize URL, verify `state` in the session, exchange the code with `fetch`, then log in through the compiled guard."
+    },
+    {
+      "id": "cashier-paddle",
+      "docs": "cashier-paddle",
+      "verdict": "port",
+      "edge": "the webhook is a route that verifies a signature and writes D1 rows; the billing portal link is a fetch.",
+      "refusal": "the Cashier Paddle package is not compiled (its service provider binds the API client and the billable trait); resolving it is refused (LW002).",
+      "port": "a port handler for the webhook (HMAC verification with WebCrypto) over D1 subscription tables, plus a fetch-based checkout link."
+    },
+    {
+      "id": "billing",
+      "docs": "billing",
+      "verdict": "port",
+      "edge": "Stripe's API is HTTPS: checkout sessions and webhooks are fetches, and the subscription state is a D1 table.",
+      "refusal": "the Laravel Cashier (Stripe) package is not compiled: its service provider and the Billable trait are vendor code the build does not compile - the call is refused (LW002).",
+      "port": "a port handler for the webhook + checkout, keyed by the worker secret; the app's own subscription model reads the D1 table."
+    },
+    {
+      "id": "mcp",
+      "docs": "mcp",
+      "verdict": "port",
+      "edge": "an MCP server over HTTP/SSE is a route: the compiled rung answers HTTP and can stream a response body.",
+      "refusal": "the package's stdio transport is impossible at the edge (a Worker has no child process), and the package's server class is vendor code the build does not compile - refused (LW002).",
+      "port": "a port handler that speaks the MCP JSON-RPC over the compiled HTTP route; the tools themselves are ordinary compiled classes."
+    },
+    {
+      "id": "ai-sdk",
+      "docs": "ai-sdk",
+      "verdict": "port",
+      "edge": "the provider calls are HTTPS fetches, and a streaming answer is a `ReadableStream` response - both native to a Worker.",
+      "refusal": "the AI SDK package is not compiled (its service provider binds the client and the facade); resolving it is refused (LW002).",
+      "port": "a port handler that calls the provider with `fetch` and streams the body; the prompt/messages are compiled app code."
+    },
+    {
+      "id": "pulse",
+      "docs": "pulse",
+      "verdict": "port",
+      "edge": "Pulse is a dashboard over recorded samples: a D1 table plus the compiled routes answers it.",
+      "refusal": "the Pulse package is not compiled (its service provider registers the recorder and the middleware); resolving `Pulse::` is refused (LW002).",
+      "port": "a port handler that records a sample per request into D1 and a compiled dashboard route that reads it; Cloudflare Analytics is the alternative the dashboard can query."
+    }
+  ]
+}

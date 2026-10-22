@@ -108,7 +108,41 @@ for (const r of rows) {
 }
 if (unverified.length) warn(`MAP rows with no code hit (verify or mark \u26D4/ops): ${unverified.join(', ')}`);
 
+// --- the integrations (COMPILED.md 8b M68) -------------------------------
+// Every Laravel integration page must answer three things: what the edge can
+// do, what it refuses (with a reason), and the PORT that carries the
+// difference. A row missing any of them - or a page that disappeared - is a
+// gap, not a note.
+const INTEGRATIONS = join(dirname(fileURLToPath(import.meta.url)), 'integrations.json');
+let integrations = null;
+try {
+  integrations = JSON.parse(readFileSync(INTEGRATIONS, 'utf8'));
+} catch (e) {
+  fail('cannot read tools/integrations.json: ' + e.message);
+}
+const PAGES = [
+  'passport', 'sanctum', 'socialite', 'cashier-paddle',
+  'billing', 'mcp', 'ai-sdk', 'pulse',
+];
+const seenIntegrations = new Set();
+for (const row of integrations.pages || []) {
+  const id = row && row.id;
+  if (!id) fail('an integration row has no id');
+  if (!PAGES.includes(id)) fail('unknown integration page: ' + id);
+  if (seenIntegrations.has(id)) fail('duplicate integration page: ' + id);
+  seenIntegrations.add(id);
+  if (row.verdict !== 'port' && row.verdict !== 'refuse') {
+    fail('integration ' + id + ' must carry a verdict ("port" or "refuse"), got ' + JSON.stringify(row.verdict));
+  }
+  if (!row.edge || !String(row.edge).trim()) fail('integration ' + id + ' does not say what the edge CAN do');
+  if (!row.refusal || !String(row.refusal).trim()) fail('integration ' + id + ' does not say what is refused');
+  if (!row.port || !String(row.port).trim()) fail('integration ' + id + ' has no port');
+  if (!(row.docs && seen.has(row.docs))) fail('integration ' + id + ' has no MAP.md page named ' + JSON.stringify(row.docs));
+}
+const missingIntegrations = PAGES.filter((p) => !seenIntegrations.has(p));
+if (missingIntegrations.length) fail('integration pages with no verdict: ' + missingIntegrations.join(', '));
 ok(`${rows.length}/${EXPECTED} rows, format valid, ${modules.length} modules, ${codes.size} fail-loud codes`);
+ok(`integrations: ${seenIntegrations.size}/${PAGES.length} pages carry a verdict + a port`);
 console.log('coverage: ' + rows.length + '/' + EXPECTED);
 if (missingModules.length || missingCodes.length || unverified.length) {
   console.log('modules-missing: ' + missingModules.length + ' | codes-missing: ' + missingCodes.length + ' | rows-unverified: ' + unverified.length);
