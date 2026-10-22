@@ -295,6 +295,10 @@ function buildMultipartBody(multipart) {
 async function loadDist(appRoot) {
   const u = (p) => pathToFileURL(path.join(appRoot, 'dist', p)).href;
   const { handleHttp } = await import(u('kernel/http.mjs'));
+  // The compiled error views, exactly as src/worker.mjs imports them: without
+  // this the harness would answer a status-only page where the deployed worker
+  // renders Laravel's own error page.
+  const { renderErrorView } = await import(u('src/error-renderer.mjs'));
   const { createDatabaseCache } = await import(u('kernel/cache.mjs'));
   const { createCookieEncryptor } = await import(u('kernel/cookies.mjs'));
   const { normalizeTable } = await import(u('kernel/router.mjs'));
@@ -303,7 +307,7 @@ async function loadDist(appRoot) {
   const { routeTable, handlers } = await import(u('src/routes.generated.mjs'));
   const { default: config } = await import(u('src/config.generated.mjs'));
   const { models } = await import(u('src/models.generated.mjs'));
-  return { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createMailer, createStorage };
+  return { handleHttp, renderErrorView, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createMailer, createStorage };
 }
 
 function decodePayload(b64) {
@@ -338,7 +342,7 @@ function rowToken(row) {
 }
 
 async function runCompiled(loaded, appRoot, scenario, dbPath) {
-  const { handleHttp, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage, createMailer } =
+  const { handleHttp, renderErrorView, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage, createMailer } =
     loaded;
   const { DatabaseSync } = await import('node:sqlite');
   const sqlite = new DatabaseSync(dbPath);
@@ -431,6 +435,7 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
           return null;
         },
         models,
+        renderErrorView,
         clock: () => FREEZE_S,
         randomString: rand,
         strRandom: rand,
@@ -730,6 +735,10 @@ async function main() {
             console.log(`    expected the body to contain: ${r.expectBody}`);
           }
           if (!r.bodyOk) {
+            if (process.env.LW_DBG_BODY) {
+              console.log('    php raw: ' + JSON.stringify(String(r.bodyPhpRaw).slice(0, 200)));
+              console.log('    js  raw: ' + JSON.stringify(String(r.bodyJsRaw).slice(0, 200)));
+            }
             const d = firstDiffLine(r.bodyPhpRaw, r.bodyJsRaw);
             if (d) {
               console.log(`    body line ${d.line} php: ${d.php}`);

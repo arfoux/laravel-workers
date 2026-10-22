@@ -574,6 +574,11 @@ const MODEL_LACKS = {
 
 const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
+// The methods an ERROR view may call on `$exception`: Laravel's framework error
+// views use `getMessage()` (the 403/500 pages), and the kernel's error object
+// answers the same.
+const EXCEPTION_VIEW_METHODS = new Set(['getMessage', 'getStatusCode', 'getCode']);
+
 // ---------------------------------------------------------------------------
 // HTTP helpers available inside a compiled controller (7b)
 // ---------------------------------------------------------------------------
@@ -1485,13 +1490,12 @@ function txCall(node) {
       // view), so it is handled outside the controller-only block.
       const a = node.arguments || [];
       if (a.length > 2) throw mkErr('LW002', '__() takes at most 2 arguments', node.loc, PORT_HINT);
-      if (!a.length || a[0].kind !== 'string') {
-        throw mkErr(
-          'LW002',
-          '__() needs a literal key at the edge (the translations are dumped at build time)',
-          node.loc,
-          PORT_HINT
-        );
+      // A DYNAMIC key is fine: `rt.__` looks it up in the dumped translations
+      // and answers the key itself when the line is missing - exactly Laravel's
+      // `makeReplacements($line ?: $key, $replace)`. Laravel's own 403 error
+      // view does this: `__($exception->getMessage() ?: 'Forbidden')`.
+      if (!a.length) {
+        throw mkErr('LW002', '__() needs a key', node.loc, PORT_HINT);
       }
       return 'rt.__(' + args + ')';
     }
@@ -1999,10 +2003,16 @@ function txCall(node) {
         if (viewKind === 'paginator' && PAGINATOR_METHODS.has(meth)) {
           return expr;
         }
+        // The EXCEPTION the error views receive (Laravel's framework views call
+        // `$exception->getMessage()`); the runtime's error object carries the
+        // methods the framework views use.
+        if (phpVar === 'exception' && EXCEPTION_VIEW_METHODS.has(meth)) {
+          return expr;
+        }
         if (phpVar !== 'errors' && !phpVar.startsWith('__')) {
           throw mkErr(
             'LW002',
-            'the method call $' + phpVar + '->' + meth + '() is not compiled in a view (the error bag is the only one with methods) - ' + PORT_HINT,
+            'the method call $' + phpVar + '->' + meth + '() is not compiled in a view (the error bag and the exception are the only ones with methods) - ' + PORT_HINT,
             node.loc,
             PORT_HINT
           );

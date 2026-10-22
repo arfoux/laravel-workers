@@ -27,6 +27,19 @@ $response = $kernel->handle($request);
 $kernel->terminate($request, $response);
 
 $name = $argv[1] ?? 'welcome';
+
+// The FRAMEWORK's error views (`errors::404`): Laravel registers that namespace
+// only while an exception is being rendered (RegisterErrorViewPaths), so a
+// build-time compile must register it the same way - the app's own
+// resources/views/errors first, then the framework's views. Without this, a
+// view name that starts with `errors::` cannot be found at all.
+if (str_starts_with($name, 'errors::')) {
+    $viewPaths = [$root . '/resources/views/errors'];
+    $frameworkViews = dirname((new ReflectionClass(Illuminate\Foundation\Exceptions\Handler::class))->getFileName())
+        . '/views';
+    $viewPaths[] = $frameworkViews;
+    $app['view']->addNamespace('errors', array_values(array_filter($viewPaths, 'is_dir')));
+}
 $out = $argv[2] ?? null;
 $uri = $argv[3] ?? '/';
 

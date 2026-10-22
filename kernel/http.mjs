@@ -1508,15 +1508,28 @@ export async function handleHttp(raw, options = {}) {
       };
     }
     const has405 = config['errors.405_view'] === true;
+    const status = has405 ? 405 : 500;
+    // Laravel renders the error page for this status (the app's errors/405, or
+    // the framework's 500) - a status-only body would differ from Laravel's
+    // HTML page byte for byte.
+    // NOTE: `ctx` is built further down (this branch returns before it), so the
+    // renderer is read from the options directly.
+    const rendered =
+      typeof options.renderErrorView === 'function'
+        ? options.renderErrorView(status, request, null, {
+            status,
+            message: has405 ? 'Method Not Allowed' : 'Server Error',
+          })
+        : null;
     return {
-      status: has405 ? 405 : 500,
+      status,
       headers: {
         'content-type': 'text/html; charset=utf-8',
         ...(has405 ? { allow: allowed.join(', ') } : {}),
         'cache-control': 'no-cache, private',
       },
       setCookie: [],
-      body: has405 ? 'Method Not Allowed' : 'Server Error',
+      body: rendered != null ? String(rendered) : has405 ? 'Method Not Allowed' : 'Server Error',
     };
   }
   request.setRoute(matched.route, matched.params);
@@ -1545,7 +1558,15 @@ export async function handleHttp(raw, options = {}) {
       );
     }
     const bare = toHttpResponse(
-      await dispatch(matchReq, table, handlers, env, { db, models, ctxRequest: request })
+      await dispatch(matchReq, table, handlers, env, {
+        db,
+        models,
+        ctxRequest: request,
+        // The compiled handler renders a status error through the compiled
+        // error views (`ctx.renderErrorView`); without it the catch answers a
+        // status-only text body where Laravel renders the framework's page.
+        ctxExtra: { renderErrorView: options.renderErrorView || null },
+      })
     );
     withDefaultCacheControl(bare);
     return { status: bare.status, headers: bare.headers, setCookie: [], body: bare.body };
@@ -1664,9 +1685,12 @@ export async function handleHttp(raw, options = {}) {
           clock: nowS,
           // The service adapters (storage/mail/queue) the worker hands down.
           storage: options.storage || null,
-  log: options.log || null,
+          log: options.log || null,
           mail: options.mail || null,
           queue: options.queue || null,
+          // The compiled error views: a status error caught INSIDE the compiled
+          // handler renders the same page the kernel's own renderer would.
+          renderErrorView: options.renderErrorView || null,
         },
       }
     );

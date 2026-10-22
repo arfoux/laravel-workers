@@ -965,14 +965,28 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    return rt.toResponse(__lwResult);');
   lines.push('  } catch (e) {');
   lines.push('    if (e && e.lwKernel) throw e;');
+  // An expectsJson request gets Laravel's JSON body (Handler::prepareJsonResponse),
+  // NOT the HTML error page - the kernel's renderer makes the same choice. It is
+  // computed ONCE, before the status branch: the 500 fallback below needs it too
+  // (a `const` inside the branch would be a TDZ error there).
+  lines.push('    const wantsJson = !!(ctx && ctx.request && typeof ctx.request.expectsJson === "function" && ctx.request.expectsJson());');
   lines.push('    if (e && e.status) {');
-  lines.push('      const rendered = (ctx && typeof ctx.renderErrorView === "function")');
+  lines.push('      const rendered = (!wantsJson && ctx && typeof ctx.renderErrorView === "function")');
   lines.push('        ? ctx.renderErrorView(e.status, ctx.request, ctx, e)');
   lines.push('        : null;');
   lines.push('      if (rendered != null) {');
   lines.push('        return { status: Number(e.status) || 500, headers: { "content-type": "text/html; charset=utf-8" }, body: String(rendered) };');
   lines.push('      }');
   lines.push('      return rt.errorResponse(e);');
+  lines.push('    }');
+  // An error WITHOUT a status is a 500 in Laravel (the exception handler
+  // renders `errors::500`). The compiled rung renders the same page instead of
+  // rethrowing into the platform's plain-text fallback.
+  lines.push('    const rendered500 = (!wantsJson && ctx && typeof ctx.renderErrorView === "function")');
+  lines.push('      ? ctx.renderErrorView(500, ctx.request, ctx, e)');
+  lines.push('      : null;');
+  lines.push('    if (rendered500 != null) {');
+  lines.push('      return { status: 500, headers: { "content-type": "text/html; charset=utf-8" }, body: String(rendered500) };');
   lines.push('    }');
   lines.push('    throw e;');
   lines.push('  }');

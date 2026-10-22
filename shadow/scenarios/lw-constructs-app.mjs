@@ -92,9 +92,7 @@ export default {
       label: 'GET /posts/999/bound (a missing model)',
       method: 'GET',
       uri: '/posts/999/bound',
-      jar: true,
-      expect: 'diverges',
-      why: "the 404 error page is a Laravel framework asset; the compiled side answers a status-only HTML page",
+      jar: true,      why: "the 404 error page is a Laravel framework asset; the compiled side answers a status-only HTML page",
     },
     {
       // A view with a layout: the sections (@section) travel to the layout
@@ -120,9 +118,7 @@ export default {
       // compiled side answers the same status.
       label: 'POST /posts/1 (the method is not allowed)',
       method: 'POST',
-      uri: '/posts/1',
-      expect: 'diverges',
-      expectStatus: 500,
+      uri: '/posts/1',      expectStatus: 500,
       why: 'the 500 error page is a Laravel framework asset; the compiled side answers a status-only page (the status is the same)',
     },
     {
@@ -252,9 +248,7 @@ export default {
       // (the compiled side answers a status-only HTML page).
       label: 'GET /admin (auth.basic, no header)',
       method: 'GET',
-      uri: '/admin',
-      expect: 'diverges',
-      why: "Laravel's default 401 error page is a framework asset; the compiled side answers a status-only HTML page",
+      uri: '/admin',      why: "Laravel's default 401 error page is a framework asset; the compiled side answers a status-only HTML page",
     },
     {
       label: 'GET /admin (auth.basic, valid credentials)',
@@ -359,8 +353,6 @@ export default {
       label: 'GET /int-param-demo/abc (a typed int parameter, TypeError)',
       method: 'GET',
       uri: '/int-param-demo/abc',
-      expect: 'diverges',
-      divergence: 'the 500 error page is a Laravel framework asset; the compiled side answers a status-only page (the status is the same)',
     },
     {
       // The upload (a multipart body): the file's metadata, the store (the
@@ -482,9 +474,10 @@ export default {
       multipart: {
         fields: { _token: '@token', title: 'Shadow upload' },
         files: [{ name: 'avatar', filename: 'big.txt', type: 'text/plain', content: 'x'.repeat(1600000) }],
-      },
+      },      why: 'the D1 blob store (the free path) holds at most 1.5 MB per object - the compiled side fails loud, the local disk has no limit',
       expect: 'diverges',
-      why: 'the D1 blob store (the free path) holds at most 1.5 MB per object - the compiled side fails loud, the local disk has no limit',
+      divergence: 'the D1 blob store (the free path) caps an object at 1.5 MB - the compiled side fails loud where the local disk has no limit (a platform limit, not a Laravel rule)',
+    
     },
     {
       // The helper verbs: `today()` follows the request clock (the oracle
@@ -542,9 +535,7 @@ export default {
       method: 'POST',
       uri: '/throw-demo',
       jar: true,
-      form: { _token: '@token' },
-      expect: 'diverges',
-      why: "the 500 error page is a Laravel framework asset; the compiled side answers a status-only HTML page",
+      form: { _token: '@token' },      why: "the 500 error page is a Laravel framework asset; the compiled side answers a status-only HTML page",
     },
     {
       // A bcrypt digest has a random salt, so the two bodies can never be equal.
