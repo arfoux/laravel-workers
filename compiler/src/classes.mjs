@@ -177,7 +177,10 @@ function compileConstructor(fqcn, classNode, opts) {
       const pname = nodeName(prop.name);
       if (!pname) continue;
       if (prop.value === undefined || prop.value === null) {
-        declared.push({ name: pname, js: 'undefined' });
+        // PHP initialises a property with no default to NULL (`public $view;`
+        // is `$view = null`), so the compiled field is null too: `json_encode`
+        // keeps the key and the mailer's `!view` test sees the same falsy value.
+        declared.push({ name: pname, js: 'null' });
         continue;
       }
       const lit = literalOf(prop.value);
