@@ -2006,6 +2006,11 @@ export function buildRt(context, opts = {}) {
     }
     // A model: `toJSON()` is its toArray() (the kernel's own shape).
     if (typeof value.toJSON === 'function') return value.toJSON();
+    // Any other JsonSerializable (`jsonSerialize()` - a paginator answers its
+    // toArray(), which is the body `response()->json($paginator)` sends) or
+    // Arrayable (`toArray()`).
+    if (typeof value.jsonSerialize === 'function') return value.jsonSerialize();
+    if (typeof value.toArray === 'function') return value.toArray();
     return value;
   };
   rt.json = function (value, status) {

@@ -97,3 +97,36 @@ test('paginator: the URL window helper (the slider)', () => {
   assert.deepEqual(w.slider, null);
   assert.deepEqual(Object.keys(w.first), ['1', '2']);
 });
+
+// ---- the serialisation (A84) --------------------------------------------
+//
+// `response()->json($paginator)`: the paginator IS JsonSerializable
+// (LengthAwarePaginator::jsonSerialize() answers toArray(), toArray() answers
+// the array below - LengthAwarePaginator.php:206-223). Probed with the
+// vendored Laravel 13: `json_encode($paginator)` answers these exact bytes,
+// key order included. The edge answered "unsupported value (Function)" (a
+// 500) because nothing serialised the paginator.
+test('paginator: json_encode() answers Laravel\'s bytes (key order, links, urls)', () => {
+  const p = new LengthAwarePaginator(
+    [
+      { id: 3, title: 'Hello Edge' },
+      { id: 2, title: 'Second Post' },
+    ],
+    3,
+    2,
+    1,
+    { path: 'http://localhost/posts-paginated' }
+  );
+  assert.equal(
+    p.toJson(),
+    '{"current_page":1,"data":[{"id":3,"title":"Hello Edge"},{"id":2,"title":"Second Post"}],' +
+      '"first_page_url":"http:\\/\\/localhost\\/posts-paginated?page=1","from":1,"last_page":2,' +
+      '"last_page_url":"http:\\/\\/localhost\\/posts-paginated?page=2","links":[' +
+      '{"url":null,"label":"&laquo; Previous","page":null,"active":false},' +
+      '{"url":"http:\\/\\/localhost\\/posts-paginated?page=1","label":"1","page":1,"active":true},' +
+      '{"url":"http:\\/\\/localhost\\/posts-paginated?page=2","label":"2","page":2,"active":false},' +
+      '{"url":"http:\\/\\/localhost\\/posts-paginated?page=2","label":"Next &raquo;","page":2,"active":false}],' +
+      '"next_page_url":"http:\\/\\/localhost\\/posts-paginated?page=2",' +
+      '"path":"http:\\/\\/localhost\\/posts-paginated","per_page":2,"prev_page_url":null,"to":2,"total":3}'
+  );
+});

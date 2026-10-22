@@ -79,6 +79,15 @@ export default {
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {
+      // `response()->json($paginator)`: the paginator IS JsonSerializable
+      // (LengthAwarePaginator::jsonSerialize -> toArray), so the body is its
+      // array - the key order, the `links` labels and the URLs included.
+      label: 'GET /posts-paginated-json (response()->json($paginator))',
+      method: 'GET',
+      uri: '/posts-paginated-json',
+      jar: true,
+    },
+    {
       // `response()->json($model)`: PHP's json_encode honours the model's
       // JsonSerializable (toArray()), so the body is the model's own JSON.
       label: 'GET /json-model-demo (response()->json($model))',

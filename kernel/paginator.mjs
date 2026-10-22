@@ -1,3 +1,5 @@
+import { phpJsonEncode } from './php-json.mjs';
+
 // kernel/paginator.mjs — the LengthAwarePaginator (Illuminate\Pagination)
 //
 // The compiled side answers the same numbers as the real Laravel: the items,
@@ -199,6 +201,82 @@ export class LengthAwarePaginator {
       for (let page = from; page >= to; page--) out[page] = this.url(page);
     }
     return out;
+  }
+
+  // ---- Laravel's linkCollection() (LengthAwarePaginator.php:113-139) ------
+  //
+  // The `links` array of toArray(): every page of the URL window plus the
+  // previous/next entries. The labels are the framework's pagination
+  // translations (Illuminate/Translation/lang/en/pagination.php:14-15).
+  linkCollection() {
+    const links = [];
+    for (const element of this.elements()) {
+      if (element === null || element === undefined) continue;
+      if (typeof element === 'object' && !Array.isArray(element)) {
+        for (const key of Object.keys(element)) {
+          const page = Number(key);
+          links.push({
+            url: element[key],
+            label: String(page),
+            page,
+            active: this.currentPage() === page,
+          });
+        }
+        continue;
+      }
+      // The '...' of the slider: `['url' => null, 'label' => '...', 'active' => false]`
+      // (flatMap) - it has no `page` key at all.
+      links.push({ url: null, label: '...', active: false });
+    }
+    links.unshift({
+      url: this.previousPageUrl(),
+      label: '&laquo; Previous',
+      page: this.currentPage() > 1 ? this.currentPage() - 1 : null,
+      active: false,
+    });
+    links.push({
+      url: this.nextPageUrl(),
+      label: 'Next &raquo;',
+      page: this.hasMorePages() ? this.currentPage() + 1 : null,
+      active: false,
+    });
+    return links;
+  }
+
+  // ---- Laravel's toArray() (LengthAwarePaginator.php:206-223) -------------
+  //
+  // The KEY ORDER is the parity: `response()->json($paginator)` answers these
+  // bytes, in this order (probed with the vendored framework).
+  toArray() {
+    return {
+      current_page: this.currentPage(),
+      data: this.__items.map((item) =>
+        item && typeof item === 'object' && typeof item.toArray === 'function' ? item.toArray() : item
+      ),
+      first_page_url: this.url(1),
+      from: this.firstItem(),
+      last_page: this.lastPage(),
+      last_page_url: this.url(this.lastPage()),
+      links: this.linkCollection(),
+      next_page_url: this.nextPageUrl(),
+      path: this.path(),
+      per_page: this.perPage(),
+      prev_page_url: this.previousPageUrl(),
+      to: this.lastItem(),
+      total: this.total(),
+    };
+  }
+
+  // `LengthAwarePaginator::jsonSerialize()` answers toArray(), so PHP's
+  // json_encode() serialises the paginator as its array (the paginator IS
+  // JsonSerializable).
+  jsonSerialize() {
+    return this.toArray();
+  }
+
+  // `LengthAwarePaginator::toJson($options = 0)` - PHP's json_encode bytes.
+  toJson() {
+    return phpJsonEncode(this.jsonSerialize());
   }
 
   // ---- the URL window (the `elements` the pagination view renders) --------

@@ -16,7 +16,6 @@
 // plumbing of the response factory (the runtime builds the response).
 
 import { phpJsonEncode } from './php-json.mjs';
-import { urlWindow } from './paginator.mjs';
 
 // Laravel's `MissingValue` (Illuminate\Http\Resources\MissingValue): the
 // sentinel a conditional attribute returns when it must NOT appear in the
@@ -782,75 +781,10 @@ function paginationInformation(paginator) {
 }
 
 // `LengthAwarePaginator::toArray()` (LengthAwarePaginator.php:206-223) - the
-// array the pagination meta is built from.
+// array the pagination meta is built from. The paginator owns it (one
+// implementation of the serialisation, the links included).
 function paginatorToArray(paginator) {
-  const lastPage = paginator.lastPage();
-  return {
-    current_page: paginator.currentPage(),
-    data: itemsOf(paginator),
-    first_page_url: paginator.url(1),
-    from: paginator.firstItem(),
-    last_page: lastPage,
-    last_page_url: paginator.url(lastPage),
-    links: linkCollection(paginator),
-    next_page_url: paginator.nextPageUrl(),
-    path: paginator.path(),
-    per_page: paginator.perPage(),
-    prev_page_url: paginator.previousPageUrl(),
-    to: paginator.lastItem(),
-    total: paginator.total(),
-  };
-}
-
-// `LengthAwarePaginator::linkCollection()` (LengthAwarePaginator.php:113-139):
-// the page links of the window, with the previous and the next page around
-// them. The labels are the framework's pagination translations
-// (Illuminate/Translation/lang/en/pagination.php:14-15).
-function linkCollection(paginator) {
-  const links = [];
-  for (const element of elementsOf(paginator)) {
-    if (element === null || element === undefined) continue;
-    if (typeof element === 'object' && !Array.isArray(element)) {
-      for (const key of Object.keys(element)) {
-        const page = Number(key);
-        links.push({
-          url: element[key],
-          label: String(page),
-          page,
-          active: paginator.currentPage() === page,
-        });
-      }
-      continue;
-    }
-    // The '...' of the slider.
-    links.push({ url: null, label: '...', active: false });
-  }
-  links.unshift({
-    url: paginator.previousPageUrl(),
-    label: '&laquo; Previous',
-    page: paginator.currentPage() > 1 ? paginator.currentPage() - 1 : null,
-    active: false,
-  });
-  links.push({
-    url: paginator.nextPageUrl(),
-    label: 'Next &raquo;',
-    page: paginator.hasMorePages() ? paginator.currentPage() + 1 : null,
-    active: false,
-  });
-  return links;
-}
-
-// `LengthAwarePaginator::elements()` (LengthAwarePaginator.php:147-158): the
-// URL window of the slider.
-function elementsOf(paginator) {
-  if (typeof paginator.elements === 'function') return paginator.elements();
-  const window = urlWindow(paginator);
-  const out = [];
-  if (window.first) out.push(window.first);
-  if (Array.isArray(window.slider)) out.push('...');
-  if (window.slider) out.push(window.slider);
-  if (Array.isArray(window.last)) out.push('...');
-  return out;
+  return paginator.toArray();
 }
 
 /**
