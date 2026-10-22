@@ -194,6 +194,18 @@ export default {
       expectMails: 1,
     },
     {
+      // The mailable in the PROPERTY form (`public $view = 'mail.property';`
+      // + the empty constructor `make:mail` scaffolds): Laravel reads the
+      // public field, and the compiled instance must carry it.
+      label: 'POST /property-mail-demo (the mailable in the property form)',
+      method: 'POST',
+      uri: '/property-mail-demo',
+      jar: true,
+      form: { _token: '@token' },
+      expectBody: 'sent',
+      expectMails: 1,
+    },
+    {
       // The Gate: the policy check (the compiled policies answer it at the
       // edge). The user owns the post, so `update` is allowed and `denies` is
       // false; the class-level `viewAny` is allowed for a signed-in user.

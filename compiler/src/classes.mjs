@@ -289,7 +289,24 @@ function compileConstructor(fqcn, classNode, opts) {
     props.push('      ' + JSON.stringify(name) + ': (args[' + i + '] === undefined ? ' + fallback + ' : args[' + i + '])');
   }
   const promoted = props.length ? '{\n' + props.join(',\n') + ',\n    }' : '{}';
-  if (!hasBody) return { js: '(args, deps) => (' + promoted + ')', deps };
+  // A constructor with an EMPTY body (`public function __construct() {}` - what
+  // `php artisan make:mail` scaffolds) still carries the class's declared
+  // properties: PHP assigns them before the body runs, so `public $view =
+  // 'mail.order';` is there whether the body is empty or not. The arrow form
+  // only holds the PROMOTED properties, so it dropped the declared ones and the
+  // mailable sent a null view at request time.
+  if (!hasBody) {
+    if (!declared.length) return { js: '(args, deps) => (' + promoted + ')', deps };
+    return {
+      js:
+        '(args, deps) => {\n    const __self = ' +
+        promoted +
+        ';\n    ' +
+        declaredJs +
+        '    return __self;\n  }',
+      deps,
+    };
+  }
 
   // A constructor with a body: the body compiles like a method (the promoted
   // properties and the assignments land on the same object).

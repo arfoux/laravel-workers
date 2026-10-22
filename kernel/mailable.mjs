@@ -99,6 +99,12 @@ export class Mailable {
     const replyTo = this.__replyTo !== undefined ? this.__replyTo : publicList(this, 'replyTo');
     const html = this.__html !== undefined ? this.__html : publicString(this, 'html');
     const text = this.__text !== undefined ? this.__text : publicString(this, 'text');
+    // Laravel: Mailable::buildView() answers `$this->view` when the mailable
+    // has no html, no markdown and no views, and Mailer::render(null) throws
+    // `InvalidArgumentException: Invalid view.` (probed with the vendored
+    // framework). The edge used to send a mail with a null body instead - a
+    // silent 200 where Laravel answers 500.
+    if (html == null && !view && !textView) throw new Error('Invalid view.');
     // The views: Laravel renders the mailable's view (and its text twin).
     const data = Object.assign({}, publicProperties(this), viewData || {});
     let renderedHtml = html;

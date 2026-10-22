@@ -113,6 +113,31 @@ class WithBody
   assert.match(res.code, /return __self;/);
 });
 
+test('classes: an EMPTY constructor still carries the declared properties (the make:mail shape)', async () => {
+  // `php artisan make:mail` scaffolds `public $view = 'mail.order';` plus an
+  // EMPTY `__construct() {}`. PHP assigns the declared property before the
+  // body runs, so the instance has it - the compiled instance must too (the
+  // arrow form held only the PROMOTED properties, so a property-form mailable
+  // lost its view and sent a null body).
+  const file = classFile('EmptyCtor', `<?php
+namespace App\\Mail;
+class EmptyCtor
+{
+    public $view = 'mail.order';
+    public $subject = 'Hello';
+    public function __construct() {}
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Mail\\EmptyCtor': { file, kind: 'mailable' } } },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  const mod = await compiledModule(res.code);
+  const instance = mod.classes['App\\Mail\\EmptyCtor'].ctor([], {});
+  assert.equal(instance.view, 'mail.order');
+  assert.equal(instance.subject, 'Hello');
+});
 test('classes: a listener that takes a service fails loud', () => {
   const file = classFile('WithService', `<?php
 namespace App\\Listeners;
@@ -724,6 +749,7 @@ class OrderMail
     protected function build(): self
     {
         $this->subject('Order ' . $this->formatOrder());
+        $this->view('mail.order');
         return $this;
     }
     private function formatOrder(): string
@@ -748,7 +774,17 @@ class OrderMail
   // value (Laravel: the subject is the one build() set).
   const mod = await compiledModule(res.code);
   const mailer = createMailer({ transport: 'log', from: 'hello@example.com' });
-  const rt = buildRt({}, { http: { mail: mailer }, classes: mod.classes, eventListeners: mod.eventListeners });
+  const rt = buildRt(
+    {},
+    {
+      http: { mail: mailer },
+      classes: mod.classes,
+      eventListeners: mod.eventListeners,
+      // A mailable with no view throws "Invalid view." (Laravel), so the
+      // mailable sets one: the test is about the HELPER, not the view.
+      views: { 'mail.order': { context: {}, main: (rt) => rt.echo('<p>Order</p>') } },
+    }
+  );
   const mail = rt.newClass('App\\Mail\\OrderMail', []);
   await rt.mail().to('buyer@example.com').send(mail);
   assert.equal(mailer.outbox[0].subject, 'Order shipped');

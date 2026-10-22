@@ -30,6 +30,26 @@ function makeRt() {
               },
             },
           },
+          // The property form (`public $view = 'mail.property';` with the empty
+          // constructor `make:mail` scaffolds): the declared fields are on the
+          // instance, so the payload finds the view.
+          'App\\Mail\\PropertyMail': {
+            base: 'mailable',
+            ctor: (args, deps) => {
+              const __self = {};
+              Object.assign(__self, { "view": "mail.property", "subject": "Property subject" });
+              return __self;
+            },
+            deps: [],
+            methods: {},
+          },
+          // A mailable with no view at all.
+          'App\\Mail\\NoViewMail': {
+            base: 'mailable',
+            ctor: (args, deps) => ({}),
+            deps: [],
+            methods: {},
+          },
         },
         views: {
           'mail.order': {
@@ -37,6 +57,12 @@ function makeRt() {
             // A compiled view writes into the runtime's output (rt.echo).
             main: (rt) => {
               rt.echo('<p>Order ' + rt.var('id') + '</p>');
+            },
+          },
+          'mail.property': {
+            context: {},
+            main: (rt) => {
+              rt.echo('<p>Property</p>');
             },
           },
         },
@@ -59,6 +85,28 @@ test('rt-mail: the mailable renders its view and the mailer sends the payload', 
   assert.equal(sent.html, '<p>Order 7</p>');
   // Laravel's message has no text body when the mailable has no text view.
   assert.equal(sent.text, null);
+});
+
+test('rt-mail: a mailable with no view fails loud (Laravel: "Invalid view.")', async () => {
+  // Probed with the vendored Laravel 13: `(new NoViewMail())->render()` throws
+  // `InvalidArgumentException: Invalid view.` (Mailable::buildView() answers
+  // null, Mailer::render(null) refuses). The edge used to send a mail with a
+  // null body - a silent 200 where Laravel answers 500.
+  const { rt } = makeRt();
+  const mailable = rt.newClass('App\\Mail\\NoViewMail', []);
+  await assert.rejects(() => rt.mail().to('buyer@example.com').send(mailable), /Invalid view\./);
+});
+
+test('rt-mail: the property form carries the view (a public field, no build())', async () => {
+  // `public $view = 'mail.property';` - the class compiler carries the declared
+  // public property, so the payload renders it (a mailable scaffolded by
+  // `make:mail` has an EMPTY constructor: the property must survive that too).
+  const { rt, mailer } = makeRt();
+  const mailable = rt.newClass('App\\Mail\\PropertyMail', []);
+  await rt.mail().to('buyer@example.com').send(mailable);
+  assert.equal(mailer.outbox.length, 1);
+  assert.equal(mailer.outbox[0].subject, 'Property subject');
+  assert.equal(mailer.outbox[0].html, '<p>Property</p>');
 });
 
 test('rt-mail: the recipients are the mailable\'s + the pending\'s (Laravel appends them)', async () => {
