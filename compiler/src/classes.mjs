@@ -193,6 +193,8 @@ function compileConstructor(fqcn, classNode, opts) {
   // runtime (a 500 the build said nothing about).
   const isEvent = opts.eventClasses.has(fqcn) || (opts.eventKinds && opts.eventKinds.has(fqcn));
   const depOf = new Map();
+  // The parameter indexes the container answers with the DEFAULT VALUE.
+  const fallbackOf = new Map();
   if (!isEvent) {
     const ctorInfo = opts.ctorInfo instanceof Map ? opts.ctorInfo.get(fqcn) : null;
     for (let i = 0; i < params.length; i++) {
@@ -206,6 +208,14 @@ function compileConstructor(fqcn, classNode, opts) {
         depOf.set(i, r.dep);
         deps.push(r.dep);
         ctorDeps.set(r.dep.param, r.dep);
+        continue;
+      }
+      // The container's fallback: a class-typed parameter with a default that
+      // the container cannot resolve answers the DEFAULT (Container::
+      // resolveClass()). The value is a PHP literal, so the parameter binds
+      // like any other literal default.
+      if (r.fallback) {
+        fallbackOf.set(i, r.fallback.value);
         continue;
       }
       // A plain value: the edge has none.
@@ -242,7 +252,9 @@ function compileConstructor(fqcn, classNode, opts) {
       continue;
     }
     let fallback = 'undefined';
-    if (p.value !== undefined && p.value !== null) {
+    if (fallbackOf.has(i)) {
+      fallback = phpLiteralJs(fallbackOf.get(i));
+    } else if (p.value !== undefined && p.value !== null) {
       const lit = literalOf(p.value);
       if (!lit) {
         return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline', code: 'LW002' };
@@ -265,7 +277,9 @@ function compileConstructor(fqcn, classNode, opts) {
       continue;
     }
     let fallback = 'undefined';
-    if (p.value !== undefined && p.value !== null) {
+    if (fallbackOf.has(i)) {
+      fallback = phpLiteralJs(fallbackOf.get(i));
+    } else if (p.value !== undefined && p.value !== null) {
       const lit = literalOf(p.value);
       if (!lit) {
         return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline', code: 'LW002' };
@@ -347,6 +361,14 @@ function compileConstructor(fqcn, classNode, opts) {
 // A plain value (the caller), an app service (the edge builds it), a
 // framework service (the edge adapter of it) — or a build error when the
 // edge cannot provide it.
+// A scalar PHP value from the dump as a JS literal.
+function phpLiteralJs(value) {
+  if (value === null) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') return String(value);
+  return JSON.stringify(String(value));
+}
+
 function resolveCtorDep(fqcn, name, type, dumped, opts) {
   // The type of the parameter (a leading backslash is PHP's own syntax:
   // `\Illuminate\Contracts\Mail\Mailer` is the same class).
@@ -383,7 +405,14 @@ function resolveCtorDep(fqcn, name, type, dumped, opts) {
         'through the container; the edge cannot',
     };
   }
+  // Container::resolveClass() catches the BindingResolutionException and falls
+  // back to the parameter's DEFAULT VALUE (Illuminate\Container\Container
+  // :1150-1170), so a class-typed parameter that carries a default never
+  // reaches the edge as an error - Laravel uses the default.
+  const hasDefault = dumped && Object.prototype.hasOwnProperty.call(dumped, 'default');
+  const defaultValue = hasDefault ? dumped.default : undefined;
   if (kind === 'abstract') {
+    if (hasDefault) return { dep: null, fallback: { param: name, value: defaultValue } };
     return {
       error:
         'the constructor of ' + fqcn + ' asks for ' + depType + ' — it is an interface without a concrete binding ' +
@@ -392,6 +421,11 @@ function resolveCtorDep(fqcn, name, type, dumped, opts) {
   }
   if (kind === 'external') {
     const adapter = SERVICE_ADAPTERS[depType];
+    if (!adapter && hasDefault) {
+      // An unbound framework service with a default: Laravel's container falls
+      // back to the default too.
+      return { dep: null, fallback: { param: name, value: defaultValue } };
+    }
     if (!adapter) {
       const why = REFUSED_SERVICES[depType];
       if (why) {

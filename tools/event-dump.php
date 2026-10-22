@@ -126,6 +126,14 @@ $ctorDump = function (string $fqcn) use ($app, $isAppClass): array {
             $out[] = $entry;
             continue;
         }
+        // A parameter with a DEFAULT is what the container falls back to when
+        // it cannot resolve the class (Container::resolveClass() catches the
+        // BindingResolutionException and answers `getDefaultValue()`), so the
+        // default travels with the dump - the edge answers the same.
+        if ($p->isDefaultValueAvailable()) {
+            $d = $p->getDefaultValue();
+            if (is_scalar($d) || $d === null) $entry['default'] = $d;
+        }
         $rc2 = new ReflectionClass($name);
         if ($rc2->isInterface() || $rc2->isAbstract()) {
             // An interface: the container binds it to a concrete class.

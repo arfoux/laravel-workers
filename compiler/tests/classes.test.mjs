@@ -1208,3 +1208,73 @@ class C
     'the handler does not call the hook itself - the lifecycle does'
   );
 });
+
+// ---- A47: a class-typed constructor parameter with a DEFAULT ----------------
+//
+// Laravel's Container::resolveClass() TRY-resolves the class and catches the
+// BindingResolutionException, falling back to the parameter's default value
+// (Illuminate/Container/Container.php). So an interface that the container
+// cannot build - or a framework service with no adapter - does NOT stop the
+// build when the parameter carries a default: Laravel passes the default. The
+// edge used to refuse such a constructor outright.
+
+test('classes: an unresolvable class parameter falls back to its default', () => {
+  const file = classFile(
+    'WithDefault',
+    `<?php
+namespace App\\Services;
+use Illuminate\\Contracts\\Cache\\Repository;
+class WithDefault
+{
+    public function __construct(private ?Repository $cache = null) {}
+    public function hasCache(): bool { return $this->cache !== null; }
+}
+`
+  );
+  const res = compileClasses(
+    {
+      events: {},
+      classes: {
+        'App\\Services\\WithDefault': {
+          file,
+          kind: 'service',
+          ctor: [{ name: 'cache', kind: 'abstract', type: 'Illuminate\\Contracts\\Cache\\Repository', default: null }],
+        },
+      },
+    },
+    { ...OPTIONS, classes: new Set(['App\\Services\\WithDefault']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The parameter binds the DEFAULT (null), not a deps[...] lookup.
+  assert.match(res.code, /"cache": \(args\[0\] === undefined \? null : args\[0\]\)/);
+  assert.doesNotMatch(res.code, /deps\["cache"\]/);
+});
+
+test('classes: a class parameter WITHOUT a default still stops the build', () => {
+  const file = classFile(
+    'NoDefault',
+    `<?php
+namespace App\\Services;
+use Illuminate\\Contracts\\Cache\\Repository;
+class NoDefault
+{
+    public function __construct(private Repository $cache) {}
+}
+`
+  );
+  const res = compileClasses(
+    {
+      events: {},
+      classes: {
+        'App\\Services\\NoDefault': {
+          file,
+          kind: 'service',
+          ctor: [{ name: 'cache', kind: 'abstract', type: 'Illuminate\\Contracts\\Cache\\Repository' }],
+        },
+      },
+    },
+    { ...OPTIONS, classes: new Set(['App\\Services\\NoDefault']) }
+  );
+  assert.equal(res.errors.length, 1);
+  assert.match(res.errors[0].message, /interface without a concrete binding/);
+});
