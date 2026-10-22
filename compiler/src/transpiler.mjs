@@ -987,7 +987,7 @@ function txRedirectChain(node) {
       if (innerArgs.length !== 0) throw mkErr('LW002', 'unsupported response(...) usage', node.loc, PORT_HINT);
       if (m === 'json') {
         const a = node.arguments || [];
-        if (a.length < 1 || a.length > 2) throw mkErr('LW002', 'response()->json() needs 1-2 arguments', node.loc, PORT_HINT);
+        if (a.length > 2) throw mkErr('LW002', 'response()->json() takes at most 2 arguments (the data and the status)', node.loc, PORT_HINT);
         return 'rt.json(' + a.map(tx).join(', ') + ')';
       }
       throw mkErr('LW002', 'unsupported response()->' + m + '() — ' + PORT_HINT, node.loc, PORT_HINT);

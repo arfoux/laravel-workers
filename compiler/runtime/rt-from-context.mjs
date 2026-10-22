@@ -2026,7 +2026,13 @@ export function buildRt(context, opts = {}) {
     // Arrayable (`toArray()`).
     if (typeof value.jsonSerialize === 'function') return value.jsonSerialize();
     if (typeof value.toArray === 'function') return value.toArray();
-    return value;
+    // A plain PHP array (an assoc array is a JS object here): PHP's
+    // json_encode() recurses into it, so a Collection or a model nested in it
+    // is serialised too. Without this `response()->json(['data' => $posts])` -
+    // the most common JSON shape there is - threw "unsupported value".
+    const out = {};
+    for (const key of Object.keys(value)) out[key] = jsonSerializable(value[key]);
+    return out;
   };
   rt.json = function (value, status) {
     // `json($data = [])`: no argument at all is an empty ARRAY ("[]"), while an

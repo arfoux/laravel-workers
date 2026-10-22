@@ -8,6 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRt } from '../runtime/rt-from-context.mjs';
+import * as CollectionModule from '../../kernel/collections.mjs';
+import { phpJsonEncode } from '../../kernel/php-json.mjs';
 
 const rt = buildRt({}, { strict: false });
 
@@ -40,6 +42,20 @@ test('rt-json: the numbers and the shapes are PHP\'s', () => {
   assert.equal(rt.json([]).body, '[]');
   assert.equal(rt.json(null).body, '{}');
   assert.equal(rt.json().body, '[]');
+  // PHP's json_encode() RECURSES into an array: a Collection or a model nested
+  // in an assoc array is serialised too (probed:
+  // response()->json(['data' => collect([['id'=>1,'n'=>'a']]), 'n' => 2])
+  // answers {"data":[{"id":1,"n":"a"}],"n":2}). Without the recursion the
+  // encoder threw "unsupported value (Collection)" - a 500 on the most common
+  // JSON shape there is.
+  const { Collection } = CollectionModule;
+  assert.equal(
+    rt.json({ data: new Collection([{ id: 1, n: 'a' }]), n: 2 }).body,
+    '{"data":[{"id":1,"n":"a"}],"n":2}'
+  );
+  // json_encode(null) stays "null" (only the JsonResponse wrapper turns a null
+  // body into "{}").
+  assert.equal(phpJsonEncode(null), 'null');
   assert.equal(rt.json({ a: null }).body, '{"a":null}');
 });
 
