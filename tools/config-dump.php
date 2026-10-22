@@ -55,6 +55,10 @@ $put('app.debug', $config->get('app.debug'));
 // The app's locale: the validation messages (and the translations) are read
 // from the app's own lang file for that locale.
 $put('app.locale', $config->get('app.locale'));
+// The app's timezone (config/app.php `timezone`): Laravel sets it as PHP's
+// default and every Carbon date renders in it. The compiled rung renders its
+// Carbon stub in the same zone, so a date in a body is the same string.
+$put('app.timezone', $config->get('app.timezone'));
 
 // ---------- pagination ----------
 // The pagination view the paginator renders (Laravel's default:

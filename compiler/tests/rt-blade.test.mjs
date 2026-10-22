@@ -128,3 +128,43 @@ test('rt-blade: a Collection spreads its items (the paginator is untouched)', ()
   // A PHP array with an "items" key is NOT a Collection: it stays an array.
   assert.deepEqual(rt.spread({ items: [1, 2] }), [[1, 2]]);
 });
+
+// ---- the app's timezone (M70) ----------------------------------------------
+//
+// Laravel sets PHP's default timezone from `config('app.timezone')`, and every
+// Carbon date renders in it. Probed with the vendored Laravel 13 / PHP 8.3,
+// `app.timezone = Asia/Jakarta` (UTC+7), instant 1761177600:
+//   format('Y-m-d H:i:s') = "2025-10-23 07:00:00"
+//   toDateTimeString()    = "2025-10-23 07:00:00"
+//   toDateString()        = "2025-10-23"
+//   timezoneName          = "Asia/Jakarta"
+//   Carbon::today()       = the zone's midnight
+// The compiled rung used to render UTC only, so every date in a body differed
+// from Laravel's for a non-UTC app.
+
+test('rt.now() renders in the app timezone, not UTC', () => {
+  const rt = buildRt(
+    {},
+    {
+      strict: false,
+      config: { 'app.timezone': 'Asia/Jakarta' },
+      http: { clock: () => 1761177600 },
+    }
+  );
+  const now = rt.now();
+  assert.equal(now.format('Y-m-d H:i:s'), '2025-10-23 07:00:00');
+  assert.equal(now.toDateTimeString(), '2025-10-23 07:00:00');
+  assert.equal(now.toDateString(), '2025-10-23');
+  assert.equal(now.timezoneName, 'Asia/Jakarta');
+  // The instant itself does not move: only the rendering is local.
+  assert.equal(now.getTimestamp(), 1761177600);
+});
+
+test('a UTC app still renders UTC (the fast path)', () => {
+  const rt = buildRt(
+    {},
+    { strict: false, config: { 'app.timezone': 'UTC' }, http: { clock: () => 1761177600 } }
+  );
+  assert.equal(rt.now().format('Y-m-d H:i:s'), '2025-10-23 00:00:00');
+  assert.equal(rt.now().timezoneName, 'UTC');
+});

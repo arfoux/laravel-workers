@@ -1503,27 +1503,82 @@ export function buildRt(context, opts = {}) {
   rt.collect = (arr) => new Collection(arr == null ? [] : arr);
   rt.Collection = Collection;
 
-  // ---- rt.now() minimal Carbon stub (UTC) ----
+  // ---- rt.now() minimal Carbon stub ----
+  //
+  // Laravel sets PHP's default timezone from `config('app.timezone')` and every
+  // Carbon date renders in it, so a date in a body is the APP's local time -
+  // not UTC. The stub renders in the same zone: `Intl` is the only timezone
+  // database a Worker has (it ships the full IANA set), and the parts are
+  // cached per zone. A UTC app takes the fast path (the `getUTC*` accessors).
   const pad2 = (n) => String(n).padStart(2, '0');
   const pad4 = (n) => String(n).padStart(4, '0');
-  function makeCarbon(date) {
+  const APP_TZ = String(configCtx['app.timezone'] || 'UTC');
+  const TZ_IS_UTC = APP_TZ === 'UTC' || APP_TZ === 'Etc/UTC' || APP_TZ === 'GMT';
+  const tzFormatters = new Map();
+  function zoneFormatter(tz) {
+    let f = tzFormatters.get(tz);
+    if (!f) {
+      f = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hour12: false,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+      tzFormatters.set(tz, f);
+    }
+    return f;
+  }
+  /** The wall-clock parts of `d` in `tz` (a timezone the app configured). */
+  function zoneParts(d, tz) {
+    if (tz === null || tz === undefined || TZ_IS_UTC) {
+      return {
+        Y: d.getUTCFullYear(),
+        m: d.getUTCMonth() + 1,
+        d: d.getUTCDate(),
+        H: d.getUTCHours(),
+        i: d.getUTCMinutes(),
+        s: d.getUTCSeconds(),
+      };
+    }
+    const parts = {};
+    for (const part of zoneFormatter(tz).formatToParts(d)) {
+      if (part.type !== 'literal') parts[part.type] = part.value;
+    }
+    // `hour12: false` renders midnight as 24 in some engines; PHP's `H` is 00.
+    const hour = Number(parts.hour) % 24;
+    return {
+      Y: Number(parts.year),
+      m: Number(parts.month),
+      d: Number(parts.day),
+      H: hour,
+      i: Number(parts.minute),
+      s: Number(parts.second),
+    };
+  }
+  function makeCarbon(date, tz = APP_TZ) {
     const d = new Date(date.getTime());
     const api = {
       _d: d,
+      _tz: tz,
       format(fmt) {
-        const Y = pad4(d.getUTCFullYear());
-        const m = pad2(d.getUTCMonth() + 1);
-        const dd = pad2(d.getUTCDate());
-        const H = pad2(d.getUTCHours());
-        const i = pad2(d.getUTCMinutes());
-        const s = pad2(d.getUTCSeconds());
-        const n = String(d.getUTCMonth() + 1);
-        const j = String(d.getUTCDate());
-        const G = String(d.getUTCHours());
-        const g0 = d.getUTCHours() % 12 || 12;
+        const p = zoneParts(d, tz);
+        const Y = pad4(p.Y);
+        const m = pad2(p.m);
+        const dd = pad2(p.d);
+        const H = pad2(p.H);
+        const i = pad2(p.i);
+        const s = pad2(p.s);
+        const n = String(p.m);
+        const j = String(p.d);
+        const G = String(p.H);
+        const g0 = p.H % 12 || 12;
         const g = String(g0);
-        const a = d.getUTCHours() < 12 ? 'am' : 'pm';
-        const A = d.getUTCHours() < 12 ? 'AM' : 'PM';
+        const a = p.H < 12 ? 'am' : 'pm';
+        const A = p.H < 12 ? 'AM' : 'PM';
         const U = String(Math.floor(d.getTime() / 1000));
         return String(fmt).replace(/Y|m|d|H|i|s|n|j|G|g|a|A|U/g, (ch) => {
           switch (ch) {
@@ -1544,17 +1599,27 @@ export function buildRt(context, opts = {}) {
           }
         });
       },
-      toDateString() { return pad4(d.getUTCFullYear()) + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()); },
-      toDateTimeString() { return pad4(d.getUTCFullYear()) + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()); },
+      // The date in the APP's timezone (Carbon renders in its own zone, and
+      // Laravel's is `config('app.timezone')`).
+      toDateString() {
+        const p = zoneParts(d, tz);
+        return pad4(p.Y) + '-' + pad2(p.m) + '-' + pad2(p.d);
+      },
+      toDateTimeString() {
+        const p = zoneParts(d, tz);
+        return pad4(p.Y) + '-' + pad2(p.m) + '-' + pad2(p.d) + ' ' + pad2(p.H) + ':' + pad2(p.i) + ':' + pad2(p.s);
+      },
+      get timezoneName() { return tz; },
+      getTimezone() { return tz; },
       get timestamp() { return Math.floor(d.getTime() / 1000); },
       getTimestamp() { return Math.floor(d.getTime() / 1000); },
-      addDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() + Number(n)); return makeCarbon(nd); },
-      subDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() - Number(n)); return makeCarbon(nd); },
-      addHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() + Number(n)); return makeCarbon(nd); },
-      subHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() - Number(n)); return makeCarbon(nd); },
-      copy() { return makeCarbon(new Date(d.getTime())); },
-      clone() { return makeCarbon(new Date(d.getTime())); },
-      toString() { return pad4(d.getUTCFullYear()) + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()); },
+      addDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() + Number(n)); return makeCarbon(nd, tz); },
+      subDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() - Number(n)); return makeCarbon(nd, tz); },
+      addHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() + Number(n)); return makeCarbon(nd, tz); },
+      subHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() - Number(n)); return makeCarbon(nd, tz); },
+      copy() { return makeCarbon(new Date(d.getTime()), tz); },
+      clone() { return makeCarbon(new Date(d.getTime()), tz); },
+      toString() { return api.toDateTimeString(); },
       valueOf() { return d.getTime(); },
     };
     return api;
@@ -1563,10 +1628,16 @@ export function buildRt(context, opts = {}) {
   // compiled side must read the same instant - the wall clock diverges.
   const clockDate = () => (requestClock ? new Date(requestClock() * 1000) : new Date());
   rt.now = () => makeCarbon(clockDate());
+  // `today()` is midnight in the APP's timezone (Carbon::today() uses the
+  // default zone), so the UTC instant is the zone's midnight converted back.
   rt.today = () => {
     const d = clockDate();
-    d.setUTCHours(0, 0, 0, 0);
-    return makeCarbon(d);
+    const p = zoneParts(d, APP_TZ);
+    const utcMidnight = Date.UTC(p.Y, p.m - 1, p.d, 0, 0, 0);
+    // The zone's offset at that instant: the parts of the UTC midnight tell it.
+    const asUtc = Date.UTC(p.Y, p.m - 1, p.d, p.H, p.i, p.s);
+    const offset = asUtc - Math.floor(d.getTime() / 1000) * 1000;
+    return makeCarbon(new Date(utcMidnight - offset));
   };
 
   // ---- controller runtime (view data, models, responses) ----
