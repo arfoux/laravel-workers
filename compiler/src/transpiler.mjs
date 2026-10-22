@@ -636,13 +636,17 @@ const REQUEST_DENY = new Set([
 const FILE_METHODS = new Set([
   'getClientOriginalName', 'getClientOriginalExtension', 'getClientMimeType',
   'getSize', 'isValid', 'store', 'storeAs',
+  // Illuminate\Http\File::dimensions(): `@getimagesize($path)` - a HEADER
+  // read, which the edge reproduces byte-for-byte (kernel/image.mjs). It
+  // answers [width, height], or false when the bytes are not an image.
+  'dimensions',
 ]);
 // The file methods that write to the object store (async at the edge).
 const FILE_ASYNC = new Set(['store', 'storeAs']);
 // The validation rules that read the file's *content* type (finfo): the edge
 // has only the type the browser declared, so the verdict would differ from
 // PHP's. The build stops instead of answering differently at the edge.
-const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes', 'image', 'dimensions']);
+const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes']);
 
 // The content-mime rule in an inline rule set (`$request->validate(['a' =>
 // 'mimes:png'])`), or null when there is none. The rules are literals in the

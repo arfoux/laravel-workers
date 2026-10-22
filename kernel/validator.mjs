@@ -12,6 +12,7 @@ import {
   renderValidationMessage,
   LARAVEL_VALIDATION_MESSAGES,
 } from './validation-messages.mjs';
+import { imageInfo } from './image.mjs';
 
 // An uploaded file (the edge's file object).
 function isUploadedFileValue(value) {
@@ -139,6 +140,65 @@ const PARAMETER_COUNTS = {
   exclude_with: 1, exclude_without: 1, same: 1, size: 1,
 };
 
+// Laravel's `image` list (ValidatesAttributes::validateImage(): jpg, jpeg,
+// png, gif, bmp, webp, avif, heic, heif) mapped onto the formats the edge's
+// header read recognises.
+const IMAGE_RULE_FORMATS = new Set(['png', 'jpeg', 'gif', 'bmp', 'webp', 'avif', 'heic', 'heif']);
+
+// `$value->getMimeType()` is image/svg+xml: an SVG is XML text, so the edge
+// looks for the root element instead of a binary header.
+function looksLikeSvg(bytes) {
+  if (!(bytes instanceof Uint8Array)) return false;
+  let head = '';
+  const limit = Math.min(bytes.length, 2048);
+  for (let i = 0; i < limit; i++) head += String.fromCharCode(bytes[i]);
+  return /<\s*svg[\s>]/i.test(head.replace(/^\uFEFF/, ''));
+}
+
+// ValidatesAttributes::failsBasicDimensionChecks() (:832-840) +
+// failsRatioCheck()/failsMinRatioCheck()/failsMaxRatioCheck() (:850-909),
+// verbatim: `ratio`/`min_ratio`/`max_ratio` are `n/d` (a bare `n` means n/1)
+// and the tolerance is 1 / (max((w+h)/2, h) + 1).
+function failsDimensionChecks(params, width, height) {
+  const named = {};
+  for (const param of params) {
+    const at = param.indexOf('=');
+    if (at < 0) {
+      throw new Error('the dimensions rule parameter "' + param + '" must be name=value');
+    }
+    named[param.slice(0, at)] = param.slice(at + 1);
+  }
+  const num = (v) => Number(v);
+  const basic =
+    ('width' in named && num(named.width) !== width) ||
+    ('min_width' in named && num(named.min_width) > width) ||
+    ('max_width' in named && num(named.max_width) < width) ||
+    ('height' in named && num(named.height) !== height) ||
+    ('min_height' in named && num(named.min_height) > height) ||
+    ('max_height' in named && num(named.max_height) < height);
+  if (basic) return true;
+  const ratioOf = (value) => {
+    const parts = String(value).split('/');
+    const numerator = parts.length ? Number(parts[0]) : 1;
+    const denominator = parts.length > 1 ? Number(parts[1]) : 1;
+    return [Number.isFinite(numerator) ? numerator : 1, Number.isFinite(denominator) ? denominator : 1];
+  };
+  const precision = 1 / (Math.max((width + height) / 2, height) + 1);
+  if ('ratio' in named) {
+    const [n, d] = ratioOf(named.ratio);
+    if (Math.abs(n / d - width / height) > precision) return true;
+  }
+  if ('min_ratio' in named) {
+    const [n, d] = ratioOf(named.min_ratio);
+    if (n / d - width / height > precision) return true;
+  }
+  if ('max_ratio' in named) {
+    const [n, d] = ratioOf(named.max_ratio);
+    if (width / height - n / d > precision) return true;
+  }
+  return false;
+}
+
 function isNumericValue(v) {
   if (typeof v === 'number' && !Number.isNaN(v)) return true;
   if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return true;
@@ -180,12 +240,12 @@ const KNOWN_RULES = new Set([
   'gt', 'gte', 'lt', 'lte', 'distinct',
   'doesnt_start_with', 'doesnt_end_with', 'list', 'required_array_keys', 'array_keys',
   'in_array', 'decimal', 'timezone',
-  'file',
+  'file', 'image', 'dimensions',
 ]);
 // The validation rules that need the file's *content* type (finfo): the edge
 // cannot sniff the content like PHP does, so they are not compiled (the build
 // stops with LW002 and names the rule).
-const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes', 'image', 'dimensions']);
+const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes']);
 // PHP `is_array()`: associative arrays arrive as plain JS objects, so an
 // `Array.isArray()` check would miss `['string' => '...']` message maps.
 const isPhpArray = (value) => typeof value === 'object' && value !== null;
@@ -1019,6 +1079,30 @@ export class Validator {
       case 'string': return typeof value === 'string';
       // Illuminate\Validation\Validator::validateFile(): a valid file instance.
       case 'file': return isUploadedFileValue(value) && value.isValid();
+      // ValidatesAttributes::validateImage() (:1539-1548): the file's type is
+      // one of the image types. Laravel asks the MIME guesser for the
+      // extension; the edge reads the HEADER (getimagesize's job), which is
+      // the same magic-byte decision for every format in the list.
+      case 'image': {
+        if (!isUploadedFileValue(value) || !value.isValid()) return false;
+        if (rule.params.includes('allow_svg')) {
+          throw new Error(
+            'the image:allow_svg rule is not compiled at the edge - an SVG is XML, not a raster ' +
+              'header, so the edge cannot tell an image from an XML document that says <svg>'
+          );
+        }
+        const info = imageInfo(value.bytes);
+        return info !== null && IMAGE_RULE_FORMATS.has(info.format);
+      }
+      // ValidatesAttributes::validateDimensions() (:792-822): an SVG passes,
+      // anything else is getimagesize() plus the named checks.
+      case 'dimensions': {
+        if (!isUploadedFileValue(value) || !value.isValid()) return false;
+        const info = imageInfo(value.bytes);
+        if (info === null) return looksLikeSvg(value.bytes);
+        if (info.width === null || info.height === null) return false;
+        return !failsDimensionChecks(rule.params, info.width, info.height);
+      }
       case 'integer': return isIntegerValue(value);
       case 'numeric': return isNumericValue(value);
       case 'boolean': return isBooleanLike(value);

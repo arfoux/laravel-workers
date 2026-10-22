@@ -22,6 +22,7 @@
 // AuthManager consumes (`auth.defaults.guard`, `session.driver`, ...).
 
 import { match, dispatch, routeKey, allowedMethods } from './router.mjs';
+import { imageInfo } from './image.mjs';
 import {
   makeCookie,
   parseCookieHeader,
@@ -401,6 +402,15 @@ function makeUploadedFile(desc, storage, defaultDisk, randomString) {
     getClientMimeType() { return this.mime; },
     getSize() { return this.size; },
     isValid() { return true; },
+    // Illuminate\Http\File::dimensions() (:60-79): `@getimagesize($path)`,
+    // which is a HEADER read - so the edge answers the same [width, height],
+    // and `false` for bytes getimagesize() would reject. No decoding.
+    dimensions() {
+      const info = imageInfo(this.bytes);
+      return info === null || info.width === null || info.height === null
+        ? false
+        : [info.width, info.height];
+    },
     // Illuminate\Http\UploadedFile::get(): the contents of the file. PHP
     // returns a byte string; the edge returns the bytes (a string would
     // re-encode them, so the compiled surface does not expose this method).

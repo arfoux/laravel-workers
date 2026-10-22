@@ -20,9 +20,11 @@
 //   user       { id, email, password, password_hash? } — the seeded auth user
 //
 // A step may carry a multipart body:
-//   multipart  { fields?: { name: value }, files?: [{ name, filename?, type?, content }] }
-//   (`content` is the file's bytes as a UTF-8 string; `type` defaults to
-//   application/octet-stream, `filename` to the field's name.)
+//   multipart  { fields?: { name: value }, files?: [{ name, filename?, type?, content?, contentBase64? }] }
+//   (`content` is the file's bytes as a UTF-8 string; a BINARY file passes its
+//   bytes as `contentBase64` instead - a JS string would re-encode every byte
+//   >= 0x80. `type` defaults to application/octet-stream, `filename` to the
+//   field's name.)
 //
 // Exit code 0 = every step that is expected to match, matched. A step marked
 // `expect: 'diverges'` is reported as a known divergence (it shrinks the
@@ -264,7 +266,13 @@ function buildMultipartBody(multipart) {
     push(`--${MULTIPART_BOUNDARY}\r\n`);
     push(`Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n`);
     push(`Content-Type: ${type}\r\n\r\n`);
-    push(String(file?.content ?? ''));
+    // A binary upload carries its bytes as base64: a JS string cannot hold
+    // them unchanged (TextEncoder would re-encode every byte >= 0x80).
+    if (file && file.contentBase64 !== undefined) {
+      chunks.push(Uint8Array.from(Buffer.from(String(file.contentBase64), 'base64')));
+    } else {
+      push(String(file?.content ?? ''));
+    }
     push('\r\n');
   }
   push(`--${MULTIPART_BOUNDARY}--\r\n`);

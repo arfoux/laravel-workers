@@ -207,7 +207,7 @@ foreach (array_slice($argv, 1) as $fqcn) {
                 foreach ((array) $rules as $rule) {
                     if (is_array($rule)) {
                         $walkNames($rule);
-                    } elseif (is_string($rule) && in_array(explode(':', $rule)[0], ['mimes', 'mimetypes', 'image', 'dimensions'], true)) {
+                    } elseif (is_string($rule) && in_array(explode(':', $rule)[0], ['mimes', 'mimetypes'], true)) {
                         $mimeRule = explode(':', $rule)[0];
                         return;
                     }

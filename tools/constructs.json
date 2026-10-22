@@ -571,6 +571,17 @@
       "reason": "it reads the file's *content* type (finfo)"
     },
     {
+      "id": "file_rule_image",
+      "label": "An `image`/`dimensions` rule on an upload",
+      "php": "$request->validate(['photo' => ['required', 'image', 'dimensions:min_width=2']]);",
+      "check": "compiler",
+      "expect": "ok",
+      "note": "`image` and `dimensions` are getimagesize(), a HEADER read (ValidatesAttributes::validateImage/validateDimensions): the edge reads the same header (kernel/image.mjs) and applies the same named checks, so the verdict is Laravel's. The finfo rules (`mimes`, `mimetypes`) stay refused.",
+      "batch": "M69",
+      "status": "done",
+      "sig": "(\\Illuminate\\Http\\Request $request)"
+    },
+    {
       "id": "request_files_property",
       "label": "The files bag as a method (`$request->files()`)",
       "php": "$files = $request->files();",

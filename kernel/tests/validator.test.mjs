@@ -733,3 +733,73 @@ test("unique: the wildcard column and the bracketed id are Laravel's", async () 
   assert.equal(payload2.except, 7, "the bracketed id is the field's value in the data");
   assert.equal(payload2.idColumn, 'id');
 });
+
+// ---- the file-content rules: `image` and `dimensions` ----------------------
+//
+// Laravel's ground truth (probed against the vendored Laravel 13 / PHP 8.3 with
+// a real 3x2 PNG):
+//   - validateImage() (ValidatesAttributes.php:1539-1548) accepts a file whose
+//     type is one of jpg/jpeg/png/gif/bmp/webp/avif/heic/heif;
+//   - validateDimensions() (:792-822) reads getimagesize() and applies the
+//     named checks (:832-909), with the ratio tolerance
+//     1 / (max((w+h)/2, h) + 1).
+// The probe: `image` PASS on a 3x2 PNG; `dimensions:width=3,height=2` PASS;
+// `dimensions:min_width=4` FAIL; `dimensions:ratio=3/2` PASS;
+// `dimensions:ratio=1/1` FAIL.
+
+// A 3x2 PNG (signature + IHDR + a minimal IDAT/IEND): the bytes getimagesize()
+// reads, base64-decoded - no PHP at test time.
+const PNG_3x2 = Uint8Array.from(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAADUlEQVR42mNk+M9QzwAEYgH9Wj0mNwAAAABJRU5ErkJggg==',
+    'base64'
+  )
+);
+
+function uploadedFile(bytes, name = 'a.png', mime = 'image/png') {
+  return {
+    __uploadedFile: true,
+    name,
+    filename: name,
+    mime,
+    size: bytes.length,
+    bytes,
+    isValid: () => true,
+  };
+}
+
+test('the image rule accepts a real PNG and rejects non-image bytes', async () => {
+  const ok = new Validator({ photo: uploadedFile(PNG_3x2) }, { photo: 'image' });
+  assert.equal(await ok.passes(), true);
+
+  const notAnImage = new Validator(
+    { photo: uploadedFile(Uint8Array.from([1, 2, 3, 4, 5]), 'a.txt', 'text/plain') },
+    { photo: 'image' }
+  );
+  assert.equal(await notAnImage.passes(), false);
+  assert.match(notAnImage.errors().toArray().photo[0], /must be an image/);
+});
+
+test('the image rule refuses the allow_svg parameter loudly', async () => {
+  // An SVG is XML, not a raster header: the edge cannot tell it apart from an
+  // XML document that happens to contain <svg>, so it must not guess.
+  const v = new Validator({ photo: uploadedFile(PNG_3x2) }, { photo: 'image:allow_svg' });
+  await assert.rejects(() => v.passes(), /allow_svg/);
+});
+
+test('the dimensions rule applies the named checks like Laravel', async () => {
+  const pass = async (rule) => new Validator({ photo: uploadedFile(PNG_3x2) }, { photo: rule }).passes();
+  assert.equal(await pass('dimensions:width=3,height=2'), true);
+  assert.equal(await pass('dimensions:min_width=4'), false);
+  assert.equal(await pass('dimensions:max_width=3'), true);
+  assert.equal(await pass('dimensions:ratio=3/2'), true);
+  assert.equal(await pass('dimensions:ratio=1/1'), false);
+  // An SVG passes the dimensions rule outright (validateDimensions's first
+  // branch, :794-796).
+  const svg = uploadedFile(
+    Uint8Array.from(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>')),
+    'a.svg',
+    'image/svg+xml'
+  );
+  assert.equal(await new Validator({ photo: svg }, { photo: 'dimensions:min_width=1000' }).passes(), true);
+});

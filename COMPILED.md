@@ -430,6 +430,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | The upload is stored under a random name (`$file->store()`) | ✅ compiles | The name is a random hash (Str::random(40)) + the extension; the extension comes from the type the browser declared (Laravel sniffs the content with finfo). | M40 |
 | The content type of the upload (`$file->getMimeType()`) | ⛔ fails loud (`LW003`) | The content type is read from the file's bytes (finfo): the edge cannot sniff the content like PHP does, so the build stops (LW003). | M40 |
 | A `mimes` rule on an upload | ⛔ fails loud (`LW002`) | The `mimes` rule compares the extension the content sniffs (finfo): the edge has only the type the browser declared, so the build stops (LW002) instead of answering differently. | M40 |
+| An `image`/`dimensions` rule on an upload | ✅ compiles | `image` and `dimensions` are getimagesize(), a HEADER read (ValidatesAttributes::validateImage/validateDimensions): the edge reads the same header (kernel/image.mjs) and applies the same named checks, so the verdict is Laravel's. The finfo rules (`mimes`, `mimetypes`) stay refused. | M69 |
 | The files bag as a method (`$request->files()`) | ⛔ fails loud (`LW002`) | In Laravel `$request->files` is a property (Symfony's FileBag), not a method: the build stops (LW002) and points at `$request->file()` / `$request->allFiles()`. | M40 |
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
@@ -500,7 +501,7 @@ or it **fails the build** - there is no third state (no silent degradation).
 | The `View` facade | ⛔ fails loud (`LW002`) | The View facade is not compiled at the edge (Laravel 13 lists 79 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Vite` facade | ⛔ fails loud (`LW002`) | The Vite facade is not compiled at the edge (Laravel 13 lists 32 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 
-**113 constructs: 40 compile, 63 fail loud, 10 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state. The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
+**114 constructs: 41 compile, 63 fail loud, 10 documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state. The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
 
 <!-- construct-audit:end -->
 

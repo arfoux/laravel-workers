@@ -288,6 +288,55 @@ export default {
       // vacuously (a route that does not exist would answer 404 on both sides).
       expectBody: 'hello-shadow|yes|yes|yes|no|hello-disk|yes|yes|yes|no',
     },
+    // The image rules: `image` is a header read (getimagesize), and
+    // `dimensions` applies its named checks to the same header
+    // (ValidatesAttributes::validateImage/validateDimensions). The PNG is a
+    // real 3x2 file, so the oracle's getimagesize() answers 3x2.
+    {
+      label: 'POST /upload-image-demo (a 3x2 PNG passes image+dimensions)',
+      method: 'POST',
+      uri: '/upload-image-demo',
+      jar: true,
+      multipart: {
+        fields: { _token: '@token', title: 'photo' },
+        files: [{
+          name: 'photo',
+          filename: 'tiny.png',
+          type: 'image/png',
+          contentBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAADUlEQVR42mNk+M9QzwAEYgH9Wj0mNwAAAABJRU5ErkJggg==',
+        }],
+      },
+    },
+    {
+      label: 'POST /upload-image-demo (a text file fails the image rule)',
+      method: 'POST',
+      uri: '/upload-image-demo',
+      jar: true,
+      multipart: {
+        fields: { _token: '@token', title: 'photo' },
+        files: [{
+          name: 'photo',
+          filename: 'note.txt',
+          type: 'text/plain',
+          content: 'not an image',
+        }],
+      },
+    },
+    {
+      label: 'POST /upload-image-min-demo (the dimensions check fails: 3 < 4000)',
+      method: 'POST',
+      uri: '/upload-image-min-demo',
+      jar: true,
+      multipart: {
+        fields: { _token: '@token', title: 'photo' },
+        files: [{
+          name: 'photo',
+          filename: 'tiny.png',
+          type: 'image/png',
+          contentBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAADUlEQVR42mNk+M9QzwAEYgH9Wj0mNwAAAABJRU5ErkJggg==',
+        }],
+      },
+    },
     {
       // The upload (a multipart body): the file's metadata, the store (the
       // app's default disk) and the bytes that come back from it. The name is

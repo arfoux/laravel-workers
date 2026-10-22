@@ -342,9 +342,19 @@ function lwUploadedFiles(array $multipart, array &$tmpFiles): array
         $filename = (string) ($file['filename'] ?? $name);
         $type = (string) ($file['type'] ?? 'application/octet-stream');
         if ($type === '') $type = 'application/octet-stream';
-        $content = $file['content'] ?? '';
-        if (!is_string($content)) {
-            $content = is_scalar($content) ? (string) $content : '';
+        // A binary upload carries its bytes as base64 (a PHP string is a byte
+        // array, a JS string is not - shadow/run.mjs encodes it the same way).
+        if (isset($file['contentBase64'])) {
+            $content = base64_decode((string) $file['contentBase64'], true);
+            if ($content === false) {
+                fwrite(STDERR, "php-shadow-oracle: the file '{$name}' has invalid contentBase64\n");
+                exit(6);
+            }
+        } else {
+            $content = $file['content'] ?? '';
+            if (!is_string($content)) {
+                $content = is_scalar($content) ? (string) $content : '';
+            }
         }
         $tmp = tempnam(sys_get_temp_dir(), 'lw');
         if ($tmp === false) {

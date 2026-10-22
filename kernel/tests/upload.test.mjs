@@ -145,12 +145,23 @@ test('validation: the size rules of a file are in kilobytes (Laravel 13)', async
   assert.deepEqual(failed.errors().avatar, ['The avatar field must not be greater than 0 kilobytes.']);
 });
 
-test('validation: a rule that reads the content type fails loud (mimes)', () => {
+test('validation: `mimes` fails loud, `image`/`dimensions` compile (a header read)', async () => {
+  // `mimes` compares the type finfo SNIFFS the content for, and the edge has
+  // only the type the browser declared - so the build refuses it.
   assert.throws(
     () => new Validator({}, { avatar: 'mimes:png' }),
     /mimes validation rule is not compiled.*finfo/s
   );
-  assert.throws(() => new Validator({}, { avatar: 'image' }), /not compiled/);
+  // `image` and `dimensions` are getimagesize(), a HEADER read the edge
+  // reproduces (kernel/image.mjs) - they compile. An ABSENT field skips them
+  // (Laravel only runs a non-required rule on a present value - a probe:
+  // both PASS on an empty input), while a present non-image fails.
+  assert.equal(await new Validator({}, { avatar: 'image' }).passes(), true);
+  assert.equal(await new Validator({}, { avatar: 'dimensions:min_width=1' }).passes(), true);
+  assert.equal(
+    await new Validator({ avatar: 'not bytes' }, { avatar: 'image' }).passes(),
+    false
+  );
 });
 
 test('upload: the files are not flashed back into the form', () => {

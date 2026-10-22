@@ -21,7 +21,7 @@ const PORT_HINT = 'write a port handler for this route (build --scaffold) instea
 // The validation rules that read the file's *content* type (finfo): the edge
 // has only the type the browser declared, so the verdict would differ from
 // PHP's. The build stops instead of answering differently at the edge.
-const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes', 'image', 'dimensions']);
+const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes']);
 
 // A rule *object* (`Rule::file()->max(2048)`, `File::types([...])`) is a
 // class: the compiled validator evaluates the string rules only, so the rule
