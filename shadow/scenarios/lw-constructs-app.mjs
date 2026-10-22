@@ -189,17 +189,12 @@ export default {
     {
       // The second page: the page comes from the request (`?page=2`).
       //
-      // This route is SNAPSHOTTED at build time (it answers HTML), so the page
-      // it serves is the one the build rendered - a static page cannot read the
-      // request's query. The query-page parity is proven on the COMPILED
-      // controller instead (`/posts-paginated-json?page=2`, below).
-      label: 'GET /posts-paginated?page=2 (the second page, a build-time snapshot)',
+      // The second page: the page comes from the request (`?page=2`).
+      label: 'GET /posts-paginated?page=2 (the second page)',
       method: 'GET',
       uri: '/posts-paginated',
       query: { page: '2' },
       jar: true,
-      expect: 'diverges',
-      why: 'a build-time snapshot: the page is baked in, the query is not read (the compiled controller proves it below)',
     },
     {
       // The pagination links: the view renders the paginator (the compiled
@@ -288,16 +283,7 @@ export default {
       jar: true,
       form: { _token: '@token', title: 'Shadow Post', body: 'From the shadow harness', published: '1' },
     },
-    {
-      // The same snapshot: the row the previous step CREATED exists only at
-      // request time, so a page rendered at build time cannot show it.
-      label: 'GET /posts (list after create, a build-time snapshot)',
-      method: 'GET',
-      uri: '/posts',
-      jar: true,
-      expect: 'diverges',
-      why: 'a build-time snapshot cannot show a row created during the run',
-    },
+    { label: 'GET /posts (list after create)', method: 'GET', uri: '/posts', jar: true },
     {
       label: 'POST /posts (the FormRequest hook prepares the input)',
       method: 'POST',

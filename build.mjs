@@ -320,6 +320,18 @@ try {
       needsPort.push({ route, reason: 'dynamic segment — needs a port' });
       continue;
     }
+    // A CONTROLLER route is compiled, not snapshotted: the build-time page is
+    // the fallback for a route the build cannot compile. Snapshotting it
+    // answered a stale page for anything the request decides (a query string,
+    // a row created during the run) while the compiled controller was never
+    // reached - the shadow compared the baked page and called it parity.
+    {
+      const action = actionForRoute(route);
+      if (action && action !== 'Closure') {
+        needsPort.push({ route, reason: 'a controller serves it — compiled, not snapshotted' });
+        continue;
+      }
+    }
     const res = prerender(route);
     const isHtml = String(res.content_type || '').includes('text/html');
     if (res.status >= 200 && res.status < 300 && isHtml) {
@@ -1722,6 +1734,23 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         for (let i = needsPort.length - 1; i >= 0; i--) {
           if (controllerRoutes.has(needsPort[i].route)) needsPort.splice(i, 1);
         }
+      }
+
+      // A route a COMPILED controller serves is NOT a snapshot: the build-time
+      // page is the fallback for a route the build could not compile. Keeping
+      // both hid the controller (the shadow compared a page baked at build
+      // time and called it parity - a stale answer for anything that depends
+      // on the request: a query string, a row created during the run).
+      for (const route of [...snapshots]) {
+        if (!controllerRoutes.has(route)) continue;
+        snapshots.splice(snapshots.indexOf(route), 1);
+        const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
+        try {
+          rmSync(join(dist, 'public', file), { force: true });
+        } catch {
+          /* the page was never written */
+        }
+        console.log(`  snapshot ${route} dropped - the compiled controller serves it`);
       }
 
       // The Storage facade needs an object store: the app's local disk is
