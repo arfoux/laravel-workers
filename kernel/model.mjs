@@ -1,6 +1,7 @@
 // kernel/model.mjs — Model base
 import { table as tableBuilder } from './db.mjs';
 import { isHashedDigest, makeSync, verifyConfiguration } from './hash.mjs';
+import { Collection } from './collections.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
 
@@ -516,8 +517,14 @@ export class Model {
     }
     for (const key of Object.keys(this._relations || {})) {
       const rel = this._relations[key];
-      if (Array.isArray(rel)) out[key] = rel.map((r) => (r && r.toJSON ? r.toJSON() : r));
-      else out[key] = rel && rel.toJSON ? rel.toJSON() : rel;
+      // A relation is serialised as an ARRAY of the related models' arrays.
+      // `Collection#toJSON()` answers a JSON STRING (Laravel's toJson()), so it
+      // must not be used here - the body would embed "[{...}]" as a string.
+      const one = (r) =>
+        r instanceof Model ? r.toJSON() : r && typeof r.toArray === 'function' ? r.toArray() : r;
+      if (rel instanceof Collection) out[key] = rel.all().map(one);
+      else if (Array.isArray(rel)) out[key] = rel.map(one);
+      else out[key] = one(rel);
     }
     return out;
   }

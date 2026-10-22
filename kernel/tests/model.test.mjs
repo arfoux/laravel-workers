@@ -252,3 +252,37 @@ test('a dotted or underscore key is never mass-assignable', () => {
   m.fill({ name: 'a', _token: 't', 'a.b': 1, secret: 'x' });
   assert.deepEqual(m.attributes, { name: 'a' });
 });
+
+
+// ---- a hasMany relation is a Collection (A75) -----------------------------
+//
+// HasMany::getResults() answers an Eloquent Collection
+// (Illuminate/Database/Eloquent/Relations/HasMany.php:433-440), so
+// `$post->comments->count()` / `->pluck()` / `->isEmpty()` work. The edge used
+// a plain array, where those methods do not exist. And the JSON must embed the
+// related models' ARRAYS - `Collection#toJSON()` answers a JSON STRING, which
+// would land in the body as "[{...}]".
+test('a loaded hasMany answers a Collection and serialises as an array', async () => {
+  const { Collection } = await import('../collections.mjs');
+  class RelComment extends Model {
+    static table = 'rel_comments';
+    static primaryKey = 'id';
+  }
+  class RelPost extends Model {
+    static table = 'rel_posts';
+    static primaryKey = 'id';
+  }
+  RelPost.relations = {
+    comments: { type: 'hasMany', model: RelComment, foreignKey: 'post_id', localKey: 'id' },
+  };
+  const post = new RelPost({ id: 7 });
+  post.setRelation('comments', new Collection([new RelComment({ id: 1, body: 'first' })]));
+  const rel = post.get('comments');
+  assert.ok(rel instanceof Collection, 'a hasMany relation is a Collection');
+  assert.equal(rel.count(), 1);
+  assert.deepEqual(rel.pluck('body').all(), ['first']);
+  assert.equal(rel.isEmpty(), false);
+  // The serialised form is the ARRAY of the related arrays, not a JSON string.
+  assert.deepEqual(post.toJSON().comments, [{ id: 1, body: 'first' }]);
+  assert.equal(typeof post.toJSON().comments, 'object');
+});

@@ -106,10 +106,20 @@ const phpCompare = (a, b) => {
 };
 
 /** Laravel's `$callback ? $callback($item, $key) : $item`, plus property access. */
+// Laravel's `data_get($item, $value)`: for an Eloquent model that goes through
+// `__get` -> `getAttribute()`, so `$collection->pluck('title')` reads the
+// model's ATTRIBUTE, not a JS property (the edge keeps them in `attributes`).
+const readProp = (item, key) => {
+  if (item === null || item === undefined) return null;
+  if (typeof item.get === 'function' && item.attributes && typeof item.attributes === 'object') {
+    return item.get(key);
+  }
+  return item[key];
+};
 const valueOf = (spec, item, key) => {
   if (typeof spec === 'function') return spec(item, key);
   if (spec === null || spec === undefined) return item;
-  return item === null || item === undefined ? null : item[spec];
+  return readProp(item, spec);
 };
 
 /** PHP array_slice() on a list (negative offset/length clamp from the end). */
@@ -419,14 +429,12 @@ export class Collection {
     if (indexKey !== null) {
       const keys = [];
       const values = this.items.map((item) => {
-        keys.push(item === null || item === undefined ? null : item[indexKey]);
-        return item === null || item === undefined ? null : item[key];
+        keys.push(readProp(item, indexKey));
+        return readProp(item, key);
       });
       return new Collection(values, keys);
     }
-    return new Collection(
-      this.items.map((item) => (item === null || item === undefined ? null : item[key]))
-    );
+    return new Collection(this.items.map((item) => readProp(item, key)));
   }
 
   implode(value = '', glue = null) {
