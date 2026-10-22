@@ -297,10 +297,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 10. Runtime `WebAssembly.compile()` — codegen disallowed by the embedder (static `.wasm` imports
     only); WASM-native crypto libs (hash-wasm etc.) are out — pure-JS equivalents stand in
     (bcryptjs measured above)
-10. **The app's timezone** — the compiled rung answers the dates in **UTC** (the Workers' timezone): the model's
-    `created_at`/`updated_at`, the date casts, the validator's `today`/`tomorrow` and the Carbon stub. Laravel uses
-    `config('app.timezone')` — an app that sets a non-UTC timezone gets different dates at the edge (a documented
-    divergence, planned in §8b / M70).
+10. **The app's timezone** — `config('app.timezone')` reaches the edge: `tools/config-dump.php` dumps it, the runtime's Carbon stub renders every date in it through `Intl` (`format`/`toDateTimeString`/`toDateString`/`today()`/`timezoneName`), and the model writes/serialises its timestamps in it (`phpDateString` writes the local wall clock, `isoDateString` converts back to UTC before the `Z` - Carbon/Converter.php:442-455). Closed in M70.
 
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 

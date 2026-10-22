@@ -210,3 +210,45 @@ test('mass assignment follows $fillable/$guarded, and an unguarded model throws'
   guarded.fill({ name: 'a', secret: 'x' });
   assert.deepEqual(guarded.attributes, { name: 'a' });
 });
+
+
+// ---- the app timezone (M70) ----------------------------------------------
+//
+// Laravel sets PHP's default timezone from config('app.timezone'), so
+// `freshTimestampString()` writes the LOCAL wall clock (HasAttributes::
+// freshTimestampString()) and Carbon::toJSON() converts it BACK to UTC before
+// appending `Z` (Carbon/Converter.php:442-455). Probed with PHP 8.3 at
+// Asia/Jakarta: the instant 2025-10-23T00:00:00Z writes `2025-10-23 07:00:00`
+// and serialises as `2025-10-23T00:00:00.000000Z`.
+test('a model timestamp is written and serialised in the app timezone', async () => {
+  const { phpDateString, isoDateString, setModelTimezone } = await import('../model.mjs');
+  const instant = new Date(Date.UTC(2025, 9, 23, 0, 0, 0));
+  try {
+    setModelTimezone('UTC');
+    assert.equal(phpDateString(instant), '2025-10-23 00:00:00');
+    assert.equal(isoDateString('2025-10-23 00:00:00'), '2025-10-23T00:00:00.000000Z');
+
+    setModelTimezone('Asia/Jakarta');
+    assert.equal(phpDateString(instant), '2025-10-23 07:00:00');
+    // The stored local wall clock converts BACK to UTC for the JSON form.
+    assert.equal(isoDateString('2025-10-23 07:00:00'), '2025-10-23T00:00:00.000000Z');
+  } finally {
+    setModelTimezone('UTC');
+  }
+});
+
+// ---- GuardsAttributes' dot/underscore rule (A42) --------------------------
+//
+// isFillable() (:213-224) refuses a key carrying a dot and a key starting with
+// `_` when no `$fillable` list is declared - Laravel's defence against a
+// nested/relation path and a framework-reserved column.
+test('a dotted or underscore key is never mass-assignable', () => {
+  class GuardedModel extends Model {
+    static table = 'guarded_model';
+    static primaryKey = 'id';
+    static guarded = ['secret'];
+  }
+  const m = new GuardedModel({});
+  m.fill({ name: 'a', _token: 't', 'a.b': 1, secret: 'x' });
+  assert.deepEqual(m.attributes, { name: 'a' });
+});

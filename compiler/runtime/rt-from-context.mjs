@@ -6,6 +6,7 @@ import { str as strHelpers } from '../../kernel/str.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
+import { setModelTimezone } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
 import { Collection } from '../../kernel/collections.mjs';
 
@@ -2072,6 +2073,10 @@ export function buildRt(context, opts = {}) {
     // The model timestamps follow the request clock (a frozen clock in the
     // parity tests), so a write carries the same `created_at` as the PHP side.
     if (requestClock && typeof M.clock !== 'undefined') M.clock = requestClock;
+    // The app's timezone: the model writes/renders its timestamps in it
+    // (Laravel sets PHP's default from config('app.timezone') and
+    // freshTimestampString()/serializeDate() follow it).
+    if (typeof setModelTimezone === 'function') setModelTimezone(APP_TZ);
     const name = M.name || 'Model';
     const facade = {
       find: (id) => M.find(db, id),

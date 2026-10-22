@@ -88,14 +88,22 @@ function phpTimestampCast(value) {
   return Number.isNaN(t) ? null : Math.floor(t / 1000);
 }
 
-// Laravel's Carbon::toJSON(): the ISO-8601 form with the microseconds
-// ('2024-01-01T00:00:00.000000Z'). The model stores the UTC 'Y-m-d H:i:s'.
-function isoDateString(value) {
+// Laravel's Carbon::toJSON() (Carbon/Converter.php:442-455): `toISOString()`
+// CONVERTS TO UTC first, then appends `Z`. The model stores the wall clock in
+// the APP's timezone (`phpDateString`), so a Jakarta `2025-10-23 07:00:00`
+// serialises as `2025-10-23T00:00:00.000000Z` - not `...T07:00:00Z`.
+export function isoDateString(value, tz = modelTimezone.value) {
   if (value == null) return value;
   const s = String(value);
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
   if (!m) return value;
-  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.000000Z`;
+  const ms = wallClockToUtcMs(+m[1], +m[2], +m[3], +m[4], +m[5], +m[6], tz);
+  const d = new Date(ms);
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return (
+    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T` +
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}.000000Z`
+  );
 }
 
 // The attributes Laravel treats as dates: the timestamps + the date casts
@@ -146,13 +154,69 @@ function jsonEquivalent(a, b) {
   }
 }
 
-// Laravel's `freshTimestampString()` - the app date format (`Y-m-d H:i:s`)
-// in the app timezone (UTC on the compiled rung).
-export function phpDateString(d) {
+// The app's timezone (config('app.timezone')): Laravel sets PHP's default from
+// it, so every model timestamp is written and rendered in it. The runtime
+// stamps this next to the clock (`Model.timezone = ctx['app.timezone']`); the
+// default is Laravel's own default.
+const modelTimezone = { value: 'UTC' };
+export function setModelTimezone(tz) {
+  modelTimezone.value = tz ? String(tz) : 'UTC';
+}
+export function modelTimezoneName() {
+  return modelTimezone.value;
+}
+
+const tzFormatters = new Map();
+function zonePartsIn(d, tz) {
+  if (!tz || tz === 'UTC' || tz === 'Etc/UTC' || tz === 'GMT') {
+    return {
+      Y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate(),
+      H: d.getUTCHours(), i: d.getUTCMinutes(), s: d.getUTCSeconds(),
+    };
+  }
+  let f = tzFormatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    tzFormatters.set(tz, f);
+  }
+  const parts = {};
+  for (const part of f.formatToParts(d)) if (part.type !== 'literal') parts[part.type] = part.value;
+  return {
+    Y: Number(parts.year), m: Number(parts.month), d: Number(parts.day),
+    H: Number(parts.hour) % 24, i: Number(parts.minute), s: Number(parts.second),
+  };
+}
+
+/** The UTC instant (ms) of a wall-clock time in `tz`. */
+function wallClockToUtcMs(Y, m, d, H, i, sec, tz) {
+  let guess = Date.UTC(Y, m - 1, d, H, i, sec);
+  if (!tz || tz === 'UTC' || tz === 'Etc/UTC' || tz === 'GMT') return guess;
+  // The zone's offset at the guessed instant, applied once (a second pass
+  // settles a DST boundary).
+  for (let pass = 0; pass < 2; pass++) {
+    const p = zonePartsIn(new Date(guess), tz);
+    const asUtc = Date.UTC(p.Y, p.m - 1, p.d, p.H, p.i, p.s);
+    const offset = asUtc - guess;
+    if (offset === 0) break;
+    const next = Date.UTC(Y, m - 1, d, H, i, sec) - offset;
+    if (next === guess) break;
+    guess = next;
+  }
+  return guess;
+}
+
+// Laravel's `freshTimestampString()` (Model.php:1729-1732 ->
+// HasAttributes::freshTimestampString()): `format('Y-m-d H:i:s')` in the APP's
+// timezone - not UTC (an Asia/Jakarta app writes 07:00 for 00:00Z).
+export function phpDateString(d, tz = modelTimezone.value) {
   const p = (n) => String(n).padStart(2, '0');
+  const z = zonePartsIn(d, tz);
   return (
-    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
-    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+    `${z.Y}-${p(z.m)}-${p(z.d)} ` +
+    `${p(z.H)}:${p(z.i)}:${p(z.s)}`
   );
 }
 
@@ -359,12 +423,34 @@ export class Model {
    * an empty `$guarded` allows everything.
    */
   static isFillableKey(key) {
+    // GuardsAttributes::isFillable() (:213-224), verbatim:
+    //   1. the `$fillable` list wins (a listed key is fillable);
+    //   2. a guarded key is not;
+    //   3. otherwise (no `$fillable` declared) a key is fillable only when it
+    //      carries no dot and does not start with `_` - Laravel's defence
+    //      against a nested/relation path and a framework-reserved column.
     const fillable = this.fillable || [];
-    if (fillable.length) return fillable.includes(key);
-    const guarded = this.guarded;
-    if (guarded === undefined || guarded === null) return true;
-    if (guarded.length === 1 && guarded[0] === '*') return false;
-    return !guarded.includes(key);
+    if (fillable.includes(key)) return true;
+    if (Model.isGuardedKey(this, key)) return false;
+    return (
+      fillable.length === 0 && !String(key).includes('.') && !String(key).startsWith('_')
+    );
+  }
+
+  /**
+   * `GuardsAttributes::isGuarded($key)` (:230-235): a case-insensitive match
+   * against `$guarded`, or `$guarded = ['*']` guarding everything.
+   */
+  static isGuardedKey(ctor, key) {
+    const guarded = ctor.guarded;
+    if (guarded === undefined || guarded === null) return false;
+    if (guarded.length === 1 && guarded[0] === '*') return true;
+    return guarded.some((g) => String(g).toLowerCase() === String(key).toLowerCase());
+  }
+
+  /** `GuardsAttributes::totallyGuarded()` (:243-246). */
+  static totallyGuarded(ctor) {
+    return (ctor.fillable || []).length === 0 && Model.isGuardedKey(ctor, '*');
   }
 
   /**
@@ -376,18 +462,21 @@ export class Model {
    */
   fill(attributes = {}) {
     const ctor = this.constructor;
-    const fillable = ctor.fillable || [];
-    const guarded = ctor.guarded;
-    const guardsEverything =
-      !fillable.length && Array.isArray(guarded) && guarded.length === 1 && guarded[0] === '*';
+    // Model::fill() (Model.php:327-350): the fillable keys are set; when the
+    // model is TOTALLY guarded (`$guarded = ['*']`, the default for a model
+    // that declares neither list) any other key throws MassAssignmentException
+    // - Laravel's own message. With a `$fillable`/`$guarded` list the rest are
+    // silently dropped (fillableFromArray()).
+    const totallyGuarded = Model.totallyGuarded(ctor);
     for (const key of Object.keys(attributes || {})) {
-      if (guardsEverything) {
+      if (ctor.isFillableKey(key)) {
+        this.set(key, attributes[key]);
+      } else if (totallyGuarded) {
         throw new Error(
           'Add [' + key + '] to fillable property to allow mass assignment on [' +
             (ctor.name || 'the model') + '].'
         );
       }
-      if (ctor.isFillableKey(key)) this.set(key, attributes[key]);
     }
     return this;
   }

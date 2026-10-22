@@ -51,6 +51,40 @@ test('a binary file read as TEXT fails loud instead of corrupting it', async () 
   assert.deepEqual(Array.from(await storage.getBytes('img/logo.png')), Array.from(PNG_HEADER));
 });
 
+test('the R2 object shape is read as BYTES, never via text()', async () => {
+  // A real R2ObjectBody answers `.text()` by decoding UTF-8 with U+FFFD
+  // replacement - the corruption A58 removed - and its `.body` is a
+  // ReadableStream (`String(stream)` = "[object ReadableStream]"). The driver
+  // is stubbed with that exact shape: arrayBuffer() + a stream body.
+  const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d]);
+  let textCalls = 0;
+  const r2 = {
+    async get(key) {
+      if (key !== 'img/logo.png' && key !== 'notes/ok.txt') return null;
+      const bytes = key === 'img/logo.png' ? PNG : new TextEncoder().encode('héllo');
+      return {
+        body: new Blob([bytes]).stream(),
+        async arrayBuffer() {
+          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        },
+        async text() {
+          textCalls++;
+          return new TextDecoder('utf-8').decode(bytes); // lossy, like R2
+        },
+      };
+    },
+    async put() { return true; },
+    async delete() { return true; },
+  };
+  const storage = createStorage({ r2 });
+  // The bytes are exact.
+  assert.deepEqual(Array.from(await storage.getBytes('img/logo.png')), Array.from(PNG));
+  // The text read refuses the binary file (it never reaches R2's lossy text()).
+  await assert.rejects(() => storage.getText('img/logo.png'), /not valid UTF-8/);
+  assert.equal(await storage.getText('notes/ok.txt'), 'héllo');
+  assert.equal(textCalls, 0, 'R2 text() must never be called: it decodes with U+FFFD');
+});
+
 test('a missing file: getText/getBytes throw, exists answers false', async () => {
   const storage = createStorage({});
   assert.equal(await storage.exists('nope.txt'), false);

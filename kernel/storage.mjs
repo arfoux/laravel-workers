@@ -172,26 +172,45 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
   // valid UTF-8 fail loud, and the reason names the byte-level alternatives
   // (`getBytes` / the file's own response path) that carry them unchanged.
   const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true });
+  // The BYTES of a stored object, whatever driver answered:
+  //   - R2    -> R2ObjectBody: `arrayBuffer()` (its `body` is a ReadableStream,
+  //              and its `text()` decodes UTF-8 with U+FFFD replacement - the
+  //              exact corruption A58 removed, so it is never called);
+  //   - D1    -> `{ body: string | Uint8Array }` (the blob row);
+  //   - memory-> `{ body: <the value> }`.
+  // A ReadableStream is drained through `Response` (the Workers runtime has
+  // both); `String(stream)` would answer "[object ReadableStream]".
+  async function readBytes(obj) {
+    if (typeof obj.arrayBuffer === 'function') {
+      return new Uint8Array(await obj.arrayBuffer());
+    }
+    const body = obj.body;
+    if (typeof body === 'string') return new TextEncoder().encode(body);
+    if (body instanceof Uint8Array) return body;
+    if (body && typeof body.getReader === 'function') {
+      return new Uint8Array(await new Response(body).arrayBuffer());
+    }
+    if (body !== undefined && body !== null) return new TextEncoder().encode(String(body));
+    return null;
+  }
   async function getText(key) {
     const obj = await base.get(key);
     if (obj === null || obj === undefined) {
       throw new Error('storage get: the file "' + key + '" does not exist');
     }
-    if (typeof obj.text === 'function') return obj.text();
+    // A text body is already a string: no decode, no loss.
     if (typeof obj.body === 'string') return obj.body;
-    if (obj.body instanceof Uint8Array) {
-      try {
-        return STRICT_UTF8.decode(obj.body);
-      } catch {
-        throw new Error(
-          'storage get: the file "' + key + '" is not valid UTF-8 (a PHP string is a byte ' +
-            'array, so Laravel hands the app the raw bytes; a JS string cannot hold them ' +
-            'without loss) - read it with getBytes() or stream the file, do not decode it as text'
-        );
-      }
+    const bytes = await readBytes(obj);
+    if (bytes === null) return null;
+    try {
+      return STRICT_UTF8.decode(bytes);
+    } catch {
+      throw new Error(
+        'storage get: the file "' + key + '" is not valid UTF-8 (a PHP string is a byte ' +
+          'array, so Laravel hands the app the raw bytes; a JS string cannot hold them ' +
+          'without loss) - read it with getBytes() or stream the file, do not decode it as text'
+      );
     }
-    if (obj.body !== undefined && obj.body !== null) return String(obj.body);
-    return null;
   }
 
   // The bytes of an object (a binary file); the compiled facade uses it for
@@ -201,10 +220,7 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     if (obj === null || obj === undefined) {
       throw new Error('storage get: the file "' + key + '" does not exist');
     }
-    if (typeof obj.body === 'string') return new TextEncoder().encode(obj.body);
-    if (obj.body instanceof Uint8Array) return obj.body;
-    if (obj.body !== undefined && obj.body !== null) return new TextEncoder().encode(String(obj.body));
-    return null;
+    return readBytes(obj);
   }
 
   // Laravel's Storage::exists() — a boolean, not a handle.
