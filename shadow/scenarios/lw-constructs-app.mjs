@@ -79,6 +79,13 @@ export default {
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {
+      // `response()->json($model)`: PHP's json_encode honours the model's
+      // JsonSerializable (toArray()), so the body is the model's own JSON.
+      label: 'GET /json-model-demo (response()->json($model))',
+      method: 'GET',
+      uri: '/json-model-demo',
+    },
+    {
       // The implicit route-model binding: the model comes from the segment
       // (`showBound(Post $post)`), so the page is the same one.
       label: 'GET /posts/1/bound (the route-model binding)',
@@ -240,6 +247,15 @@ export default {
       uri: '/posts/1',
       jar: true,
       form: { _token: '@token' },
+    },
+    {
+      // The model is gone: `response()->json(null)` is Symfony's
+      // `$data ??= new \ArrayObject()` -> "{}" (JsonResponse.php:47).
+      label: 'GET /json-model-demo (missing model -> {})',
+      method: 'GET',
+      uri: '/json-model-demo',
+      jar: true,
+      expectBody: '{}',
     },
     {
       // A missing Basic header: Laravel answers 401 with Symfony's

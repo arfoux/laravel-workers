@@ -1991,14 +1991,37 @@ export function buildRt(context, opts = {}) {
       body: message,
     };
   };
-  rt.json = (value, status) => ({
-    status: Number(status) || 200,
-    headers: { 'content-type': 'application/json' },
-    // PHP's json_encode bytes: the slashes are escaped ("a\/b"), the non-ASCII
-    // as \uXXXX (the surrogate pairs too). A plain JSON.stringify would answer
-    // a different body (Laravel's bytes are the parity).
-    body: phpJsonEncode(value == null ? null : value),
-  });
+  // PHP's json_encode() honours JsonSerializable::jsonSerialize(): a Model
+  // answers its toArray() (`{"id":1,"name":"a"}`) and an Eloquent Collection
+  // answers an ARRAY of them. Without this the raw object reached the encoder
+  // and threw "unsupported value (Function)" - a 500 where Laravel answers the
+  // model's JSON.
+  const jsonSerializable = (value) => {
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(jsonSerializable);
+    // A kernel Collection: `toArray()` (its `toJSON()` is a JSON STRING, like
+    // Laravel's toJson(), so it must not be used here).
+    if (typeof value.toArray === 'function' && typeof value.all === 'function') {
+      return value.toArray();
+    }
+    // A model: `toJSON()` is its toArray() (the kernel's own shape).
+    if (typeof value.toJSON === 'function') return value.toJSON();
+    return value;
+  };
+  rt.json = function (value, status) {
+    // `json($data = [])`: no argument at all is an empty ARRAY ("[]"), while an
+    // explicit null is Symfony's `$data ??= new \ArrayObject()` -> "{}"
+    // (JsonResponse.php:47).
+    const noArg = arguments.length === 0;
+    return {
+      status: Number(status) || 200,
+      headers: { 'content-type': 'application/json' },
+      // PHP's json_encode bytes: the slashes are escaped ("a\/b"), the
+      // non-ASCII as \uXXXX (the surrogate pairs too). A plain JSON.stringify
+      // would answer a different body (Laravel's bytes are the parity).
+      body: noArg ? '[]' : value == null ? '{}' : phpJsonEncode(jsonSerializable(value)),
+    };
+  };
   // Laravel's Router::toResponse (Illuminate/Routing/Router.php:929-953): the
   // value a controller returns becomes the response - a string is the body
   // (text/html), an array or an object is JSON, null is an empty 200, and a

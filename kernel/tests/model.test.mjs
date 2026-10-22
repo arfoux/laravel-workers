@@ -286,3 +286,37 @@ test('a loaded hasMany answers a Collection and serialises as an array', async (
   assert.deepEqual(post.toJSON().comments, [{ id: 1, body: 'first' }]);
   assert.equal(typeof post.toJSON().comments, 'object');
 });
+
+// ---- response()->json($model) (A83) --------------------------------------
+//
+// PHP's json_encode() honours JsonSerializable::jsonSerialize(), and a Model
+// implements it through toArray() (Model.php:2270-2290). Probed with the
+// vendored Laravel 13:
+//   response()->json($model)      -> {"id":1,"name":"a"}
+//   response()->json($collection) -> [{"id":1,"name":"a"},{"id":2,"name":"b"}]
+// The compiled rung passed the raw object to the encoder, which threw
+// "unsupported value (Function)" - a 500 where Laravel answers the model.
+test('response()->json() serialises a model and a collection', async () => {
+  const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+  const { Collection } = await import('../collections.mjs');
+  class JsonPost extends Model {
+    static table = 'json_posts';
+    static primaryKey = 'id';
+    static fillable = ['id', 'name'];
+  }
+  const rt = buildRt(null, { strict: false });
+  const a = new JsonPost({ id: 1, name: 'a' });
+  const b = new JsonPost({ id: 2, name: 'b' });
+  assert.equal(String(rt.json(a).body), '{"id":1,"name":"a"}');
+  assert.equal(
+    String(rt.json(new Collection([a, b])).body),
+    '[{"id":1,"name":"a"},{"id":2,"name":"b"}]'
+  );
+  assert.equal(String(rt.json([a]).body), '[{"id":1,"name":"a"}]');
+  // Symfony's JsonResponse ctor: `$data ??= new \ArrayObject()` (line 47), so
+  // an explicit null answers "{}" - and `json()` with no argument answers the
+  // `$data = []` default, "[]".
+  assert.equal(String(rt.json(null).body), '{}');
+  assert.equal(String(rt.json().body), '[]');
+  assert.equal(rt.json({}, 201).status, 201);
+});

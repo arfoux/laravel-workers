@@ -33,9 +33,13 @@ test('rt-json: the numbers and the shapes are PHP\'s', () => {
   assert.equal(rt.json(1.5).body, '1.5');
   assert.equal(rt.json(0.1 + 0.2).body, '0.30000000000000004');
   assert.equal(rt.json(42).body, '42');
-  // PHP: json_encode([]) => [] ; json_encode(null) => null
+  // PHP: json_encode([]) => [] ; json_encode(null) => null. But a RESPONSE is
+  // Symfony's JsonResponse, whose ctor does `$data ??= new \ArrayObject()`
+  // (JsonResponse.php:47): `response()->json(null)` answers "{}" (probed), and
+  // `response()->json()` answers the `$data = []` default, "[]".
   assert.equal(rt.json([]).body, '[]');
-  assert.equal(rt.json(null).body, 'null');
+  assert.equal(rt.json(null).body, '{}');
+  assert.equal(rt.json().body, '[]');
   assert.equal(rt.json({ a: null }).body, '{"a":null}');
 });
 
