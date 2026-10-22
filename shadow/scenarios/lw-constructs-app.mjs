@@ -79,6 +79,15 @@ export default {
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
     {
+      // An API RESOURCE: the controller answers `new PostResource($post)` and
+      // Laravel's Router wraps it in a ResourceResponse - `{"data": {...},
+      // "meta": {...}}` (JsonResource::toArray + with()).
+      label: 'GET /resource-demo (an API resource)',
+      method: 'GET',
+      uri: '/resource-demo',
+      jar: true,
+    },
+    {
       // `response()->json($paginator)`: the paginator IS JsonSerializable
       // (LengthAwarePaginator::jsonSerialize -> toArray), so the body is its
       // array - the key order, the `links` labels and the URLs included.

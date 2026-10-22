@@ -19,7 +19,7 @@
 // is not compiled and the routes that use it stay blocked.
 import parser from 'php-parser';
 import { readFileSync } from 'node:fs';
-import { transpileControllerMethod, VALIDATOR_TYPES } from './transpiler.mjs';
+import { transpileControllerMethod, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES } from './transpiler.mjs';
 import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapters.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
@@ -551,7 +551,13 @@ function compileMethod(fqcn, methodNode, opts) {
       ? (opts.imports instanceof Map && opts.imports.get(ptype)) || ptype
       : null;
     const isValidatorType = resolvedType && VALIDATOR_TYPES.has(resolvedType);
-    if (ptype && !isEventType && !isValidatorType) {
+    // A RESOURCE's toArray()/with() take the Request - Laravel's own signature
+    // (JsonResource::toArray($request)). The runtime hands the request in, so
+    // the compiled class may take it too (only there: any other class would be
+    // asking for a service the edge cannot inject).
+    const isResourceRequest =
+      !!opts.resource && resolvedType && RESOURCE_REQUEST_TYPES.has(resolvedType);
+    if (ptype && !isEventType && !isValidatorType && !isResourceRequest) {
       return {
         error:
           'the method ' + fqcn + '::' + name + '() takes a ' + p.type + ' — the edge cannot inject a service ' +
@@ -599,6 +605,8 @@ function compileMethod(fqcn, methodNode, opts) {
     mailable: !!opts.mailable,
     // A FormRequest: the request surface of the kernel's base.
     formRequest: !!opts.formRequest,
+    // A resource: its toArray()/with() take the request.
+    resource: !!opts.resource,
     // The type of each parameter (the variable -> the FQCN of the type): the
     // FormRequest hooks take the validator, so the compiled body must know it.
     paramTypes,
@@ -616,9 +624,22 @@ function compileMethod(fqcn, methodNode, opts) {
     };
   }
   const args = ['rt'].concat(params.map((p) => vname(p.name)));
+  // A RESOURCE's toArray()/with() are called by the kernel's base
+  // (JsonResource::resolve -> toArray($request)) on the SYNCHRONOUS response
+  // path, so an `async` body would hand a Promise to the payload. A resource
+  // body that needs an await is refused instead of leaking one.
+  const syncMethod = !!opts.resource;
+  if (syncMethod && /\bawait\b/.test(String(emitted.code || ''))) {
+    return {
+      error:
+        'the method ' + fqcn + '::' + name + '() needs an await — a resource shapes the response ' +
+        'synchronously, so the compiled body cannot wait for a promise (move the call out of the resource)',
+      code: 'LW002',
+    };
+  }
   return {
     js:
-      'async function (' + args.join(', ') + ') {\n' +
+      (syncMethod ? 'function (' : 'async function (') + args.join(', ') + ') {\n' +
       String(emitted.code || '')
         .split('\n')
         .map((l) => (l ? '      ' + l : l))
@@ -767,7 +788,14 @@ export function compileClasses(dump, opts = {}) {
         .filter((m) => m && m.kind === 'method' && !m.isStatic)
         .map((m) => nodeName(m.name))
         .filter(Boolean),
-      base: info.kind === 'mailable' ? 'mailable' : info.kind === 'formRequest' ? 'formRequest' : null,
+      base:
+        info.kind === 'mailable'
+          ? 'mailable'
+          : info.kind === 'formRequest'
+            ? 'formRequest'
+            : info.kind === 'resource'
+              ? 'resource'
+              : null,
     });
   }
   options.classRegistry = registry;
@@ -866,7 +894,14 @@ export function compileClasses(dump, opts = {}) {
       (parsed.imports instanceof Map && parsed.imports.get(parentName)) || parentName;
     const isFormRequest =
       info.kind === 'formRequest' && parentFqcn === 'Illuminate\\Foundation\\Http\\FormRequest';
-    if (classNode.extends && !isMailable && !isFormRequest) {
+    // A resource extends Laravel's JsonResource (the kernel's base carries
+    // `toArray()`, the wrapping, the `with`/`additional`): the app declares only
+    // `toArray()`, so the inherited surface must come from the base.
+    const isResource =
+      info.kind === 'resource' &&
+      (parentFqcn === 'Illuminate\\Http\\Resources\\Json\\JsonResource' ||
+        parentFqcn === 'Illuminate\\Http\\Resources\\Json\\ResourceCollection');
+    if (classNode.extends && !isMailable && !isFormRequest && !isResource) {
       errors.push({
         class: fqcn,
         message:
@@ -914,6 +949,7 @@ export function compileClasses(dump, opts = {}) {
     options.mailable = info.kind === 'mailable';
     // A FormRequest: the request surface of the kernel's base (the hooks).
     options.formRequest = info.kind === 'formRequest';
+    options.resource = info.kind === 'resource';
     const ctor = compileConstructor(fqcn, classNode, options);
     if (ctor.error) {
       errors.push({ class: fqcn, message: ctor.error, code: ctor.code });
@@ -967,15 +1003,16 @@ export function compileClasses(dump, opts = {}) {
       // The kernel's base the class extends (a mailable's fluent surface, a
       // FormRequest's request surface) - a call on an inline instance needs
       // to know it (the base's methods take only their own arguments).
-      base: info.kind === 'mailable' ? 'mailable' : info.kind === 'formRequest' ? 'formRequest' : null,
+      base: isMailable ? 'mailable' : isFormRequest ? 'formRequest' : isResource ? 'resource' : null,
     };
     entries.push({
       fqcn,
       ctor: ctor.js,
       methods,
       deps: ctor.deps || [],
-      // A mailable extends the kernel's Mailable base.
-      base: info.kind === 'mailable' ? 'mailable' : info.kind === 'formRequest' ? 'formRequest' : null,
+      // The kernel base the compiled class extends: a mailable's fluent
+      // surface, a FormRequest's request surface, a JsonResource's wrapping.
+      base: isMailable ? 'mailable' : isFormRequest ? 'formRequest' : isResource ? 'resource' : null,
     });
   }
 

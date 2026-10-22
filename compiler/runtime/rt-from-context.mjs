@@ -8,6 +8,7 @@ import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
 import { setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
+import { JsonResource, resourceResponse } from '../../kernel/resources.mjs';
 import { Collection } from '../../kernel/collections.mjs';
 
 // The Collection marker: the runtime's Collection class is created per rt (a
@@ -671,14 +672,28 @@ export function buildRt(context, opts = {}) {
         ? Object.assign(new Mailable(), built)
         : entry.base === 'formRequest'
           ? Object.assign(new FormRequest(rt.request()), built)
-          : built;
+          : entry.base === 'resource'
+            ? // `Illuminate\Http\Resources\Json\JsonResource::__construct($resource)`
+              // is INHERITED by the app's resource (a resource declares only
+              // toArray()), so the wrapped value is the first constructor
+              // argument - the compiled class has no constructor of its own.
+              Object.assign(new JsonResource(Array.isArray(args) ? args[0] : undefined), built)
+            : built;
     // The runtime: a mailable renders its view through it (`__lwMail`).
     Object.defineProperty(obj, '__rt', { value: rt, enumerable: false, configurable: true });
     // The class of the instance (the dispatch needs it) — not enumerable, so a
     // JSON answer does not show it.
     Object.defineProperty(obj, '__lwClass', { value: String(fqcn), enumerable: false });
     for (const [name, fn] of Object.entries(entry.methods || {})) {
-      obj[name] = fn.bind(obj);
+      // A RESOURCE's methods are called by the base (JsonResource::resolve ->
+      // toArray($request)), so the runtime binds `rt` itself: the compiled
+      // signature is `(rt, ...args)` and the caller only supplies the args.
+      // A resource's `with($request)` is a METHOD in Laravel while the base
+      // carries the `with` ARRAY (the extra top-level keys); JS cannot keep the
+      // two apart under one name, so the compiled method lands on `withData` -
+      // the name the payload already reads (`resource.withData()`).
+      const key = entry.base === 'resource' && name === 'with' ? 'withData' : name;
+      obj[key] = entry.base === 'resource' ? (...a) => fn.call(obj, rt, ...a) : fn.bind(obj);
     }
     return obj;
   };
@@ -2048,6 +2063,12 @@ export function buildRt(context, opts = {}) {
     if (typeof value === 'string') {
       return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: value };
     }
+    // A resource returned from a controller: Laravel's Router::prepareResponse
+    // wraps it in a ResourceResponse (the `data` key, the `with` and the
+    // `additional` of the resource - ResourceResponse.php:31-52). The marker
+    // (`__lwResource`) is what identifies it: the kernel's base replaces the
+    // instance's prototype with a property proxy, so `instanceof` is false.
+    if (value && value.__lwResource === true) return resourceResponse(value, rt.request());
     if (Array.isArray(value)) return rt.json(value);
     if (typeof value === 'object') {
       // A model that was just created: Laravel answers 201 (a JsonResponse).

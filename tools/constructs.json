@@ -1499,6 +1499,16 @@
       "status": "done",
       "code": "LW002",
       "reason": "the Vite facade is not compiled at the edge"
+    },
+    {
+      "id": "api_resource",
+      "label": "an API resource (`return new PostResource($post)`)",
+      "php": null,
+      "check": "build",
+      "expect": "fail",
+      "note": "The controller answers a JsonResource; the Router's prepareResponse() wraps it in a ResourceResponse - `{\"data\": {...}, ...with($request)}` (JsonResource::toArray + the `$wrap` key, ResourceResponse.php:31-52). The app declares only toArray()/with(); the rest is the kernel base. Byte-proven by the shadow (`GET /resource-demo` identical) and by compiler/tests/resource-class.test.mjs. The audit cannot probe it as a controller fragment: the class is resolved through the class DUMP (kind `resource`), which the fragment probe does not run. A body that needs an await fails loud (the response path is synchronous).",
+      "batch": "M66",
+      "status": "done"
     }
   ],
   "meta": {

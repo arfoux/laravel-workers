@@ -1054,6 +1054,12 @@ const VALIDATOR_TYPES = new Set([
   'Illuminate\\Validation\\Validator',
   'Illuminate\\Contracts\\Validation\\Validator',
 ]);
+// The REQUEST type a JsonResource's toArray()/with() take (Laravel's own
+// signature: `toArray($request)`). The runtime hands the request in.
+const RESOURCE_REQUEST_TYPES = new Set([
+  'Illuminate\\Http\\Request',
+  'Illuminate\\Http\\Request\\Request',
+]);
 
 function txGate(node, meth) {
   const argNodes = node.arguments || [];
@@ -2846,4 +2852,4 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
 
 export default transpile;
 
-export { REQUEST_CALL, REQUEST_NO_CHAIN, REQUEST_ASYNC, REQUEST_DENY, VALIDATOR_TYPES };
+export { REQUEST_CALL, REQUEST_NO_CHAIN, REQUEST_ASYNC, REQUEST_DENY, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES };

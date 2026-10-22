@@ -189,6 +189,17 @@ foreach (glob($appRoot . '/app/Jobs/*.php') ?: [] as $jobFile) {
     $addClass($fqcn, 'job');
 }
 
+// The API RESOURCES (app/Http/Resources): `return new PostResource($post)`
+// from a controller. Laravel's Router wraps the value in a ResourceResponse
+// (the `data` key, the resource's `with`/`additional`), and the app's class
+// declares only `toArray()` - the rest is inherited from
+// Illuminate\Http\Resources\Json\JsonResource, which the kernel provides.
+foreach (glob($appRoot . '/app/Http/Resources/*.php') ?: [] as $resourceFile) {
+    $fqcn = 'App\\Http\\Resources\\' . basename($resourceFile, '.php');
+    if (!class_exists($fqcn)) continue;
+    $addClass($fqcn, 'resource');
+}
+
 // The FormRequests (app/Http/Requests): the build compiles them too, so the
 // hooks Laravel runs on them (prepareForValidation) are compiled and run.
 foreach (glob($appRoot . '/app/Http/Requests/*.php') ?: [] as $requestFile) {

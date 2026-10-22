@@ -1590,6 +1590,9 @@ writeTree(tmpRoot, {
   'kernel/php-json.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'php-json.mjs'), 'utf8'),
   'kernel/mailable.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'mailable.mjs'), 'utf8'),
   'kernel/form-request.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'form-request.mjs'), 'utf8'),
+  // The runtime imports the kernel's JsonResource base (a resource returned by
+  // a controller becomes a ResourceResponse).
+  'kernel/resources.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'resources.mjs'), 'utf8'),
   'kernel/php-serialize.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'php-serialize.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(
     path.join(pkgDir, 'compiler', 'runtime', 'rt-from-context.mjs'),

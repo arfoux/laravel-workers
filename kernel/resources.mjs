@@ -291,6 +291,10 @@ export class JsonResource {
     this.additionalData = [];
     // The additional top-level keys of the response (JsonResource.php:37).
     this.with = [];
+    // The marker the runtime recognises: `instanceof` cannot answer it because
+    // the property proxy REPLACES the prototype below (a Proxy of
+    // JsonResource.prototype is not JsonResource.prototype).
+    Object.defineProperty(this, '__lwResource', { value: true, enumerable: false });
     installPropertyProxy(this);
   }
 
