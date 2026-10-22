@@ -320,14 +320,22 @@ try {
       needsPort.push({ route, reason: 'dynamic segment — needs a port' });
       continue;
     }
-    // A CONTROLLER route is compiled, not snapshotted: the build-time page is
-    // the fallback for a route the build cannot compile. Snapshotting it
-    // answered a stale page for anything the request decides (a query string,
-    // a row created during the run) while the compiled controller was never
-    // reached - the shadow compared the baked page and called it parity.
+    // A controller route of the APP is compiled, not snapshotted: the build-time
+    // page is the fallback for a route the build cannot compile. Snapshotting
+    // it answered a stale page for anything the request decides (a query
+    // string, a row created during the run) while the compiled controller was
+    // never reached - the shadow compared the baked page and called it parity.
+    //
+    // A FRAMEWORK controller is different: `Illuminate\...` is not the app's
+    // code and the build never compiles it (the composer autoload cannot even
+    // resolve it), so its snapshot is the right answer - Laravel's own `/up`
+    // health route is exactly that.
     {
       const action = actionForRoute(route);
-      if (action && action !== 'Closure') {
+      const actionClass = action && action.includes('@') ? action.slice(0, action.lastIndexOf('@')) : action;
+      const isAppController =
+        !!actionClass && actionClass !== 'Closure' && !/^Illuminate\\/.test(actionClass);
+      if (isAppController) {
         needsPort.push({ route, reason: 'a controller serves it — compiled, not snapshotted' });
         continue;
       }
