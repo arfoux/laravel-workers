@@ -360,6 +360,14 @@ export class Collection {
     if (value === null || value === undefined) return new Collection([]);
     if (value instanceof Collection) return new Collection(value);
     if (Array.isArray(value)) return new Collection(value);
+    // A PHP ASSOC array is a plain JS object at the edge, and Arr::wrap keeps
+    // it keyed - wrapping it as one item would turn `['a' => 1]` into
+    // `[{a: 1}]` (key 0), so `keys()` and `get('a')` would diverge. A model or
+    // a resource is a class instance, so it still becomes the single item
+    // (`$model instanceof Enumerable` is false in PHP too).
+    if (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+      return new Collection(value);
+    }
     return new Collection([value]);
   }
 

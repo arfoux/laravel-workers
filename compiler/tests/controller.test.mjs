@@ -2523,9 +2523,50 @@ test('emit: wrap() and collect() answer Laravel values for a scalar', async () =
   assert.equal(new Collection('ab').count(), 1);
   assert.equal(new Collection(5).count(), 1);
   assert.deepEqual(new Collection([1, 2]).all(), [1, 2]);
-  // wrap() keeps an OBJECT as one item (Arr::wrap); collect() does not.
-  const model = { id: 7 };
-  assert.deepEqual(Collection.wrap(model).all(), [model]);
+  // A PHP ASSOC array is a plain JS object at the edge: Arr::wrap keeps it
+  // KEYED, so wrapping it as one item would turn ['a' => 1] into [{a: 1}]
+  // (key 0) and `keys()`/`get('a')` would diverge.
+  const assoc = Collection.wrap({ a: 1 });
+  assert.equal(assoc.count(), 1);
+  assert.deepEqual(assoc.keys().all(), ['a']);
+  assert.equal(assoc.get('a'), 1);
+  // A class instance is NOT a plain object, so it stays the single item
+  // (`$model instanceof Enumerable` is false in PHP too).
+  class Item {
+    constructor() {
+      this.id = 7;
+    }
+  }
+  const item = new Item();
+  assert.deepEqual(Collection.wrap(item).all(), [item]);
+});
+
+test('emit: a call receiver without an allowlist still chains', () => {
+  // The collection check keys on the RECEIVER'S KIND (collect()/wrap()/a
+  // relation), not on "every call receiver": `response()`, `redirect()` and
+  // `now()` have no allowlist here, and a blanket check would refuse them.
+  const meta = { routeUri: '/x', routeParams: [], models: [], views: [] };
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n    }\n}\n';
+  for (const body of [
+    "return response()->json(['a' => 1])->header('X-A', 'b');",
+    "return redirect('/x')->with('ok', 'y');",
+    'return now()->addDay();',
+  ]) {
+    const res = emitController(src(body), 'demo', meta);
+    assert.deepEqual(res.errors, [], body + ' -> ' + JSON.stringify(res.errors));
+  }
+  // An inline model chain stays refused (the receiver answers a model, and a
+  // model has no collection surface).
+  const bad = emitController(
+    src('return \\App\\Models\\Post::all()->sliding(2);'),
+    'demo',
+    { routeUri: '/x', routeParams: [], models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }], views: [] }
+  );
+  assert.equal(bad.code, null);
+  assert.equal(bad.errors[0].code, 'LW003');
 });
 
 test('emit: an inline paginator chain compiles the pagination view', () => {
