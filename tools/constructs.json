@@ -621,7 +621,6 @@
       "label": "An `OPTIONS` route",
       "php": null,
       "check": "build",
-      "expect": "fail",
       "note": "The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route.",
       "batch": "M40",
       "status": "done"
@@ -666,7 +665,6 @@
       "label": "A rule object in a FormRequest",
       "php": null,
       "check": "build",
-      "expect": "fail",
       "note": "The FormRequest dump reads the rules Laravel itself builds and NORMALIZES a rule object to its string form (Laravel hands the validator the object and the validator reads that string): `Rule::in(['a','b'])` becomes `in:\"a\",\"b\"` - which the kernel parses exactly like Laravel (M61a). A CONDITIONAL rule object is refused (the row below).",
       "batch": "M43/M62",
       "status": "done"
@@ -676,7 +674,6 @@
       "label": "A conditional rule object in a FormRequest",
       "php": null,
       "check": "build",
-      "expect": "fail",
       "note": "A conditional rule object (`Rule::requiredIf(true)`, `Rule::when(...)`) is refused: its string form is the CONDITION evaluated at build time (`RequiredIf::__toString()` returns 'required' or ''), so the edge would bake the build-time branch into the rule - a request Laravel accepts could be rejected (or the other way round). The dump stops with that reason (LW003).",
       "batch": "M62",
       "status": "done"
@@ -686,7 +683,6 @@
       "label": "`prepareForValidation()` (overridden)",
       "php": null,
       "check": "build",
-      "expect": "ok",
       "note": "The hook is COMPILED: the build compiles the FormRequest class (the dump registers it), the compiled handler runs the hook BEFORE the validation (Laravel's order - ValidatesWhenResolvedTrait::validateResolved), and the input the hook prepares is what the rules see. The compiled class extends the kernel's `kernel/form-request.mjs` - the request surface the hook uses (merge(), input(), all()).",
       "batch": "M62d",
       "status": "done"
@@ -696,7 +692,6 @@
       "label": "A FormRequest that overrides `after()` / `validationData()` / `passedValidation()`",
       "php": null,
       "check": "build",
-      "expect": "ok",
       "note": "All three hooks run in the compiled lifecycle, in Laravel's order: `validationData()` is the data source, `after()` registers its RETURN VALUE as a validator callback, and `passedValidation()` runs after the rules pass. Proven by the shadow (`POST /hooked-request-demo` 422/422 for the `after()` refusal and 200/200 carrying the `passedValidation` marker).",
       "batch": "M62f",
       "status": "done"
@@ -706,49 +701,8 @@
       "label": "A FormRequest that overrides `withValidator()`",
       "php": null,
       "check": "build",
-      "expect": "ok",
       "note": "Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled class carries the hook and the lifecycle calls it with the kernel's validator, in Laravel's order. Proven by the shadow (`POST /hooked-request-demo` 422/422 byte-identical when `withValidator()` refuses the flag) and by the compiled handler's `hooks: [...]` list.",
       "batch": "M62f",
-      "status": "done"
-    },
-    {
-      "id": "form_request_after",
-      "label": "A FormRequest that overrides `after()`",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "Laravel registers the hook's closure on the validator (`Foundation/Http/FormRequest.php:114`), so the callback runs after the rules pass and can add errors. The compiled rung runs no after-hook - the dump refuses the class with that reason (LW003).",
-      "batch": "M61g",
-      "status": "done"
-    },
-    {
-      "id": "form_request_validator",
-      "label": "A FormRequest that overrides `validator()`",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "Laravel asks the app for the validator instead of `createDefaultValidator()` (`Foundation/Http/FormRequest.php:104`), so the app builds its own. The compiled rung always uses the default validator - the dump refuses the class with that reason (LW003).",
-      "batch": "M61g",
-      "status": "done"
-    },
-    {
-      "id": "form_request_validation_data",
-      "label": "A FormRequest that overrides `validationData()`",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "Laravel validates what the hook returns (the default is `all()`; `Foundation/Http/FormRequest.php:197`), so the app chooses the data that is validated. The compiled rung validates the raw input - the dump refuses the class with that reason (LW003).",
-      "batch": "M61g",
-      "status": "done"
-    },
-    {
-      "id": "form_request_passed_validation",
-      "label": "A FormRequest that overrides `passedValidation()`",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "Laravel runs the hook at the end of `validateResolved()` (`Validation/ValidatesWhenResolvedTrait.php:35`) - the work that follows a successful validation. The compiled rung never runs it - the dump refuses the class with that reason (LW003).",
-      "batch": "M61g",
       "status": "done"
     },
     {
@@ -1503,19 +1457,40 @@
     {
       "id": "api_resource",
       "label": "an API resource (`return new PostResource($post)`)",
-      "php": null,
-      "check": "build",
-      "expect": "fail",
-      "note": "The controller answers a JsonResource; the Router's prepareResponse() wraps it in a ResourceResponse - `{\"data\": {...}, ...with($request)}` (JsonResource::toArray + the `$wrap` key, ResourceResponse.php:31-52). The app declares only toArray()/with(); the rest is the kernel base. Byte-proven by the shadow (`GET /resource-demo` identical) and by compiler/tests/resource-class.test.mjs. The audit cannot probe it as a controller fragment: the class is resolved through the class DUMP (kind `resource`), which the fragment probe does not run. A body that needs an await fails loud (the response path is synchronous).",
+      "php": "return new \\App\\Http\\Resources\\PostResource($post);",
+      "expect": "ok",
+      "note": "The controller answers a JsonResource; the Router's prepareResponse() wraps it in a ResourceResponse - `{\"data\": {...}, ...with($request)}` (JsonResource::toArray + the `$wrap` key, ResourceResponse.php:31-52). The app declares only toArray()/with(); the rest is the kernel base. Byte-proven by the shadow (`GET /resource-demo` identical) and by compiler/tests/resource-class.test.mjs; the audit probes it as a controller fragment with the class registry the build passes. A body that needs an await fails loud (the response path is synchronous).",
       "batch": "M66",
-      "status": "done"
+      "status": "done",
+      "pre": "$post = \\App\\Models\\Post::find(1);",
+      "models": [
+        {
+          "alias": "Post",
+          "fqcn": "App\\Models\\Post"
+        }
+      ],
+      "classes": {
+        "fqcns": [
+          "App\\Http\\Resources\\PostResource"
+        ],
+        "aliases": {
+          "PostResource": "App\\Http\\Resources\\PostResource"
+        },
+        "registry": {
+          "App\\Http\\Resources\\PostResource": {
+            "base": "resource",
+            "methods": [
+              "toArray"
+            ]
+          }
+        }
+      }
     },
     {
       "id": "form_request_validator_factory",
       "label": "A FormRequest that overrides `validator()`",
       "php": null,
       "check": "build",
-      "expect": "fail",
       "note": "Laravel asks the app's own factory for the validator (`FormRequest::getValidatorInstance()`), so an override decides the rules, the messages and the factory itself. The edge has ONE validator factory, so the dump refuses the class (LW003, `tools/formrequest-dump.php`) and the build stops instead of validating with different rules than Laravel.",
       "batch": "M62f",
       "status": "done"

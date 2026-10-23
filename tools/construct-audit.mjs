@@ -34,7 +34,7 @@ const CHECK = process.argv.includes('--check');
 const START = '<!-- construct-audit:start -->';
 const END = '<!-- construct-audit:end -->';
 
-const GLYPH = { ok: '✅ compiles', fail: '⛔ fails loud' };
+const GLYPH = { ok: '✅ compiles', fail: '⛔ fails loud', documented: '— documented (build level)' };
 
 // The event class the class-level probes hang their listener on.
 const AUDIT_EVENT_PHP = `<?php
@@ -139,23 +139,29 @@ for (const c of DATA.constructs) {
   // marked as compiling must compile.
   const expected = c.expect;
   const actual = p.verdict;
-  // A build-level construct (a Blade layout, an OPTIONS route) is documented
-  // here: the compiler cannot judge it, so it is not probed.
+  // A build-level construct (a Blade layout, an OPTIONS route, a PHP-side dump
+  // decision) is DOCUMENTED here: the compiler cannot judge it, so it is not
+  // probed and it has no verdict to state. It must not carry an `expect`
+  // either - a decorative "fail" on such a row is how a superseded refusal
+  // (form_request_after) stayed green beside the shipped feature that replaced
+  // it. An `expect` on a build row is drift.
+  const isBuild = c.check === 'build';
   // A row may also name the REASON the construct must fail loud for (a
   // substring of the message): a construct that fails loud for another reason
   // is drift too (the M45/M46 family: the verdict was right, the reason was
-  // wrong).
+  // wrong). Every PROBED fail row must name it, so a refusal cannot be recorded
+  // without saying why.
   const reasonOk = expected === 'fail' && c.reason ? p.message.includes(c.reason) : true;
-  const ok =
-    c.check === 'build'
-      ? true
-      : actual === expected && (expected === 'fail' ? (c.code ? p.code === c.code : true) : true) && reasonOk;
+  const missingReason = !isBuild && expected === 'fail' && !c.reason;
+  const ok = isBuild
+    ? c.expect === undefined && c.code === undefined
+    : actual === expected && (expected === 'fail' ? (c.code ? p.code === c.code : true) : true) && reasonOk && !missingReason;
   if (!ok) drift++;
   rows.push({
     id: c.id,
     label: c.label,
     check: c.check || 'compiler',
-    verdict: actual,
+    verdict: isBuild ? 'documented' : actual,
     code: p.code,
     expected,
     ok,
@@ -190,7 +196,7 @@ const facadeCounts = {
 const counts = {
   ok: rows.filter((r) => r.verdict === 'ok').length,
   fail: rows.filter((r) => r.verdict === 'fail').length,
-  build: rows.filter((r) => r.check === 'build').length,
+  build: rows.filter((r) => r.verdict === 'documented').length,
   np: rows.filter((r) => r.verdict === 'not probed').length,
   drift,
 };
@@ -204,7 +210,7 @@ const table = [
         ? GLYPH.ok
         : r.verdict === 'fail'
           ? (r.code ? `${GLYPH.fail} (\`${r.code}\`)` : GLYPH.fail)
-          : '— documented (build level)';
+          : GLYPH.documented;
     const drift = r.ok ? '' : ' **⚠ drift**';
     return `| ${r.label} | ${v}${drift} | ${r.note} | ${r.batch} |`;
   }),
@@ -216,6 +222,20 @@ if (CHECK) {
   // 1. the expectations must hold
   const drifted = rows.filter((r) => !r.ok);
   for (const r of drifted) {
+    if (r.check === 'build') {
+      // A build-level row states no verdict: carrying one is the drift.
+      console.error(
+        `construct-audit FAIL: ${r.label} - a documented (build-level) row must not carry expect/code (it is not probed)`
+      );
+      continue;
+    }
+    if (!r.reason && r.expected === 'fail') {
+      // A probed refusal must say WHY it refuses, or the row cannot be checked.
+      console.error(
+        `construct-audit FAIL: ${r.label} - a probed fail row must record the reason (a substring of the message)`
+      );
+      continue;
+    }
     console.error(
       `construct-audit FAIL: ${r.label} - expected ${r.expected}${r.expected === 'fail' ? ` (${r.code})` : ''}, got ${r.verdict}${r.code ? ` (${r.code})` : ''}`
     );
