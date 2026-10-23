@@ -272,6 +272,11 @@ export function buildRt(context, opts = {}) {
   // context and the session/request helpers fail loud rather than invent state.
   const liveSession = (opts && opts.http && opts.http.session) ? opts.http.session : null;
   const liveRequest = (opts && opts.http && opts.http.request) ? opts.http.request : null;
+  // The D1 binding, captured WITHOUT throwing: `rt.db()` raises when it is
+  // missing, and the FormRequest lifecycle must not raise for a request whose
+  // rules never touch the database. `unique`/`exists` check it themselves
+  // (kernel/validator.mjs).
+  const liveDb = (opts && opts.db) || null;
   const liveAuth = (opts && opts.http && opts.http.auth) ? opts.http.auth : null;
   const liveCache = (opts && opts.http && opts.http.cache) ? opts.http.cache : null;
   // The request clock (integer seconds) — the model timestamps follow it.
@@ -392,7 +397,7 @@ export function buildRt(context, opts = {}) {
     // `required`/`string`/`max` answered 500 on a worker without a D1 binding
     // where Laravel answers 200.
     const validator = new Validator(data, opts.rules || {}, opts.messages || {}, {
-      db: opts.db || null,
+      db: liveDb,
       attributes: opts.attributes || {},
       defaultMessages: defaultValidationMessages(),
     });
