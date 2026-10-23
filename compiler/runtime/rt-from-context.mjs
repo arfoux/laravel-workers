@@ -385,8 +385,14 @@ export function buildRt(context, opts = {}) {
     const data = hooks.includes('validationData')
       ? await instance.validationData(rt)
       : instance.all();
+    // The connection is OPTIONAL: only `unique`/`exists` read it, and the
+    // validator raises its own precise error for them when it is missing
+    // (kernel/validator.mjs - "validation rule unique needs opts.db"). Calling
+    // rt.db() here threw for EVERY FormRequest, so a route whose rules are all
+    // `required`/`string`/`max` answered 500 on a worker without a D1 binding
+    // where Laravel answers 200.
     const validator = new Validator(data, opts.rules || {}, opts.messages || {}, {
-      db: rt.db(),
+      db: opts.db || null,
       attributes: opts.attributes || {},
       defaultMessages: defaultValidationMessages(),
     });

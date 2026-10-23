@@ -31,9 +31,8 @@ function makeRt(methods) {
     {},
     {
       http: { request },
-      // The validator is constructed with rt.db() (the unique/exists rules read
-      // the database); these rules never touch it, so a stub is enough.
-      db: { prepare: () => ({ bind() { return this; }, all: async () => ({ results: [] }), first: async () => null, run: async () => ({ success: true, meta: {} }) }) },
+      // NO db binding: none of these rules touch the database, and a worker
+      // without D1 must still validate (Laravel answers 200).
       classes: {
         [FQCN]: { base: 'formRequest', ctor: () => ({}), deps: [], methods },
       },
