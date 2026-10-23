@@ -131,6 +131,34 @@ function probe(c) {
   return { verdict: 'fail', code: e.code, message: String(e.message).split('\n')[0] };
 }
 
+// A documented row names its proof: `shadow:<label substring>`,
+// `test:<path>` or `dump:<path>`. The pointer is RESOLVED here, so a row cannot
+// claim a proof that no longer exists (a deleted test, a renamed scenario step).
+const SCENARIO_FILE = join(ROOT, 'shadow', 'scenarios', 'lw-constructs-app.mjs');
+function resolveProof(proof) {
+  if (typeof proof !== 'string' || !proof.includes(':')) return 'no proof recorded';
+  const at = proof.indexOf(':');
+  const kind = proof.slice(0, at);
+  const what = proof.slice(at + 1).trim();
+  if (kind === 'test' || kind === 'dump') {
+    try {
+      readFileSync(join(ROOT, what));
+      return null;
+    } catch {
+      return `the file ${what} does not exist`;
+    }
+  }
+  if (kind === 'shadow') {
+    let scenario;
+    try {
+      scenario = readFileSync(SCENARIO_FILE, 'utf8');
+    } catch {
+      return `the scenario file ${SCENARIO_FILE} does not exist`;
+    }
+    return scenario.includes("'" + what + "'") ? null : `the scenario has no step ${JSON.stringify(what)}`;
+  }
+  return `unknown proof kind ${JSON.stringify(kind)}`;
+}
 const rows = [];
 let drift = 0;
 for (const c of DATA.constructs) {
@@ -153,8 +181,9 @@ for (const c of DATA.constructs) {
   // without saying why.
   const reasonOk = expected === 'fail' && c.reason ? p.message.includes(c.reason) : true;
   const missingReason = !isBuild && expected === 'fail' && !c.reason;
+  const proofProblem = isBuild ? resolveProof(c.proof) : null;
   const ok = isBuild
-    ? c.expect === undefined && c.code === undefined
+    ? c.expect === undefined && c.code === undefined && !proofProblem
     : actual === expected && (expected === 'fail' ? (c.code ? p.code === c.code : true) : true) && reasonOk && !missingReason;
   if (!ok) drift++;
   rows.push({
@@ -169,6 +198,10 @@ for (const c of DATA.constructs) {
     batch: c.batch,
     status: c.status,
     reason: c.reason || null,
+    proof: c.proof || null,
+    proofProblem,
+    // The code the LEDGER declares (the probe's own code is `code` above).
+    declaredCode: c.code === undefined ? null : c.code,
     message: p.message,
   });
 }
@@ -215,7 +248,7 @@ const table = [
     return `| ${r.label} | ${v}${drift} | ${r.note} | ${r.batch} |`;
   }),
   '',
-  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every one of them is either compiled *and* proven by the shadow harness, or it fails the build — there is no third state. The Laravel 13 facades: **${facadeCounts.total} of ${facadeTotal} classified (${facadeCounts.ok} compile, ${facadeCounts.fail} fail loud) — the facade coverage is ${facadeTotal ? Math.round((facadeCounts.total / facadeTotal) * 100) : 0}%** (every facade of the vendored Illuminate/Support/Facades must have a row).`,
+  `**${rows.length} constructs: ${counts.ok} compile, ${counts.fail} fail loud, ${counts.build} documented at the build level.** Every probed construct is either compiled *and* proven by the shadow harness, or it fails the build; the ${counts.build} documented rows are build-level decisions the compiler cannot judge, and each one names its own proof (the 'proof' field: a shadow step, a test file or the dump that decides it). The Laravel 13 facades: **${facadeCounts.total} of ${facadeTotal} classified (${facadeCounts.ok} compile, ${facadeCounts.fail} fail loud) — the facade coverage is ${facadeTotal ? Math.round((facadeCounts.total / facadeTotal) * 100) : 0}%** (every facade of the vendored Illuminate/Support/Facades must have a row).`,
 ].join('\n');
 
 if (CHECK) {
@@ -224,8 +257,15 @@ if (CHECK) {
   for (const r of drifted) {
     if (r.check === 'build') {
       // A build-level row states no verdict: carrying one is the drift.
+      if (r.expected !== undefined || r.declaredCode !== null) {
+        console.error(
+          `construct-audit FAIL: ${r.label} - a documented (build-level) row must not carry expect/code (it is not probed)`
+        );
+        continue;
+      }
+      // ...and it must point at a proof that still exists.
       console.error(
-        `construct-audit FAIL: ${r.label} - a documented (build-level) row must not carry expect/code (it is not probed)`
+        `construct-audit FAIL: ${r.label} - its proof does not resolve: ${r.proofProblem}`
       );
       continue;
     }

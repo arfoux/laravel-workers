@@ -623,7 +623,8 @@
       "check": "build",
       "note": "The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route.",
       "batch": "M40",
-      "status": "done"
+      "status": "done",
+      "proof": "shadow:OPTIONS /posts (the automatic OPTIONS response)"
     },
     {
       "id": "relation_property",
@@ -667,7 +668,8 @@
       "check": "build",
       "note": "The FormRequest dump reads the rules Laravel itself builds and NORMALIZES a rule object to its string form (Laravel hands the validator the object and the validator reads that string): `Rule::in(['a','b'])` becomes `in:\"a\",\"b\"` - which the kernel parses exactly like Laravel (M61a). A CONDITIONAL rule object is refused (the row below).",
       "batch": "M43/M62",
-      "status": "done"
+      "status": "done",
+      "proof": "test:compiler/tests/formrequest-dump.test.mjs"
     },
     {
       "id": "form_request_conditional_rule_object",
@@ -676,7 +678,8 @@
       "check": "build",
       "note": "A conditional rule object (`Rule::requiredIf(true)`, `Rule::when(...)`) is refused: its string form is the CONDITION evaluated at build time (`RequiredIf::__toString()` returns 'required' or ''), so the edge would bake the build-time branch into the rule - a request Laravel accepts could be rejected (or the other way round). The dump stops with that reason (LW003).",
       "batch": "M62",
-      "status": "done"
+      "status": "done",
+      "proof": "test:compiler/tests/formrequest-dump.test.mjs"
     },
     {
       "id": "prepare_for_validation",
@@ -685,7 +688,8 @@
       "check": "build",
       "note": "The hook is COMPILED: the build compiles the FormRequest class (the dump registers it), the compiled handler runs the hook BEFORE the validation (Laravel's order - ValidatesWhenResolvedTrait::validateResolved), and the input the hook prepares is what the rules see. The compiled class extends the kernel's `kernel/form-request.mjs` - the request surface the hook uses (merge(), input(), all()).",
       "batch": "M62d",
-      "status": "done"
+      "status": "done",
+      "proof": "shadow:POST /posts (the FormRequest hook prepares the input)"
     },
     {
       "id": "form_request_other_hooks",
@@ -694,7 +698,8 @@
       "check": "build",
       "note": "All three hooks run in the compiled lifecycle, in Laravel's order: `validationData()` is the data source, `after()` registers its RETURN VALUE as a validator callback, and `passedValidation()` runs after the rules pass. Proven by the shadow (`POST /hooked-request-demo` 422/422 for the `after()` refusal and 200/200 carrying the `passedValidation` marker).",
       "batch": "M62f",
-      "status": "done"
+      "status": "done",
+      "proof": "shadow:POST /hooked-request-demo (the FormRequest hooks run)"
     },
     {
       "id": "form_request_with_validator",
@@ -703,7 +708,8 @@
       "check": "build",
       "note": "Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled class carries the hook and the lifecycle calls it with the kernel's validator, in Laravel's order. Proven by the shadow (`POST /hooked-request-demo` 422/422 byte-identical when `withValidator()` refuses the flag) and by the compiled handler's `hooks: [...]` list.",
       "batch": "M62f",
-      "status": "done"
+      "status": "done",
+      "proof": "shadow:POST /hooked-request-demo (withValidator refuses the flag)"
     },
     {
       "id": "listener_service",
@@ -1493,7 +1499,8 @@
       "check": "build",
       "note": "Laravel asks the app's own factory for the validator (`FormRequest::getValidatorInstance()`), so an override decides the rules, the messages and the factory itself. The edge has ONE validator factory, so the dump refuses the class (LW003, `tools/formrequest-dump.php`) and the build stops instead of validating with different rules than Laravel.",
       "batch": "M62f",
-      "status": "done"
+      "status": "done",
+      "proof": "test:compiler/tests/formrequest-dump.test.mjs"
     }
   ],
   "meta": {
