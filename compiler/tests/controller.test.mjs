@@ -2492,6 +2492,16 @@ test('emit: a Collection chain resolves against the kernel Collection surface', 
   assert.deepEqual(wrapped.errors, []);
   assert.match(wrapped.code, /rt\.collectionWrap\("a"\)\.count\(\)/);
   assert.doesNotMatch(wrapped.code, /rt\.collect\("a"\)/);
+  // A CHAIN on wrap() resolves against the same allowlist as make(): without
+  // this the receiver was untyped and `wrap($v)->sole()` was refused with
+  // LW002 - the false refusal this branch exists to prevent.
+  const wrappedChain = emitController(src("return \\Illuminate\\Support\\Collection::wrap([1])->sole();"), 'demo', meta);
+  assert.deepEqual(wrappedChain.errors, []);
+  assert.match(wrappedChain.code, /rt\.collectionWrap\(\[1\]\)\.sole\(\)/);
+  const wrappedBad = emitController(src('return \\Illuminate\\Support\\Collection::wrap([1])->sliding(2);'), 'demo', meta);
+  assert.equal(wrappedBad.code, null);
+  assert.equal(wrappedBad.errors[0].code, 'LW003');
+  assert.match(wrappedBad.errors[0].message, /sliding/);
   // A method the kernel Collection lacks is still a build error: the inline
   // chain must not compile to a call that throws at request time.
   const bad = emitController(src('return collect([1, 2])->sliding(2);'), 'demo', meta);

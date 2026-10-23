@@ -2490,7 +2490,12 @@ function collectionProducerOf(node) {
   if (what.kind === 'staticlookup') {
     const cls = String((what.what && what.what.name) || '').replace(/^\\/, '');
     const m = what.offset && what.offset.name;
-    if ((cls === 'Collection' || cls === 'Illuminate\\Support\\Collection') && m === 'make') return true;
+    // `make()` and `wrap()` both answer the kernel Collection (the runtime
+    // emits rt.collect / rt.collectionWrap for them), so a chain on either
+    // resolves against COLLECTION_METHODS.
+    if ((cls === 'Collection' || cls === 'Illuminate\\Support\\Collection') && (m === 'make' || m === 'wrap')) {
+      return true;
+    }
     return false;
   }
   if (what.kind === 'propertylookup') {
