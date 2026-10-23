@@ -1561,8 +1561,15 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             (fqcn) => (classesDump.classes[fqcn] || {}).kind === 'job'
           )
         );
+        // A framework class the transpiler compiles ITSELF (`Collection::make()`
+        // / `Collection::wrap()` -> the kernel Collection) is not an app model,
+        // so the model dump must not judge it. Without this the route is
+        // skipped with "not a usable Eloquent model" - a misleading refusal for
+        // a construct that compiles.
+        const frameworkFqcns = new Set(['Collection', 'Illuminate\\Support\\Collection']);
         const badModel = (p.meta.classes || []).find((c) => {
           if (jobFqcns.has(c.fqcn)) return false;
+          if (frameworkFqcns.has(c.fqcn)) return false;
           const d = modelDump.get(c.fqcn);
           return !d || !d.model;
         });
@@ -1725,6 +1732,8 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
               });
             };
             for (const c of p.meta.classes || []) {
+              const d = modelDump.get(c.fqcn);
+              if (!d || !d.model) continue;
               push(c.alias, c.fqcn);
             }
             for (const param of p.meta.params || []) {

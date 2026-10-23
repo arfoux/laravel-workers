@@ -137,6 +137,17 @@ export default {
       jar: true,
     },
     {
+      // The model/collection surface the transpiler allowlists: `toJson()` is
+      // a JSON STRING (Model.php:2094) while the JS protocol hook `toJSON()`
+      // answers the object, `getDirty()` is a key => value MAP
+      // (HasAttributes.php:2341), `isDirty('a','b')` reads func_get_args()
+      // (:2262-2267), and `Collection::wrap('a/b')` is Arr::wrap (a non-array
+      // becomes ONE item) - NOT collect(), which would drop it.
+      label: 'GET /model-surface-demo (toJson/getDirty/isDirty/wrap)',
+      method: 'GET',
+      uri: '/model-surface-demo',
+    },
+    {
       // `response()->json($model)`: PHP's json_encode honours the model's
       // JsonSerializable (toArray()), so the body is the model's own JSON.
       label: 'GET /json-model-demo (response()->json($model))',

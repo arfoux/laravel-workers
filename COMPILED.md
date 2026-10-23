@@ -81,8 +81,10 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   Everything else fails loud (never a wrong compile)
 - FormRequest: `rules()`/`messages()`/`attributes()` are dumped at build time and
   compiled into the handler — the request is validated *before* the method body and
-  `validated()` returns the ruled attributes. `authorize()` must be true and
-  `prepareForValidation()` is not supported (build fails loud)
+  `validated()` returns the ruled attributes. `authorize()` must be true. The hooks run in Laravel's order
+  (`prepareForValidation` -> `authorize` -> `validationData` -> `withValidator` ->
+  `after` -> the rules -> `passedValidation`); the `validator()` factory stays a
+  build error (the edge has one factory, so the app's would never run)
 - Out-of-subset class body → per-class build error (never a wrong compile)
 
 ### 1.3 Shadow harness (the proof machine)
