@@ -1,69 +1,69 @@
 {
-  "name": "laravel-workers",
-  "version": "0.3.1",
-  "description": "Build-time toolchain: compile a Laravel app's Blade views, routes and D1 read paths to a Cloudflare Workers artifact (static + snapshot + compiled handlers); unsupported constructs fail the build",
-  "type": "module",
-  "license": "MIT",
-  "author": "arfoux",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/arfoux/laravel-workers.git"
-  },
-  "homepage": "https://github.com/arfoux/laravel-workers#readme",
-  "bugs": {
-    "url": "https://github.com/arfoux/laravel-workers/issues"
-  },
-  "keywords": [
-    "laravel",
-    "cloudflare",
-    "workers",
-    "edge",
-    "d1",
-    "blade",
-    "transpiler",
-    "workers-native",
-    "build-time",
-    "toolchain"
-  ],
-  "bin": {
-    "laravel-workers": "bin/laravel-workers.mjs"
-  },
-  "files": [
-    "bin",
-    "build.mjs",
-    "compiler/bin",
-    "compiler/src",
-    "compiler/runtime",
-    "kernel",
-    "src",
-    "tools",
-    "shadow",
-    "!tools/pack-smoke.mjs"
-  ],
-  "scripts": {
-    "setup": "npm install && npm --prefix compiler install",
-    "test": "node --test kernel/tests/router.test.mjs kernel/tests/db.test.mjs kernel/tests/sqlite-integration.test.mjs kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs kernel/tests/validator.test.mjs kernel/tests/services.test.mjs kernel/tests/str.test.mjs kernel/tests/routes-json.test.mjs kernel/tests/registry-json.test.mjs kernel/tests/ports.test.mjs kernel/tests/budget.test.mjs kernel/tests/paginator.test.mjs kernel/tests/php-serialize.test.mjs kernel/tests/php-json.test.mjs kernel/tests/cookies.test.mjs kernel/tests/session.test.mjs kernel/tests/ratelimit.test.mjs kernel/tests/cache.test.mjs kernel/tests/storage.test.mjs kernel/tests/image.test.mjs kernel/tests/collections.test.mjs compiler/tests/queue.test.mjs kernel/tests/redis.test.mjs kernel/tests/model.test.mjs kernel/tests/resources.test.mjs kernel/tests/csrf.test.mjs kernel/tests/auth.test.mjs kernel/tests/http.test.mjs kernel/tests/validation.test.mjs kernel/tests/login-flow.test.mjs kernel/tests/upload.test.mjs kernel/tests/validation-messages.test.mjs kernel/tests/validator-hooks.test.mjs compiler/tests/controller.test.mjs compiler/tests/classes.test.mjs compiler/tests/policy.test.mjs compiler/tests/request-call-consistency.test.mjs compiler/tests/source-syntax.test.mjs compiler/tests/dist-swap.test.mjs compiler/tests/resource-class.test.mjs compiler/tests/relation-property.test.mjs compiler/tests/model-accessor.test.mjs compiler/tests/allowlist-surface.test.mjs compiler/tests/rt-str.test.mjs compiler/tests/rt-arith.test.mjs compiler/tests/rt-json.test.mjs compiler/tests/rt-semantics.test.mjs compiler/tests/rt-semantics2.test.mjs compiler/tests/rt-break.test.mjs compiler/tests/rt-increment.test.mjs compiler/tests/rt-mail.test.mjs compiler/tests/mail-reach.test.mjs compiler/tests/inline-class-call.test.mjs compiler/tests/mail-views-dump.test.mjs compiler/tests/rt-blade.test.mjs compiler/tests/formrequest-dump.test.mjs compiler/tests/formrequest-lifecycle.test.mjs",
-    "test:db": "node --test kernel/tests/db.test.mjs",
-    "test:sqlite": "node --test kernel/tests/sqlite-integration.test.mjs",
-    "test:hash": "node --test kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs",
-    "test:validator": "node --test kernel/tests/validator.test.mjs",
-    "test:corpus": "node compiler/tests/run-corpus.mjs",
-    "build": "node build.mjs --strict",
-    "verify": "node bin/laravel-workers.mjs verify",
-    "test:services": "node --test kernel/tests/services.test.mjs",
-    "test:budget": "node --test kernel/tests/budget.test.mjs",
-    "check:docs": "node tools/gate.mjs",
-    "bench": "node tools/bench.mjs",
-    "test:shadow": "node shadow/run.mjs",
-    "test:pack": "node tools/pack-smoke.mjs",
-    "audit:constructs": "node tools/construct-audit.mjs",
-    "test:str": "node --test kernel/tests/str.test.mjs"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "bcryptjs": "2.4.3",
-    "php-parser": "3.7.0"
-  }
+ "name": "laravel-workers",
+ "version": "0.3.1",
+ "description": "Build-time toolchain: compile a Laravel app's Blade views, routes and D1 read paths to a Cloudflare Workers artifact (static + snapshot + compiled handlers); unsupported constructs fail the build",
+ "type": "module",
+ "license": "MIT",
+ "author": "arfoux",
+ "repository": {
+  "type": "git",
+  "url": "git+https://github.com/arfoux/laravel-workers.git"
+ },
+ "homepage": "https://github.com/arfoux/laravel-workers#readme",
+ "bugs": {
+  "url": "https://github.com/arfoux/laravel-workers/issues"
+ },
+ "keywords": [
+  "laravel",
+  "cloudflare",
+  "workers",
+  "edge",
+  "d1",
+  "blade",
+  "transpiler",
+  "workers-native",
+  "build-time",
+  "toolchain"
+ ],
+ "bin": {
+  "laravel-workers": "bin/laravel-workers.mjs"
+ },
+ "files": [
+  "bin",
+  "build.mjs",
+  "compiler/bin",
+  "compiler/src",
+  "compiler/runtime",
+  "kernel",
+  "src",
+  "tools",
+  "shadow",
+  "!tools/pack-smoke.mjs"
+ ],
+ "scripts": {
+  "setup": "npm install && npm --prefix compiler install",
+  "test": "node --test kernel/tests/router.test.mjs kernel/tests/db.test.mjs kernel/tests/sqlite-integration.test.mjs kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs kernel/tests/validator.test.mjs kernel/tests/services.test.mjs kernel/tests/str.test.mjs kernel/tests/routes-json.test.mjs kernel/tests/registry-json.test.mjs kernel/tests/ports.test.mjs kernel/tests/budget.test.mjs kernel/tests/paginator.test.mjs kernel/tests/php-serialize.test.mjs kernel/tests/php-json.test.mjs kernel/tests/cookies.test.mjs kernel/tests/session.test.mjs kernel/tests/ratelimit.test.mjs kernel/tests/cache.test.mjs kernel/tests/storage.test.mjs kernel/tests/image.test.mjs kernel/tests/collections.test.mjs compiler/tests/queue.test.mjs kernel/tests/redis.test.mjs kernel/tests/model.test.mjs kernel/tests/resources.test.mjs kernel/tests/csrf.test.mjs kernel/tests/auth.test.mjs kernel/tests/http.test.mjs kernel/tests/validation.test.mjs kernel/tests/login-flow.test.mjs kernel/tests/upload.test.mjs kernel/tests/validation-messages.test.mjs kernel/tests/validator-hooks.test.mjs compiler/tests/controller.test.mjs compiler/tests/classes.test.mjs compiler/tests/policy.test.mjs compiler/tests/request-call-consistency.test.mjs compiler/tests/source-syntax.test.mjs compiler/tests/dist-swap.test.mjs compiler/tests/resource-class.test.mjs compiler/tests/relation-property.test.mjs compiler/tests/model-accessor.test.mjs compiler/tests/allowlist-surface.test.mjs compiler/tests/rt-str.test.mjs compiler/tests/rt-arith.test.mjs compiler/tests/rt-json.test.mjs compiler/tests/rt-semantics.test.mjs compiler/tests/rt-semantics2.test.mjs compiler/tests/rt-break.test.mjs compiler/tests/rt-increment.test.mjs compiler/tests/rt-mail.test.mjs compiler/tests/mail-reach.test.mjs compiler/tests/inline-class-call.test.mjs compiler/tests/mail-views-dump.test.mjs compiler/tests/rt-blade.test.mjs compiler/tests/formrequest-dump.test.mjs compiler/tests/formrequest-lifecycle.test.mjs kernel/tests/readiness.test.mjs",
+  "test:db": "node --test kernel/tests/db.test.mjs",
+  "test:sqlite": "node --test kernel/tests/sqlite-integration.test.mjs",
+  "test:hash": "node --test kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs",
+  "test:validator": "node --test kernel/tests/validator.test.mjs",
+  "test:corpus": "node compiler/tests/run-corpus.mjs",
+  "build": "node build.mjs --strict",
+  "verify": "node bin/laravel-workers.mjs verify",
+  "test:services": "node --test kernel/tests/services.test.mjs",
+  "test:budget": "node --test kernel/tests/budget.test.mjs",
+  "check:docs": "node tools/gate.mjs",
+  "bench": "node tools/bench.mjs",
+  "test:shadow": "node shadow/run.mjs",
+  "test:pack": "node tools/pack-smoke.mjs",
+  "audit:constructs": "node tools/construct-audit.mjs",
+  "test:str": "node --test kernel/tests/str.test.mjs"
+ },
+ "engines": {
+  "node": ">=22"
+ },
+ "dependencies": {
+  "bcryptjs": "2.4.3",
+  "php-parser": "3.7.0"
+ }
 }

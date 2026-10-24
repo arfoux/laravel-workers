@@ -18,6 +18,7 @@ import { buildRoutesJson } from './tools/routes-json.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
+import { BLOCK, DECLARED, renderReadiness, sweepAppSources } from './tools/readiness.mjs';
 import { compilePolicies } from './compiler/src/policy.mjs';
 import { compileClasses, compileOneMethod } from './compiler/src/classes.mjs';
 import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
@@ -26,6 +27,7 @@ import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -58,11 +60,17 @@ const strict = process.argv.includes('--strict');
 const scaffold = process.argv.includes('--scaffold');
 const PHP = process.env.PHP_BIN || 'php';
 
+// One place the operator looks to answer "can my app run at the edge?"
+const findings = [];
+const note = (f) => findings.push(f);
+const relPath = (p) => relative(appDir, p).split('\\').join('/');
+
 const fail = (msg) => {
   console.error('BUILD FAILED: ' + msg);
   // The staging directory is thrown away: `dist/` keeps the last build that
   // COMPLETED (a failed build must never leave a half-written dist behind).
   discardStaging(dist);
+  if (findings.length) console.error(renderReadiness(findings, { dist: relPath(distFinal) }));
   process.exit(1);
 };
 
@@ -95,8 +103,37 @@ const portEntries = Object.entries(registry.ports || {});
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
 if (!existsSync(join(appDir, 'vendor/autoload.php'))) fail('vendor/ not found — run composer install');
-if (!existsSync(join(appDir, 'public/build/manifest.json')))
-  fail('public/build/manifest.json not found — run `npm run build` first');
+// A Vite app writes public/build/manifest.json. A Mix/webpack app writes
+// public/mix-manifest.json. A standalone esbuild (BookStack: public/dist) writes
+// no manifest at all — the build can still proceed when the pages are declared
+// in registry.json `static`. Failing on "public/build" alone made whole apps
+// untestable before the first real decision. The order is Vite-first: the path
+// the build WOULD write if its own `npm run build` ran.
+{
+  const manifestCandidates = [
+    join(appDir, 'public/build/manifest.json'),
+    join(appDir, 'public/dist/manifest.json'),
+    join(appDir, 'public/mix-manifest.json'),
+  ];
+  const manifestPath = manifestCandidates.find((p) => existsSync(p));
+  if (!manifestPath) {
+    if (Object.keys(registry.static || {}).length) {
+      console.log(
+        '\u2022 manifest: none of the usual frontend manifests found (' +
+          manifestCandidates.map((p) => relPath(p)).join(', ') +
+          ') — but registry.json has "static", so pages declared there count as handled'
+      );
+    } else {
+      fail(
+        'no frontend manifest found — looked for ' +
+          manifestCandidates.map((p) => relPath(p)).join(', ') +
+          ' — run the app\'s frontend build (npm run build) first, or declare pages in registry.json "static"'
+      );
+    }
+  } else {
+    console.log(`\u2022 manifest: ${relPath(manifestPath)}`);
+  }
+}
 
 // ---------- 1. export routes from the Laravel app ----------
 console.log('• exporting routes via `php artisan route:list --json`');
@@ -193,6 +230,20 @@ const isHonouredMiddleware = (m) => {
   if (name !== 'throttle') return false;
   const spec = str.slice('throttle'.length).replace(/^:/, '');
   return spec === '' || /^\d+(,\d+)?$/.test(spec); // numeric spec only
+};
+
+const MIDDLEWARE_FIX = (m, route) => {
+  const name = String(m).split(':')[0];
+  const ignore = '{\"ignore\": {\"' + route + '\": \"<why the edge does not serve it>\"}}';
+  switch (name) {
+    case 'verified': return 'email verification needs a signed URL the edge cannot mint the same way -- add a port, or ' + ignore;
+    case 'signed': return 'signed URLs are verified against app.key (a port can do it with WebCrypto) -- add a port, or ' + ignore;
+    case 'password.confirm': return 'the password-confirm window is session state the compiled rung does not port -- add a port, or ' + ignore;
+    case 'can': return 'a route-level `can:` check needs the policy at the route stage -- call `$this->authorize()` inside the controller instead (that compiles), or add a port';
+    case 'throttle': return 'a NAMED rate limiter lives in AppServiceProvider and the build cannot read it -- use a numeric throttle (e.g. throttle:60,1) or ' + ignore;
+    case 'cors': return 'CORS headers are added by a port or by the Cloudflare dashboard (Transform Rules) -- the compiled rung does not add them';
+    default: return 'add a port for this route (build --scaffold), or ' + ignore;
+  }
 };
 console.log(`  app routes (${routes.length}): ${routes.join('  ')}`);
 const skippedRoutes = [
@@ -291,7 +342,11 @@ try {
   // 3a. manual static pages (registry.json → "static")
   for (const [route, file] of staticMap) {
     const res = prerender(route);
-    if (res.status < 200 || res.status >= 300) fail(`static route ${route} returned HTTP ${res.status}`);
+    if (res.status < 200 || res.status >= 300) {
+      const detail = res.error ? `: ${res.error}` : (res.body ? `: ${String(res.body).slice(0, 150).replace(/\n/g, ' ')}` : '');
+      note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: detail.includes('key:generate') ? 'run `php artisan key:generate` in the app' : detail.includes('database') ? 'prepare the DB: touch database/database.sqlite && php artisan migrate --force (the build prerenders every page it serves)' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
+      fail(`static route ${route} returned HTTP ${res.status}${detail}`);
+    }
     const { bytes, fixed } = writePage(file, res.body);
     console.log(`• static ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
     if (otherMethods(route).length) partials.push({ route, methods: otherMethods(route) });
@@ -376,25 +431,26 @@ try {
 }
 {
   const problems = [];
-  if (!runtimeConfig['app.key']) problems.push('app.key is empty');
+  const problem = (cause, fix) => { problems.push(cause); note({ route: null, area: 'config', severity: BLOCK, cause, fix }); };
+  if (!runtimeConfig['app.key']) problem('app.key is empty', 'run `php artisan key:generate` (the edge signs cookies and sessions with it)');
   const driver = runtimeConfig['session.driver'];
   if (driver !== 'database' && driver !== 'cookie') {
-    problems.push(`session.driver '${driver}' is not supported by the compiled rung (database/cookie only)`);
+    problem(`session.driver '${driver}' is not supported by the compiled rung (database/cookie only)`);
   }
   if (runtimeConfig['session.encrypt']) {
-    problems.push('SESSION_ENCRYPT=true (EncryptedStore) is not supported by the compiled rung yet');
+    problem('SESSION_ENCRYPT=true (EncryptedStore) is not supported by the compiled rung yet');
   }
   if (runtimeConfig['cookies.serialize']) {
-    problems.push('EncryptCookies::$serialize must be false (cookie serialization is not ported)');
+    problem('EncryptCookies::$serialize must be false (cookie serialization is not ported)');
   }
   if ((runtimeConfig['hashing.driver'] || 'bcrypt') !== 'bcrypt') {
-    problems.push(`hashing.driver '${runtimeConfig['hashing.driver']}' is not supported (bcrypt only)`);
+    problem(`hashing.driver '${runtimeConfig['hashing.driver']}' is not supported (bcrypt only)`);
   }
   const thirdPartyGuards = Object.entries(runtimeConfig)
     .filter(([k, v]) => k.startsWith('auth.guards.') && v && v.driver && v.driver !== 'session')
     .map(([k, v]) => `${k} (driver '${v.driver}')`);
   if (thirdPartyGuards.length) {
-    problems.push(`guard(s) with a non-session driver: ${thirdPartyGuards.join(', ')} (only the session guard is ported)`);
+    problem(`guard(s) with a non-session driver: ${thirdPartyGuards.join(', ')} (only the session guard is ported)`);
   }
   if (problems.length) {
     fail('unsupported runtime config (the compiled rung would diverge from PHP):\n  - ' + problems.join('\n  - '));
@@ -1930,6 +1986,9 @@ if (!existsSync(join(dist, 'src', 'classes.generated.mjs'))) {
 }
 
 // ---------- 3d. schema snapshot ----------
+// Keep the count so the success footer can name the D1 tables and remind the
+// operator that the schema statement must be applied ONCE by hand.
+let schemaTableCount = 0;
 mkdirSync(cacheDir, { recursive: true });
 const schemaPath = join(cacheDir, 'schema.json');
 console.log('\u2022 dumping DB schema');
@@ -1950,6 +2009,7 @@ console.log('  -> dist/schema.json');
     tables = (snapshot.tables || [])
       .map((t) => String(t.sql || '').trim().replace(/;+$/, ''))
       .filter(Boolean);
+    schemaTableCount = tables.length;
   } catch {
     /* the snapshot is unreadable - dist/schema.json is still written */
   }
@@ -2084,7 +2144,10 @@ for (const v of verbControllers) {
     const bad = (entry.middleware || []).filter(
       (m) => !RUNTIME_MIDDLEWARE.has(String(m).split(':')[0]) && !isNumericThrottle(m)
     );
-    if (bad.length) offenders.push(`${entry.uri} [${bad.join(', ')}] (${entry.kind})`);
+    if (bad.length) {
+      offenders.push(`${entry.uri} [${bad.join(', ')}] (${entry.kind})`);
+      for (const m of bad) note({ route: entry.uri, area: 'middleware', severity: BLOCK, cause: `runs the "${m}" middleware, which the compiled rung does not honour`, fix: MIDDLEWARE_FIX(m, entry.uri) });
+    }
     if ((entry.middleware || []).some(isNumericThrottle)) throttleRoutes++;
   }
   if (offenders.length) {
@@ -2099,6 +2162,7 @@ for (const v of verbControllers) {
   // `throttle` reads/writes the D1-backed `database` cache store. Without it,
   // kernel/http.mjs throws at request time — so refuse to compile such a route.
   if (throttleRoutes && runtimeConfig['cache.driver'] !== 'database') {
+    note({ route: null, area: 'config', severity: BLOCK, cause: `${throttleRoutes} route(s) use throttle middleware, but cache.driver is '${runtimeConfig['cache.driver']}' and the compiled limiter needs the D1-backed 'database' store`, fix: 'set CACHE_STORE=database and migrate the cache + cache_locks tables -- or add a port for the throttled routes' });
     fail(
       `throttle middleware needs the D1-backed 'database' cache store, but cache.driver is ` +
         `'${runtimeConfig['cache.driver']}'.\n  Set CACHE_STORE=database (with the cache + cache_locks ` +
@@ -2148,6 +2212,24 @@ const routesJson = buildRoutesJson(routeTable, { publicDirs: ['build'], extraInc
 writeFileSync(join(dist, 'public', '_routes.json'), JSON.stringify(routesJson, null, 2) + '\n');
 console.log(`  -> dist/public/_routes.json (${(routesJson.include || []).length} include, ${(routesJson.exclude || []).length} exclude)`);
 
+// The action for an unhandled route. The reason already says WHY; this says
+// WHAT TO DO, and the four cases are genuinely different (a dynamic segment is
+// a five-minute port; a route that answers 500 at build time is a bug in the
+// app that the build just found for free).
+const needsPortFix = (n) => {
+  const reason = String(n.reason || '');
+  const ignore = `{"ignore": {"${n.route}": "<why>"}}`;
+  if (reason.startsWith('dynamic segment')) return `write a port — the worker router matches dynamic segments and hands them to the handler as ctx.params (build --scaffold creates the file), or ${ignore}`;
+  if (reason.startsWith('no GET')) return `the route has no GET to snapshot — write a port for the verb(s) it does answer, or ${ignore}`;
+  if (reason.startsWith('unhandled (autoSnapshot: false)')) return `registry.json sets "autoSnapshot": false, so nothing is snapshotted — write a port, or set autoSnapshot back to true`;
+  if (reason.startsWith('a controller serves it')) return 'the controller did not compile — the reason is on its `controller ... skipped` line above; fix that, or write a port';
+  if (reason.startsWith('HTTP 5')) return `the route throws when the app boots at build time (${reason}) — this is a bug the build found for free; fix the route, then rebuild`;
+  if (reason.startsWith('HTTP 3')) return `the route redirects (${reason}) — a redirect needs a handler: write a port that returns it, or ${ignore}`;
+  if (reason.startsWith('HTTP 4')) return `the route answers ${reason} for a bare GET — it probably needs a parameter or auth; write a port, or ${ignore}`;
+  if (reason.startsWith('HTTP')) return `the response is not an HTML page (${reason}) — write a port that returns it (a JSON or file body), or ${ignore}`;
+  return `write a port (build --scaffold), or ${ignore}`;
+};
+
 // ---------- 6. coverage report ----------
 const unknown = [
   ...new Set([
@@ -2180,7 +2262,63 @@ if (!blocked)
     `• coverage: all ${routes.length} route(s) handled — static ${staticMap.length}, snapshots ${snapshots.length}, ports ${portEntries.length}, controllers ${controllerRoutes.size}, extra-verb controllers ${verbControllers.length}, ignored ${ignoreMap.length}`
   );
 
+// Every undecided route becomes a finding with the action that resolves it.
+// The reasons above are already specific ("dynamic segment", "HTTP 500"); what
+// the operator lacks is the STEP, so each row names one.
+for (const n of needsPort) {
+  note({ route: n.route, area: 'route', severity: BLOCK, cause: `no handler: ${n.reason}`, fix: needsPortFix(n) });
+  // A route that never became a snapshot or a controller skips the middleware
+  // audit above (that one walks the route TABLE), so its middleware is never
+  // named - and the reason it could not be served is usually the middleware,
+  // not the status it happened to answer. `verified` reads as "HTTP 500"; the
+  // truth is a stage the compiled rung does not run.
+  for (const m of middlewareForRoute(n.route) || []) {
+    if (isHonouredMiddleware(m)) continue;
+    note({ route: n.route, area: 'middleware', severity: BLOCK, cause: `runs the "${m}" middleware, which the compiled rung does not honour`, fix: MIDDLEWARE_FIX(m, n.route) });
+  }
+}
+for (const p of partials) note({ route: p.route, area: 'route', severity: BLOCK, cause: `GET is snapshotted, but ${p.methods.join(', ')} has no handler`, fix: `write a port for ${p.methods.join('/')} ${p.route} (build --scaffold), or ignore the route with a reason` });
+for (const x of uncompiledExtraNonPost) note({ route: x.route, area: 'route', severity: BLOCK, cause: `${x.verb} has no handler (only GET/POST/PUT/PATCH/DELETE compile)`, fix: `write a port for ${x.verb} ${x.route}, or ignore the route with a reason` });
+for (const u of unknown) note({ route: u, area: 'registry', severity: BLOCK, cause: 'registry.json names this route, but `artisan route:list` has no such route', fix: 'fix the path in registry.json (it must match route:list exactly), or delete the entry' });
+for (const ss of stubPorts) note({ route: null, area: 'route', severity: BLOCK, cause: `the port ${relPath(join(portsSrc, ss))} is still the scaffold stub (it answers 501)`, fix: 'implement the handler against env.DB (or another binding), then re-run the build' });
+// An `ignore` is a decision, not a failure: it ships, so it is reported as a
+// declared gap and never changes a green build into a red one.
+for (const [route, reason] of ignoreMap) note({ route, area: 'route', severity: DECLARED, cause: `ignored -- ${reason || 'no reason given'}`, fix: reason ? null : 'registry.json: give the "ignore" entry a reason (the next reader needs it)' });
+
+
+// ---------- 6b. app-source sweep (advisory only) ----------------------------
+// The compiler is the authority on what compiles. This sweep is not: it names
+// constructs the sandbox CANNOT ever carry even if the route is compiled, so
+// the operator fixes them before hitting the first build failure. Advisory
+// means severity = ADVISORY: green builds are not turned red by this list.
+// We walk only app/ (not vendor/) because everything outside the app is
+// framework code -- the build already refuses or ignores it correctly.
+{
+  const sweepDir = join(appDir, 'app');
+  if (existsSync(sweepDir)) {
+    const files = [];
+    const walk = (d) => {
+      for (const e of readdirSync(d)) {
+        const p = join(d, e);
+        if (lstatSync(p).isDirectory()) {
+          walk(p);
+          continue;
+        }
+        if (!e.endsWith('.php')) continue;
+        try {
+          files.push({ file: relPath(p), source: readFileSync(p, 'utf8') });
+        } catch {
+          /* unreadable file: not a build input */
+        }
+      }
+    };
+    walk(sweepDir);
+    for (const f of sweepAppSources(files)) note(f);
+  }
+}
+
 // ---------- 7. scaffold stubs for routes that need a port ----------
+
 if (scaffold && needsPort.length) {
   const slugify = (route) =>
     route.replace(/^\//, '').replace(/[{}]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'home';
@@ -2216,6 +2354,7 @@ if (strict && blocked) {
     : '';
   fail(
     'coverage check failed (--strict)' +
+      ` — ${needsPort.length + partials.length + uncompiledExtraNonPost.length + stubPorts.length + unknown.length} thing(s) need a decision, listed above` +
       (scaffold ? ' — port stubs were scaffolded + registered; implement them, then re-run' : '') +
       stubNote
   );
@@ -2225,6 +2364,7 @@ if (strict && blocked) {
 // the work would silently never happen (Laravel runs it). This runs LAST -
 // `queuePushes` is filled while the controllers are emitted.
 if (queuePushes.length && !(cronTriggers && cronTriggers.length)) {
+  for (const route of queuePushes) note({ route, area: 'queue', severity: BLOCK, cause: 'dispatches a queued job, but the worker has no cron trigger', fix: 'add `[triggers] crons = ["*/1 * * * *"]` to wrangler.toml (a Worker has no long-lived consumer), or dispatch the job inline (QUEUE_CONNECTION=sync)', paths: [{ tier: 'free', what: 'add `[triggers] crons = ["*/1 * * * *"]` to wrangler.toml - the compiled rung writes the job to the D1 lw_jobs table and the cron trigger drains it (free accounts get 5 triggers)' }, { tier: 'free', what: 'or dispatch inline with QUEUE_CONNECTION=sync when the work is small enough to finish in the request' }, { tier: 'paid', what: 'Cloudflare Queues with a consumer you write - charged per operation' }] });
   fail(
     'the route(s) ' + queuePushes.join(', ') + ' dispatch a queued job, but the worker has no cron trigger - ' +
       'a Worker has no long-lived queue consumer, so the job would never run. Add a cron trigger ' +
@@ -2247,3 +2387,18 @@ commitDist(dist, distFinal, (file) =>
 console.log(
   `done. dist: ${relative(appDir, distFinal)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, controllers: ${controllerRoutes.size}, ignored: ${ignoreMap.length})`
 );
+
+// The build is green: say what that green MEANS. A green build with two
+// ignored routes is not the same product as one with none, and the operator
+// must see the difference here - not discover it at the edge.
+console.log(renderReadiness(findings));
+
+// The one thing every first deploy needs and no build can do for the operator:
+// the D1 tables. Printed only when there is a schema to apply.
+if (schemaTableCount) {
+  console.log(
+    `  schema: ${relPath(join(distFinal, 'schema.sql'))} (${schemaTableCount} table(s)) -- apply ONCE, by hand:\n` +
+      '    npx wrangler d1 execute DB --file=dist/schema.sql --remote'
+  );
+}
+console.log('  next: npx wrangler dev   (local)     npx wrangler deploy   (edge)');
