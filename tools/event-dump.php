@@ -38,12 +38,8 @@ if ($appRoot === '' || !is_dir($appRoot)) {
 }
 
 require lw_vendor_autoload_for($appRoot);
-// The views a mailable renders: the extractor reads the mailable's own source
-// (the fluent call AND the public property - the compiled kernel honours
-// both).
+$app = lw_boot_app($appRoot);
 require_once __DIR__ . '/mailable-views.php';
-
-$app = require $appRoot . '/bootstrap/app.php';
 $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
 $events = [];

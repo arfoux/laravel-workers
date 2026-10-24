@@ -96,3 +96,36 @@ function lw_vendor_autoload(): string
 {
     return lw_vendor_autoload_for(lw_app_root());
 }
+
+/**
+ * Require the resolved autoloader, register the checkout's App\ namespace on it,
+ * and boot the app. Used by every tool that needs the full Laravel app (it
+ * replaces the previous two-liner: `require lw_vendor_autoload(); $app =
+ * require .../bootstrap/app.php`).
+ *
+ * Why register App\ separately? An LW_VENDOR_DIR points at a vendor-lite cache
+ * whose vendor/ only contains packages — the cache has no app/ directory, so the
+ * composer-generated autoloader never maps App\* classes. Without this line every
+ * `$app->make(...\Kernel::class)` fails. The cache stays pristine; the mapping is
+ * registered at boot time from the checkout.
+ */
+function lw_boot_app(?string $root = null)
+{
+    $root = $root ?? lw_app_root();
+    // Generate and inject APP_KEY if missing. The app cannot boot without a valid
+    // key. Setting it in $_ENV / $_SERVER makes `config('app.key')` pick it up
+    // at boot time — no need to write the .env file, which keeps the checkout clean.
+    if (!putenv('APP_KEY')) {
+        $key = 'base64:' . base64_encode(random_bytes(32));
+        $_ENV['APP_KEY'] = $key;
+        $_SERVER['APP_KEY'] = $key;
+        putenv('APP_KEY=' . $key);
+    }
+
+    require lw_vendor_autoload_for($root);
+    foreach (Composer\Autoload\ClassLoader::getRegisteredLoaders() as $loader) {
+        $loader->addPsr4('App\\', rtrim($root, '/\\') . '/app/');
+    }
+
+    return require $root . '/bootstrap/app.php';
+}

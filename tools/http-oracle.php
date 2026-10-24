@@ -26,8 +26,7 @@ if (!$appPath || !is_file($appPath . '/bootstrap/app.php')) {
     fwrite(STDERR, "usage: php http-oracle.php <laravel-app-path>\n");
     exit(1);
 }
-require lw_vendor_autoload_for($appPath);
-$app = require $appPath . '/bootstrap/app.php';
+$app = lw_boot_app($appPath);
 
 $input = json_decode(stream_get_contents(STDIN), true);
 if (!is_array($input)) {

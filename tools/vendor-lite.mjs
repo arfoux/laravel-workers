@@ -68,8 +68,11 @@ function writeComposerLite(appDir, dest) {
     config: src.config,
     repositories: src.repositories,
   };
-  // Keep autoload so App\ resolves, but the install will regenerate it anyway.
-  if (src.autoload) lite.autoload = src.autoload;
+  // NOTE: do NOT copy autoload/autoload-dev. The "files" key generates require()
+  // calls for paths relative to the project root; copying them into a vendor-lite
+  // cache makes them point to <cache>/app/... (absent). The runtime loader in
+  // lw_boot_app() (tools/_root.php) handles App\* classes separately via
+  // ClassLoader::addPsr4() — see lw_boot_app() for the bootstrap sequence.
   mkdirSync(dest, { recursive: true });
   writeFileSync(join(dest, 'composer.json'), JSON.stringify(lite, null, 2) + '\n');
   // Copy the lock if it exists — composer install is then deterministic.
@@ -107,7 +110,9 @@ export function ensureVendorLite(appDir, opts = {}) {
     throw new Error(`vendor-lite install failed in ${dir}:\n${err.slice(-2000)}`);
   }
   if (!existsSync(autoload)) throw new Error(`expected ${autoload} after install`);
-  // Keep a tiny marker so GC knows the hash -> app mapping.
+  // App\* namespaces are registered by lw_boot_app() at runtime — the cache stays
+  // pristine and reusable; see tools/_root.php:lw_boot_app() for the bootstrap
+  // sequence that adds 'App\\' => <appDir>/app/ to the ClassLoader.
   try { writeFileSync(join(dir, '.lw-app'), appDir + '\n'); } catch {}
   return { dir, autoload, hash, hit: false };
 }

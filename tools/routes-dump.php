@@ -13,10 +13,7 @@
 
 require_once __DIR__ . '/_root.php';
 
-$root = lw_app_root();
-require lw_vendor_autoload();
-
-$app = require $root . '/bootstrap/app.php';
+$app = lw_boot_app(lw_app_root());
 
 $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 $kernel->bootstrap();

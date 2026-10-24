@@ -9,9 +9,7 @@
 require_once __DIR__ . '/_root.php';
 $root = lw_app_root();
 
-require lw_vendor_autoload();
-
-$app = require $root . '/bootstrap/app.php';
+$app = lw_boot_app();
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 

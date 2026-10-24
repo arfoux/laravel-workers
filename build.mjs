@@ -84,6 +84,7 @@ const fail = (msg) => {
   // COMPLETED (a failed build must never leave a half-written dist behind).
   discardStaging(dist);
   if (findings.length) console.error(renderReadiness(findings, { dist: relPath(distFinal) }));
+  else console.error(renderReadiness([], { dist: relPath(distFinal) }));
   process.exit(1);
 };
 
@@ -168,9 +169,29 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
 
 // ---------- 1. export routes from the Laravel app ----------
 console.log('• exporting routes via `php artisan route:list --json` (booted through the resolved autoloader)');
-const listed = JSON.parse(
-  execFileSync(PHP, [join(pkgDir, 'tools', 'routes-dump.php')], { cwd: appDir, env: childEnv() }).toString('utf8')
-);
+let listed;
+try {
+  listed = JSON.parse(
+    execFileSync(PHP, [join(pkgDir, 'tools', 'routes-dump.php')], { cwd: appDir, env: childEnv() }).toString('utf8')
+  );
+} catch (e) {
+  const stderr = e.stderr ? e.stderr.toString() : '';
+  const errDetail = stderr
+    ? `\n  PHP output:\n    ` + stderr.replace(/^/gm, '    ').trimEnd()
+    : '';
+  note({
+    severity: BLOCK,
+    area: 'route',
+    cause: 'the app failed to boot during route export' + (stderr ? ': ' + stderr.trim().split('\n').pop() : ''),
+    fix: 'check that the app has a .env with APP_KEY, DB connection and all required vars; then re-run',
+  });
+  fail(
+    'route export crashed' + errDetail +
+    '\n  the build cannot continue without the route table — this usually means\n' +
+    '  the app failed to boot (missing env vars, DB connection, etc.)\n' +
+    '  -> fix the root cause in the app, then re-run the build'
+  );
+}
 // Laravel only reports `path` for closure routes — controller-action routes
 // (Route::get('/x', [XController::class, 'm']), Route::resource, invokable
 // controllers) come back with path === null even though they live in routes/.
@@ -458,7 +479,14 @@ try {
   }).toString('utf8');
   runtimeConfig = JSON.parse(raw);
 } catch (e) {
-  fail('config dump failed: ' + String(e.stderr || e.message || '').trim().slice(0, 800));
+  const msg = String(e.stderr || e.message || '').trim().slice(0, 800);
+  note({
+    severity: BLOCK,
+    area: 'config',
+    cause: 'runtime config dump failed' + (msg ? ': ' + msg : ''),
+    fix: 'check APP_KEY, session.driver, and config file validity; ensure required keys are present and valid JSON',
+  });
+  fail('config dump failed: ' + msg);
 }
 {
   const problems = [];
@@ -709,11 +737,22 @@ if (errorViewCodes.length) {
     const registryName = frameworkOnly.has(code) ? 'errors::' + code : viewName;
     const dumpPath = join(cacheDir, 'errors.' + code + '.compiled.json');
     console.log(`  compiling error view ${viewName}`);
-    execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), viewName, dumpPath, '/'], {
-      cwd: appDir,
-      env: childEnv(),
-    });
-    const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+    let dump;
+    try {
+      execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), viewName, dumpPath, '/'], {
+        cwd: appDir,
+        env: childEnv(),
+      });
+      dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+    } catch (e) {
+      note({
+        severity: BLOCK,
+        area: 'route',
+        cause: `error view ${code} failed to compile`,
+        fix: 'check the view source compiles; ensure compile-view.php can write its cache output',
+      });
+      fail('compile-view failed for ' + code + ': ' + String(e.stderr || e.message || '').trim().slice(0, 800));
+    }
     if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + viewName);
 
     const viewModulePath = join(dist, 'src', 'views', 'errors.' + code + '.mjs');
