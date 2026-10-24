@@ -324,3 +324,18 @@ _Builds tested: laravel/laravel, monicahq/monica, BookStackApp/BookStack, invoic
 
 All four now produce a READINESS block + BLOCK finding on failure (no more misleading green / no-more READINESS).
 
+
+### Fixed this session (follow-up): error-view write robustness + regression caught
+
+1. **build.mjs**: tambahkan `mkdirSync(cacheDir, { recursive: true })` sebelum loop
+   error-view menulis dump ke `<app>/.cache/laravel-workers/errors.<code>.compiled.json`.
+
+2. **tools/compile-view.php**: `file_put_contents` kini diverifikasi — kalau gagal,
+   `fwrite(STDERR, ...)` + `exit(1)`, supaya kegagalan tulis tidak diam-diam lalu
+   crash di `readFileSync` (yang bikin build kehilangan READINESS sama sekali).
+
+3. **Regression terdeteksi**: edit via Python menulis file dengan line-ending CRLF
+   → regex test (`/^\s*if \(prepared\.length\) \{$/`) gagal → test
+   `compiler/tests/source-syntax.test.mjs` ("every generated module the worker
+   imports is always emitted") gagal. Diperbaiki dengan menulis ulang ke LF.
+
