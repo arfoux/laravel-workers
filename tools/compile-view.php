@@ -16,6 +16,7 @@
 
 require_once __DIR__ . '/_root.php';
 $app = lw_boot_app();
+$root = lw_app_root();
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 $request = Illuminate\Http\Request::create($argv[3] ?? '/', 'GET');
