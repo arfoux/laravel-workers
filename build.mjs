@@ -2383,9 +2383,13 @@ if (strict && blocked) {
   const stubNote = stubPorts.length
     ? ` — ${stubPorts.length} port(s) are still scaffold stubs (returning 501): ${stubPorts.join(', ')}`
     : '';
+  // Count the findings themselves, not the route arrays - the routes were
+  // re-checked into multiple findings (one per unresolved middleware), and
+  // that's what the readiness block above prints.
+  const blocking = findings.filter((f) => f.severity === BLOCK).length;
   fail(
     'coverage check failed (--strict)' +
-      ` — ${needsPort.length + partials.length + uncompiledExtraNonPost.length + stubPorts.length + unknown.length} thing(s) need a decision, listed above` +
+      ` — ${blocking} finding(s) need a decision, listed above` +
       (scaffold ? ' — port stubs were scaffolded + registered; implement them, then re-run' : '') +
       stubNote
   );

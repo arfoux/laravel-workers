@@ -7,7 +7,7 @@
 //
 // The three verdicts are the product's contract (docs/READINESS.md):
 //   RUNS ON THE EDGE          every route is served; nothing declared away
-//   RUNS WITH DECLARED GAPS   every route is decided; some are `ignore`d or ported
+//   RUNS WITH DECLARED GAPS   every route is decided; some are `ignore`d (those ship as declared gaps)
 //   DOES NOT RUN              something the edge cannot serve, undeclared
 //
 // Exit codes stay 0/1: the verdict is text, not a new signal.
@@ -63,6 +63,8 @@ const AREA_LABEL = {
   sweep: 'app source',
 };
 
+// Not used yet: renderReadiness groups by severity, not by area.
+// The AREA_ORDER / AREA_LABEL tables document the intended order.
 function byArea(findings) {
   const out = new Map();
   for (const f of findings) {
