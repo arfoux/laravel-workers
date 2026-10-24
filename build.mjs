@@ -725,6 +725,7 @@ const errorViewCodes = [...new Set([...appErrorCodes, ...frameworkErrorCodes])].
 const frameworkOnly = new Set(errorViewCodes.filter((c) => !appErrorCodes.includes(c)));
 const errorViewImports = [];
 const errorViewCases = [];
+mkdirSync(cacheDir, { recursive: true });
 if (errorViewCodes.length) {
   console.log(`� error views: compiling ${errorViewCodes.length} (${errorViewCodes.join(', ')})`);
   mkdirSync(join(dist, 'src', 'views'), { recursive: true });

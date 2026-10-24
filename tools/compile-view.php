@@ -246,7 +246,10 @@ $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTIT
 
 if ($out) {
     @mkdir(dirname($out), 0777, true);
-    file_put_contents($out, $json);
+    if (file_put_contents($out, $json) === false) {
+        fwrite(STDERR, "could not write {$out}");
+        exit(1);
+    }
     fwrite(STDOUT, 'wrote ' . $out . ' (' . strlen($json) . " bytes)\n");
 } else {
     echo $json;
