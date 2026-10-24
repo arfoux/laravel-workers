@@ -80,6 +80,16 @@ if (cmd === 'test') {
     process.exit(2);
   }
   run(process.execPath, [shadowPath, ...args], { cwd: appDir });
+} else if (cmd === 'vendor:ensure') {
+  // Build a (or reuse the cached) vendor tree the build needs to boot the app.
+  // Content-addressed by composer.lock, so a second project with the same lock
+  // costs nothing and a fresh clone never runs a full `composer install`.
+  const litePath = join(pkgDir, 'tools', 'vendor-lite.mjs');
+  if (!existsSync(litePath)) {
+    console.error('laravel-workers vendor:ensure: tools/vendor-lite.mjs not found in package — reinstall laravel-workers.');
+    process.exit(1);
+  }
+  run(process.execPath, [litePath, ...process.argv.slice(3)], { cwd: appDir });
 } else if (cmd === 'verify') {
   const php = process.env.PHP_BIN ?? 'php';
   const verifyPath = join(pkgDir, 'tools', 'verify-s0.php');
@@ -95,6 +105,6 @@ if (cmd === 'test') {
   }
   run(php, [verifyPath], { cwd: appDir, env: { ...process.env, LW_APP_ROOT: appDir } });
 } else {
-  console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | init | build | verify`);
+  console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | init | build | verify | vendor:ensure`);
   process.exit(1);
 }

@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_root.php';
 // tools/event-dump.php — the app's event listeners (build time).
 //
 // The listeners are classes: at the edge there is no listener runtime, so a
@@ -36,7 +37,7 @@ if ($appRoot === '' || !is_dir($appRoot)) {
     exit(2);
 }
 
-require $appRoot . '/vendor/autoload.php';
+require lw_vendor_autoload_for($appRoot);
 // The views a mailable renders: the extractor reads the mailable's own source
 // (the fluent call AND the public property - the compiled kernel honours
 // both).

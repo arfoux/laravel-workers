@@ -86,6 +86,20 @@ a copied or hardlinked tree works.
 Cost: small. Risk: low. Win: removes the install entirely for CI with a warm
 cache.
 
+Status: **landed.** `tools/_root.php` exposes `lw_vendor_autoload()` (resolved
+app root) and `lw_vendor_autoload_for($appRoot)` (the oracle scripts, which
+resolve their own root from argv/env and must not be redirected to
+`LW_APP_ROOT`). All 21 helpers require through it, and `build.mjs` passes
+`LW_VENDOR_DIR` to every child. With `LW_VENDOR_DIR` set, `lw_app_root()` accepts
+an app that has `artisan` + `bootstrap/app.php` even when it has no `vendor/` —
+that is the point.
+
+One site could not be redirected: the app's own `artisan` file hardcodes
+`require __DIR__.'/vendor/autoload.php'`. So the build no longer shells out to
+`php artisan route:list`; `tools/routes-dump.php` boots the console kernel
+itself through the resolved autoloader and asks Artisan for the same command,
+emitting the same JSON.
+
 ### D. One long-lived PHP dispatcher (the real fix for "lama banget")
 
 Replace the 16+ `execFileSync(PHP, …)` calls with **one** PHP process that boots
@@ -129,6 +143,18 @@ Win: the second project with the same lock file costs nothing. Cost: medium —
 invalidation, disk usage, and Composer's path-repositories (which do embed
 absolute paths). Only worth building if A–D leave a real gap.
 
+Status: **landed** as `tools/vendor-lite.mjs` / `npx laravel-workers vendor:ensure`.
+Keyed on `sha256(composer.lock + PHP version + platform)`, installed with
+`composer install --no-dev --prefer-dist` into
+`<cache>/laravel-workers/cache/vendor-lite/<16 hex>`, and a hit costs ~0.18 s
+against ~39 s for the install (measured on the Laravel 13 skeleton).
+
+The known trade: Composer's path-repositories embed absolute paths, so a tree
+installed for one checkout is not guaranteed to be portable to a different path.
+The cache therefore stores the lock hash, not the app path, and a project that
+uses path repositories gets a hit that may be wrong — the build's own boot is
+what catches it (it fails loudly rather than silently). Tracked in §5.
+
 ### F. Rejected: ship a bundled framework
 
 Bundling `laravel/framework` inside laravel-workers would break the one
@@ -154,9 +180,9 @@ parity.
 |---|---|---|---|
 | 1 | **A** — the message | minutes | "why does it want Composer at all?" |
 | 2 | **B** — `--no-dev`, if it holds | one measurement | "the install is slow" |
-| 3 | **C** — `LW_VENDOR_DIR` | small | "CI should not re-install" |
+| 3 | **C** — `LW_VENDOR_DIR` | small | "CI should not re-install" — **landed** |
 | 4 | **D** — one PHP dispatcher | medium | **"the build is slow"** — the actual complaint |
-| 5 | **E** — vendor cache | medium | only if 1–4 leave a gap |
+| 5 | **E** — vendor cache | medium | only if 1–4 leave a gap — **landed** (`vendor:ensure`) |
 
 Steps 1–3 remove the *prerequisite*; step 4 removes the *slowness*. `laravel-workers`
 will still need a `vendor/` to exist — that is what "boot the real app" means, and
@@ -168,3 +194,8 @@ one cheap, explained, cacheable step instead of a silent multi-minute tax.
 - `composer install --no-dev` timing and whether the build succeeds on it — **measuring**.
 - Real-project confirmation that a warm-CI `vendor/` reuse works — needs the
   multi-project sweep results.
+- `vendor-lite` and Composer path-repositories: a cache hit is keyed on the lock
+  file alone, so two checkouts at different absolute paths can collide. The
+  failure is loud (the boot fails), but it is not prevented. Needs a real app
+  that uses `repositories: [{type: path}]` to settle whether the hash should
+  also include the checkout path.

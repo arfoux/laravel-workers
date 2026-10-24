@@ -9,7 +9,7 @@
 
 require_once __DIR__ . '/_root.php';
 $root = lw_app_root();
-require $root . '/vendor/autoload.php';
+require lw_vendor_autoload();
 $app = require $root . '/bootstrap/app.php';
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 $request = Illuminate\Http\Request::create('/', 'GET');

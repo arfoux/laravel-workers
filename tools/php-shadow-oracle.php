@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_root.php';
 
 // tools/php-shadow-oracle.php — generic scenario oracle for the shadow harness.
 //
@@ -40,12 +41,12 @@ if (!is_array($input)) {
 }
 
 $appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-if (!is_string($appRoot) || !is_file($appRoot . '/vendor/autoload.php')) {
-    fwrite(STDERR, "php-shadow-oracle: pass \"app_root\" or set LW_LARAVEL_APP (vendor/autoload.php required)\n");
+if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
+    fwrite(STDERR, "php-shadow-oracle: pass \"app_root\" or set LW_LARAVEL_APP (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
     exit(2);
 }
 
-require $appRoot . '/vendor/autoload.php';
+require lw_vendor_autoload_for($appRoot);
 
 use Carbon\Carbon;
 use Illuminate\Http\Request;

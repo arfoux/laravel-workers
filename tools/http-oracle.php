@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_root.php';
 // tools/http-oracle.php — Laravel HTTP pipeline oracle.
 //
 // Boots a real Laravel app (fresh-app fixture) and replays scripted requests
@@ -25,7 +26,7 @@ if (!$appPath || !is_file($appPath . '/bootstrap/app.php')) {
     fwrite(STDERR, "usage: php http-oracle.php <laravel-app-path>\n");
     exit(1);
 }
-require $appPath . '/vendor/autoload.php';
+require lw_vendor_autoload_for($appPath);
 $app = require $appPath . '/bootstrap/app.php';
 
 $input = json_decode(stream_get_contents(STDIN), true);

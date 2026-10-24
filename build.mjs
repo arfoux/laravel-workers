@@ -60,6 +60,19 @@ const strict = process.argv.includes('--strict');
 const scaffold = process.argv.includes('--scaffold');
 const PHP = process.env.PHP_BIN || 'php';
 
+// Where the app's PHP dependencies live. An app that runs locally has them in
+// <app>/vendor; a fresh clone has none, and `vendor:ensure` (tools/vendor-lite.mjs)
+// keeps a content-addressed copy instead. Either way the helpers and artisan
+// read the same override, so nothing below has to know which it is.
+const vendorDir = process.env.LW_VENDOR_DIR ? resolve(process.env.LW_VENDOR_DIR) : null;
+if (vendorDir) {
+  const ok = existsSync(join(vendorDir, 'autoload.php')) || existsSync(join(vendorDir, 'vendor/autoload.php'));
+  if (!ok) fail(`LW_VENDOR_DIR is set to "${process.env.LW_VENDOR_DIR}" but no autoload.php was found there (looked for <dir>/autoload.php and <dir>/vendor/autoload.php)`);
+}
+// Child PHP processes inherit this: artisan needs it, and the tools/*.php helpers
+// read it through tools/_root.php.
+const childEnv = () => ({ ...process.env, LW_APP_ROOT: appDir, ...(vendorDir ? { LW_VENDOR_DIR: vendorDir } : {}) });
+
 // One place the operator looks to answer "can my app run at the edge?"
 const findings = [];
 const note = (f) => findings.push(f);
@@ -102,7 +115,25 @@ const staticMap = Object.entries(registry.static || {});
 const portEntries = Object.entries(registry.ports || {});
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
-if (!existsSync(join(appDir, 'vendor/autoload.php'))) fail('vendor/ not found — run composer install');
+if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
+  note({
+    route: null,
+    area: 'config',
+    severity: BLOCK,
+    cause: 'the app has no vendor/ (and LW_VENDOR_DIR is not set)',
+    fix: 'the build boots your app to read its routes, config and schema, so it needs the PHP dependencies',
+    paths: [
+      { tier: 'free', what: 'composer install --no-dev  (once per checkout - an app you already run locally already has vendor/, so nothing to do there)' },
+      { tier: 'free', what: 'or reuse a cached tree: npx laravel-workers vendor:ensure && LW_VENDOR_DIR=<printed dir> npx laravel-workers build --strict' },
+    ],
+  });
+  fail(
+    'vendor/ not found — this build boots your app, so it needs its PHP dependencies.\n' +
+      '  once per checkout:  composer install --no-dev\n' +
+      '  or a cached tree:   npx laravel-workers vendor:ensure  (prints the dir to pass as LW_VENDOR_DIR)\n' +
+      '  an app you already run locally already has vendor/ — nothing to do there.'
+  );
+}
 // A Vite app writes public/build/manifest.json. A Mix/webpack app writes
 // public/mix-manifest.json. A standalone esbuild (BookStack: public/dist) writes
 // no manifest at all — the build can still proceed when the pages are declared
@@ -136,9 +167,9 @@ if (!existsSync(join(appDir, 'vendor/autoload.php'))) fail('vendor/ not found �
 }
 
 // ---------- 1. export routes from the Laravel app ----------
-console.log('• exporting routes via `php artisan route:list --json`');
+console.log('• exporting routes via `php artisan route:list --json` (booted through the resolved autoloader)');
 const listed = JSON.parse(
-  execFileSync(PHP, ['artisan', 'route:list', '--json'], { cwd: appDir }).toString('utf8')
+  execFileSync(PHP, [join(pkgDir, 'tools', 'routes-dump.php')], { cwd: appDir, env: childEnv() }).toString('utf8')
 );
 // Laravel only reports `path` for closure routes — controller-action routes
 // (Route::get('/x', [XController::class, 'm']), Route::resource, invokable
@@ -270,7 +301,7 @@ const prerender = (route) => {
   try {
     out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(pkgDir, 'tools/prerender.php'), route], {
       cwd: appDir,
-      env: { ...process.env, LW_APP_ROOT: appDir },
+      env: childEnv(),
     }).toString('utf8');
   } catch (e) {
     const stderr = String(e.stderr || '').trim();
@@ -511,7 +542,7 @@ let cronTriggers = [];
   try {
     const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'schedule-dump.php')], {
       cwd: appDir,
-      env: { ...process.env, LW_APP_ROOT: appDir },
+      env: childEnv(),
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
     }).toString('utf8');
@@ -607,7 +638,7 @@ for (const [route, view] of viewMap) {
   console.log(`compiling view ${view} for ${route}`);
   execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, route], {
     cwd: appDir,
-    env: { ...process.env, LW_APP_ROOT: appDir },
+    env: childEnv(),
   });
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
   if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + route);
@@ -680,7 +711,7 @@ if (errorViewCodes.length) {
     console.log(`  compiling error view ${viewName}`);
     execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), viewName, dumpPath, '/'], {
       cwd: appDir,
-      env: { ...process.env, LW_APP_ROOT: appDir },
+      env: childEnv(),
     });
     const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
     if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + viewName);
@@ -990,7 +1021,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         try {
           const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...allFqcns], {
             cwd: appDir,
-            env: { ...process.env, LW_APP_ROOT: appDir },
+            env: childEnv(),
           }).toString('utf8');
           for (const d of JSON.parse(raw)) modelDump.set(d.fqcn, d);
           // A DECLARED relation names its related model (`$post->comments` is a
@@ -1001,7 +1032,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             if (!fqcns.length) return;
             const more = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...fqcns], {
               cwd: appDir,
-              env: { ...process.env, LW_APP_ROOT: appDir },
+              env: childEnv(),
             }).toString('utf8');
             for (const d of JSON.parse(more)) modelDump.set(d.fqcn, d);
           };
@@ -1044,7 +1075,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         try {
           const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'policy-dump.php'), ...allFqcns], {
             cwd: appDir,
-            env: { ...process.env, LW_APP_ROOT: appDir },
+            env: childEnv(),
           }).toString('utf8');
           policyDump = JSON.parse(raw);
         } catch (e) {
@@ -1062,7 +1093,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       try {
         const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'event-dump.php'), appDir], {
           cwd: appDir,
-          env: { ...process.env, LW_APP_ROOT: appDir },
+          env: childEnv(),
         }).toString('utf8');
         classesDump = JSON.parse(raw);
       } catch (e) {
@@ -1088,7 +1119,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             try {
               const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'class-dump.php'), fqcn], {
                 cwd: appDir,
-                env: { ...process.env, LW_APP_ROOT: appDir },
+                env: childEnv(),
               }).toString('utf8');
               const extra = JSON.parse(raw);
               for (const [k, v] of Object.entries(extra.classes || {})) classesDump.classes[k] = v;
@@ -1123,7 +1154,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         try {
           const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...extraModelFqcns], {
             cwd: appDir,
-            env: { ...process.env, LW_APP_ROOT: appDir },
+            env: childEnv(),
           }).toString('utf8');
           for (const d of JSON.parse(raw)) modelDump.set(d.fqcn, d);
         } catch (e) {
@@ -1149,7 +1180,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         try {
           const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'formrequest-dump.php'), ...list], {
             cwd: appDir,
-            env: { ...process.env, LW_APP_ROOT: appDir },
+            env: childEnv(),
           }).toString('utf8');
           for (const d of JSON.parse(raw)) formRequestDump.set(d.fqcn, d);
         } catch (e) {
@@ -1180,7 +1211,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         try {
           const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'constants-dump.php'), ...list], {
             cwd: appDir,
-            env: { ...process.env, LW_APP_ROOT: appDir },
+            env: childEnv(),
           }).toString('utf8');
           for (const d of JSON.parse(raw)) constantDump.set(d.fqcn, d);
         } catch (e) {
@@ -1264,7 +1295,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         try {
           execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, '/'], {
             cwd: appDir,
-            env: { ...process.env, LW_APP_ROOT: appDir },
+            env: childEnv(),
           });
           const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
           if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
@@ -1994,7 +2025,7 @@ const schemaPath = join(cacheDir, 'schema.json');
 console.log('\u2022 dumping DB schema');
 execFileSync(PHP, [join(pkgDir, 'tools', 'schema-dump.php'), schemaPath], {
   cwd: appDir,
-  env: { ...process.env, LW_APP_ROOT: appDir },
+  env: childEnv(),
 });
 cpSync(schemaPath, join(dist, 'schema.json'));
 console.log('  -> dist/schema.json');

@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_root.php';
 
 // tools/php-csrf-oracle.php — PHP 8.3 oracle for kernel/csrf.mjs.
 //
@@ -52,12 +53,12 @@ if (!is_array($input)) {
 
 $appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
 
-if (!is_string($appRoot) || !is_file($appRoot . '/vendor/autoload.php')) {
-    fwrite(STDERR, "php-csrf-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (vendor/autoload.php required)\n");
+if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
+    fwrite(STDERR, "php-csrf-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
     exit(2);
 }
 
-require $appRoot . '/vendor/autoload.php';
+require lw_vendor_autoload_for($appRoot);
 
 use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Http\Request as LaravelRequest;
