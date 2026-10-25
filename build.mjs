@@ -23,6 +23,7 @@ import { compilePolicies } from './compiler/src/policy.mjs';
 import { compileClasses, compileOneMethod } from './compiler/src/classes.mjs';
 import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
 import { viewFileName } from './compiler/src/view-name.mjs';
+import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import {
   cpSync,
@@ -117,23 +118,26 @@ const portEntries = Object.entries(registry.ports || {});
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
 if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
-  note({
-    route: null,
-    area: 'config',
-    severity: BLOCK,
-    cause: 'the app has no vendor/ (and LW_VENDOR_DIR is not set)',
-    fix: 'the build boots your app to read its routes, config and schema, so it needs the PHP dependencies',
-    paths: [
-      { tier: 'free', what: 'composer install --no-dev  (once per checkout - an app you already run locally already has vendor/, so nothing to do there)' },
-      { tier: 'free', what: 'or reuse a cached tree: npx laravel-workers vendor:ensure && LW_VENDOR_DIR=<printed dir> npx laravel-workers build --strict' },
-    ],
-  });
-  fail(
-    'vendor/ not found — this build boots your app, so it needs its PHP dependencies.\n' +
-      '  once per checkout:  composer install --no-dev\n' +
-      '  or a cached tree:   npx laravel-workers vendor:ensure  (prints the dir to pass as LW_VENDOR_DIR)\n' +
-      '  an app you already run locally already has vendor/ — nothing to do there.'
-  );
+  // No vendor/ and no override: provision a composer-free vendor-lite cache
+  // (fetch dist zips + write our own autoloader - no composer install).
+  try {
+    const v = await ensureVendorLite(appDir, { silent: true });
+    vendorDir = v.dir;
+    console.log(`  -> vendor: provisioned via composer-free vendor-lite at ${v.dir}`);
+  } catch (e) {
+    note({
+      route: null,
+      area: 'config',
+      severity: BLOCK,
+      cause: 'the app has no vendor/ (and LW_VENDOR_DIR is not set)',
+      fix: 'the build boots your app to read its routes, config and schema, so it needs the PHP dependencies',
+      paths: [
+        { tier: 'free', what: 'the laravel-workers vendor-lite installer fetches the needed packages directly (no composer install)' },
+        { tier: 'free', what: 'or reuse a cached tree: npx laravel-workers vendor:ensure && LW_VENDOR_DIR=<printed dir> npx laravel-workers build --strict' },
+      ],
+    });
+    fail(`vendor provisioning failed: ${e.message}`);
+  }
 }
 // A Vite app writes public/build/manifest.json. A Mix/webpack app writes
 // public/mix-manifest.json. A standalone esbuild (BookStack: public/dist) writes

@@ -123,9 +123,13 @@ function lw_boot_app(?string $root = null)
     }
 
     require lw_vendor_autoload_for($root);
-    foreach (Composer\Autoload\ClassLoader::getRegisteredLoaders() as $loader) {
-        $loader->addPsr4('App\\', rtrim($root, '/\\') . '/app/');
-    }
+    spl_autoload_register(function (string $class) use ($root): void {
+        $prefix = 'App\\';
+        if (strpos($class, $prefix) !== 0) { return; }
+        $rel = str_replace('\\', '/', substr($class, strlen($prefix)));
+        $file = rtrim($root, '/\\') . '/app/' . $rel . '.php';
+        if (is_file($file)) { require $file; }
+    });
 
     return require $root . '/bootstrap/app.php';
 }

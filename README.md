@@ -153,7 +153,7 @@ Versions actually tested (byte-parity corpus + CI + live deploy):
 | --- | --- | --- |
 | Laravel | `13.37.0` (nearFind, app-breeze), `11.34.2` (blogkit) | 10–13 as source of truth |
 | PHP — build time only | `8.3.30` (ZTS x64, Windows) | **≥ 8.3**; parity oracle is 8.3 (other minors untested) |
-| Composer | `2.9.4` | 2.x, for the app's own `composer install` |
+| Composer | none needed | vendor is provisioned automatically via composer-free vendor-lite (no `composer install`), or the app's own `vendor/` when present |
 | Node | `22.18.0` | **≥ 22** (`engines`) |
 | npm | `10.9.3` | ≥ 10 |
 | Cloudflare Workers | `wrangler` `4.151.1` | 4.x; `compatibility_date` `2026-08-01` (live corpus) / `2026-10-01` (`init` template) |
