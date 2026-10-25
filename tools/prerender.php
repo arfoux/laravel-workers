@@ -12,6 +12,10 @@ $root = lw_app_root();
 $app = lw_boot_app();
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+// Boot the full bootstrap pipeline (LoadEnvironmentVariables, LoadConfiguration,
+// RegisterProviders, BootProviders…) — without it the container lacks the
+// `config` binding and every prerender 500s with BindingResolutionException.
+$kernel->bootstrap();
 
 $uri = $argv[1] ?? '/';
 
@@ -39,6 +43,13 @@ try {
 
     if ($status >= 200 && $status < 300) {
         $payload['body'] = $response->getContent();
+    }
+
+    // A 5xx rendered inside the kernel (Laravel's error handler caught the
+    // exception) still surfaces the throwable here — expose it so the build
+    // log explains WHY the route needs a port instead of a bare 500.
+    if ($status >= 500 && isset($response->exception)) {
+        $payload['error'] = get_class($response->exception) . ': ' . $response->exception->getMessage();
     }
 } catch (Throwable $e) {
     // The app threw while serving the page (e.g. a controller hitting a table that

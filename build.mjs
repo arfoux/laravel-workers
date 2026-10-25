@@ -24,6 +24,8 @@ import { compileClasses, compileOneMethod } from './compiler/src/classes.mjs';
 import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
+import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
+import { provisionPhp } from './tools/php-provision.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import {
   cpSync,
@@ -59,13 +61,22 @@ const dist = distFinal + '.building';
 const cacheDir = isNpmMode ? join(appDir, '.cache', 'laravel-workers') : join(pkgDir, '.cache');
 const strict = process.argv.includes('--strict');
 const scaffold = process.argv.includes('--scaffold');
-const PHP = process.env.PHP_BIN || 'php';
+// The interpreter that boots the app. It is RESOLVED below, once composer.json
+// has been read: the app's own `require.php` decides which installed PHP can
+// parse it, and hard-coding `php` from PATH fails for every user whose default
+// differs from the app's. `PHP` stays a module-level binding so every tool call
+// below uses the same binary.
+let PHP = 'php';
+// The PHP preflight lives below, after `fail` is initialised (calling a
+// `const` before its declaration throws ReferenceError, and a bare catch
+// would swallow it — the preflight would be dead code on exactly the path it
+// exists to handle).
 
 // Where the app's PHP dependencies live. An app that runs locally has them in
 // <app>/vendor; a fresh clone has none, and `vendor:ensure` (tools/vendor-lite.mjs)
 // keeps a content-addressed copy instead. Either way the helpers and artisan
 // read the same override, so nothing below has to know which it is.
-const vendorDir = process.env.LW_VENDOR_DIR ? resolve(process.env.LW_VENDOR_DIR) : null;
+let vendorDir = process.env.LW_VENDOR_DIR ? resolve(process.env.LW_VENDOR_DIR) : null;
 if (vendorDir) {
   const ok = existsSync(join(vendorDir, 'autoload.php')) || existsSync(join(vendorDir, 'vendor/autoload.php'));
   if (!ok) fail(`LW_VENDOR_DIR is set to "${process.env.LW_VENDOR_DIR}" but no autoload.php was found there (looked for <dir>/autoload.php and <dir>/vendor/autoload.php)`);
@@ -84,11 +95,71 @@ const fail = (msg) => {
   // The staging directory is thrown away: `dist/` keeps the last build that
   // COMPLETED (a failed build must never leave a half-written dist behind).
   discardStaging(dist);
-  if (findings.length) console.error(renderReadiness(findings, { dist: relPath(distFinal) }));
-  else console.error(renderReadiness([], { dist: relPath(distFinal) }));
+  // A failed build must never print a green verdict. Failures raised before
+  // their own check runs (missing frontend manifest, PHP preflight) would
+  // otherwise leave `findings` empty and the banner would read RUNS ON THE
+  // EDGE directly under BUILD FAILED. Record the failure as the blocking
+  // finding so the verdict is DOES NOT RUN with the reason attached.
+  if (!findings.some((f) => f && f.severity === BLOCK)) {
+    note({
+      severity: BLOCK,
+      area: 'config',
+      cause: msg.split('\n')[0],
+      fix: 'fix the error above, then re-run the build',
+    });
+  }
+  console.error(renderReadiness(findings, { dist: relPath(distFinal) }));
   process.exit(1);
 };
 
+// Resolve the interpreter that can boot THIS app.
+//
+// The app's `require.php` is the constraint, not the machine's default: an app
+// declaring `^8.4` cannot be parsed by 8.3 at all, and an older app may not run
+// on 8.4. `resolvePhp` honours PHP_BIN, then `php` from PATH, then any versioned
+// interpreter installed on the machine (Laragon, XAMPP, C:\php, Herd,
+// Homebrew, asdf, phpenv, mise), highest satisfying version first. When nothing
+// satisfies it, the error names every interpreter found and the ways out.
+let phpRequirement = null;
+if (isNpmMode) {
+  try {
+    phpRequirement = JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8')).require?.php || null;
+  } catch {
+    phpRequirement = null; // no/unreadable composer.json: no constraint to enforce
+  }
+}
+let resolved = null;
+try {
+  resolved = resolvePhp({ requirement: phpRequirement });
+} catch (e) {
+  // Nothing installed can boot the app. When the app declares a requirement and
+  // provisioning is allowed, fetch a portable interpreter into the cache rather
+  // than refusing to build: "this machine has no PHP 8.4" is not a reason an
+  // 8.4 app cannot be built. LW_NO_PHP_PROVISION=1 opts out (offline CI).
+  if (phpRequirement && !process.env.LW_NO_PHP_PROVISION) {
+    console.log(`• php: no installed interpreter satisfies ${phpRequirement} — provisioning a portable build`);
+    try {
+      const p = await provisionPhp(phpRequirement);
+      resolved = { bin: p.bin, version: p.version, source: p.source };
+      console.log(`  -> php ${p.version} ${p.cached ? 'reused from cache' : 'downloaded and verified (sha256)'} at ${p.bin}`);
+    } catch (e2) {
+      fail(e.message + '\n  automatic provisioning also failed: ' + e2.message);
+    }
+  } else {
+    fail(e.message);
+  }
+}
+PHP = resolved.bin;
+// A build with a different interpreter is valid — it boots the app — but the
+// parity suite is pinned to ORACLE_PHP, so say which one was used. Silence
+// here would let a version-specific divergence look like a compiler bug.
+if (resolved.source !== 'PATH' || resolved.version !== ORACLE_PHP) {
+  console.log(
+    `• php: ${resolved.version} (${resolved.bin})` +
+      (phpRequirement ? ` — app requires ${phpRequirement}` : '') +
+      (resolved.version === ORACLE_PHP ? '' : `; parity suite is pinned to ${ORACLE_PHP}`)
+  );
+}
 const lwConfig = process.env.LW_CONFIG ? resolve(appDir, process.env.LW_CONFIG) : null;
 if (lwConfig && !existsSync(lwConfig))
   fail(`LW_CONFIG is set to "${process.env.LW_CONFIG}" but that file was not found (resolved: ${lwConfig})`);
@@ -175,18 +246,35 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
 console.log('• exporting routes via `php artisan route:list --json` (booted through the resolved autoloader)');
 let listed;
 try {
-  listed = JSON.parse(
-    execFileSync(PHP, [join(pkgDir, 'tools', 'routes-dump.php')], { cwd: appDir, env: childEnv() }).toString('utf8')
-  );
+  const rawRoutes = execFileSync(PHP, [join(pkgDir, 'tools', 'routes-dump.php')], { cwd: appDir, env: childEnv() }).toString('utf8');
+  try {
+    listed = JSON.parse(rawRoutes);
+  } catch {
+    // A Laravel boot failure (missing APP_KEY, a PHP-version parse error, an
+    // invalid config file) is rendered by the console kernel into STDOUT
+    // while the process still exits 0 — the real cause is in that text, not
+    // on stderr.
+    const tail = rawRoutes.trim() ? rawRoutes.trim().split('\n').slice(-15).map((l) => '    ' + l).join('\n') : '    (empty)';
+    fail(
+      'route export failed — the app did not return the JSON route table, so it failed to boot\n' +
+      '  PHP output:\n' + tail +
+      '\n  the build cannot continue without the route table — fix the error above, then re-run the build'
+    );
+  }
 } catch (e) {
-  const stderr = e.stderr ? e.stderr.toString() : '';
-  const errDetail = stderr
-    ? `\n  PHP output:\n    ` + stderr.replace(/^/gm, '    ').trimEnd()
-    : '';
+  // PHP compile/boot errors print to STDOUT even when the process exits
+  // non-zero, so both streams matter here. Reporting only stderr shipped a
+  // generic "missing env vars" hint for what was really a PHP parse error.
+  const stderr = e.stderr ? e.stderr.toString().trim() : '';
+  const stdout = e.stdout ? e.stdout.toString().trim() : '';
+  const outTail = stdout ? stdout.split('\n').slice(-15).join('\n') : '';
+  const errTail = stderr ? stderr.split('\n').slice(-15).join('\n') : '';
+  const combined = [errTail, outTail].filter(Boolean).join('\n');
+  const errDetail = combined ? '\n  PHP output:\n    ' + combined.replace(/\n/g, '\n    ') : '';
   note({
     severity: BLOCK,
     area: 'route',
-    cause: 'the app failed to boot during route export' + (stderr ? ': ' + stderr.trim().split('\n').pop() : ''),
+    cause: 'the app failed to boot during route export' + (combined ? ': ' + combined.split('\n').pop().trim() : ''),
     fix: 'check that the app has a .env with APP_KEY, DB connection and all required vars; then re-run',
   });
   fail(
@@ -321,6 +409,8 @@ const originRe = /(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//
 // exception renderers bypass PHP output buffering), so prerender.php terminates
 // its stdout with a marker and the JSON that follows it.
 const PRERENDER_MARKER = '---LW-PRERENDER-JSON---';
+
+const isRuntimeBindingError = (reason) => /Database connection \[[^\]]+\] not configured|D1 (?:database configuration|Worker driver) requires (?:a|an) "/.test(String(reason));
 const prerender = (route) => {
   let out;
   try {
@@ -399,8 +489,9 @@ try {
   for (const [route, file] of staticMap) {
     const res = prerender(route);
     if (res.status < 200 || res.status >= 300) {
+      const rawDetail = res.error ? String(res.error) : (res.body ? String(res.body) : '');
       const detail = res.error ? `: ${res.error}` : (res.body ? `: ${String(res.body).slice(0, 150).replace(/\n/g, ' ')}` : '');
-      note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: detail.includes('key:generate') ? 'run `php artisan key:generate` in the app' : detail.includes('database') ? 'prepare the DB: touch database/database.sqlite && php artisan migrate --force (the build prerenders every page it serves)' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
+      note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: rawDetail.includes('key:generate') ? 'run `php artisan key:generate` in the app' : isRuntimeBindingError(rawDetail) ? 'this static entry reads a D1 binding the build cannot reach -- a static entry must prerender clean, so give the app a local sqlite fallback for the build (config/database.php) or make the route dynamic' : rawDetail.includes('database') ? 'prepare the DB: touch database/database.sqlite && php artisan migrate --force (the build prerenders every page it serves)' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
       fail(`static route ${route} returned HTTP ${res.status}${detail}`);
     }
     const { bytes, fixed } = writePage(file, res.body);
@@ -474,14 +565,29 @@ try {
 // ---------- 2b. runtime config (compiled HTTP kernel) ----------
 // kernel/http.mjs reads a FLAT dotted config. Anything the compiled rung cannot
 // honour fails the build here instead of producing a silently-degraded worker.
-console.log('\u0007 dumping runtime config via `tools/config-dump.php`');
+console.log('• dumping runtime config via `tools/config-dump.php`');
 let runtimeConfig;
 try {
   const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'config-dump.php')], {
     cwd: appDir,
+    env: childEnv(),
     maxBuffer: 1 << 24,
   }).toString('utf8');
-  runtimeConfig = JSON.parse(raw);
+  try {
+    runtimeConfig = JSON.parse(raw);
+  } catch {
+    const tail = raw.trim() ? raw.trim().split('\n').slice(-15).map((l) => '    ' + l).join('\n') : '    (empty)';
+    note({
+      severity: BLOCK,
+      area: 'config',
+      cause: 'runtime config dump failed — the app did not return the JSON config (it failed to boot)',
+      fix: 'the PHP error below is the cause; check APP_KEY, session.driver, and config file validity',
+    });
+    fail(
+      'config dump failed — the app did not return the JSON runtime config, so it failed to boot\n' +
+      '  PHP output:\n' + tail
+    );
+  }
 } catch (e) {
   const msg = String(e.stderr || e.message || '').trim().slice(0, 800);
   note({
@@ -731,7 +837,7 @@ const errorViewImports = [];
 const errorViewCases = [];
 mkdirSync(cacheDir, { recursive: true });
 if (errorViewCodes.length) {
-  console.log(`� error views: compiling ${errorViewCodes.length} (${errorViewCodes.join(', ')})`);
+  console.log(`• error views: compiling ${errorViewCodes.length} (${errorViewCodes.join(', ')})`);
   mkdirSync(join(dist, 'src', 'views'), { recursive: true });
   mkdirSync(join(dist, 'src', 'contexts'), { recursive: true });
   for (const code of errorViewCodes) {
@@ -1993,12 +2099,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             console.log('  Free-plan limits apply: 100k row writes/day, 5M row reads/day, 500 MB per database, 1.5 MB per object.');
             console.log('  Bind an R2 bucket ("r2_buckets": [{"binding":"R2",...}]) for real object storage (it asks for a credit card).');
           } else {
-            fail(
-              'a compiled controller uses the Storage facade, but the app binds neither R2 nor D1.\n' +
-                '  The edge has no local filesystem: Storage::put/get/exists/delete need an object store.\n' +
-                '  Add the D1 binding ({"d1_databases":[{"binding":"DB",...}]}) - the blob store needs no\n' +
-                '  extra Cloudflare product - or an R2 bucket ({"r2_buckets":[{"binding":"R2",...}]}).'
-            );
+            note({ route: null, area: 'runtime', severity: DECLARED, cause: 'a compiled controller uses the Storage facade, but the app binds neither R2 nor D1 — at the edge there is no local filesystem, so Storage::put/get/exists/delete have no object store to back them', fix: 'add the D1 binding (the app ships a D1 blob store, no extra product) or an R2 bucket to wrangler.toml. Until then, Storage facade calls return null at request time.', paths: [{ tier: 'free', what: 'add the D1 binding to wrangler.toml ({"d1_databases":[{"binding":"DB",...}]}) — the app ships a D1 blob store (one row per object in lw_blobs), no extra Cloudflare product' }, { tier: 'paid', what: 'or bind an R2 bucket ({"r2_buckets":[{"binding":"R2",...}]}) — real object storage, asks for a credit card' }] });
           }
         }
         // The compiled cache store is the D1-backed `database` store (the
@@ -2008,15 +2109,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         // stops instead.
         const usesCache = controllerSources.some((s) => s.includes('rt.cache()'));
         if (usesCache && runtimeConfig['cache.driver'] !== 'database') {
-          fail(
-            'a compiled controller uses the cache, but the app\'s cache store is `' +
-              runtimeConfig['cache.driver'] +
-              '`.\n' +
-              '  The compiled rung has exactly one cache store: the D1-backed `database` store (the Laravel\n' +
-              '  DatabaseCacheStore, oracle-verified). Another driver would read and write a different store -\n' +
-              '  a silent divergence.\n' +
-              '  Set CACHE_STORE=database (with the cache + cache_locks tables) or write a port for the route.'
-          );
+          note({ route: null, area: 'config', severity: DECLARED, cause: `a compiled controller uses the cache, but cache.driver is '${runtimeConfig['cache.driver']}' — the compiled rung has exactly one cache store: the D1-backed 'database' store`, fix: 'set CACHE_STORE=database (with the cache + cache_locks tables) or write a port for the route. Until then, cache reads/writes hit a different store than the compiled rung expects — a silent divergence.', paths: [{ tier: 'free', what: 'set CACHE_STORE=database and migrate the cache + cache_locks tables — the compiled rung then reads/writes the D1-backed store' }, { tier: 'free', what: 'or write a port for the route (the port handles the cache)' }] });
         }
       }
     }
@@ -2147,6 +2240,21 @@ if (existsSync(portsSrc)) {
   console.log('  ! no ports directory found — created empty dist/src/ports');
 }
 cpSync(join(pkgDir, 'kernel'), join(dist, 'kernel'), { recursive: true });
+// kernel/auth.mjs and kernel/hash.mjs import bcryptjs (pure JS, WebCrypto
+// fallback). The dist tree is what Wrangler bundles, so the package must live
+// inside it: a bare `bcryptjs` import from <app>/dist resolves only if
+// <app>/dist/node_modules/bcryptjs exists (the app itself need not depend on it).
+const bcryptSrc = [join(pkgDir, 'node_modules', 'bcryptjs'), join(appDir, 'node_modules', 'bcryptjs')].find((p) =>
+  existsSync(join(p, 'index.js'))
+);
+if (bcryptSrc) {
+  cpSync(bcryptSrc, join(dist, 'node_modules', 'bcryptjs'), { recursive: true });
+} else {
+  fail(
+    'bcryptjs is missing — kernel/auth.mjs and kernel/hash.mjs import it, and the dist bundle cannot resolve it.\n' +
+      '  Reinstall laravel-workers (npm i) or add bcryptjs to the app and run npm i.'
+  );
+}
 cpSync(join(pkgDir, 'compiler', 'runtime'), join(dist, 'src', 'runtime'), { recursive: true });
 
 const builtAt = new Date().toISOString();
@@ -2235,14 +2343,12 @@ for (const v of verbControllers) {
     );
   }
   // `throttle` reads/writes the D1-backed `database` cache store. Without it,
-  // kernel/http.mjs throws at request time — so refuse to compile such a route.
+  // the compiled limiter 500s at request time — but the operator can rewrite
+  // the app (set CACHE_STORE=database) to make it work. So this is a declared
+  // gap, not a hard block: the build ships, and the operator knows exactly
+  // what to do to close the gap.
   if (throttleRoutes && runtimeConfig['cache.driver'] !== 'database') {
-    note({ route: null, area: 'config', severity: BLOCK, cause: `${throttleRoutes} route(s) use throttle middleware, but cache.driver is '${runtimeConfig['cache.driver']}' and the compiled limiter needs the D1-backed 'database' store`, fix: 'set CACHE_STORE=database and migrate the cache + cache_locks tables -- or add a port for the throttled routes' });
-    fail(
-      `throttle middleware needs the D1-backed 'database' cache store, but cache.driver is ` +
-        `'${runtimeConfig['cache.driver']}'.\n  Set CACHE_STORE=database (with the cache + cache_locks ` +
-        `tables migrated) in the app, or add a port for the throttled route(s).`
-    );
+    note({ route: null, area: 'config', severity: DECLARED, cause: `${throttleRoutes} route(s) use throttle middleware, but cache.driver is '${runtimeConfig['cache.driver']}' — the compiled limiter needs the D1-backed 'database' store`, fix: 'set CACHE_STORE=database and migrate the cache + cache_locks tables (the free path) — or add a port for the throttled routes. Until then the throttled routes 500 at request time.', paths: [{ tier: 'free', what: 'set CACHE_STORE=database in the app and migrate the cache + cache_locks tables — the compiled limiter then reads/writes D1' }, { tier: 'free', what: 'or add a port for the throttled route(s) — the port handles the throttling' }] });
   }
 }
 
@@ -2298,7 +2404,12 @@ const needsPortFix = (n) => {
   if (reason.startsWith('no GET')) return `the route has no GET to snapshot — write a port for the verb(s) it does answer, or ${ignore}`;
   if (reason.startsWith('unhandled (autoSnapshot: false)')) return `registry.json sets "autoSnapshot": false, so nothing is snapshotted — write a port, or set autoSnapshot back to true`;
   if (reason.startsWith('a controller serves it')) return 'the controller did not compile — the reason is on its `controller ... skipped` line above; fix that, or write a port';
-  if (reason.startsWith('HTTP 5')) return `the route throws when the app boots at build time (${reason}) — this is a bug the build found for free; fix the route, then rebuild`;
+  if (reason.startsWith('HTTP 5')) {
+    const dbHint = /no such table/i.test(reason)
+      ? ' — the database is missing tables: run `php artisan migrate` first (a fresh clone starts with an empty database)'
+      : '';
+    return `the route throws when the app boots at build time (${reason}) — this is a bug the build found for free; fix the route, then rebuild${dbHint}`;
+  }
   if (reason.startsWith('HTTP 3')) return `the route redirects (${reason}) — a redirect needs a handler: write a port that returns it, or ${ignore}`;
   if (reason.startsWith('HTTP 4')) return `the route answers ${reason} for a bare GET — it probably needs a parameter or auth; write a port, or ${ignore}`;
   if (reason.startsWith('HTTP')) return `the response is not an HTML page (${reason}) — write a port that returns it (a JSON or file body), or ${ignore}`;
@@ -2315,7 +2426,8 @@ const unknown = [
   ]),
 ].filter((r) => !routes.includes(r));
 const stubPorts = findStubPorts(portsSrc);
-const blocked = needsPort.length > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0 || uncompiledExtraNonPost.length > 0;
+const runtimeBinding = needsPort.filter((n) => isRuntimeBindingError(n.reason));
+const blocked = (needsPort.length - runtimeBinding.length) > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0 || uncompiledExtraNonPost.length > 0;
 
 if (snapshots.length) console.log(`• auto-snapshots (${snapshots.length}): ${snapshots.join(', ')}`);
 for (const p of partials)
@@ -2341,7 +2453,11 @@ if (!blocked)
 // The reasons above are already specific ("dynamic segment", "HTTP 500"); what
 // the operator lacks is the STEP, so each row names one.
 for (const n of needsPort) {
-  note({ route: n.route, area: 'route', severity: BLOCK, cause: `no handler: ${n.reason}`, fix: needsPortFix(n) });
+  if (isRuntimeBindingError(n.reason)) {
+    note({ route: n.route, area: 'route', severity: DECLARED, cause: `needs a runtime binding (auto-gap): ${n.reason}`, fix: 'declare the binding in wrangler.jsonc (d1_databases) or set the env at deploy time; the build cannot prerender a route that needs a live connection' });
+  } else {
+    note({ route: n.route, area: 'route', severity: BLOCK, cause: `no handler: ${n.reason}`, fix: needsPortFix(n) });
+  }
   // A route that never became a snapshot or a controller skips the middleware
   // audit above (that one walks the route TABLE), so its middleware is never
   // named - and the reason it could not be served is usually the middleware,

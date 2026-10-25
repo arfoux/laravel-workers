@@ -9,7 +9,7 @@
 // text } — the recipients are a string or an array of them, exactly like
 // Laravel's message. A compiled Mailable hands its payload over through
 // `__lwMail()` (the compiler emits it).
-export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl } = {}) {
+export function createMailer({ transport = 'log', from: defaultFrom, key: keyOpt, fetchImpl } = {}) {
   const f = fetchImpl || globalThis.fetch;
   const sent = [];
 
@@ -59,21 +59,15 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
       return { id: 'log-' + sent.length };
     }
     if (transport === 'resend') {
-      // env.RESEND_API_KEY expected; in tests fetchImpl is mocked
-      const key = (typeof process !== 'undefined' && process.env && process.env.RESEND_API_KEY) || 'test-key';
+      // The key: the Worker's env (wrangler secret put RESEND_API_KEY), else
+      // process.env (nodejs_compat), else the test fallback.
+      const key = keyOpt || (typeof process !== 'undefined' && process.env && process.env.RESEND_API_KEY) || 'test-key';
+      // Resend rejects requests without a User-Agent (403, code 1010), so the
+      // header is explicit rather than left to the client.
       const res = await f('https://api.resend.com/emails', {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: payload.from,
-          to: [payload.to].flat(),
-          cc: [payload.cc || []].flat(),
-          bcc: [payload.bcc || []].flat(),
-          reply_to: [payload.replyTo || []].flat(),
-          subject: payload.subject,
-          html: payload.html,
-          text: payload.text,
-        }),
+        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'laravel-workers (Cloudflare Workers)' },
+        body: JSON.stringify(resendBody(payload)),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '');
@@ -83,6 +77,25 @@ export function createMailer({ transport = 'log', from: defaultFrom, fetchImpl }
       return { id: json.id || 'resend' };
     }
     throw new Error('unknown transport ' + transport);
+  };
+
+  // The Resend payload: the required fields always, the optional ones only
+  // when present (an empty array or a null text is omitted, not sent).
+  const resendBody = (payload) => {
+    const body = {
+      from: payload.from,
+      to: [payload.to].flat(),
+      subject: payload.subject,
+    };
+    const cc = [payload.cc || []].flat();
+    const bcc = [payload.bcc || []].flat();
+    const replyTo = [payload.replyTo || []].flat();
+    if (cc.length) body.cc = cc;
+    if (bcc.length) body.bcc = bcc;
+    if (replyTo.length) body.reply_to = replyTo;
+    if (payload.html) body.html = payload.html;
+    if (typeof payload.text === 'string' && payload.text.length) body.text = payload.text;
+    return body;
   };
 
   // The payload of a mailable (the compiled one) or of a plain object.

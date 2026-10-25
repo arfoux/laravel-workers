@@ -20,11 +20,18 @@ test('mail noop', async () => {
 });
 test('mail resend mock fetch', async () => {
   let lastUrl = null;
-  const fetchImpl = async (url) => { lastUrl = url; return { ok: true, async json(){ return { id: 're_123' }; } }; };
-  const mail = createMailer({ transport: 'resend', from: 'from@example.com', fetchImpl });
+  let lastOpts = null;
+  const fetchImpl = async (url, opts) => { lastUrl = url; lastOpts = opts; return { ok: true, async json(){ return { id: 're_123' }; } }; };
+  const mail = createMailer({ transport: 'resend', from: 'from@example.com', key: 're_abc', fetchImpl });
   const r = await mail.send({ to: 'a@b.co', subject: 'hi', html: 'x' });
   assert.equal(r.id, 're_123');
   assert.equal(lastUrl, 'https://api.resend.com/emails');
+  assert.equal(lastOpts.headers['Authorization'], 'Bearer re_abc');
+  assert.ok(lastOpts.headers['User-Agent']);
+  const body = JSON.parse(lastOpts.body);
+  assert.equal(body.from, 'from@example.com');
+  assert.deepEqual(body.to, ['a@b.co']);
+  assert.equal(body.cc, undefined);
 });
 test('mail resend error', async () => {
   const fetchImpl = async () => ({ ok: false, status: 401, async text(){ return 'bad key'; } });

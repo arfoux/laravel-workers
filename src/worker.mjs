@@ -59,6 +59,7 @@ function makeMail(env) {
   return createMailer({
     transport: config['mail.driver'] || 'log',
     from: config['mail.from.address'] || undefined,
+    key: env && env.RESEND_API_KEY,
     fetchImpl: env && typeof env.fetch === 'function' ? env.fetch.bind(env) : undefined,
   });
 }

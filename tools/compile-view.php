@@ -148,8 +148,10 @@ if (preg_match('/app\(\s*([\'"])Illuminate\\\\Foundation\\\\Vite\1\s*\)\s*\(/', 
     } else {
         $notes[] = 'vite invoke args not captured (unsupported expression)';
     }
-} else {
-    $notes[] = 'no app(\'Illuminate\\Foundation\\Vite\')(...) call site found in the compiled view';
+} elseif (stripos($compiled, 'vite') !== false) {
+    // A plain view (no @vite) is the normal case — only note it when the view
+    // mentions vite but the standard call pattern is missing.
+    $notes[] = 'no app(\'Illuminate\\Foundation\\Vite\')(...) call site found in the compiled view (view mentions "vite" but the standard call pattern is missing)';
 }
 
 $app->forgetInstance(Illuminate\Foundation\Vite::class);

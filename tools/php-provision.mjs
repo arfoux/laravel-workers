@@ -1,0 +1,172 @@
+// tools/php-provision.mjs — fetch a portable PHP when the machine has none that fits.
+//
+// The build needs a PHP interpreter ONLY as a build-time oracle: it boots the
+// real Laravel app and compiles the answers to JS. The edge never runs PHP. So
+// "the machine has no PHP 8.4" is not a reason to refuse to build an app that
+// requires 8.4 — it is a reason to get one.
+//
+// Order of preference (cheapest and safest first):
+//   1. an interpreter already installed that satisfies the app  (php-runtime.mjs)
+//   2. this module: a portable build downloaded into the cache
+//   3. an error that names exactly what to install
+//
+// Integrity: every download is checked against a published SHA-256 before it is
+// extracted or executed. The Windows source (windows.php.net) publishes hashes
+// in releases.json; a mismatch aborts the provision and leaves nothing behind.
+// There is no "skip the check" switch: an unverified binary that the build then
+// executes is exactly the kind of silent risk this project refuses elsewhere.
+//
+// Platform support: Windows is provisioned from windows.php.net (the official
+// upstream). Linux and macOS are NOT provisioned here — dl.static-php.dev does
+// not publish per-file checksums, and running an unverified binary is not
+// acceptable. Those platforms get a precise install command instead, which is
+// honest: the operator's package manager is the verified source there.
+
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cacheBase } from './vendor-lite.mjs';
+import { probePhp, satisfies } from './php-runtime.mjs';
+
+const RELEASES_URL = 'https://windows.php.net/downloads/releases/releases.json';
+const DOWNLOAD_BASE = 'https://windows.php.net/downloads/releases/';
+
+/** Where a provisioned interpreter lives: <cache>/php/<version>/. */
+export function phpCacheDir(version) {
+  return join(cacheBase(), 'php', version);
+}
+
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+async function fetchBuffer(url) {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/**
+ * Pick the highest Windows PHP build that satisfies `requirement`.
+ * @returns {Promise<{version:string, path:string, sha256:string, size:string}>}
+ */
+export async function pickWindowsBuild(requirement) {
+  const json = JSON.parse((await fetchBuffer(RELEASES_URL)).toString('utf8'));
+  const candidates = [];
+  for (const [line, byBuild] of Object.entries(json)) {
+    const nts = byBuild['nts-vs17-x64'] || byBuild['nts-vs16-x64'];
+    if (!nts || !nts.zip) continue;
+    // The map key is the minor line ("8.4"); the artifact carries the full version.
+    const m = String(nts.zip.path).match(/^php-(\d+\.\d+\.\d+)-nts-Win32-/);
+    if (!m) continue;
+    const version = m[1];
+    if (satisfies(version, requirement) !== true) continue;
+    candidates.push({ version, path: nts.zip.path, sha256: nts.zip.sha256, size: nts.zip.size, line });
+  }
+  if (!candidates.length) {
+    const available = Object.keys(json).filter((k) => json[k]['nts-vs17-x64'] || json[k]['nts-vs16-x64']).join(', ');
+    throw new Error(
+      `windows.php.net has no build satisfying PHP ${requirement} (available lines: ${available}).\n` +
+        `  -> install a PHP that satisfies ${requirement} yourself, then set PHP_BIN to it`
+    );
+  }
+  // Prefer the LOWEST satisfying version: an app declaring `^8.4` was tested on
+  // 8.4, and Composer's `^` also admits 8.5 — newer than the app asked for and
+  // a gratuitous source of behaviour change. Floor at 8.1 (the oldest Laravel
+  // this harness targets); below that, take the highest available.
+  const asc = (a, b) => {
+    const x = a.version.split('.').map(Number);
+    const y = b.version.split('.').map(Number);
+    return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+  };
+  const sorted = candidates.sort(asc);
+  const modern = sorted.filter((c) => Number(c.version.split('.')[0]) >= 8 && !(c.version.startsWith('8.0')));
+  return modern[0] || sorted[sorted.length - 1];
+}
+
+// The extensions Laravel's boot and the build's helpers need. Only the ones the
+// archive actually ships are enabled, so a build never fails on a missing dll.
+const EXTENSIONS = ['curl', 'fileinfo', 'gd', 'intl', 'mbstring', 'openssl', 'pdo_sqlite', 'sqlite3', 'zip', 'exif', 'sodium'];
+
+function writeIni(dir) {
+  const extDir = join(dir, 'ext');
+  const have = new Set(
+    (existsSync(extDir) ? readdirSync(extDir) : [])
+      .filter((f) => /^php_.*\.dll$/i.test(f))
+      .map((f) => f.replace(/^php_/i, '').replace(/\.dll$/i, '').toLowerCase())
+  );
+  const lines = [
+    '; generated by laravel-workers php:ensure — a build-time oracle only',
+    `extension_dir = "${extDir.replace(/\\/g, '/')}"`,
+    'memory_limit = 512M',
+    'error_reporting = E_ALL & ~E_DEPRECATED',
+    'display_errors = Off',
+    'log_errors = On',
+    '',
+  ];
+  for (const e of EXTENSIONS) if (have.has(e)) lines.push(`extension=${e}`);
+  writeFileSync(join(dir, 'php.ini'), lines.join('\n') + '\n');
+}
+
+/**
+ * Provision a portable PHP that satisfies `requirement` (Windows only).
+ * @returns {Promise<{bin:string, version:string, source:string, cached:boolean}>}
+ */
+export async function provisionPhp(requirement) {
+  if (process.platform !== 'win32') {
+    const hint =
+      process.platform === 'darwin'
+        ? 'brew install php@' + String(requirement).replace(/[^0-9.]/g, '').slice(0, 3)
+        : 'apt install php' + String(requirement).replace(/[^0-9.]/g, '').slice(0, 3) + '-cli';
+    throw new Error(
+      `automatic PHP provisioning is Windows-only (this build runs on ${process.platform}).\n` +
+        `  -> install the interpreter with your package manager (e.g. "${hint}"),\n` +
+        `     or point PHP_BIN at an existing one: PHP_BIN=/path/to/php npx laravel-workers build --strict`
+    );
+  }
+
+  const build = await pickWindowsBuild(requirement);
+  const dest = phpCacheDir(build.version);
+  const bin = join(dest, 'php.exe');
+
+  // A previous provision that verified cleanly is reused as-is.
+  if (existsSync(bin) && probePhp(bin) === build.version) {
+    return { bin, version: build.version, source: dest, cached: true };
+  }
+
+  mkdirSync(dest, { recursive: true });
+  const tmp = mkdtempSync(join(tmpdir(), 'lw-php-'));
+  const zip = join(tmp, build.path);
+  try {
+    const buf = await fetchBuffer(DOWNLOAD_BASE + build.path);
+    writeFileSync(zip, buf);
+
+    const got = sha256File(zip);
+    if (got !== build.sha256) {
+      throw new Error(
+        `checksum mismatch for ${build.path}\n  expected sha256 ${build.sha256}\n  got      sha256 ${got}\n` +
+          '  -> the download was corrupted or the upstream file changed; nothing was installed'
+      );
+    }
+
+    const r = execFileSync('unzip', ['-oq', zip, '-d', dest], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    void r;
+    writeIni(dest);
+
+    const version = probePhp(bin);
+    if (!version) {
+      throw new Error(
+        `the extracted interpreter at ${bin} did not run.\n` +
+          '  -> install PHP manually and set PHP_BIN to it'
+      );
+    }
+    if (satisfies(version, requirement) !== true) {
+      throw new Error(`the provisioned interpreter reports PHP ${version}, which does not satisfy ${requirement}`);
+    }
+    return { bin, version, source: dest, cached: false };
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
