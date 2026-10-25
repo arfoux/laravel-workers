@@ -45,8 +45,9 @@ and Imagick in the source sweep. Source of the limits: `COMPILED.md`
 
 ## Efficiency findings (measured)
 
-`composer install` on the Laravel 13 skeleton: **379 s** (cold Composer cache).
-This is what the tool requires to boot the app at build time; see §Vendor below.
+The composer-free vendor installer (`tools/vendor-lite.mjs`) fetches the lock-resolved
+dist zips and writes a self-contained autoloader; **no `composer install` is required**.
+See the Vendor section below.
 
 **The build boots Laravel from scratch for every PHP helper call.** A bare boot
 (`autoload` + `bootstrap/app.php` + `Kernel::class`) measured **2815 / 3064 /
@@ -77,14 +78,14 @@ are written but never read back to skip a rebuild.
 
 ## Vendor (`composer install`) — user complaint
 
-The build requires `vendor/autoload.php` (`build.mjs:110`) and 23 helper scripts
-boot the real app. That is inherent to the oracle design (compile against real
+The build requires a `vendor/autoload.php` that can boot the app, and 23 helper
+scripts boot the real app. That is inherent to the oracle design (compile against real
 PHP behaviour), and an app that already runs locally already has `vendor/`.
-The cost only appears on a fresh clone or in CI.
-
-Open question being measured: whether `composer install --no-dev` is enough to
-boot the app at build time. If yes, the documented path gets materially faster
-for large apps (no PHPUnit/Faker/Pint/Sail download).
+The cost only appears on a fresh clone or in CI. It is now **zero**: the build
+auto-provisions a composer-free vendor tree via `tools/vendor-lite.mjs`
+(`npx laravel-workers vendor:ensure` warms the content-addressed cache) - it reads
+`composer.lock`, fetches each dist zip straight from its URL, extracts it, and writes
+a self-contained PSR-4/classmap/files autoloader. **No `composer install` at all.**
 
 ## Open findings from the multi-project sweep
 

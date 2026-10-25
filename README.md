@@ -180,7 +180,7 @@ Versions actually tested (byte-parity corpus + CI + live deploy):
 cd my-laravel-app             # artisan + vendor + public/build there
 npm i laravel-workers
 npx laravel-workers init             # writes registry.json + wrangler.jsonc, updates .gitignore
-composer install; npm run build
+# no composer install needed - the build provisions the app's PHP vendor itself (composer-free vendor-lite)
 npx laravel-workers build --strict   # dist/ (cwd-based, no edge/ required); --scaffold for port stubs
 # local preview/deploy: npx wrangler deploy
 
@@ -247,7 +247,6 @@ cat > wrangler.jsonc <<'JSONC'
   "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<the id from: npx wrangler d1 create my-app>" } ],
   "observability": { "enabled": true } }
 JSONC
-composer install --no-interaction
 cp .env.example .env && php artisan key:generate
 php artisan migrate --force
 npm run build
@@ -257,7 +256,7 @@ npx wrangler d1 execute DB --file=dist/schema.sql --remote
 # deploy command: npx wrangler deploy
 ```
 
-The build image must provide PHP ≥ 8.3 + Composer (build time only).
+The build image must provide PHP >= 8.3 (Composer is NOT needed anymore - the build provisions vendor itself via composer-free vendor-lite).
 
 ## Architecture (30 s)
 

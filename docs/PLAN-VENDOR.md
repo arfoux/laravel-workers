@@ -144,10 +144,9 @@ invalidation, disk usage, and Composer's path-repositories (which do embed
 absolute paths). Only worth building if A–D leave a real gap.
 
 Status: **landed** as `tools/vendor-lite.mjs` / `npx laravel-workers vendor:ensure`.
-Keyed on `sha256(composer.lock + PHP version + platform)`, installed with
-`composer install --no-dev --prefer-dist` into
-`<cache>/laravel-workers/cache/vendor-lite/<16 hex>`, and a hit costs ~0.18 s
-against ~39 s for the install (measured on the Laravel 13 skeleton).
+Keyed on `sha256(composer.lock + PHP version + platform)`, provisioned by fetching
+each dist zip straight from its URL and extracting it (no composer) into
+`<cache>/vendor-lite/<16 hex>`, and a hit costs ~0.18 s against ~39 s of fetch+extract.
 
 The known trade: Composer's path-repositories embed absolute paths, so a tree
 installed for one checkout is not guaranteed to be portable to a different path.
@@ -184,10 +183,10 @@ parity.
 | 4 | **D** — one PHP dispatcher | medium | **"the build is slow"** — the actual complaint |
 | 5 | **E** — vendor cache | medium | only if 1–4 leave a gap — **landed** (`vendor:ensure`) |
 
-Steps 1–3 remove the *prerequisite*; step 4 removes the *slowness*. `laravel-workers`
-will still need a `vendor/` to exist — that is what "boot the real app" means, and
-it is the source of the byte-parity guarantee. What changes is that it becomes
-one cheap, explained, cacheable step instead of a silent multi-minute tax.
+Steps 1-3 remove the *prerequisite*; step 4 removes the *slowness*. `laravel-workers`
+now auto-provisions that `vendor/` itself via the composer-free `vendor-lite`
+installer, so **no manual step is required at all**: a fresh clone or CI job just builds.
+The byte-parity guarantee comes from booting the real app either way.
 
 ## 5. Open evidence
 

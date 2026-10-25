@@ -540,7 +540,7 @@ async function main() {
   }
   const appRoot = path.resolve(args.app);
   if (!existsSync(path.join(appRoot, 'vendor', 'autoload.php'))) {
-    console.error(`shadow: ${appRoot} has no vendor/ — run composer install first`);
+  console.error(`shadow: ${appRoot} has no vendor/ - run 'npx laravel-workers vendor:ensure' first (no composer install needed)`);
     process.exit(2);
   }
 

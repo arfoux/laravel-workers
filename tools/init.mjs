@@ -66,7 +66,7 @@ if (existsSync(gitignorePath)) {
 
 console.log('');
 console.log('Next steps:');
-console.log('  composer install');
+console.log('  npx laravel-workers vendor:ensure   # fetch the PHP deps (no composer install needed)');
 console.log('  npm run build');
 console.log('  npx laravel-workers build --strict');
 console.log('  npx wrangler dev      # local preview');

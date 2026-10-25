@@ -37,7 +37,7 @@ if (!appRoot || !existsSync(join(appRoot, 'artisan'))) {
   process.exit(0);
 }
 if (!existsSync(join(appRoot, 'vendor', 'autoload.php'))) {
-  console.log(`pack-smoke SKIP: ${appRoot} has no vendor/ (run composer install first)`);
+  console.log(`pack-smoke SKIP: ${appRoot} has no vendor/ (run 'npx laravel-workers vendor:ensure' first)`);
   process.exit(0);
 }
 
