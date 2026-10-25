@@ -85,7 +85,7 @@ function lw_vendor_autoload_for(string $appRoot): string
 
     $own = rtrim($appRoot, "/\\") . '/vendor/autoload.php';
     if (!is_file($own)) {
-        fwrite(STDERR, "laravel-workers: {$own} is missing - run `npx laravel-workers vendor:ensure` (composer-free vendor-lite) in the laravel-workers checkout, or set LW_VENDOR_DIR.\n");
+        fwrite(STDERR, "laravel-workers: {$own} is missing - run `npx laravel-workers vendor:ensure` in {$appRoot}, or set LW_VENDOR_DIR.\n");
         exit(2);
     }
 
