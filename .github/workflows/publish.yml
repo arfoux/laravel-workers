@@ -19,9 +19,11 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm --prefix compiler install
-      - run: npm run build
       - run: npm test
       - run: npm run test:corpus
+      - run: node tools/gate.mjs --strict
+      - name: Syntax check shipped ESM
+        run: find build.mjs kernel compiler/src compiler/runtime bin tools -name '*.mjs' -print0 | xargs -0 -n1 node --check
       - run: npm pack --dry-run
       - run: npm config delete '//registry.npmjs.org/:_authToken'
         continue-on-error: true
@@ -41,8 +43,8 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm --prefix compiler install
-      - run: npm run build
       - run: npm test
+      - run: npm run test:corpus
       - uses: actions/setup-node@v4
         with:
           node-version: 22
