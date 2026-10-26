@@ -4,9 +4,12 @@ The change-by-change record of laravel-workers (M1–M70 and the A-series audit 
 
 ## v0.4.3 (prepared)
 
+- New: **conditional frontend-manifest check** — `build.mjs` pre-scans `resources/views/**` for `@vite()`/`mix()` instead of demanding a manifest from every app. A fullstack app without one fails up front, naming the exact view and the one-time `npm install && npm run build`; a backend-only API app (no view touches the frontend) needs no manifest at all and used to be failed by the old unconditional check.
+- New: **build-time DB sandbox** — `tools/schema-compile.php` takes an optional second argument and materialises a throwaway SQLite with the schema it just compiled. `build.mjs` seeds `.cache/laravel-workers/build.sqlite` when the app's own SQLite database is absent or was `touch`ed but never migrated, so a fresh `laravel new` project boots for prerender and reports `RUNS ON THE EDGE` instead of `DOES NOT RUN` (Laravel's session middleware reads `sessions` on every request). Your own database file, when real, is used as-is and never written to; the remote `d1 execute` stays manual and is now printed as the step that runs **before** `wrangler deploy`.
 - New: **auto APP_KEY** — `build.mjs` writes `APP_KEY=base64:<32 random bytes>` into `.env` when absent (from `.env.example` when present), so a fresh clone builds with zero manual config. The key persists across rebuilds (the worker encrypts cookies/sessions with it). `schema-compile.php` uses `lw_boot_app()`, which injects a key for standalone runs too.
 - New: **auto `wrangler.jsonc`** — when absent, build.mjs scaffolds it with the worker name from the app-dir slug and a `database_id` placeholder. It never creates cloud resources — only the local config file; obtaining the real id is the one manual step (`npx wrangler d1 create`).
-- Docs: README Quick start + zero-touch section rebuilt around "build is self-sufficient, `init` optional"; CI e2e drops the stale `php artisan key:generate` to actually prove the zero-config path.
+- New: **Bun ≥ 1.0** — the full suite passes under `bun run test` (768/768); `engines.bun`, the requirements row, and the package description/keywords follow ("compile to JS bundle, no PHP at edge").
+- Docs: README Quick start + zero-touch section rebuilt around "build is self-sufficient, `init` optional"; two new subsections — *Fullstack app vs backend-only API* and *What `RUNS ON THE EDGE` claims (routes, not data)*; CI e2e drops the stale `php artisan key:generate` to actually prove the zero-config path.
 
 ## v0.4.2
 
