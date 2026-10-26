@@ -30,11 +30,17 @@ so these are upper bounds):
 |---|---|
 | `composer install` (cold Composer cache) | **379 s** |
 | One bare Laravel boot (`autoload` + `bootstrap/app.php` + `Kernel`) | **2815 / 3064 / 5101 ms** |
-| PHP spawns in `build.mjs` | **16 by static count**; `prerender` is 1 per route, `compile-view` 1 per view, `class-dump` 1 per class |
+| PHP spawns in `build.mjs` | **16 by static count** (measured pre-Track E); `prerender` was 1 per route, `compile-view` 1 per view, `class-dump` 1 per class |
 
 A 40-route / 15-view app pays roughly **60 boots ≈ 3–5 minutes** — every single
 build, not just the first. That is the number worth attacking, and it makes the
 vendor question mostly disappear: pay the install once, then have fast builds.
+
+> **Update (Track E, landed):** `prerender.php` now renders every URI in one
+> boot and `compile-view.php --batch` compiles a whole view wave per boot, so the
+> 40-route/15-view figure above is now a handful of boots, not ~60. The
+> measurements in this plan are unchanged — they justify the vendor decision as
+> recorded.
 
 ## 3. Options, cheapest first
 
