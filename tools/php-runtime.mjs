@@ -80,16 +80,37 @@ export function satisfies(version, constraint) {
     if (!c || c === '*') return true;
     let m, lo, hi;
 
-    // ^8.4 / ^8.4.1 — next major
+    // ^1.2.3 -> >=1.2.3 <2.0.0. Composer bumps the FIRST NON-ZERO component:
+    // ^0.2.3 -> <0.3.0, ^0.0.3 -> <0.0.4 (^0 -> <1, ^0.0 -> <0.1). The old
+    // always-bump-major rule matched PHP's own constraints but was wrong for
+    // the ^0.x packages a lockless dependency resolution encounters.
     if ((m = c.match(/^\^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/))) {
-      lo = [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)];
-      hi = [Number(m[1]) + 1, 0, 0];
+      const maj = Number(m[1]);
+      const min = m[2] === undefined ? null : Number(m[2]);
+      const pat = m[3] === undefined ? null : Number(m[3]);
+      lo = [maj, min || 0, pat || 0];
+      if (maj !== 0) hi = [maj + 1, 0, 0];
+      else if (min === null) hi = [1, 0, 0];      // ^0    -> <1
+      else if (min !== 0) hi = [0, min + 1, 0];    // ^0.2  -> <0.3
+      else if (pat === null) hi = [0, 1, 0];       // ^0.0  -> <0.1
+      else hi = [0, 0, pat + 1];                   // ^0.0.3 -> <0.0.4
       return cmpArr(v, lo) >= 0 && cmpArr(v, hi) < 0;
     }
     // ~8.4 (next major) / ~8.4.1 (next minor)
     if ((m = c.match(/^~(\d+)(?:\.(\d+))?(?:\.(\d+))?$/))) {
       lo = [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)];
       hi = m[2] === undefined ? [Number(m[1]) + 1, 0, 0] : [Number(m[1]), Number(m[2]) + 1, 0];
+      return cmpArr(v, lo) >= 0 && cmpArr(v, hi) < 0;
+    }
+    // 13.* / 13.X (any minor) ; 1.2.* / 1.2.X (any patch)
+    if ((m = c.match(/^(\d+)\.(?:\*|x)$/i))) {
+      lo = [Number(m[1]), 0, 0];
+      hi = [Number(m[1]) + 1, 0, 0];
+      return cmpArr(v, lo) >= 0 && cmpArr(v, hi) < 0;
+    }
+    if ((m = c.match(/^(\d+)\.(\d+)\.(?:\*|x)$/i))) {
+      lo = [Number(m[1]), Number(m[2]), 0];
+      hi = [Number(m[1]), Number(m[2]) + 1, 0];
       return cmpArr(v, lo) >= 0 && cmpArr(v, hi) < 0;
     }
     // 8 / 8.3 / 8.3.0 / 8.3.*
