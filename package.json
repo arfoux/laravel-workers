@@ -32,6 +32,7 @@
     "bin",
     "build.mjs",
     "compiler/bin",
+    "compiler/blade.mjs",
     "compiler/src",
     "compiler/runtime",
     "kernel",
