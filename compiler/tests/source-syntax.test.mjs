@@ -48,7 +48,7 @@ test('every generated module the worker imports is always emitted', () => {
 
   // The conditional block's line range (the brace matching the `if`).
   const lines = build.split('\n');
-  const open = lines.findIndex((l) => /^\s*if \(prepared\.length\) \{$/.test(l));
+  const open = lines.findIndex((l) => /^\s*if \(prepared\.length\)\s*\{/.test(l));
   assert.ok(open >= 0, 'the `if (prepared.length)` controller block moved - re-derive this test');
   let depth = 0;
   let close = -1;

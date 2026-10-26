@@ -4,199 +4,238 @@
 
 [![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm](https://img.shields.io/badge/npm-laravel--workers-9cf.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**What it is, plainly.** A toolchain with three parts: a `compiler` (Blade → PHP → JS, byte-parity against PHP 8.3), a Workers-native `kernel` (router, D1 query builder, models, validation, services), and `build.mjs` (pipeline → `dist/kernel` + `_routes.json` + schema snapshot). Laravel stays the source of truth in dev; the edge runs compiled JS + D1, **Free-plan-safe (measured 1–6 ms)**. It is **not** a Laravel runtime and **not** PHP-in-Worker: controllers ARE transpiled (a documented subset; anything outside it fails the build and needs a `ports/*.mjs` handler).mjs`.
+**What it is.** A toolchain with three parts:
+
+- `compiler/` — Blade → PHP → JS transpiler (byte-parity corpus + PHP 8.3 oracle).
+- `kernel/` — Workers-native runtime: router, D1 query builder, models, sessions, auth, validation, cache, mail, queue, scheduler.
+- `build.mjs` — pipeline → `dist/` artifact ready for `wrangler deploy`.
+
+Laravel stays the source of truth in dev; the edge runs compiled JS + D1. It is **not** a Laravel runtime and **not** PHP-in-Worker (WASM). Controllers ARE transpiled (a documented subset; anything outside it fails the build and needs a `ports/*.mjs` handler). **Free-plan-safe** (budget p95 ≤ 5 ms, measured by `kernel/tests/budget.test.mjs`).
+
+---
 
 ## Why
 
-PHP-in-Worker (wasm) boots Laravel per request: **measured 1008–2018 ms CPU** → 503 on Free. `laravel-workers` moves all boot to **build time** and ships a tiered Worker: `static` (0 invocations) → `snapshot` (prerendered HTML) → `compiled handler` (router → handler → D1, **measured 1–6 ms**) → `port` (escape-hatch hand-written JS). Anything uncovered **fails the build** (`--strict`).
+PHP-in-Worker (WASM) boots Laravel per request: **~1000–2000 ms CPU** → 503 on Free. `laravel-workers` moves all boot to **build time** and ships a tiered Worker:
 
-**Status: 0.4.0 prepared, the npm publish waits on a valid npm login.** The compiled rung covers M1–M70 (construct audit: **114 constructs — 41 compile, 63 fail loud, 10 documented at the build level**; facade coverage 47/47). The change-by-change record (each M/A step, what it did and what it found) is in **[CHANGELOG.md](CHANGELOG.md)**.
+```
+static      → 0 invocations (Cloudflare Static Assets)
+snapshot    → prerendered HTML for clean GET routes
+compiled    → router → controller → D1 (p95 ≤ 5 ms, see budget gate)
+port        → escape-hatch hand-written JS for unsupported constructs
+```
+
+Anything uncovered **fails the build** (`--strict`). No silently-wrong output ships.
+
+**Construct coverage:** 114 constructs audited — 41 compile, 63 fail loud, 10 documented at the build level. Façade coverage 47/47 (every `Illuminate\Support\Facades\*` has a verdict). The change-by-change record is in **[CHANGELOG.md](CHANGELOG.md)**; the full map in **[MAP.md](MAP.md)**.
 
 ---
-## Supported vs unsupported
 
-Compiles today (byte-parity corpus + kernel tests):
-- **Blade → PHP** is compiled by the real Laravel Blade compiler at build time; the transpiler consumes the resulting PHP subset: `echo`, `if/elseif/else`, `for`/`while`/`foreach` (incl. `key => value`), PHP comparison/logic semantics (`==`/`!=`/`===`/`!==`/`<`/`>`/`<=`/`>=`, `&&`/`||`/`and`/`or`/`!`), ternary/`?:`, `??`/`??=`, `switch` (loose, fallthrough), `match` (strict), `isset()`/`empty()`, function declarations (defaults, recursion), string interpolation (`"$x"`, `"{$a['k']}"`, escapes), string concat, `e()`, `sprintf`, `str_replace`, `strtolower`/`strtoupper`/`trim`/`strlen`/`substr`/`str_repeat`/`str_pad`/`ucfirst`/`lcfirst`, `str_contains`/`str_starts_with`/`str_ends_with`, `count`/`in_array`/`implode`/`explode`/`number_format`/`nl2br`, `array_keys`/`array_values`/`array_merge`/`array_key_exists`, `ltrim`/`rtrim`/`ucwords`/`strrev`/`strpos`/`strrpos`/`substr_count`/`strip_tags`/`htmlspecialchars`, `is_null`/`is_bool`/`is_int`/`is_float`/`is_string`/`is_array`/`is_object`/`is_numeric`, `abs`/`round`/`floor`/`ceil`/`intval`/`floatval`/`max`/`min`, `json_encode`/`json_decode`, `array_sum`/`array_slice`/`array_reverse`/`array_unique`/`array_count_values`/`array_flip`/`array_filter`/`array_map` (named-function callbacks).
-- **Kernel**: router (domain rules + `{param}`/`{param?}`/`{param*}`, `X-HTTP-Method-Override`) + response, D1 query builder (where/or + `where(fn)` grouping, join/group/having/distinct, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime`, `sum`/`avg`/`min`/`max`, `upsert`/`insertGetId`/`truncate`/`increment`/`updateOrInsert`/`chunk`, D1-safe param binding: boolean→1/0, Date→ISO, undefined→NULL), Model base + relations (`hasMany`/`hasOne`/`belongsTo`, `create`/`firstOrCreate`/`updateOrCreate` honouring `fillable` + mutators + casts, `refresh`/`increment`, casts incl. `json`/`decimal:N`, accessors/mutators `getFooAttribute`/`setFooAttribute`, `hidden`/`visible`/`appends`, `softDeletes` with `trashed`/`restore`/`forceDelete`/`withTrashed`/`onlyTrashed`, `findOrFail`/`firstOrFail`, declared relations with `with()` eager loading + `withCount()` counters + `withSum()`/`withAvg()`/`withMin()`/`withMax()` aggregate attributes + `whereHas()`/`whereDoesntHave()`/`has(rel,'>=',n)` correlated `EXISTS`/`COUNT`, `related()`/`load()` lazy loading, local scopes via `query(db).scope('name')`), bcrypt hash incl. `Hash::isHashed()`, AES encrypter, validator (70+ rules, nested dot paths + `items.*.name` wildcards, `exclude*`/`missing*`/`present*` conditionals), mail/queue/cache/storage/scheduler adapters.
-- **The Gate (M39a)**: `Gate::allows()`/`Gate::denies()` compile — the **policy** is compiled at build time (`tools/policy-dump.php` → `compiler/src/policy.mjs` → `dist/src/policies.generated.mjs`): the ability methods and the `before()` hook become async functions, and the runtime keeps Laravel's rules (the `before()` answer wins, a guest the policy does not allow is denied without the call, a missing ability is `false`).
-- **The object store (M30/M39b)**: `Storage::put()/get()/exists()/delete()` and `Storage::disk('<the app\'s default disk>')` compile to the compiled store — the D1 blob store (no Cloudflare product, no card) or R2 when the app binds it.
-- **The file upload (M40 part 5)**: a `multipart/form-data` body is parsed at the edge and `$request->file('x')` answers Laravel's file object (the name, the extension, the type the browser declared, the size, `isValid()`); the file is in the validated data, the `file` rule works and the size rules of a file are in **kilobytes**; `$file->store()`/`$file->storeAs()` write to the app's **default disk** and answer the disk-relative path. The content type of a file (`getMimeType()`) and the `mimes`/`mimetypes`/`image`/`dimensions` rules read the file's **bytes** (finfo) — the edge cannot sniff the content like PHP, so they fail loud (LW002/LW003).
-- **The event dispatch (M39c)**: `Event::dispatch(new X(...))` compiles — the **listeners** are classes, so the build compiles them (`tools/event-dump.php` → `compiler/src/classes.mjs` → `dist/src/classes.generated.mjs`: the constructor with the promoted properties + the public methods) and the dispatch calls them **synchronously**, like Laravel (every listener runs, only an answer of `false` stops the chain, and the dispatch answers the array of the responses).
-- **The Blade layouts (M40)**: `@extends` / `@section` / `@yield` compile — the sections travel to the layout (the env is shared with the nested render) and the build compiles the view closure (the layout is imported too).
-- **The route-model binding (M40)**: `show(Post $post)` compiles — the model comes from the route segment (a missing model is a 404, like Laravel's `ModelNotFoundException`).
-- **The method handling (M40)**: an `OPTIONS` request gets Laravel's **automatic OPTIONS response** (200, an empty body, the `Allow` header with the verbs the URI accepts) and a method that does not match answers like Laravel (405 with an `errors/405` view, else 500). A **CORS** config is not compiled: the build skips the routes under a CORS path (the `Access-Control-*` headers would be missing).
-- **The paginator (M40)**: `Post::paginate(10)` compiles to Laravel's `LengthAwarePaginator` — the items, the total, the pages, the first/last item, the previous/next URLs and the URL window (`elements()`); the page comes from the request (`?page=N`). The **pagination links** (`$paginator->links()`) render the framework's `pagination::tailwind` view — compiled at build time, **byte-identical** to Laravel's markup. The **translations** (`__()`) are dumped at build time (the app's `lang/` + the framework's fallback).
-- **The PHP casts (M40)**: `(string)`, `(int)`, `(bool)` and `(float)` compile with PHP's own semantics; the other casts fail loud.
+## Compiles today
 
-Fails loud (build error or `LW002`), use a port instead:
-- Blade **components** (`<x-...>`) that compile to `$__env->…` (the layouts compile — M40).
-- Controller code outside the compiled subset: an action with a resolvable class method is transpiled for `GET`/`POST`/`PUT`/`PATCH`/`DELETE` (one handler per verb; the automatic `OPTIONS` response is Laravel's — M40; the uploaded files compile — M40 part 5). `Request`/FormRequest injection, `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`, `$request->validate()`/`validateWithBag()`, `response()`/`response()->json()`, the `Cache`/`Hash` facades, class constants (`RouteServiceProvider::HOME`), `redirect()->intended()` + session rotation, and the Eloquent writes (`create`/`fill`/`save`/`delete`/`$model->attr = ...`) are supported at runtime `Request $request` injection plus `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*` and `$request->validate()`/`validateWithBag()` are supported at runtime (`auth`/`guest` route middleware is honoured by `handleHttp`; numeric `throttle:n[,m]` runs on the D1-backed `database` cache store, and the build fails loud on named limiters — `throttle:name` needs its `AppServiceProvider` definition — and when `cache.driver !== 'database'`). A failed `validate()` renders like Laravel: 302 back with flashed `errors` + `_old_input`, or 422 JSON for `expectsJson` (json session serialization; the `ViewErrorBag` `serialize()` path fails loud). Eloquent relations, `$this`, a FormRequest whose rules cannot be dumped, and unknown constructs fail loud — write a `ports/*.mjs` handler.
-- The class-bearing calls: `Mail::to()->send()` (the mailable is a class), `Queue::push(SomeJob::class)` (the job would never run at the edge — the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job; the paths that work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads — a port handler writes the row, the edge has no producer for it; the job class is not compiled either), a **named** `Storage::disk()` (it needs a bucket of its own: R2 asks for a credit card; the free path is the D1 blob store), `Cache::tags()` (the D1 `database` store has no tags — in Laravel this route 500s with `BadMethodCallException("This cache store does not support tagging.")`, so the build refuses the route before it ships: stricter than Laravel, not a parity) and the Gate forms that are not a policy check — `Gate::authorize()` (it throws a 403), `Gate::any()`/`none()`, `Gate::define()`/`before()`/`after()` (the global Gate registrations) — all fail loud with their own reason (LW002). The **content type of an uploaded file** (`$file->getMimeType()`) and the `mimes`/`mimetypes`/`image`/`dimensions` **rules** fail loud too (LW002/LW003): they read the file's bytes (finfo), and the edge cannot sniff the content like PHP — the upload itself compiles (M40 part 5). The **event dispatch of an event *name*** (`Event::dispatch('post.created')`) fails loud too: without a class the edge cannot know which listener answers.
+| Area | What's supported | Proof |
+|---|---|---|
+| **Blade** | `@extends`/`@section`/`@yield`, `@if`/`@elseif`/`@else`, `@foreach`/`@for`/`@while`, `@switch`/`@match`, ternary / `?:` / `??` / `??=`, `isset`/`empty`, string interpolation, `e()`, `__()` translations (dumped at build), PHP casts | corpus 51/51 + PHP 8.3 oracle |
+| **Router** | `{param}` / `{param?}` / `{param*}`, domain rules, `X-HTTP-Method-Override`, automatic `OPTIONS` | `kernel/tests/router.test.mjs` |
+| **Controllers** | `GET`/`POST`/`PUT`/`PATCH`/`DELETE` with resolvable class methods; `Request`/FormRequest injection; `session()`/`old()`/`csrf_token()`/`csrf_field()`; `auth()`/`Auth::*`; `$request->validate()`/`validateWithBag()`; `response()`/`response()->json()`; `Cache`/`Hash` facades; class constants; `redirect()->intended()` + session rotation; Eloquent writes (`create`/`fill`/`save`/`delete`/`$model->attr = …`) | PHP 8.3 oracle (M15) |
+| **Eloquent** | `find`/`findOrFail`/`all`/`where*`/`orderBy*`/`limit` + `first`/`get`/`count`/`pluck`/`value`; `hasMany`/`hasOne`/`belongsTo`; `create`/`updateOrCreate`/`firstOrCreate`; `fillable` + mutators + casts (`json`, `decimal:N`, `hashed`); `refresh`/`increment`; soft deletes; relations read as properties | `kernel/tests/db.test.mjs` + SQLite integration |
+| **Auth** | `SessionGuard` (attempt/login/logout/remember/recaller), `EloquentUserProvider`, `BcryptHasher` (`$2y$` parity), remember-me rotation, `auth`/`guest` middleware, `auth.basic` | 13 guard runs byte-parity vs PHP 8.3 oracle (M14) |
+| **Session + CSRF** | Flash data + rotation, `migrate`/`regenerate`/`invalidate`, token plumbing, `PreventRequestForgery` | PHP 8.3 oracle (M11/M13) |
+| **Rate limiting** | `ThrottleRequests` over the D1-backed `database` cache store | PHP 8.3 oracle (M12/M18) |
+| **Validation** | 60+ rules incl. `unique`/`exists` via D1, pipe-safe regex, `nullable`/`sometimes`/`bail`, wildcard display names, Laravel 13 messages | `kernel/tests/validator.test.mjs` |
+| **D1 query builder** | `where*`/`where(fn)`, `join`/`group`/`having`/`distinct`, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime`, `sum`/`avg`/`min`/`max`, `upsert`/`insertGetId`/`truncate`/`increment`/`updateOrInsert`/`chunk`, D1-safe param binding (bool→1/0, Date→ISO, undefined→NULL) | `kernel/tests/sqlite-integration.test.mjs` |
+| **Cache** | `DatabaseCacheStore` (D1-backed `database` cache), KV cache-aside, `Cache` façade (`get`/`put`/`add`/`remember`/`increment`/`decrement`/…), `forget`/`flush` | PHP 8.3 oracle (M18) |
+| **Storage** | `Storage::put()`/`get()`/`exists()`/`delete()` and `Storage::disk('<default>')` → D1 blob store (no card) or R2 (when bound); uploads `$file->store()` | M30/M39b/M40-part5 |
+| **File upload** | multipart parsed at the edge, `$request->file()` answers the file object, the `file` rule, size rules in KB | M40-part5 |
+| **Gate / policy** | `Gate::allows()`/`denies()` — the policy compiled at build time (`tools/policy-dump.php` → `dist/src/policies.generated.mjs`), the `before()` hook honoured | M39a |
+| **Event dispatch** | `Event::dispatch(new X())` — listeners compiled, run synchronously, every listener, `false` stops, the array answer | M39c/M47/M53 |
+| **Paginator** | `paginate(10)` → `LengthAwarePaginator` (items/total/pages/URL window); `$paginator->links()` renders `pagination::tailwind` byte-identical to Laravel | M40 |
+| **Mail** | `Mail::to()->send()` compiles the mailable class; mailer built from `mail.default` → log/noop/resend | M28/M57 |
+| **Queue | Scheduler** | `Queue::push()` fails loud (worker has no queue consumer); the schedule dumps to `dist/cron.json` + `schedule.generated.mjs`, the `scheduled` handler evaluates due events | M28/M29 |
+| **Method handling** | auto `OPTIONS` (200, `Allow` header); unmatched method → 405 with `errors/405` view else 500 | M40 |
+| **Route-model binding** | `show(Post $post)` — model from the route segment, 404 on miss | M40 |
 
+### Fails loud (use a port instead)
+
+| Construct | Why | Escape hatch |
+|---|---|---|
+| Blade `<x-…>` components | compile to `$__env->…` — only the layouts compile | hand-written `ports/*.mjs` |
+| Controller code outside the subset | transpiler fails the build (LW001–LW004) | a `ports/` handler |
+| `Queue::push(SomeJob::class)` | the job would never run at the edge — no queue handler, the binding carries JSON not a PHP job | CF Queues binding + a consumer you write; or a D1 table a cron reads |
+| named `Storage::disk('x')` | needs its own bucket; R2 asks for a credit card | bind R2 explicitly, or use the default disk |
+| `Cache::tags()` | the D1 `database` store has no tags | drop tags |
+| CORS config | the `Access-Control-*` headers would be missing | declare the routes in `registry.json` `ignore` |
+
+---
 
 ## What's inside
 
-- `compiler/` — **M1 view compiler** + **M10 controller compiler**: `bin/transpile.mjs` (php-parser 3.7.0, codes `LW001`–`LW004` fail-loud), `bin/controller.mjs`, `src/transpiler.mjs`, `src/controller.mjs`, `src/policy.mjs` (M39a: the policy compiler), `runtime/rt-from-context.mjs`, `tests/` (corpus 51, parity, smoke, controller, policy).
-- `kernel/` — Workers-native runtime: `router.mjs` + `response.mjs` (W3), `db.mjs` + `model.mjs` (M3 D1 builder + Model), `hash.mjs` + `encrypter.mjs` (M5), `validator.mjs` (M6) + `{mail,queue,cache,storage,scheduler}.mjs` (M7), `session.mjs` + `csrf.mjs` + `ratelimit.mjs` + `auth.mjs` (M11–M14 compiled-rung layers, PHP-8.3-oracle-verified), `cache.mjs` `DatabaseCacheStore` (M18, D1-backed `database` cache for `throttle`), `validation.mjs` `ValidationException` + session error-bag shape (M19, drives `handleHttp`'s redirect-back/422), `http.mjs` (M15 compiled HTTP pipeline), budget gate (M8).
-- `tools/` — build-time PHP: `compile-view.php` (S0 dump), `prerender.php`, `model-dump.php` (M10 Eloquent metadata), `constants-dump.php` + `formrequest-dump.php` (M23 class constants + FormRequest rules), `policy-dump.php` (M39a: the Gate/policy metadata — the abilities, the guest rules, the global Gate callbacks), `php-shadow-oracle.php` (the M24 shadow harness oracle), `verify-s0.php`, `schema-compile.php`, `docs-check.mjs` + `bench.mjs` (M8 gates; `pragma_table_info` fallback, D1 AUTH-safe), `pack-smoke.mjs` (M31: packs the repo, installs the tarball into an empty project and builds a real app with it - the published file set is proven, not assumed), `constructs.json` + `construct-audit.mjs` (the **construct audit**: every construct an app can meet is probed against the real compiler; the table in `COMPILED.md` is generated from it and `check:docs` fails when it drifts - the docs cannot lie about what compiles).
-- `shadow/` — the proof machine (M24): `run.mjs` replays a scenario against the real app (PHP oracle) and the compiled worker and diffs status/headers/body byte-wise; `scenarios/<app>.mjs` is the per-app corpus. `npm run test:shadow -- --app <app-root>` or `laravel-workers shadow --app <app-root>`.
-- `build.mjs` — app build pipeline (copies into a Laravel app's build dir; `dist/kernel` layout + `dist/schema.json` snapshot + `dist/schema.sql` (the same schema as SQL, for `wrangler d1 execute`) + `routes.generated.mjs` route table with names/domains and a `routeNames` map + `public/_routes.json` for Cloudflare Static Assets).
-- `MAP.md` — the map (+105/105 Laravel 13.x docs verdicts, tolerance model, budgets, prior-art policy).
+```
+compiler/                 transpile Blade→PHP→JS (build time)
+  src/transpiler.mjs       PHP-subset → dependency-free ESM (LW001–LW004)
+  src/controller.mjs       controller methods → JS handlers
+  src/policy.mjs           Gate/policy compiler (M39a)
+  runtime/rt-from-context.mjs, rt*.mjs   the VM: concat, sprintf, DateTime, …
+  tests/                   corpus 51 + parity + smoke + controller + policy + source-syntax
+
+kernel/                   Workers-native runtime (request time, 0 PHP)
+  http.mjs                 the compiled HTTP pipeline (M15)
+  router.mjs  db.mjs  model.mjs  sqlite.mjs
+  session.mjs csrf.mjs auth.mjs ratelimit.mjs hash.mjs encrypter.mjs
+  validator.mjs validation.mjs php-serialize.mjs php-json.mjs
+  cache.mjs storage.mjs mail.mjs queue.mjs scheduler.mjs paginator.mjs
+  tests/                   502/502 (see npm run test:all)
+
+tools/                    build-time PHP + JS helpers (boot the real app)
+  schema-compile.php       migrations → in-memory SQLite → D1 DDL (driver-agnostic)
+  compile-view.php  model-dump.php  constants-dump.php  formrequest-dump.php
+  policy-dump.php  event-dump.php  class-dump.php  schedule-dump.php
+  routes-dump.mjs  config-dump.mjs  constants-dump.mjs  (pure JS re-implementations)
+  _root.php  init.mjs  vendor-lite.mjs  php-provision.mjs  php-runtime.mjs
+  verify-s0.php  pack-smoke.mjs  docs-check.mjs  bench.mjs  constructs.json
+
+shadow/                   M24 proof machine: real Laravel app (PHP 8.3) vs the
+                          compiled worker, byte-wise diff of status/headers/body
+
+build.mjs                 the pipeline: routes → controllers → views → schema →
+                          config → prerender → readiness gate → dist/
+```
+
+---
 
 ## Requirements
 
-Versions actually tested (byte-parity corpus + CI + live deploy):
-
 | Component | Tested with | Requirement |
-| --- | --- | --- |
-| Laravel | `13.37.0` (nearFind, app-breeze), `11.34.2` (blogkit) | 10–13 as source of truth |
-| PHP — build time only | `8.3.30` (ZTS x64, Windows) | **≥ 8.3**; parity oracle is 8.3 (other minors untested) |
-| Composer | none needed | vendor is provisioned automatically via composer-free vendor-lite (no `composer install`), or the app's own `vendor/` when present |
+|---|---|---|
+| Laravel (source of truth) | `13.37.0` (nearFind), `11.34.2` (blogkit) | **≥ 10** |
+| PHP — build time only | `8.3.30` (ZTS x64, Windows) | **≥ 8.3**; parity oracle is 8.3.30 |
+| Composer | none | not needed — vendor-lite provisions deps; app's own `vendor/` works too |
 | Node | `22.18.0` | **≥ 22** (`engines`) |
 | npm | `10.9.3` | ≥ 10 |
-| Cloudflare Workers | `wrangler` `4.151.1` | 4.x; `compatibility_date` `2026-08-01` (live corpus) / `2026-10-01` (`init` template) |
-
-- Laravel app as source of truth (Vite unchanged, sessions/CSRF off by default in this pipeline).
-- `php-parser@3.7.0` (npm) for the compiler, `bcryptjs@2.4.3` for `kernel/hash` (pure JS, no native).
-- Cloudflare account for deploy (D1 binding id `ad5876a0-c5eb-493c-917e-5e8f0e543200` in this repo's test Wrangler). **Free plan safe — measured 1–6 ms CPU.**
+| Cloudflare Workers | `wrangler` `4.151.1` | 4.x; `compatibility_date` `2026-10-01` |
+| PHP extensions (build only) | `pdo_sqlite`, `sqlite3` | for `tools/schema-compile.php` |
 
 ### The Cloudflare tiers we target (in order)
 
-1. **Free plan first** — the D1 blob store (`lw_blobs`, 1,5 MB per object, no extra product, **no credit card**) is the default object store; the Workers free limits (10 ms CPU/req, 50 subrequests, 100k D1 writes/day, 5M reads/day) are the budget the kernel is measured against.
-2. **R2 when the app really needs it** — a **named** disk (its own bucket), an object above 1,5 MB, or many objects. R2's free tier (10 GB-month, 1M Class A, 10M Class B, free egress) is generous, but **R2 asks for a payment method** — so the build never turns it on by itself: it prints the `wrangler.jsonc` snippet and the operator decides.
-3. **The paid plan, only when the free path really cannot do it** — if an app needs more than the free quotas (or a paid-only Cloudflare feature), that is a *deliberate operator decision*: the toolchain stays free-plan-shaped by default, says exactly what the app needs, and the operator opts into the paid plan. Nothing in the compiler assumes a paid plan, and no construct is blocked *because* the free plan is too small — the build only fails loud when the edge genuinely cannot answer like PHP.
+1. **Free plan first** — Workers (10 ms CPU/req, 50 subrequests), D1 (100k writes/day, 5M reads/day), KV, the D1 blob store (`lw_blobs` — 1.5 MB/object, **no credit card**) as the default object store. The 1008–2018 ms CPU of PHP-in-Worker fails this budget; the compiled rung is p95 ≤ 5 ms.
+2. **R2 when the app really needs it** — a **named** disk, an object > 1.5 MB, or many objects. R2's free tier (10 GB-month, 1M Class A, 10M Class B) is generous, **but R2 asks for a payment method** — so the build never turns it on by itself: it prints the `wrangler.jsonc` snippet and the operator decides.
+3. **The paid plan, only when the free path cannot do it** — Dynamic Workers and the full Queues (billed per op) are the only paid-only features. The toolchain stays free-plan-shaped by default; no construct is blocked *because* the free plan is too small — the build fails loud only when the edge genuinely cannot answer like PHP.
 
-**Three levels, not two — "paid" is not the same as "needs a credit card"** (the Cloudflare docs, checked 2026-10-21; the pages were last updated 2026-04-21):
-- the **free plan** (no card, no subscription): Workers, D1, KV, the D1 blob store, a *limited* version of Queues (10,000 operations/day included, 128 KB per message, 24 h retention on the free plan) and Durable Objects (100k requests + 100k row writes per day);
-- the **Workers paid plan** (a subscription): Dynamic Workers (only on the paid plan) and the full Queues (billed per operation);
-- a **payment method** (a credit card): R2 — even its free tier asks for one. That is the only product in the list that needs a card.
+**Three levels, not two** (checked against the Cloudflare docs 2026-10-21): free plan (no card, no subscription) · Workers paid plan (a subscription) · a payment method (a card) — **R2 is the only product that needs a card**.
+
+---
 
 ## Quick start
 
 ```bash
-# 1) As an npm package in a real Laravel app (recommended):
-cd my-laravel-app             # artisan + vendor there
+# in a real Laravel app (vendor + public/build there):
+cd my-laravel-app
 npx laravel-workers build --strict   # dist/ — vendor + APP_KEY + schema + wrangler.jsonc all automatic
-#   (optional) npx laravel-workers init   # the same scaffolding, before building; also touches .gitignore
-# local preview / deploy: npx wrangler d1 create my-laravel-app  # the ONE manual step — paste its id into wrangler.jsonc
-#   npx wrangler d1 execute DB --file=dist/schema.sql --remote  # then:
-#   npx wrangler deploy
 
-# 2) From checkout (tests / legacy edge layout):
+# the ONE manual step (cloud provisioning the build refuses to do):
+npx wrangler d1 create my-laravel-app
+#   paste the returned database_id into wrangler.jsonc (the build wrote a placeholder)
+npx wrangler d1 execute DB --file=dist/schema.sql --remote
+npx wrangler deploy
+
+# optional scaffold (idempotent; the build does it anyway):
+npx laravel-workers init
+```
+
+From checkout (developing the toolchain, tests):
+
+```bash
 git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
-npm run setup                 # root + compiler deps
-
-npm test                      # 359/359 - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + registry-json + ports + budget + the PHP oracle parity - router + db/model + sqlite + hash + encrypter + validator + services + routes-json + registry-json + ports + budget
-npm run test:corpus           # 51/51 — M1 transpiler corpus
-npm run test:hash             # 7/7  — hash + encrypter only
-
-# verify/build against the parent Laravel checkout (legacy edge/ also works):
-npx laravel-workers verify    # VERIFY-S0 15/15 (else SKIP)
-npx laravel-workers build     # --strict build; reads registry.json / edge/registry.json from app cwd
+npm run setup               # root + compiler deps
+npm test                    # 502 kernel + corpus/parity/oracle
+npm run test:corpus         # 51/51 — M1 transpiler corpus
+npm run test:sqlite         # real in-memory SQLite integration
+npx laravel-workers verify  # VERIFY-S0 15/15 (else SKIP — needs parent vendor/)
 ```
+
+---
 
 ## CLI
 
 ```bash
-laravel-workers test            # all kernel tests (380)
-laravel-workers test:db          # db/model only
-laravel-workers test:sqlite      # real in-memory SQLite integration (node:sqlite)
-laravel-workers test:hash       # hash + encrypter only
-laravel-workers test:validator  # validator only
-laravel-workers test:services   # mail/queue/cache/storage/scheduler
-laravel-workers test:budget     # budget gate only
-laravel-workers test:corpus     # transpiler corpus (51)
-laravel-workers bench           # micro-bench (bench.mjs)
-laravel-workers check:docs      # docs-check 105/105
-laravel-workers init            # scaffold registry.json + wrangler.jsonc (needs Laravel app root)
-laravel-workers build           # --strict (needs Laravel app); --scaffold generates + registers port stubs
+laravel-workers init            # scaffold registry.json + wrangler.jsonc (idempotent)
+laravel-workers build           # --strict (needs Laravel app root); --scaffold generates port stubs
 laravel-workers verify          # php tools/verify-s0.php (SKIP when no parent vendor/)
-laravel-workers shadow          # the shadow harness: the real app (PHP oracle) vs the compiled worker
+laravel-workers shadow --app <root>   # compare real PHP app (oracle) vs compiled worker, byte-diff
 
-# npm aliases do the same:
-npm test                      # kernel
-npm run test:corpus
-npm run build
-npm run verify
-# also: npm run bench / npm run check:docs / npm run test:budget / npm run test:services / npm run test:pack / npm run audit:constructs etc.
+# npm aliases:
+npm test                # 768/768 tests
+npm run test:corpus     # 51/51 transpiler corpus
+npm run test:hash       # hash + encrypter only
+npm run test:sqlite     # in-memory SQLite integration
+npm run bench           # micro-bench p95 budget
+npm run check:docs      # 105/105 docs verdicts
+npm run audit:constructs # facade coverage audit
 ```
+
+---
 
 ## Zero-touch / CI (Workers Builds)
 
-Works on any Laravel ≥ 10 project — a clone you just pulled, or an app you've been running for two years. The two questions the docs always dodge:
+Works on any Laravel ≥ 10 project — a fresh clone or an app you've been running for years. Every PHP helper boots the real Laravel app through `vendor/autoload.php` — **that is the one thing that cannot be skipped**. Everything else is automatic.
 
-### What does the build actually need?
-
-Every build step (route export, view compilation, schema extraction, config dump, model introspection — all of it) boots the real Laravel app through `vendor/autoload.php`. That is the one thing that cannot be skipped. Everything else has been removed.
-
-| Requirement | Old way | Current way |
+| Requirement | Old way | Now |
 |---|---|---|
-| PHP vendor files | `composer install` (379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader. No composer binary. Same result, different path. |
-| Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots the app, runs migrations against an in-memory SQLite (Laravel emits SQLite DDL regardless of the app's actual driver), dumps the schema. No DB file, no migrate step. Driver-agnostic: MySQL/Postgres/SQLite source apps all produce the same D1-SQLite output. |
-| `.env` with `APP_KEY` | `php artisan key:generate` | **automatic at build** — `build.mjs` writes `APP_KEY=base64:<32 random bytes>` into `.env` (from `.env.example` when present) if no key is set, and `tools/_root.php`'s `lw_boot_app()` injects one for tools run outside the build. No artisan, no manual step. The key is **stable** (written once, reused) because the deployed worker encrypts cookies/sessions with it. |
-| `composer install` binary | required on cold clone | **not required** — vendor-lite handles it. If the app already has `vendor/`, nothing runs. |
+| PHP vendor files | `composer install` (~379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader. Content-addressed cache (pays once per lock). No composer binary. |
+| Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots app, migrates in-memory SQLite, dumps via pragma. No DB file. Driver-agnostic (MySQL/Postgres/SQLite source → same D1 DDL output). |
+| `APP_KEY` | `php artisan key:generate` | **Automatic** — `build.mjs` writes `base64:<32 bytes>` into `.env` if absent. Stable across rebuilds (the worker encrypts cookies with it). `tools/_root.php` also auto-injects it for standalone tool runs. |
 
-### What "zero config" actually means
+`registry.json` and `wrangler.jsonc` are **optional** — the build uses sensible defaults and auto-writes `wrangler.jsonc` when absent (worker name from the app-dir slug; `database_id` is a placeholder). So even the scaffolding happens at build time.
 
-`npx laravel-workers build --strict` is **self-sufficient**. Nothing else is required:
+### The one manual step
 
-1. **`vendor/autoload.php`** — on an existing app this already exists; on a fresh clone vendor-lite provisions it in seconds (content-addressed cache, pays once per `composer.lock`, not once per build).
-2. **`APP_KEY`** — nothing to do: the build generates one and writes it to `.env` if absent (pure Node.js `crypto.randomBytes(32)`, the same bytes `artisan key:generate` produces). It persists, so redeploys keep existing sessions valid.
-
-`registry.json` and `wrangler.jsonc` are **optional** — `build` uses sensible defaults without them (autoSnapshot on, no ports), and auto-writes `wrangler.jsonc` (worker name from the app-dir slug, `database_id` placeholder) + `.env`/`APP_KEY` when they're missing. So even the scaffolding happens at build: zero manual setup before `dist/` exists. `npx laravel-workers init` does the same standalone for teams that want it committed first.
-
-That is all. No `composer install`, no `migrate`, no pre-existing SQLite file, no `init`.
-
-### One honest caveat
-
-`vendor-lite` fetches from packagist and writes a minimal autoloader from the lock-resolved package list. If an app's `composer.json` has custom autoload entries that reference the app's own files (`"autoload": { "psr-4": { "App\\": "app/" } }` is fine — that's Laravel's default), vendor-lite handles it. If an app has `"autoload-files"` pointing at files outside the vendor tree, vendor-lite detects this and tells you to run `composer install --no-dev` instead. The goal is that **vendor-lite works for the normal case and tells you clearly when it cannot**.
-
-Workers Builds (Dashboard → Workers → connect the GitHub repo) — config is injected in the build command, nothing is committed:
+The build **never provisions cloud resources**. Obtaining the D1 `database_id` requires a live call to Cloudflare:
 
 ```bash
-# auto-scaffolded by the build if missing: wrangler.jsonc (worker name = app slug,
-# database_id placeholder) + .env/APP_KEY. `init` = same, standalone:
-npx -y laravel-workers@0.4.0 build --strict
-# D1 schema (tables from migrations + lw_blobs if the app uses Storage::)
+npx wrangler d1 create my-app    # paste the returned id into wrangler.jsonc
 npx wrangler d1 execute DB --file=dist/schema.sql --remote
-# deploy: npx wrangler deploy
+npx wrangler deploy
 ```
 
-The build image must provide PHP >= 8.3. Composer is not needed — the build provisions the vendor tree itself.
+**One honest caveat:** if `composer.json` has `"autoload-files"` pointing outside the vendor tree, vendor-lite detects this and tells you to `composer install --no-dev` — it cannot satisfy those entries from packagist.
+
+---
 
 ## Architecture (30 s)
 
 ```
 Laravel app (dev truth)
-  └─ edge/tools/*.php   S0  dump routes / Blade-compiled HTML+context / schema / config (PHP boots here ONLY)
-  └─ edge/build.mjs     S1  transpile Blade→JS, routes→router, schema→schema.json + generated controllers
-  └─ bundler            S2  kernel + generated → worker ESM
-  └─ golden tests       S3  Laravel render vs compiled render byte-equal
-  └─ --strict gate      S4  uncovered route → fail
-  └─ prerender          S5  clean GET → static snapshot (0-invocation tier)
-  └─ wrangler deploy    S6  deploy → Workers + D1
+  └─ tools/*.php          S0   dump routes / compiled Blade / schema / config (PHP boots here ONLY)
+  └─ tools/*.mjs          S1   transpile Blade→JS, routes→router, schema→schema.json + controllers
+  └─ bundler              S2   kernel + generated → worker ESM
+  └─ golden tests         S3   Laravel render vs compiled render byte-identical
+  └─ --strict gate        S4   uncovered route → fail
+  └─ prerender            S5   clean GET → static snapshot (0-invocation tier)
+  └─ wrangler deploy      S6   deploy → Workers + D1
 ```
+
+PHP boots **only at S0** (build time). The edge (S1–S6) is pure JS.
+
+---
 
 ## Docs & checks
 
-- `MAP.md` — auto-snapshot semantics, D1 max-queries note, Unknowns-to-verify, and Appendix C (105 docs pages → verdict; no blanks, releases must re-check `laravel/docs@13.x` — W8).
-- `compiler/tests/run-corpus.mjs` — oracle; `compiler/tests/parity-m1` + `tools/verify-s0.php` — green in M1.
-- `kernel/tests/{router,db,hash,encrypter,validator,services,routes-json,registry-json,ports,budget}.test.mjs` — M5 proves `make`/`check`/`encryptString`/`decryptString` round-trip, tamper, wrong-key, unicode.
+- `MAP.md` — full construct coverage map, 105 docs verdicts, D1 limits, unknown-to-verify list.
+- `tools/constructs.json` — every `Illuminate\Support\Facades\*` (Laravel 13, 47 rows) with a verdict.
+- `npm run check:docs` — 105/105. `npm run audit:constructs` — facade coverage.
+- `kernel/tests/budget.test.mjs` — p95 ≤ 5 ms hot, ≤ 30 ms for the encrypter.
+
+---
 
 ## Philosophy
 
-- **Laravel stays Laravel** — this is the toolchain, not app code; no fork of framework.
+- **Laravel stays Laravel** — this is the toolchain, not a framework fork.
 - **Coverage enforced** — unhandled route = warning; `--strict` = failure. No silent gaps.
-- **Free-plan-first** (`10ms` CPU, `50` subrequests, `5M` D1 reads/day) — Paid is headroom, never a fallback.
-- **Honest claims** — "approach in progress" until M1–M5 measured; prior-art scan stays clean before any "discovery" claim.
+- **Free-plan-first** — paid is headroom, never a fallback; the build says exactly what the app needs.
+- **Honest claims** — no "approach in progress" before M1 was measured; prior-art scan clean.
 
-## Roadmap (living)
-
-- **M6** Validation kernel — done (M6).
-- **M7** Services kernel — done (M7).
-- **M8** Final gates — done: docs-check 105/105 + bench/budget p95 ≤5ms + CI + pack green.
-- **M9** Zero-touch hardening — done: stubs fail loud, `LW_CONFIG`/`LW_PORTS_DIR`, optional registry, fresh-Laravel e2e job in CI (strict build → dist asserts → `wrangler dev` runtime smoke).
+---
 
 ## License
 
