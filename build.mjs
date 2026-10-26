@@ -2235,8 +2235,8 @@ if (!existsSync(join(dist, 'src', 'classes.generated.mjs'))) {
 let schemaTableCount = 0;
 mkdirSync(cacheDir, { recursive: true });
 const schemaPath = join(cacheDir, 'schema.json');
-console.log('\u2022 dumping DB schema');
-execFileSync(PHP, [join(pkgDir, 'tools', 'schema-dump.php'), schemaPath], {
+console.log('\u2022 compiling migrations \u2192 schema (D1 SQLite dialect, in-memory)');
+execFileSync(PHP, [join(pkgDir, 'tools', 'schema-compile.php'), schemaPath], {
   cwd: appDir,
   env: childEnv(),
 });

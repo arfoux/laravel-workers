@@ -1,5 +1,23 @@
 <?php
 
+/**
+ * schema-compile.php — compile the app's migrations to a D1-ready schema
+ * snapshot, WITHOUT requiring the app's database to be migrated first.
+ *
+ * How it works:
+ *   1. boot the app (same as every other dump: reads .env + vendor),
+ *   2. point the default connection at an in-memory SQLite database,
+ *   3. run every migration against it (Laravel's Schema builder compiles the
+ *      SQL with the SQLite grammar — the D1 dialect — no matter what driver
+ *      the app is configured for: MySQL, Postgres or SQLite are all read
+ *      through the same migration files),
+ *   4. dump the resulting schema through the SQLite pragma interface.
+ *
+ * Output shape is identical to the old schema-dump.php, so `build.mjs` only
+ * changes which tool it spawns. The consumer (dist/schema.json + schema.sql)
+ * is unchanged.
+ */
+
 require_once __DIR__ . '/_root.php';
 $root = lw_app_root();
 
@@ -7,12 +25,47 @@ require lw_vendor_autoload();
 
 $app = require $root . '/bootstrap/app.php';
 
-$kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-$request = Illuminate\Http\Request::create('/', 'GET');
-$response = $kernel->handle($request);
-$kernel->terminate($request, $response);
+// A console kernel is what knows how to run `artisan migrate`; boot it (it also
+// registers the migration repository service that `migrate` depends on).
+$console = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$console->bootstrap();
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Config;
+
+// ---- point the default connection at a throwaway in-memory SQLite ----
+// This has to happen AFTER bootstrap (config is loaded) but BEFORE migrate.
+// `:memory:` keeps one PDO alive per connection name inside Laravel, so the
+// migrations and the pragma reads below share the same database.
+$compileConn = 'lw_compile';
+Config::set('database.default', $compileConn);
+Config::set("database.connections.$compileConn", [
+    'driver'                  => 'sqlite',
+    'database'                => ':memory:',
+    'prefix'                  => '',
+    'foreign_key_constraints' => false,
+    // Laravel's migrations table; needed by the migrator. No FKs enforced
+    // during the compile — the DDL carries the constraints for D1 instead.
+]);
+DB::purge($compileConn); // drop any stale resolved connection for this name
+
+// ---- run all migrations against that in-memory SQLite ----
+// `--force` skips the confirmation prompt; `--no-interaction` keeps CI/SSH
+// clean. Laravel creates the `migrations` repository table itself on first run.
+$exit = $console->call('migrate', [
+    '--force'          => true,
+    '--no-interaction' => true,
+]);
+if ($exit !== 0) {
+    fwrite(STDERR, "schema-compile: `artisan migrate` exited with status {$exit}\n");
+    // the migrate output is already on the console; say which migrations were
+    // clean, so the operator can fix the raw-SQL ones loudly.
+    exit(1);
+}
+
+// ---- dump the schema exactly like schema-dump.php ----
+// The queries below are SQLite pragma introspection; the connection is the
+// in-memory SQLite we just migrated, so the DDL is the D1 dialect.
 
 $escape = static function (string $name): string {
     return str_replace("'", "''", $name);
@@ -142,7 +195,7 @@ foreach ($tables as $table) {
 $json = json_encode($out, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
 if ($json === false) {
-    fwrite(STDERR, "schema-dump: JSON encode failed\n");
+    fwrite(STDERR, "schema-compile: JSON encode failed\n");
     exit(1);
 }
 

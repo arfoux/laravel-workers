@@ -59,7 +59,7 @@ and more on a real app:
 | `route:list --json` | 1 | |
 | `config-dump.php` | 1 | |
 | `schedule-dump.php` | 1 | |
-| `schema-dump.php` | 1 | |
+| `schema-compile.php` | 1 | |
 | `prerender.php` | **1 per route** | a 50-route app = 50 boots |
 | `compile-view.php` | **1 per view**, and again per error view | two call sites, lines 621 and 1278 |
 | `model-dump.php` | **3+**, and one per transitive round | lines 1004, 1015, 1137 |
