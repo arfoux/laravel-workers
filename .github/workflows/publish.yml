@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
 
+# Release = a tag, not a version edit: `npm version patch` (omit
+# --no-git-tag-version) writes package.json, commits and creates the `v*` tag in
+# one act, then `git push && git push --follow-tags`. Editing package.json by
+# hand (or with --no-git-tag-version) publishes nothing — this workflow listens
+# for tags. Publishing on every push to main would be worse: a mid-development
+# merge would cut a release and npm rejects a version that already exists.
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -14,6 +20,13 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      - name: The tag must name the version package.json carries
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json ($want) — retag the release commit" >&2
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
