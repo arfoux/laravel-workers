@@ -1,16 +1,33 @@
 # laravel-workers
 
-> A build-time toolchain: Laravel app in, Cloudflare Workers artifact out. Blade views, routes and the D1/read paths it can verify against PHP 8.3 are compiled to dependency-free JS at build time. What it cannot verify **fails the build** — no silently-wrong output ships.
+> Compile your Laravel app to a tiny JS bundle that runs on Cloudflare Workers.
+> No PHP at the edge. No WASM. No cold-start drama.
 
 [![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm](https://img.shields.io/badge/npm-laravel--workers-9cf.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**What it is.** A toolchain with three parts:
+---
 
-- `compiler/` — Blade → PHP → JS transpiler (byte-parity corpus + PHP 8.3 oracle).
-- `kernel/` — Workers-native runtime: router, D1 query builder, models, sessions, auth, validation, cache, mail, queue, scheduler.
-- `build.mjs` — pipeline → `dist/` artifact ready for `wrangler deploy`.
+**What makes this different.**
 
-Laravel stays the source of truth in dev; the edge runs compiled JS + D1. It is **not** a Laravel runtime and **not** PHP-in-Worker (WASM). Controllers ARE transpiled (a documented subset; anything outside it fails the build and needs a `ports/*.mjs` handler). **Free-plan-safe** (budget p95 ≤ 5 ms, measured by `kernel/tests/budget.test.mjs`).
+Most edge-Laravel projects still run PHP somewhere — Octane, WASM, or a separate PHP host. That means PHP cold starts (~1000–2000 ms CPU), WASM bootstrapping, or a permanently warm PHP server to call.
+
+`laravel-workers` takes the opposite approach: **compile at build time, run pure JS at the edge.**
+
+```
+Laravel app (your dev machine)
+  └─ laravel-workers build
+       ↓ Blade → PHP → JS  (real Laravel compiler, byte-parity verified)
+       ↓ routes + models + config → generated JS modules
+  → dist/  (a small ESM bundle)
+       ↓ wrangler deploy
+  Cloudflare Workers  (V8 isolates — the same runtime as every other Worker)
+```
+
+The edge is just a Worker. It boots in **microseconds** (V8 isolates, no PHP, no WASM), runs your Blade views, queries D1, manages sessions — all in ~**5 ms CPU** (p95, measured by `kernel/tests/budget.test.mjs`).
+
+What this is **not:** a Laravel runtime, or PHP-in-Worker. Your Laravel app is the source of truth in development; the edge runs compiled output that was verified byte-identical against PHP 8.3 during the build. Any construct the compiler cannot handle **fails the build** — no silently wrong answer ships.
+
+**Construct coverage:** 114 audited — 41 compile, 63 fail loud with specific reasons, 10 documented at the build level. Every Laravel 13 façade has a row in `tools/constructs.json`.
 
 ---
 
