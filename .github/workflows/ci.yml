@@ -95,11 +95,12 @@ jobs:
       - name: Create a fresh Laravel app
         run: composer create-project laravel/laravel e2e-app --no-interaction --prefer-dist
       - name: Prepare the app
+        # The frontend needs building (Vite), and prerender/session need a real
+        # sqlite file. APP_KEY is NOT prepared: build.mjs auto-generates it.
         run: |
           cd e2e-app
           touch database/database.sqlite
           cp .env.example .env
-          php artisan key:generate
           npm install # a fresh Laravel app ships no package-lock.json, so npm ci cannot be used
           npm run build
       - name: Pack the published artifact

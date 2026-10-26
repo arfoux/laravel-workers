@@ -2,6 +2,12 @@
 
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 
+## v0.4.3 (prepared)
+
+- New: **auto APP_KEY** — `build.mjs` writes `APP_KEY=base64:<32 random bytes>` into `.env` when absent (from `.env.example` when present), so a fresh clone builds with zero manual config. The key persists across rebuilds (the worker encrypts cookies/sessions with it). `schema-compile.php` uses `lw_boot_app()`, which injects a key for standalone runs too.
+- New: **auto `wrangler.jsonc`** — when absent, build.mjs scaffolds it with the worker name from the app-dir slug and a `database_id` placeholder. It never creates cloud resources — only the local config file; obtaining the real id is the one manual step (`npx wrangler d1 create`).
+- Docs: README Quick start + zero-touch section rebuilt around "build is self-sufficient, `init` optional"; CI e2e drops the stale `php artisan key:generate` to actually prove the zero-config path.
+
 ## v0.4.2
 
 Bug-fix release for the npm tarball (what a user installs and what `build.mjs` runs against must ship):

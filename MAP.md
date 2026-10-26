@@ -392,7 +392,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | Compiled rung (kernel layers M11–M22) | ✅ session/csrf/ratelimit/auth/hash/encrypter/validator/cache/validation — PHP-8.3-oracle verified |
 | Controller transpilation (M10/M17/M22/M23) | ✅ GET/POST/PUT/PATCH/DELETE, one handler per verb; FormRequests, `Cache`/`Hash` facades, class constants, Eloquent writes, `auth.basic`; anything outside the subset fails the build |
 | Shadow harness (M24) | ✅ the real app (PHP 8.3 + sqlite) vs the compiled worker, byte-wise diff of status/headers/body; construct app 17/19 byte-identical (2 documented divergences), fresh app 9/10 (1), 0 unexplained |
-| CI (M25) | ✅ `test` + `parity` (the PHP oracle parity runs for real against a fresh app, `migrate` needed for DB-dependent tests) + `e2e` (fresh Laravel, zero config — schema-compile handles DB schema from migrations, no pre-migrate needed) |
+| CI (M25) | ✅ `test` + `parity` (the PHP oracle parity runs for real against a fresh app, `migrate` needed for DB-dependent tests) + `e2e` (fresh Laravel, **zero config** — schema-compile derives the D1 schema from migrations, build auto-generates `APP_KEY` + `wrangler.jsonc`; the only prepared steps are Vite's `npm install`/`build` and a sqlite file for prerender/session) |
 | Test counts | npm test 359/359 · corpus 51/51 · docs-check 105/105 |
 | W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (51/51) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (128/128 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |

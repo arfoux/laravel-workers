@@ -39,7 +39,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 
@@ -238,6 +238,31 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
     writeFileSync(envPath, envText);
     process.env.APP_KEY = key;
     console.log('  -> APP_KEY: generated and written to .env (the worker signs cookies with it)');
+  }
+}
+
+// ---- ensure wrangler.jsonc (optional; deploy config, NOT cloud provisioning) ----
+// We write a minimal wrangler.jsonc when none exists so the user lands in a
+// deploy-ready state: the worker name is derived from the app directory slug,
+// and the D1 database_id is a placeholder (obtaining it is `npx wrangler d1
+// create <name>` — a cloud-provisioning step the build deliberately does NOT
+// do). If wrangler.jsonc exists, it is untouched.
+{
+  const wranglerPath = join(appDir, 'wrangler.jsonc');
+  if (existsSync(wranglerPath)) {
+    console.log('  -> wrangler.jsonc already exists — left as-is (set "database_id" after `npx wrangler d1 create <name>`)');
+  } else {
+    const slug = basename(appDir).toLowerCase().replace(/[^a-z0-9-]+/g, '-') || 'laravel-workers-app';
+    writeFileSync(wranglerPath, `{
+  "name": "${slug}",
+  "main": "./dist/src/worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+  "d1_databases": [ { "binding": "DB", "database_name": "${slug}", "database_id": "REPLACE_WITH_D1_ID" } ],
+  "observability": { "enabled": true }
+}
+`);
+    console.log(`  -> wrangler.jsonc: written (worker name "${slug}") — run \`npx wrangler d1 create ${slug}\` and paste the returned id into "database_id"`);
   }
 }
 // A Vite app writes public/build/manifest.json. A Mix/webpack app writes

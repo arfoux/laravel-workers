@@ -75,11 +75,12 @@ Versions actually tested (byte-parity corpus + CI + live deploy):
 
 ```bash
 # 1) As an npm package in a real Laravel app (recommended):
-cd my-laravel-app             # artisan + vendor + public/build there
-npm i laravel-workers
-npx laravel-workers init             # writes registry.json + wrangler.jsonc + .env (APP_KEY via pure JS), updates .gitignore
-npx laravel-workers build --strict   # dist/ (cwd-based); vendor + schema handled automatically — no separate steps
-# local preview/deploy: npx wrangler deploy
+cd my-laravel-app             # artisan + vendor there
+npx laravel-workers build --strict   # dist/ — vendor + APP_KEY + schema + wrangler.jsonc all automatic
+#   (optional) npx laravel-workers init   # the same scaffolding, before building; also touches .gitignore
+# local preview / deploy: npx wrangler d1 create my-laravel-app  # the ONE manual step — paste its id into wrangler.jsonc
+#   npx wrangler d1 execute DB --file=dist/schema.sql --remote  # then:
+#   npx wrangler deploy
 
 # 2) From checkout (tests / legacy edge layout):
 git clone https://github.com/arfoux/laravel-workers
@@ -138,12 +139,14 @@ Every build step (route export, view compilation, schema extraction, config dump
 
 ### What "zero config" actually means
 
-The build needs three things:
+`npx laravel-workers build --strict` is **self-sufficient**. Nothing else is required:
+
 1. **`vendor/autoload.php`** — on an existing app this already exists; on a fresh clone vendor-lite provisions it in seconds (content-addressed cache, pays once per `composer.lock`, not once per build).
 2. **`APP_KEY`** — nothing to do: the build generates one and writes it to `.env` if absent (pure Node.js `crypto.randomBytes(32)`, the same bytes `artisan key:generate` produces). It persists, so redeploys keep existing sessions valid.
-3. **`registry.json` + `wrangler.jsonc`** — written by `npx laravel-workers init` or copy-pasted from below.
 
-That is all. No `composer install`, no `migrate`, no pre-existing SQLite file.
+`registry.json` and `wrangler.jsonc` are **optional** — `build` uses sensible defaults without them (autoSnapshot on, no ports), and auto-writes `wrangler.jsonc` (worker name from the app-dir slug, `database_id` placeholder) + `.env`/`APP_KEY` when they're missing. So even the scaffolding happens at build: zero manual setup before `dist/` exists. `npx laravel-workers init` does the same standalone for teams that want it committed first.
+
+That is all. No `composer install`, no `migrate`, no pre-existing SQLite file, no `init`.
 
 ### One honest caveat
 
@@ -152,16 +155,8 @@ That is all. No `composer install`, no `migrate`, no pre-existing SQLite file.
 Workers Builds (Dashboard → Workers → connect the GitHub repo) — config is injected in the build command, nothing is committed:
 
 ```bash
-cat > registry.json <<'JSON'
-{ "autoSnapshot": true, "ports": {} }
-JSON
-cat > wrangler.jsonc <<'JSONC'
-{ "name": "my-app", "main": "./dist/src/worker.mjs", "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
-  "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<from: npx wrangler d1 create my-app>" } ],
-  "observability": { "enabled": true } }
-JSONC
-npx -y laravel-workers@0.4.0 init    # registry.json + wrangler.jsonc + .env/APP_KEY (pure JS)
+# auto-scaffolded by the build if missing: wrangler.jsonc (worker name = app slug,
+# database_id placeholder) + .env/APP_KEY. `init` = same, standalone:
 npx -y laravel-workers@0.4.0 build --strict
 # D1 schema (tables from migrations + lw_blobs if the app uses Storage::)
 npx wrangler d1 execute DB --file=dist/schema.sql --remote
