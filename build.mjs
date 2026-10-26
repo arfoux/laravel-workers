@@ -25,6 +25,7 @@ import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mj
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
+import { compileView } from './compiler/blade.mjs';
 import { provisionPhp } from './tools/php-provision.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import {
@@ -246,7 +247,7 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
 console.log('• exporting routes via `php artisan route:list --json` (booted through the resolved autoloader)');
 let listed;
 try {
-  const rawRoutes = execFileSync(PHP, [join(pkgDir, 'tools', 'routes-dump.php')], { cwd: appDir, env: childEnv() }).toString('utf8');
+  const rawRoutes = execFileSync('node', [join(pkgDir, 'tools', 'routes-dump.mjs')], { cwd: appDir, env: childEnv() }).toString('utf8');
   try {
     listed = JSON.parse(rawRoutes);
   } catch {
@@ -565,10 +566,10 @@ try {
 // ---------- 2b. runtime config (compiled HTTP kernel) ----------
 // kernel/http.mjs reads a FLAT dotted config. Anything the compiled rung cannot
 // honour fails the build here instead of producing a silently-degraded worker.
-console.log('• dumping runtime config via `tools/config-dump.php`');
+console.log('• dumping runtime config via `tools/config-dump.mjs`');
 let runtimeConfig;
 try {
-  const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'config-dump.php')], {
+  const raw = execFileSync('node', [join(pkgDir, 'tools', 'config-dump.mjs')], {
     cwd: appDir,
     env: childEnv(),
     maxBuffer: 1 << 24,
@@ -675,10 +676,10 @@ let cronTriggers = [];
 // becomes a cron trigger (the padanan — Free allows 5 triggers per account) and
 // the due event is queued for the app runtime that still exists.
 {
-  console.log('• dumping the app schedule via `tools/schedule-dump.php`');
+  console.log('• dumping the app schedule via `tools/schedule-dump.mjs`');
   let schedule = { events: [] };
   try {
-    const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'schedule-dump.php')], {
+    const raw = execFileSync('node', [join(pkgDir, 'tools', 'schedule-dump.mjs')], {
       cwd: appDir,
       env: childEnv(),
       encoding: 'utf8',
@@ -768,6 +769,74 @@ mkdirSync(join(dist, 'src', 'controllers'), { recursive: true });
 mkdirSync(join(dist, 'src', 'views'), { recursive: true });
 mkdirSync(join(dist, 'src', 'contexts'), { recursive: true });
 
+// ---------- Blade compilation: blade2php is the authority ----------
+// `blade2php` is the standalone compiler this package depends on (one-way: it
+// knows nothing about laravel-workers). It emits the bytes Illuminate's
+// BladeCompiler emits, so the transpiler's input contract is unchanged.
+//
+// compile-view.php still runs: it ALSO captures the view's runtime context
+// (config, routes, vite, urls) by booting the app, and that capture is what
+// the static-discovery phase replaces. The split is therefore PHP for the
+// context, blade2php for the template.
+//
+// PHP's compiled output is kept as the ORACLE, not the product: a divergence
+// or a blade2php failure is recorded as a blocking finding and the build falls
+// back to the PHP bytes, so no build ever ships worse output than it did
+// before the seam existed. LW_BLADE_JS=0 opts out entirely.
+const bladeLaravel = (() => {
+  try {
+    const req = JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8')).require?.['laravel/framework'] ?? '';
+    const m = /(\d+)/.exec(String(req));
+    return m ? m[1] : null;
+  } catch {
+    return null; // no composer.json / no constraint: blade2php's own default
+  }
+})();
+const bladeOff = process.env.LW_BLADE_JS === '0';
+const blade = { checked: 0, diverged: 0, failed: 0 };
+
+// The first byte where two compilations differ, for a message that locates the
+// divergence instead of just announcing it.
+const firstDiff = (a, b) => {
+  const limit = Math.min(a.length, b.length);
+  for (let i = 0; i < limit; i++) if (a[i] !== b[i]) return i;
+  return a.length === b.length ? -1 : limit;
+};
+
+function bladeCompile(dump, label) {
+  if (bladeOff || !dump || typeof dump.compiled !== 'string') return;
+  if (typeof dump.path !== 'string' || !existsSync(dump.path)) return;
+  let out;
+  try {
+    out = compileView(readFileSync(dump.path, 'utf8'), {
+      laravel: bladeLaravel ?? undefined,
+      app: appDir,
+      path: dump.path,
+    });
+  } catch (e) {
+    blade.failed++;
+    const cause = `blade2php could not compile ${label}: ${e.code ? e.code + ' ' : ''}${e.message}`;
+    console.error('  ! ' + cause);
+    note({ severity: BLOCK, area: 'view', cause, fix: 'report it with the view source; until then this view builds with the PHP compiler' });
+    return;
+  }
+  blade.checked++;
+  const at = firstDiff(out.compiled, dump.compiled);
+  if (at >= 0) {
+    blade.diverged++;
+    const around = (s) => s.slice(Math.max(0, at - 60), at + 60).replace(/\s+/g, ' ');
+    const cause =
+      `blade2php diverged from Laravel for ${label} at byte ${at} ` +
+      `(blade2php: "${around(out.compiled)}" | Laravel: "${around(dump.compiled)}")`;
+    console.error('  ! ' + cause);
+    note({ severity: BLOCK, area: 'view', cause, fix: 'report it with the view source; until then this view builds with the PHP compiler' });
+    return;
+  }
+  // Byte-identical: the dump already holds exactly what blade2php produced, so
+  // rewriting it would be pointless I/O. The check is the value here — it is
+  // what lets the PHP compiler be deleted from this path later.
+}
+
 const controllerByRoute = new Map();
 
 for (const [route, view] of viewMap) {
@@ -780,6 +849,8 @@ for (const [route, view] of viewMap) {
   });
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
   if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + route);
+
+  bladeCompile(dump, route);
 
   const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
   execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
@@ -865,6 +936,8 @@ if (errorViewCodes.length) {
       fail('compile-view failed for ' + code + ': ' + String(e.stderr || e.message || '').trim().slice(0, 800));
     }
     if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + viewName);
+
+    bladeCompile(dump, viewName);
 
     const viewModulePath = join(dist, 'src', 'views', 'errors.' + code + '.mjs');
     execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
@@ -1169,7 +1242,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       if (allFqcns.length) {
         console.log(`• dumping model metadata (${allFqcns.length}): ${allFqcns.join(', ')}`);
         try {
-          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...allFqcns], {
+          const raw = execFileSync('node', [join(pkgDir, 'tools', 'model-dump.mjs'), ...allFqcns], {
             cwd: appDir,
             env: childEnv(),
           }).toString('utf8');
@@ -1180,7 +1253,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           // are pulled in here - transitively, until nothing new arrives.
           const dumpMore = (fqcns) => {
             if (!fqcns.length) return;
-            const more = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...fqcns], {
+            const more = execFileSync('node', [join(pkgDir, 'tools', 'model-dump.mjs'), ...fqcns], {
               cwd: appDir,
               env: childEnv(),
             }).toString('utf8');
@@ -1223,7 +1296,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       if (allFqcns.length) {
         console.log(`• dumping the Gate policies (${allFqcns.length})`);
         try {
-          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'policy-dump.php'), ...allFqcns], {
+          const raw = execFileSync('node', [join(pkgDir, 'tools', 'policy-dump.mjs'), ...allFqcns], {
             cwd: appDir,
             env: childEnv(),
           }).toString('utf8');
@@ -1241,7 +1314,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // runtime, so the build compiles the listeners (and the event classes).
       let classesDump = { events: {}, classes: {} };
       try {
-        const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'event-dump.php'), appDir], {
+        const raw = execFileSync('node', [join(pkgDir, 'tools', 'event-dump.mjs'), appDir], {
           cwd: appDir,
           env: childEnv(),
         }).toString('utf8');
@@ -1267,7 +1340,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         for (const fqcn of gateCallbackClasses) {
           if (!seen.has(fqcn)) {
             try {
-              const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'class-dump.php'), fqcn], {
+              const raw = execFileSync('node', [join(pkgDir, 'tools', 'class-dump.mjs'), fqcn], {
                 cwd: appDir,
                 env: childEnv(),
               }).toString('utf8');
@@ -1302,7 +1375,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       if (extraModelFqcns.length) {
         console.log(`• dumping the policy models (${extraModelFqcns.length}): ${extraModelFqcns.join(', ')}`);
         try {
-          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'model-dump.php'), ...extraModelFqcns], {
+          const raw = execFileSync('node', [join(pkgDir, 'tools', 'model-dump.mjs'), ...extraModelFqcns], {
             cwd: appDir,
             env: childEnv(),
           }).toString('utf8');
@@ -1359,7 +1432,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         const list = [...constantFqcns];
         console.log(`• dumping class constants (${list.length}): ${list.join(', ')}`);
         try {
-          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'constants-dump.php'), ...list], {
+          const raw = execFileSync('node', [join(pkgDir, 'tools', 'constants-dump.mjs'), ...list], {
             cwd: appDir,
             env: childEnv(),
           }).toString('utf8');
@@ -1449,6 +1522,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           });
           const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
           if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
+
+          bladeCompile(dump, view);
+
           // The kinds of the view data (the pagination view receives a
           // paginator): the transpiler needs them to allow the method calls.
           if (viewDataKinds[view]) {
@@ -2565,6 +2641,17 @@ if (queuePushes.length && !(cronTriggers && cronTriggers.length)) {
       'a Worker has no long-lived queue consumer, so the job would never run. Add a cron trigger ' +
       '(wrangler.toml `[triggers] crons = ["*/1 * * * *"]`) or dispatch the job inline ' +
       "(Laravel's sync driver) instead"
+  );
+}
+
+// ---------- the Blade seam verdict ----------
+// "0 diverged" is the evidence that the PHP Blade compiler can be dropped from
+// this path; a silent pass would hide the one number that matters.
+if (!bladeOff) {
+  console.log(
+    `• blade2php: ${blade.checked} view(s) compiled byte-identical to Laravel` +
+      (bladeLaravel ? ` (${bladeLaravel})` : '') +
+      (blade.diverged || blade.failed ? ` — ${blade.diverged} diverged, ${blade.failed} failed (PHP compiler used for those)` : '')
   );
 }
 
