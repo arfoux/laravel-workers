@@ -1,7 +1,22 @@
 {
   "name": "laravel-workers",
   "version": "0.4.2",
-  "description": "Build-time toolchain: compile a Laravel app's Blade views, routes and D1 read paths to a Cloudflare Workers artifact (static + snapshot + compiled handlers); unsupported constructs fail the build",
+  "description": "Compile your Laravel app to a tiny JS bundle that runs on Cloudflare Workers. No PHP at the edge. No WASM. No cold-start drama.",
+  "keywords": [
+    "laravel",
+    "cloudflare-workers",
+    "d1",
+    "blade",
+    "blade-compiler",
+    "compile-time",
+    "serverless",
+    "edge-computing",
+    "v8",
+    "transpiler",
+    "laravel-workers",
+    "bun-compatible",
+    "free-plan"
+  ],
   "type": "module",
   "license": "MIT",
   "author": "arfoux",
@@ -61,7 +76,8 @@
     "test:str": "node --test kernel/tests/str.test.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "bun": ">=1.0"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",

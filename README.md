@@ -128,6 +128,7 @@ build.mjs                 the pipeline: routes → controllers → views → sch
 | PHP — build time only | `8.3.30` (ZTS x64, Windows) | **≥ 8.3**; parity oracle is 8.3.30 |
 | Composer | none | not needed — vendor-lite provisions deps; app's own `vendor/` works too |
 | Node | `22.18.0` | **≥ 22** (`engines`) |
+| Bun | `1.4.0` | **≥ 1.0** (full test suite passes — `bun run test` → 768/768) |
 | npm | `10.9.3` | ≥ 10 |
 | Cloudflare Workers | `wrangler` `4.151.1` | 4.x; `compatibility_date` `2026-10-01` |
 | PHP extensions (build only) | `pdo_sqlite`, `sqlite3` | for `tools/schema-compile.php` |
