@@ -26,6 +26,7 @@ import { viewFileName } from './compiler/src/view-name.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
 import { compileView } from './compiler/blade.mjs';
+import { transpile } from './compiler/src/transpiler.mjs';
 import { provisionPhp } from './tools/php-provision.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import {
@@ -589,27 +590,45 @@ const originRe = new RegExp(
 // its stdout with a marker and the JSON that follows it.
 const PRERENDER_MARKER = '---LW-PRERENDER-JSON---';
 
+// A failure that is NOT an app bug: the route asks for a runtime binding the
+// build sandbox has no access to (D1 at build time). Kept separate so the
+// verdict can mark it DECLARED (works once deployed) instead of BLOCK.
 const isRuntimeBindingError = (reason) => /Database connection \[[^\]]+\] not configured|D1 (?:database configuration|Worker driver) requires (?:a|an) "/.test(String(reason));
-const prerender = (route) => {
+
+// Track E (prerender-batch): every route that will be rendered enters ONE
+// boot — one PHP process, one Laravel startup, N requests in order. The
+// marker still fences the payload (an error page can surround it on stdout).
+const prerenderBatch = (uris) => {
+  const byUri = new Map();
+  if (!uris.length) return byUri;
   let out;
   try {
-    out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(pkgDir, 'tools/prerender.php'), route], {
+    out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(pkgDir, 'tools', 'prerender.php'), ...uris], {
       cwd: appDir,
       env: childEnv(),
+      maxBuffer: 1 << 28,
     }).toString('utf8');
   } catch (e) {
     const stderr = String(e.stderr || '').trim();
     const stdout = String(e.stdout || '').trim();
     const detail = (stderr || stdout || String(e.message || '')).slice(-2000);
-    fail(`prerender crashed for ${route}${detail ? `:\n${detail}` : ''}`);
+    fail(`prerender crashed (${uris.length} routes, first ${uris[0]})${detail ? `:\n${detail}` : ''}`);
   }
   const idx = out.lastIndexOf(PRERENDER_MARKER);
   const jsonText = idx >= 0 ? out.slice(idx + PRERENDER_MARKER.length) : out;
+  let parsed;
   try {
-    return JSON.parse(jsonText);
+    parsed = JSON.parse(jsonText);
   } catch {
-    fail(`prerender returned non-JSON for ${route}: ${jsonText.trim().slice(0, 200)}`);
+    fail(`prerender returned non-JSON for ${uris[0]} (+${uris.length - 1} more): ${jsonText.trim().slice(0, 200)}`);
   }
+  if (!Array.isArray(parsed) || parsed.length !== uris.length) {
+    fail(
+      `prerender returned ${Array.isArray(parsed) ? parsed.length + ' result(s)' : 'no array'} for ${uris.length} route(s) — one boot must answer every URI`
+    );
+  }
+  for (const p of parsed) byUri.set(typeof p.uri === 'string' ? p.uri : '', p);
+  return byUri;
 };
 
 // ---------- 3. dist skeleton + prerendered pages ----------
@@ -663,6 +682,51 @@ const partials = [];
 const needsPort = [];
 const uncompiledExtraNonPost = [];
 
+// Track E (prerender-batch): the render set is decided BEFORE the boot —
+// every filter below only reads build state, then one batch covers the
+// static entries and the auto-snapshots.
+const handled = new Set([
+  ...staticMap.map(([r]) => r),
+  ...portEntries.map(([r]) => r),
+  ...viewMap.map(([r]) => r),
+  ...ignoreMap.map(([r]) => r),
+]);
+// Why a route is NOT snapshotted, or null when it is. Kept pure (no side
+// effects) so the set can be collected before the single prerender batch.
+const snapshotSkip = (route) => {
+  if (!autoSnapshot) return 'unhandled (autoSnapshot: false)';
+  const methods = methodsFor.get(route) || new Set();
+  if (!methods.has('GET')) return `no GET (${[...methods].join(', ') || '?'})`;
+  if (route.includes('{')) return 'dynamic segment — needs a port';
+  // A controller route of the APP is compiled, not snapshotted: the build-time
+  // page is the fallback for a route the build cannot compile. Snapshotting
+  // it answered a stale page for anything the request decides (a query
+  // string, a row created during the run) while the compiled controller was
+  // never reached - the shadow compared the baked page and called it parity.
+  //
+  // A FRAMEWORK controller is different: `Illuminate\...` is not the app's
+  // code and the build never compiles it (the composer autoload cannot even
+  // resolve it), so its snapshot is the right answer - Laravel's own `/up`
+  // health route is exactly that.
+  const action = actionForRoute(route);
+  const actionClass = action && action.includes('@') ? action.slice(0, action.lastIndexOf('@')) : action;
+  if (actionClass && actionClass !== 'Closure' && !/^Illuminate\\/.test(actionClass)) {
+    return 'a controller serves it — compiled, not snapshotted';
+  }
+  return null;
+};
+const prerenderUris = staticMap.map(([r]) => r);
+for (const route of routes) {
+  if (handled.has(route) || snapshotSkip(route)) continue;
+  prerenderUris.push(route);
+}
+const prerendered = prerenderBatch(prerenderUris);
+const prerender = (route) => {
+  const res = prerendered.get(route);
+  if (!res) fail(`prerender returned no result for ${route}`);
+  return res;
+};
+
 try {
   // 3a. manual static pages (registry.json → "static")
   for (const [route, file] of staticMap) {
@@ -679,48 +743,14 @@ try {
   }
 
   // 3b. auto-snapshot: clean GET routes appear on the edge on the next deploy
-  const handled = new Set([
-    ...staticMap.map(([r]) => r),
-    ...portEntries.map(([r]) => r),
-    ...viewMap.map(([r]) => r),
-    ...ignoreMap.map(([r]) => r),
-  ]);
   for (const route of routes) {
     if (handled.has(route)) continue;
-    if (!autoSnapshot) {
-      needsPort.push({ route, reason: 'unhandled (autoSnapshot: false)' });
+    const skip = snapshotSkip(route);
+    if (skip) {
+      needsPort.push({ route, reason: skip });
       continue;
     }
-    const methods = methodsFor.get(route) || new Set();
     const others = otherMethods(route);
-    if (!methods.has('GET')) {
-      needsPort.push({ route, reason: `no GET (${[...methods].join(', ') || '?'})` });
-      continue;
-    }
-    if (route.includes('{')) {
-      needsPort.push({ route, reason: 'dynamic segment — needs a port' });
-      continue;
-    }
-    // A controller route of the APP is compiled, not snapshotted: the build-time
-    // page is the fallback for a route the build cannot compile. Snapshotting
-    // it answered a stale page for anything the request decides (a query
-    // string, a row created during the run) while the compiled controller was
-    // never reached - the shadow compared the baked page and called it parity.
-    //
-    // A FRAMEWORK controller is different: `Illuminate\...` is not the app's
-    // code and the build never compiles it (the composer autoload cannot even
-    // resolve it), so its snapshot is the right answer - Laravel's own `/up`
-    // health route is exactly that.
-    {
-      const action = actionForRoute(route);
-      const actionClass = action && action.includes('@') ? action.slice(0, action.lastIndexOf('@')) : action;
-      const isAppController =
-        !!actionClass && actionClass !== 'Closure' && !/^Illuminate\\/.test(actionClass);
-      if (isAppController) {
-        needsPort.push({ route, reason: 'a controller serves it — compiled, not snapshotted' });
-        continue;
-      }
-    }
     const res = prerender(route);
     const isHtml = String(res.content_type || '').includes('text/html');
     if (res.status >= 200 && res.status < 300 && isHtml) {
@@ -1033,21 +1063,111 @@ function bladeCompile(dump, label) {
   // what lets the PHP compiler be deleted from this path later.
 }
 
+// Track E (transpile-batch): the transpiler is pure JS, so spawning
+// `node compiler/bin/transpile.mjs` per view was process overhead only.
+// Same code as the CLI, same bytes — the CLI stays for standalone debugging.
+const transpileToModule = (dumpPath, viewModulePath) => {
+  let data;
+  try {
+    data = JSON.parse(readFileSync(dumpPath, 'utf8'));
+  } catch (e) {
+    throw new Error(JSON.stringify([{ code: 'LW004', message: 'cannot read input: ' + (e.message || e), line: 0, column: 0, hint: '' }]));
+  }
+  if (typeof data.compiled !== 'string') {
+    throw new Error(JSON.stringify([{ code: 'LW004', message: 'no .compiled string in JSON', line: 0, column: 0, hint: '' }]));
+  }
+  const viewDataKinds = data.viewDataKinds && typeof data.viewDataKinds === 'object' ? data.viewDataKinds : null;
+  const { code, errors } = transpile(data.compiled, { viewDataKinds });
+  if (errors && errors.length) throw new Error(JSON.stringify(errors));
+  const tmp = viewModulePath + '.tmp-' + process.pid;
+  writeFileSync(tmp, code, 'utf8');
+  renameSync(tmp, viewModulePath);
+};
+
+// Track E (compile-view-batch): compile-view.php boots the whole framework per
+// call; --batch runs the identical single-view steps for every job in ONE boot.
+// A failed job leaves its dump unwritten and reports `view <name>: <error>` on
+// stderr; every other job still writes its dump. The batch exits 1 if any job
+// failed, but the dumps it did write are the per-view signal below.
+const viewJobs = [];
+const runViewJobs = () => {
+  if (!viewJobs.length) return '';
+  const jobsPath = join(cacheDir, 'view-jobs.json');
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(jobsPath, JSON.stringify(viewJobs));
+  let stderr = '';
+  try {
+    execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), '--batch', jobsPath], {
+      cwd: appDir,
+      env: childEnv(),
+      maxBuffer: 1 << 28,
+    });
+  } catch (e) {
+    stderr = String(e.stderr || e.stdout || e.message || '');
+  } finally {
+    rmSync(jobsPath, { force: true });
+  }
+  viewJobs.length = 0;
+  return stderr;
+};
+// The batch's error line for one view (`view <name>: <error>`), or the tail of
+// whatever killed the whole batch (a boot crash writes no per-view lines).
+const viewJobError = (stderr, name) => {
+  const prefix = `view ${name}: `;
+  const line = String(stderr || '').split(/\r?\n/).find((l) => l.startsWith(prefix));
+  if (line) return line.slice(prefix.length);
+  return String(stderr || '').trim().split('\n').slice(-4).join(' / ');
+};
+
 const controllerByRoute = new Map();
+
+// ---------- 3x. route views + error views, compiled in ONE boot ----------
+// The jobs are collected here (collection is pure filesystem + route state);
+// the loops below only read the dumps a single --batch run left behind. A
+// dump the batch did not write = that view's `view <name>: ...` error line.
+const errorViewDir = join(appDir, 'resources', 'views', 'errors');
+const appErrorCodes = existsSync(errorViewDir)
+  ? readdirSync(errorViewDir)
+      .filter((f) => f.endsWith('.blade.php'))
+      .map((f) => f.replace(/\.blade\.php$/, ''))
+      .sort()
+  : [];
+// The framework's error views EXTEND `errors::minimal`, which extends
+// `errors::layout`: the whole closure compiles, so the layout is in the list.
+const frameworkErrorCodes = [
+  '401', '402', '403', '404', '419', '429', '500', '503',
+  'layout', 'minimal',
+];
+const errorViewCodes = [...new Set([...appErrorCodes, ...frameworkErrorCodes])].sort();
+// Which of the codes come from the framework (the app did not override them):
+// their view NAME is the namespaced one.
+const frameworkOnly = new Set(errorViewCodes.filter((c) => !appErrorCodes.includes(c)));
+const errorViewImports = [];
+const errorViewCases = [];
+mkdirSync(cacheDir, { recursive: true });
+
+const viewJobSeen = new Set();
+const queueViewJob = (name, out, uri) => {
+  if (viewJobSeen.has(out)) return; // two routes, one view: the last URI wins,
+  viewJobSeen.add(out);             // exactly like the per-view dumps did
+  rmSync(out, { force: true });     // a dump from a previous build must not pass for this one
+  viewJobs.push({ name, out, uri });
+};
+for (const [route, view] of viewMap) queueViewJob(view, join(cacheDir, view + '.compiled.json'), route);
+for (const code of errorViewCodes) {
+  const viewName = frameworkOnly.has(code) ? 'errors::' + code : 'errors.' + code;
+  queueViewJob(viewName, join(cacheDir, 'errors.' + code + '.compiled.json'), '/');
+}
+const viewStderr = runViewJobs();
 
 for (const [route, view] of viewMap) {
   const slug = slugifyRoute(route);
   const dumpPath = join(cacheDir, view + '.compiled.json');
   console.log(`compiling view ${view} for ${route}`);
-  try {
-    execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, route], {
-      cwd: appDir,
-      env: childEnv(),
-    });
-  } catch (e) {
+  if (!existsSync(dumpPath)) {
     // A view that fails to compile must land in the verdict, not only in
     // scrollback: the route would otherwise ship with no handler at all.
-    const detail = String(e.stdout || e.stderr || e.message || '').trim().split('\n').slice(-4).join(' / ');
+    const detail = viewJobError(viewStderr, view);
     console.log(`  view ${view}: compile FAILED — ${detail.slice(0, 300)}`);
     needsPort.push({ route, reason: `the view for ${route} did not compile (${view}): ${detail.slice(0, 200)}` });
     continue;
@@ -1059,11 +1179,11 @@ for (const [route, view] of viewMap) {
 
   const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
   try {
-    execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
+    transpileToModule(dumpPath, viewModulePath);
   } catch (e) {
     // A transpiler refusal used to escape here as a raw stack dump with NO
     // READINESS block. fail() keeps the invariant: verdict first, staging thrown.
-    const detail = String(e.stderr || e.message || '').trim().split('\n').slice(-4).join(' / ');
+    const detail = String(e.message || '').trim().split('\n').slice(-4).join(' / ');
     fail(
       `transpiling the view for ${route} failed (${view}): ${detail}\n` +
         '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
@@ -1103,26 +1223,6 @@ for (const [route, view] of viewMap) {
 // Handler registers that namespace per render, RegisterErrorViewPaths). Both
 // are Blade, so both compile here; a status with neither keeps the
 // status-only page (and the shadow reports it as a divergence).
-const errorViewDir = join(appDir, 'resources', 'views', 'errors');
-const appErrorCodes = existsSync(errorViewDir)
-  ? readdirSync(errorViewDir)
-      .filter((f) => f.endsWith('.blade.php'))
-      .map((f) => f.replace(/\.blade\.php$/, ''))
-      .sort()
-  : [];
-// The framework's error views EXTEND `errors::minimal`, which extends
-// `errors::layout`: the whole closure compiles, so the layout is in the list.
-const frameworkErrorCodes = [
-  '401', '402', '403', '404', '419', '429', '500', '503',
-  'layout', 'minimal',
-];
-const errorViewCodes = [...new Set([...appErrorCodes, ...frameworkErrorCodes])].sort();
-// Which of the codes come from the framework (the app did not override them):
-// their view NAME is the namespaced one.
-const frameworkOnly = new Set(errorViewCodes.filter((c) => !appErrorCodes.includes(c)));
-const errorViewImports = [];
-const errorViewCases = [];
-mkdirSync(cacheDir, { recursive: true });
 if (errorViewCodes.length) {
   console.log(`• error views: compiling ${errorViewCodes.length} (${errorViewCodes.join(', ')})`);
   mkdirSync(join(dist, 'src', 'views'), { recursive: true });
@@ -1135,33 +1235,28 @@ if (errorViewCodes.length) {
     const registryName = frameworkOnly.has(code) ? 'errors::' + code : viewName;
     const dumpPath = join(cacheDir, 'errors.' + code + '.compiled.json');
     console.log(`  compiling error view ${viewName}`);
-    let dump;
-    try {
-      execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), viewName, dumpPath, '/'], {
-        cwd: appDir,
-        env: childEnv(),
-      });
-      dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-    } catch (e) {
+    if (!existsSync(dumpPath)) {
+      const detail = viewJobError(viewStderr, viewName);
       note({
         severity: BLOCK,
         area: 'route',
         cause: `error view ${code} failed to compile`,
         fix: 'check the view source compiles; ensure compile-view.php can write its cache output',
       });
-      fail('compile-view failed for ' + code + ': ' + String(e.stderr || e.message || '').trim().slice(0, 800));
+      fail('compile-view failed for ' + code + ': ' + detail.slice(0, 800));
     }
+    const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
     if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + viewName);
 
     bladeCompile(dump, viewName);
 
     const viewModulePath = join(dist, 'src', 'views', 'errors.' + code + '.mjs');
     try {
-      execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
+      transpileToModule(dumpPath, viewModulePath);
     } catch (e) {
       // This site crashed the build with a raw execFileSync dump and no READINESS
       // block (seen: LW003 on Arr::except for a Laravel 11 app) — fail() instead.
-      const detail = String(e.stderr || e.message || '').trim().split('\n').slice(-4).join(' / ');
+      const detail = String(e.message || '').trim().split('\n').slice(-4).join(' / ');
       fail(
         `transpiling the error view errors::${code} failed: ${detail}\n` +
           '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
@@ -1723,52 +1818,75 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           : {};
       const viewQueue = [...neededViews, ...mailViews];
       while (viewQueue.length) {
-        const view = viewQueue.shift();
-        if (compiledViews.has(view) || failedViews.has(view)) continue;
-        const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
-        const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
-        if (existsSync(viewModulePath) && existsSync(dumpPath)) {
-          // Already compiled (another route used it): read the dump for the
-          // views it depends on.
+        // Track E (compile-view-batch): one wave = one boot. The deps of a view
+        // only become known once its dump exists (scanViewDeps reads the
+        // compiled PHP for `make('...')`), so each depth level of the closure
+        // is one batch, not one boot per view.
+        const wave = [];
+        const waveSeen = new Set();
+        while (viewQueue.length) {
+          const view = viewQueue.shift();
+          if (compiledViews.has(view) || failedViews.has(view)) continue;
+          const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
+          const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
+          if (existsSync(viewModulePath) && existsSync(dumpPath)) {
+            // Already compiled (another route used it): read the dump for the
+            // views it depends on.
+            try {
+              const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+              compiledViews.add(view);
+              for (const d of scanViewDeps(view, dump.compiled)) {
+                if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
+              }
+            } catch {
+              failedViews.add(view);
+            }
+            continue;
+          }
+          if (waveSeen.has(view)) continue; // two routes named it in one wave
+          waveSeen.add(view);
+          wave.push(view);
+        }
+        if (!wave.length) continue;
+        // One batch run for the whole wave; a dump it failed to write marks
+        // that view failed (the per-view `view <name>: ...` error line).
+        for (const view of wave) {
+          const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
+          rmSync(dumpPath, { force: true }); // a dump from a previous build must not pass for this one
+          console.log(`compiling view ${view} (controller)`);
+          viewJobs.push({ name: view, out: dumpPath, uri: '/' });
+        }
+        const waveStderr = runViewJobs();
+        for (const view of wave) {
+          const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
+          const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
+          if (!existsSync(dumpPath)) {
+            failedViews.add(view);
+            console.log(`  view ${view}: skipped — ${viewJobError(waveStderr, view).slice(0, 300)}`);
+            continue;
+          }
           try {
             const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+            if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
+
+            bladeCompile(dump, view);
+
+            // The kinds of the view data (the pagination view receives a
+            // paginator): the transpiler needs them to allow the method calls.
+            if (viewDataKinds[view]) {
+              dump.viewDataKinds = viewDataKinds[view];
+              writeFileSync(dumpPath, JSON.stringify(dump));
+            }
+            transpileToModule(dumpPath, viewModulePath);
+            writeFileSync(join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
             compiledViews.add(view);
             for (const d of scanViewDeps(view, dump.compiled)) {
               if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
             }
-          } catch {
+          } catch (e) {
             failedViews.add(view);
+            console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
           }
-          continue;
-        }
-        console.log(`compiling view ${view} (controller)`);
-        try {
-          execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, '/'], {
-            cwd: appDir,
-            env: childEnv(),
-          });
-          const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-          if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
-
-          bladeCompile(dump, view);
-
-          // The kinds of the view data (the pagination view receives a
-          // paginator): the transpiler needs them to allow the method calls.
-          if (viewDataKinds[view]) {
-            dump.viewDataKinds = viewDataKinds[view];
-            writeFileSync(dumpPath, JSON.stringify(dump));
-          }
-          execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], {
-            cwd: appDir,
-          });
-          writeFileSync(join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
-          compiledViews.add(view);
-          for (const d of scanViewDeps(view, dump.compiled)) {
-            if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
-          }
-        } catch (e) {
-          failedViews.add(view);
-          console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
         }
       }
       // The views a route needs: the ones it renders + the closure of their

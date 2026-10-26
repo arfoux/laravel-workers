@@ -60,21 +60,25 @@ and more on a real app:
 | `config-dump.php` | 1 | |
 | `schedule-dump.php` | 1 | |
 | `schema-compile.php` | 1 | |
-| `prerender.php` | **1 per route** | a 50-route app = 50 boots |
-| `compile-view.php` | **1 per view**, and again per error view | two call sites, lines 621 and 1278 |
-| `model-dump.php` | **3+**, and one per transitive round | lines 1004, 1015, 1137 |
-| `class-dump.php` | **1 per Gate-callback class** | inside a `for` loop, line 1102 |
+| `prerender.php` | **1 batch** (was 1 per route) | every URI — static entries + snapshots — renders in ONE boot (`--batch`-style argv) |
+| `compile-view.php` | **1 batch per wave** (was 1 per view) | route views + error views share one boot; the controller views run one boot per dependency-depth wave, since a view's `@extends`/`@include` deps are only known once its dump exists |
+| `model-dump.php` | **3+**, and one per transitive round | still per-instance |
+| `class-dump.php` | **1 per Gate-callback class** | inside a `for` loop; still per-instance |
 | `policy-dump.php`, `event-dump.php`, `formrequest-dump.php`, `constants-dump.php` | 1 each | |
 
-A 40-route / 15-view app therefore pays roughly **60 boots ≈ 3–5 minutes** in
-boot cost alone. Proposed fix (not implemented): one long-lived PHP dispatcher
-that boots Laravel once and serves the existing helpers over a JSON-lines
-protocol on stdin/stdout. That turns N boots into 1 without changing any dump
+A 40-route / 15-view app used to pay roughly **60 boots ≈ 3–5 minutes** in boot
+cost alone. **Track E (implemented)** batches the two biggest: `prerender.php`
+renders every URI in one boot, and `compile-view.php --batch` compiles a whole
+wave of views per boot. Still per-instance: `model-dump.php` and
+`class-dump.php`. Proposed (not implemented): one long-lived PHP dispatcher
+that boots Laravel once and serves every helper over a JSON-lines protocol on
+stdin/stdout — turns the remaining N boots into 1 without changing any dump
 output. Secondary win: batch the three `model-dump` calls into one.
 
-**Redundant work:** `compile-view.php` compiles the same view twice for the
-`/` route (lines 621 and 1278). No caching: the `.cache/laravel-workers/` dumps
-are written but never read back to skip a rebuild.
+**Redundant work:** inside a batch, one view name shared by two jobs compiles
+once (dedup by dump path). A warm rebuild reads the `.cache/laravel-workers/`
+dumps back only when the compiled module is also present — a half-written cache
+recompiles rather than trusting a stale dump.
 
 ## Vendor (`composer install`) — user complaint
 

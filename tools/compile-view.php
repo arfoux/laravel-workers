@@ -1,11 +1,14 @@
 <?php
 
 // Compile a Blade view to PHP using the real Laravel Blade compiler — build time only.
-// Usage: php edge/tools/compile-view.php <view-name> [out.json]
+// Usage:
+//   php tools/compile-view.php <view-name> [out.json] [uri]   one view — one boot
+//   php tools/compile-view.php --batch <jobs.json>            every view — ONE boot
+// jobs.json: [{"name": "...", "out": "...", "uri": "..."}, ...]
 // Output: JSON {view, path, compiled, context:{config, app, vite, files, auth, routes, route_names, urls, app_version, vfs}}
 //
-// The context is captured under the SAME boot path as edge/tools/prerender.php
-// (HTTP kernel + Request::create('/', 'GET') + handle/terminate) so every captured
+// The context is captured under the SAME boot path as tools/prerender.php
+// (HTTP kernel + Request::create + handle/terminate) so every captured
 // value is byte-exact against the reference render (e.g. url('/dashboard') resolves
 // against the request root, not APP_URL).
 //
@@ -13,44 +16,27 @@
 // fonts()/__invoke() on the container singleton, which pollutes its
 // preloadedAssets (font-preload dedupe) and would drop <link rel="preload"> tags
 // from a second capture on the same instance.
+//
+// Track E (compile-view-batch): --batch boots the framework ONCE and runs the
+// identical single-view steps — handle, capture, write — for every job. A
+// failed job is caught per job (`view <name>: <error>` on stderr, dump left
+// unwritten) so the rest still compile; the process then exits 1.
 
 require_once __DIR__ . '/_root.php';
 $app = lw_boot_app();
 $root = lw_app_root();
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-$request = Illuminate\Http\Request::create($argv[3] ?? '/', 'GET');
-$response = $kernel->handle($request);
-$kernel->terminate($request, $response);
 
 // The app may have registered an exception handler (Ignition renders the page
 // and PHP then exits 0), which turns every failure into a silent missing dump —
 // the build can only report ENOENT instead of the real cause. Register ours
 // AFTER the kernel bootstrapped so it wins: honest stderr + non-zero exit.
-set_exception_handler(static function (\Throwable $e): void {
+$ownHandler = static function (\Throwable $e): void {
     fwrite(STDERR, 'compile-view: ' . get_class($e) . ': ' . $e->getMessage()
         . ' @ ' . $e->getFile() . ':' . $e->getLine() . PHP_EOL);
     exit(1);
-});
-
-$name = $argv[1] ?? 'welcome';
-
-// The FRAMEWORK's error views (`errors::404`): Laravel registers that namespace
-// only while an exception is being rendered (RegisterErrorViewPaths), so a
-// build-time compile must register it the same way - the app's own
-// resources/views/errors first, then the framework's views. Without this, a
-// view name that starts with `errors::` cannot be found at all.
-if (str_starts_with($name, 'errors::')) {
-    $viewPaths = [$root . '/resources/views/errors'];
-    $frameworkViews = dirname((new ReflectionClass(Illuminate\Foundation\Exceptions\Handler::class))->getFileName())
-        . '/views';
-    $viewPaths[] = $frameworkViews;
-    $app['view']->addNamespace('errors', array_values(array_filter($viewPaths, 'is_dir')));
-}
-$out = $argv[2] ?? null;
-$uri = $argv[3] ?? '/';
-
-$notes = [];
+};
 
 // --- helpers -----------------------------------------------------------------
 
@@ -107,171 +93,221 @@ $stringLiteral = function (string $code): ?string {
     return $value;
 };
 
-// The view factory first: the namespaced views (the framework's
-// `pagination::tailwind`) are registered when the 'view' service is resolved
-// (the providers hook into it), so the factory has to be built before its
-// finder can find them.
-$finder = $app->make('view')->getFinder();
-$path = $finder->find($name);
+// --- one view: the steps are IDENTICAL in single and batch mode ---------------
 
-$compiler = $app->make('blade.compiler');
-$compiled = $compiler->compileString(file_get_contents($path));
+$capture = function (string $name, ?string $out, string $uri) use ($app, $root, $kernel, $extractArgs, $evalGate, $stringLiteral, $ownHandler): void {
+    // The native request first, then our handler: the framework registers its
+    // own exception handler while bootstrapping this first handle(), so ours
+    // has to (re)win afterwards — same order as the single-view mode always had.
+    $request = Illuminate\Http\Request::create($uri, 'GET');
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+    set_exception_handler($ownHandler);
 
-// --- route data / names ------------------------------------------------------
-
-$routeData = [];
-$routeNames = [];
-foreach ($app->make('router')->getRoutes() as $route) {
-    $routeData[] = [
-        'uri' => $route->uri(),
-        'name' => $route->getName(),
-        'methods' => $route->methods(),
-        'domain' => $route->getDomain(),
-    ];
-    if (($routeName = $route->getName()) !== null) {
-        $routeNames[] = $routeName;
+    // The FRAMEWORK's error views (`errors::404`): Laravel registers that namespace
+    // only while an exception is being rendered (RegisterErrorViewPaths), so a
+    // build-time compile must register it the same way - the app's own
+    // resources/views/errors first, then the framework's views. Without this, a
+    // view name that starts with `errors::` cannot be found at all.
+    if (str_starts_with($name, 'errors::')) {
+        $viewPaths = [$root . '/resources/views/errors'];
+        $frameworkViews = dirname((new ReflectionClass(Illuminate\Foundation\Exceptions\Handler::class))->getFileName())
+            . '/views';
+        $viewPaths[] = $frameworkViews;
+        $app['view']->addNamespace('errors', array_values(array_filter($viewPaths, 'is_dir')));
     }
-}
-$routeNames = array_values($routeNames);
 
-// --- files (public_path existence) -------------------------------------------
+    $notes = [];
 
-$files = [];
-foreach (['build/manifest.json', 'build/fonts-manifest.json', 'hot'] as $f) {
-    $files[$f] = file_exists(public_path($f));
-}
+    // The view factory first: the namespaced views (the framework's
+    // `pagination::tailwind`) are registered when the 'view' service is resolved
+    // (the providers hook into it), so the factory has to be built before its
+    // finder can find them.
+    $finder = $app->make('view')->getFinder();
+    $path = $finder->find($name);
 
-// --- vite: fonts() + invoke() with the EXACT args found in the compiled text --
+    $compiler = $app->make('blade.compiler');
+    $compiled = $compiler->compileString(file_get_contents($path));
 
-// Compiled by @vite([...]): app('Illuminate\Foundation\Vite')(['…', '…']).
-$viteInvokeArgs = null;
-if (preg_match('/app\(\s*([\'"])Illuminate\\\\Foundation\\\\Vite\1\s*\)\s*\(/', $compiled, $m, PREG_OFFSET_CAPTURE)) {
-    $open = $m[0][1] + strlen($m[0][0]) - 1;
-    $inner = $extractArgs($compiled, $open);
+    // --- route data / names ------------------------------------------------------
 
-    if ($inner !== null && $evalGate($inner)) {
-        try {
-            $viteInvokeArgs = eval('return ' . $inner . ';');
-        } catch (\Throwable $e) {
-            $notes[] = "vite invoke args eval threw: {$e->getMessage()}";
+    $routeData = [];
+    $routeNames = [];
+    foreach ($app->make('router')->getRoutes() as $route) {
+        $routeData[] = [
+            'uri' => $route->uri(),
+            'name' => $route->getName(),
+            'methods' => $route->methods(),
+            'domain' => $route->getDomain(),
+        ];
+        if (($routeName = $route->getName()) !== null) {
+            $routeNames[] = $routeName;
         }
-    } else {
-        $notes[] = 'vite invoke args not captured (unsupported expression)';
     }
-} elseif (stripos($compiled, 'vite') !== false) {
-    // A plain view (no @vite) is the normal case — only note it when the view
-    // mentions vite but the standard call pattern is missing.
-    $notes[] = 'no app(\'Illuminate\\Foundation\\Vite\')(...) call site found in the compiled view (view mentions "vite" but the standard call pattern is missing)';
-}
+    $routeNames = array_values($routeNames);
 
-$app->forgetInstance(Illuminate\Foundation\Vite::class);
-$vite = $app->make(Illuminate\Foundation\Vite::class);
+    // --- files (public_path existence) -------------------------------------------
 
-// Laravel gained Vite::fonts() in 12.x. On 11 and older the method does not
-// exist, and a bare call there threw — rendered by the app's exception handler
-// with exit 0, so the build saw only "dump missing". No fonts feature on that
-// major = nothing to capture.
-$viteFonts = method_exists($vite, 'fonts') ? (string) $vite->fonts() : '';
-
-$viteInvoke = '';
-if ($viteInvokeArgs !== null) {
-    $viteInvoke = (string) $vite($viteInvokeArgs);
-}
-
-// --- urls: every url(...) / route(...) call site in the compiled PHP segments --
-
-$phpSegments = [];
-if (preg_match_all('/<\?(?:php|=)?(.*?)(?:\?>|$)/s', $compiled, $m, PREG_OFFSET_CAPTURE)) {
-    foreach ($m[1] as $segment) {
-        $phpSegments[] = $segment[0];
-    }
-}
-
-$urls = [];
-foreach ($phpSegments as $code) {
-    if (!preg_match_all('/(?<![A-Za-z0-9_$>:])(url|route)\s*\(/', $code, $calls, PREG_OFFSET_CAPTURE)) {
-        continue;
+    $files = [];
+    foreach (['build/manifest.json', 'build/fonts-manifest.json', 'hot'] as $f) {
+        $files[$f] = file_exists(public_path($f));
     }
 
-    foreach ($calls[0] as $i => $call) {
-        $fn = $calls[1][$i][0];
-        $open = $call[1] + strlen($call[0]) - 1;
-        $inner = $extractArgs($code, $open);
+    // --- vite: fonts() + invoke() with the EXACT args found in the compiled text --
 
-        if ($inner === null) {
-            $urls[$fn . '(...unbalanced...)'] = ['error' => 'could not extract arguments'];
+    // Compiled by @vite([...]): app('Illuminate\Foundation\Vite')(['…', '…']).
+    $viteInvokeArgs = null;
+    if (preg_match('/app\(\s*([\'"])Illuminate\\\\Foundation\\\\Vite\1\s*\)\s*\(/', $compiled, $m, PREG_OFFSET_CAPTURE)) {
+        $open = $m[0][1] + strlen($m[0][0]) - 1;
+        $inner = $extractArgs($compiled, $open);
+
+        if ($inner !== null && $evalGate($inner)) {
+            try {
+                $viteInvokeArgs = eval('return ' . $inner . ';');
+            } catch (\Throwable $e) {
+                $notes[] = "vite invoke args eval threw: {$e->getMessage()}";
+            }
+        } else {
+            $notes[] = 'vite invoke args not captured (unsupported expression)';
+        }
+    } elseif (stripos($compiled, 'vite') !== false) {
+        // A plain view (no @vite) is the normal case — only note it when the view
+        // mentions vite but the standard call pattern is missing.
+        $notes[] = 'no app(\'Illuminate\\Foundation\\Vite\')(...) call site found in the compiled view (view mentions "vite" but the standard call pattern is missing)';
+    }
+
+    $app->forgetInstance(Illuminate\Foundation\Vite::class);
+    $vite = $app->make(Illuminate\Foundation\Vite::class);
+
+    // Laravel gained Vite::fonts() in 12.x. On 11 and older the method does not
+    // exist, and a bare call there threw — rendered by the app's exception handler
+    // with exit 0, so the build saw only "dump missing". No fonts feature on that
+    // major = nothing to capture.
+    $viteFonts = method_exists($vite, 'fonts') ? (string) $vite->fonts() : '';
+
+    $viteInvoke = '';
+    if ($viteInvokeArgs !== null) {
+        $viteInvoke = (string) $vite($viteInvokeArgs);
+    }
+
+    // --- urls: every url(...) / route(...) call site in the compiled PHP segments --
+
+    $phpSegments = [];
+    if (preg_match_all('/<\?(?:php|=)?(.*?)(?:\?>|$)/s', $compiled, $m, PREG_OFFSET_CAPTURE)) {
+        foreach ($m[1] as $segment) {
+            $phpSegments[] = $segment[0];
+        }
+    }
+
+    $urls = [];
+    foreach ($phpSegments as $code) {
+        if (!preg_match_all('/(?<![A-Za-z0-9_$>:])(url|route)\s*\(/', $code, $calls, PREG_OFFSET_CAPTURE)) {
             continue;
         }
 
-        $key = $stringLiteral($inner) ?? trim($inner);
+        foreach ($calls[0] as $i => $call) {
+            $fn = $calls[1][$i][0];
+            $open = $call[1] + strlen($call[0]) - 1;
+            $inner = $extractArgs($code, $open);
 
-        if (!array_key_exists($key, $urls) && $evalGate($inner)) {
-            try {
-                $value = eval('return ' . $fn . '(' . $inner . ');');
-                if (is_object($value)) {
-                    $value = method_exists($value, '__toString') ? (string) $value : json_encode($value);
+            if ($inner === null) {
+                $urls[$fn . '(...unbalanced...)'] = ['error' => 'could not extract arguments'];
+                continue;
+            }
+
+            $key = $stringLiteral($inner) ?? trim($inner);
+
+            if (!array_key_exists($key, $urls) && $evalGate($inner)) {
+                try {
+                    $value = eval('return ' . $fn . '(' . $inner . ');');
+                    if (is_object($value)) {
+                        $value = method_exists($value, '__toString') ? (string) $value : json_encode($value);
+                    }
+                    $urls[$key] = $value;
+                } catch (\Throwable $e) {
+                    $urls[$key] = ['error' => $e->getMessage()];
                 }
-                $urls[$key] = $value;
-            } catch (\Throwable $e) {
-                $urls[$key] = ['error' => $e->getMessage()];
             }
         }
     }
-}
 
-// --- auth (wrapped: the build context may throw without an HTTP session) ------
+    // --- auth (wrapped: the build context may throw without an HTTP session) ------
 
-try {
-    $authCheck = auth()->guard()->check();
-} catch (\Throwable $e) {
-    $authCheck = false;
-    $notes[] = 'auth()->guard()->check() threw: ' . get_class($e) . ': ' . $e->getMessage() . ' — captured false';
-}
+    try {
+        $authCheck = auth()->guard()->check();
+    } catch (\Throwable $e) {
+        $authCheck = false;
+        $notes[] = 'auth()->guard()->check() threw: ' . get_class($e) . ': ' . $e->getMessage() . ' — captured false';
+    }
 
-// --- payload ------------------------------------------------------------------
+    // --- payload ------------------------------------------------------------------
 
-$payload = [
-    'view' => $name,
-    'path' => $path,
-    'compiled' => $compiled,
-    'context' => [
-        'app' => [
-            'version' => $app->version(),
-            'locale' => $app->getLocale(),
+    $payload = [
+        'view' => $name,
+        'path' => $path,
+        'compiled' => $compiled,
+        'context' => [
+            'app' => [
+                'version' => $app->version(),
+                'locale' => $app->getLocale(),
+            ],
+            'config' => [
+                'app.name' => config('app.name'),
+                'app.locale' => config('app.locale'),
+            ],
+            'vite' => [
+                'fonts' => $viteFonts,
+                'invoke' => $viteInvoke,
+            ],
+            'files' => $files,
+            'auth' => [
+                'check' => (bool) $authCheck,
+            ],
+            'routes' => $routeData,
+            'route_names' => $routeNames,
+            'urls' => $urls === [] ? new stdClass() : $urls,
+            'app_version' => $app->version(),
+            'vfs' => $files,
         ],
-        'config' => [
-            'app.name' => config('app.name'),
-            'app.locale' => config('app.locale'),
-        ],
-        'vite' => [
-            'fonts' => $viteFonts,
-            'invoke' => $viteInvoke,
-        ],
-        'files' => $files,
-        'auth' => [
-            'check' => (bool) $authCheck,
-        ],
-        'routes' => $routeData,
-        'route_names' => $routeNames,
-        'urls' => $urls === [] ? new stdClass() : $urls,
-        'app_version' => $app->version(),
-        'vfs' => $files,
-    ],
-];
+    ];
 
-$json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
 
-if ($out) {
-    @mkdir(dirname($out), 0777, true);
-    if (file_put_contents($out, $json) === false) {
-        fwrite(STDERR, "could not write {$out}");
+    if ($out) {
+        @mkdir(dirname($out), 0777, true);
+        if (file_put_contents($out, $json) === false) {
+            throw new RuntimeException("could not write {$out}");
+        }
+        fwrite(STDOUT, 'wrote ' . $out . ' (' . strlen($json) . " bytes)\n");
+    } else {
+        echo $json;
+    }
+
+    foreach ($notes as $note) {
+        fwrite(STDERR, 'note: ' . $note . "\n");
+    }
+};
+
+// --- main ---------------------------------------------------------------------
+
+if (($argv[1] ?? '') === '--batch') {
+    $jobsFile = $argv[2] ?? '';
+    $jobs = json_decode((string) @file_get_contents($jobsFile), true);
+    if (!is_array($jobs)) {
+        fwrite(STDERR, "compile-view: cannot read the jobs file {$jobsFile}\n");
         exit(1);
     }
-    fwrite(STDOUT, 'wrote ' . $out . ' (' . strlen($json) . " bytes)\n");
-} else {
-    echo $json;
+    $failures = 0;
+    foreach ($jobs as $job) {
+        $name = (string) ($job['name'] ?? '');
+        try {
+            $capture($name, $job['out'] ?? null, (string) ($job['uri'] ?? '/'));
+        } catch (\Throwable $e) {
+            $failures++;
+            fwrite(STDERR, 'view ' . $name . ': ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        }
+    }
+    exit($failures ? 1 : 0);
 }
 
-foreach ($notes as $note) {
-    fwrite(STDERR, 'note: ' . $note . "\n");
-}
+$capture($argv[1] ?? 'welcome', $argv[2] ?? null, $argv[3] ?? '/');
