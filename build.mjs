@@ -265,12 +265,17 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
     console.log(`  -> wrangler.jsonc: written (worker name "${slug}") — run \`npx wrangler d1 create ${slug}\` and paste the returned id into "database_id"`);
   }
 }
-// A Vite app writes public/build/manifest.json. A Mix/webpack app writes
-// public/mix-manifest.json. A standalone esbuild (BookStack: public/dist) writes
-// no manifest at all — the build can still proceed when the pages are declared
-// in registry.json `static`. Failing on "public/build" alone made whole apps
-// untestable before the first real decision. The order is Vite-first: the path
-// the build WOULD write if its own `npm run build` ran.
+// A Vite app writes public/build/manifest.json; a Mix/webpack app writes
+// public/mix-manifest.json. Whether the build NEEDS the frontend manifests is
+// a property of the app, not of the repo:
+//   - any Blade view calling @vite()/mix()  → the compiled HTML embeds hashed
+//     asset URLs from the manifest → a missing manifest makes compile-view.php
+//     throw (ViteManifestNotFoundException / an asset() miss) → fail loud with
+//     the real reason. No silent-wrong HTML ships.
+//   - no view touches the frontend manifests (a backend-only API app) → nothing
+//     needs them; defer here used to fail the whole build for NO reason.
+// So this block only records WHICH manifest exists; it does not fail on its
+// own. Vite-first: the path the build WOULD write if its own `npm run build` ran.
 {
   const manifestCandidates = [
     join(appDir, 'public/build/manifest.json'),
@@ -279,19 +284,41 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
   ];
   const manifestPath = manifestCandidates.find((p) => existsSync(p));
   if (!manifestPath) {
-    if (Object.keys(registry.static || {}).length) {
-      console.log(
-        '\u2022 manifest: none of the usual frontend manifests found (' +
-          manifestCandidates.map((p) => relPath(p)).join(', ') +
-          ') — but registry.json has "static", so pages declared there count as handled'
-      );
-    } else {
+    // The app is fullstack iff some Blade view calls the frontend (Vite's
+    // @vite() or Laravel Mix's mix()). A missing manifest then means the
+    // compiled HTML would reference asset URLs that don't exist — silent-wrong
+    // — so fail NOW with the view that needs it. A backend-only API app (no
+    // view touches the frontend) sails past: no manifest needed at all.
+    const viewsRoot = join(appDir, 'resources', 'views');
+    const viteViews = [];
+    const scan = (dir) => {
+      if (!existsSync(dir)) return;
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, ent.name);
+        if (ent.isDirectory()) scan(p);
+        else if (/\.blade\.php$/.test(ent.name)) {
+          const src = readFileSync(p, 'utf8');
+          if (/@vite\s*\(|mix\s*\(/.test(src)) viteViews.push(relPath(p));
+        }
+      }
+    };
+    scan(viewsRoot);
+    if (viteViews.length) {
       fail(
-        'no frontend manifest found — looked for ' +
+        'this is a FULLSTACK app: ' +
+          (viteViews.length > 1 ? viteViews.length + ' Blade views' : viteViews[0]) +
+          ' call @vite()/mix(), but no frontend manifest is built (' +
           manifestCandidates.map((p) => relPath(p)).join(', ') +
-          ' — run the app\'s frontend build (npm run build) first, or declare pages in registry.json "static"'
+          '). Run the app\'s frontend build once: `npm install && npm run build` (Vite). ' +
+          'The built assets (public/build) are copied to dist/public and served via Cloudflare Static Assets. ' +
+          'A backend-only API app (no @vite in any view) needs no manifest at all.'
       );
     }
+    console.log(
+      '\u2022 manifest: no frontend manifest found (' +
+        manifestCandidates.map((p) => relPath(p)).join(', ') +
+        ') — no Blade view calls @vite()/mix(), treating this as backend-only (no frontend build needed)'
+    );
   } else {
     console.log(`\u2022 manifest: ${relPath(manifestPath)}`);
   }
