@@ -41,6 +41,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 let appDir;
@@ -209,6 +210,34 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
       ],
     });
     fail(`vendor provisioning failed: ${e.message}`);
+  }
+}
+
+// ---- ensure APP_KEY (automatic; no artisan, no manual step) ----
+// The compiled worker encrypts cookies/sessions with app.key, so the key must be
+// STABLE across builds and deploys — a per-build random key would invalidate
+// every session on redeploy. So: if the app already has a key (in .env, or in
+// the real environment), keep it; otherwise write one into .env exactly like
+// `artisan key:generate` would (base64 of 32 random bytes).
+{
+  const envPath = join(appDir, '.env');
+  let envText = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+  const hasKeyInEnvFile = /^APP_KEY=\s*\S/m.test(envText);
+  const hasKeyInProcess = !!(process.env.APP_KEY && String(process.env.APP_KEY).trim());
+  if (!hasKeyInEnvFile && !hasKeyInProcess) {
+    if (!existsSync(envPath)) {
+      const examplePath = join(appDir, '.env.example');
+      if (existsSync(examplePath)) {
+        envText = readFileSync(examplePath, 'utf8');
+      }
+    }
+    const key = 'base64:' + randomBytes(32).toString('base64');
+    envText = /^APP_KEY=.*$/m.test(envText)
+      ? envText.replace(/^APP_KEY=.*$/m, 'APP_KEY=' + key)
+      : envText + (envText.endsWith('\n') || envText === '' ? '' : '\n') + 'APP_KEY=' + key + '\n';
+    writeFileSync(envPath, envText);
+    process.env.APP_KEY = key;
+    console.log('  -> APP_KEY: generated and written to .env (the worker signs cookies with it)');
   }
 }
 // A Vite app writes public/build/manifest.json. A Mix/webpack app writes
