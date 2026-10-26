@@ -656,7 +656,7 @@ try {
 {
   const problems = [];
   const problem = (cause, fix) => { problems.push(cause); note({ route: null, area: 'config', severity: BLOCK, cause, fix }); };
-  if (!runtimeConfig['app.key']) problem('app.key is empty', 'run `npx laravel-workers init` (it writes .env + APP_KEY in pure JS; `php artisan key:generate` works too) — the edge signs cookies and sessions with it');
+  if (!runtimeConfig['app.key']) problem('app.key is empty', 'build.mjs auto-generates APP_KEY into .env when absent — if you see this, .env has APP_KEY= with no value; set it to the output of `node -e "console.log(\'base64:\',require(\'crypto\').randomBytes(32).toString(\'base64\'))"`');
   const driver = runtimeConfig['session.driver'];
   if (driver !== 'database' && driver !== 'cookie') {
     problem(`session.driver '${driver}' is not supported by the compiled rung (database/cookie only)`);
