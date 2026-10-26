@@ -124,6 +124,8 @@ npm run verify
 
 ## Zero-touch / CI (Workers Builds)
 
+The build works on any Laravel ≥ 10 app — fresh installs and existing projects alike. The tool that extracts the D1 schema now compiles migrations directly (no pre-migrated DB needed), so the only hard requirement is an `.env` with a valid `APP_KEY`.
+
 Keep the repo pure Laravel — config and ports can live outside it:
 
 - `LW_CONFIG=../edge-config/registry.json` — registry path override (relative to the app root; a set-but-missing file **fails the build**).
@@ -135,7 +137,6 @@ Keep the repo pure Laravel — config and ports can live outside it:
 Workers Builds (Dashboard → Workers → connect the GitHub repo) — config is injected in the build command, nothing is committed:
 
 ```bash
-touch database/database.sqlite
 cat > registry.json <<'JSON'
 { "autoSnapshot": true, "ports": {} }
 JSON
@@ -146,7 +147,6 @@ cat > wrangler.jsonc <<'JSONC'
   "observability": { "enabled": true } }
 JSONC
 cp .env.example .env && php artisan key:generate
-php artisan migrate --force
 npm run build
 npx -y laravel-workers@0.4.0 build --strict
 # the D1 schema: the app's tables (+ lw_blobs when the app uses Storage::)
