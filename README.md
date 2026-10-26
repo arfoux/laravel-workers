@@ -201,7 +201,7 @@ Works on any Laravel ≥ 10 project — a fresh clone or an app you've been runn
 | Requirement | Old way | Now |
 |---|---|---|
 | PHP vendor files | `composer install` (~379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader. Content-addressed cache (pays once per lock). No composer binary. |
-| Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots app, migrates in-memory SQLite, dumps via pragma. No DB file. Driver-agnostic (MySQL/Postgres/SQLite source → same D1 DDL output). |
+| Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots app, migrates in-memory SQLite, dumps via pragma. Your `database/` is never touched: when the app has no database file, the build seeds a throwaway SQLite in `.cache/` (schema applied, empty) so it can boot for prerender. Driver-agnostic (MySQL/Postgres/SQLite source → same D1 DDL output). |
 | `APP_KEY` | `php artisan key:generate` | **Automatic** — `build.mjs` writes `base64:<32 bytes>` into `.env` if absent. Stable across rebuilds (the worker encrypts cookies with it). `tools/_root.php` also auto-injects it for standalone tool runs. |
 
 `registry.json` and `wrangler.jsonc` are **optional** — the build uses sensible defaults and auto-writes `wrangler.jsonc` when absent (worker name from the app-dir slug; `database_id` is a placeholder). So even the scaffolding happens at build time.
@@ -217,6 +217,31 @@ npx wrangler deploy
 ```
 
 **One honest caveat:** if `composer.json` has `"autoload-files"` pointing outside the vendor tree, vendor-lite detects this and tells you to `composer install --no-dev` — it cannot satisfy those entries from packagist.
+
+### Fullstack app vs backend-only API
+
+Laravel is two halves and the build treats them as two halves. Which one you have decides whether `npm run build` is needed:
+
+| Your app | Needs `public/build/`? | What the build does |
+|---|---|---|
+| **Fullstack** — any Blade view calls `@vite()`/`mix()` (a stock `laravel new` is one: `welcome.blade.php`) | **Yes** — the compiled HTML embeds the hashed asset URLs read from `public/build/manifest.json` | fails at once, naming the exact view and the exact command to run |
+| **Backend-only** — no view touches the frontend (a JSON API) | **No** — nothing reads it | logs `backend-only (no frontend build needed)` and proceeds |
+
+`build.mjs` pre-scans `resources/views/**` before compiling, so the failure is upfront and specific — not a build that shipped `<script src>` tags pointing at files that were never built. The fix is one command, once:
+
+```bash
+npm install && npm run build    # your app's own Vite; the build never runs it for you
+```
+
+`laravel-workers` compiles the **backend**; **Vite** builds the **frontend**. Running `npm` from the build would make your toolchain depend on the network, the registry and an auth token — so the build tells you instead, then copies `public/build` → `dist/public`, where Workers Static Assets serves it **from the same origin as the worker**. There is no second port in production: the `artisan :8000` + `vite :5173` pair exists only under `composer run dev`.
+
+### What `RUNS ON THE EDGE` claims (and what it does not)
+
+It is a claim about **routes, not data**: every route has a compiled handler, a snapshot or a port; nothing is ignored; no binding is missing. It does **not** claim your database exists — you apply `dist/schema.sql` to the remote D1 yourself, once, **before the first deploy** (see *The one manual step*).
+
+To render pages the build boots your app, and a Laravel app reads its own `sessions` table on every request — which used to make a fresh `laravel new` project report `DOES NOT RUN` for no reason at all. So when your own `database/database.sqlite` is absent, the build gives the app a throwaway SQLite (`.cache/laravel-workers/build.sqlite`, your schema applied, **empty**) for the duration of the build. It is not your database and not the cloud D1. Your existing database file, when present, is used as-is.
+
+The honest consequence: a page that reads rows the build has never seen prerenders as it looks **with an empty table**. Run it against real data after `d1 execute`, or decide such a route explicitly (`registry.json` → `ports`/`static`/`ignore`).
 
 ---
 

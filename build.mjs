@@ -85,7 +85,17 @@ if (vendorDir) {
 }
 // Child PHP processes inherit this: artisan needs it, and the tools/*.php helpers
 // read it through tools/_root.php.
-const childEnv = () => ({ ...process.env, LW_APP_ROOT: appDir, ...(vendorDir ? { LW_VENDOR_DIR: vendorDir } : {}) });
+// `dbSandboxPath` (set below, before the first boot) points at the build-time
+// SQLite sandbox when the app's own SQLite database is absent — so every child
+// that boots the app (routes, prerender, config dump) can reach the schema
+// without the operator having a populated database. It is never a cloud resource.
+let dbSandboxPath = null;
+const childEnv = () => ({
+  ...process.env,
+  LW_APP_ROOT: appDir,
+  ...(vendorDir ? { LW_VENDOR_DIR: vendorDir } : {}),
+  ...(dbSandboxPath ? { DB_DATABASE: dbSandboxPath } : {}),
+});
 
 // One place the operator looks to answer "can my app run at the edge?"
 const findings = [];
@@ -322,6 +332,57 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
   } else {
     console.log(`\u2022 manifest: ${relPath(manifestPath)}`);
   }
+}
+
+// ---------- 1. compile migrations → D1 schema (+ a build-time DB sandbox) ----------
+// One `migrate` run does two jobs: the D1 schema snapshot (dist/schema.json +
+// dist/schema.sql, written later) AND a throwaway SQLite with that schema
+// applied, so the build can BOOT the app for prerendering even on a fresh
+// skeleton that ships no database file. A fresh `laravel new` app cannot boot
+// without one (the session middleware reads `sessions` on every request), which
+// used to read as "DOES NOT RUN" on the simplest possible project. The sandbox
+// is NOT the app's database and NOT the cloud D1: it lives in the build cache,
+// lasts only for the build, and the deploy-time
+// `wrangler d1 execute DB --file=dist/schema.sql --remote` (schema + the
+// operator's own data) is unchanged and still manual.
+console.log('\u2022 compiling migrations \u2192 schema (D1 SQLite dialect, in-memory)');
+mkdirSync(cacheDir, { recursive: true });
+const schemaPath = join(cacheDir, 'schema.json');
+{
+  // Read the app's DB setting the way its own config does (env() → .env). Only a
+  // SQLite database that is actually absent is shadowed; an existing file (with
+  // data) or a differently-configured database is respected — the build never
+  // points the app at a database it did not find.
+  const envPath = join(appDir, '.env');
+  const envText = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+  const envVal = (name, dflt) => {
+    const m = envText.match(new RegExp('^' + name + '=[ \\t]*(.*)$', 'm'));
+    const v = String(process.env[name] ?? (m ? m[1] : '')).trim();
+    return v || dflt;
+  };
+  const dbConn = envVal('DB_CONNECTION', 'sqlite');
+  const dbDatabase = envVal('DB_DATABASE', 'database/database.sqlite');
+  const dbFile = resolve(appDir, dbDatabase);
+  // A file that exists but has never been migrated (the classic
+  // `touch database/database.sqlite`) holds no schema either, so it counts as
+  // absent — and it is never written to: seeding the build's own sandbox is a
+  // build cache file, the app's data file stays the operator's to migrate.
+  const hasOwnDb = existsSync(dbFile) && lstatSync(dbFile).size > 0;
+  if (dbConn === 'sqlite' && !hasOwnDb) {
+    dbSandboxPath = join(cacheDir, 'build.sqlite');
+  }
+}
+execFileSync(
+  PHP,
+  [join(pkgDir, 'tools', 'schema-compile.php'), schemaPath, ...(dbSandboxPath ? [dbSandboxPath] : [])],
+  { cwd: appDir, env: childEnv() }
+);
+if (dbSandboxPath) {
+  console.log(
+    `  -> build-time DB sandbox: ${dbSandboxPath}\n` +
+      '     (the schema is applied so the app boots for prerender; the deploy-time\n' +
+      '      `wrangler d1 execute DB --file=dist/schema.sql --remote` is still yours to run)'
+  );
 }
 
 // ---------- 1. export routes from the Laravel app ----------
@@ -2312,15 +2373,9 @@ if (!existsSync(join(dist, 'src', 'classes.generated.mjs'))) {
 
 // ---------- 3d. schema snapshot ----------
 // Keep the count so the success footer can name the D1 tables and remind the
-// operator that the schema statement must be applied ONCE by hand.
+// operator that the schema statement must be applied ONCE by hand. The schema
+// itself was compiled at the top of the build (it also seeds the DB sandbox).
 let schemaTableCount = 0;
-mkdirSync(cacheDir, { recursive: true });
-const schemaPath = join(cacheDir, 'schema.json');
-console.log('\u2022 compiling migrations \u2192 schema (D1 SQLite dialect, in-memory)');
-execFileSync(PHP, [join(pkgDir, 'tools', 'schema-compile.php'), schemaPath], {
-  cwd: appDir,
-  env: childEnv(),
-});
 cpSync(schemaPath, join(dist, 'schema.json'));
 console.log('  -> dist/schema.json');
 
@@ -2757,11 +2812,19 @@ console.log(
 console.log(renderReadiness(findings));
 
 // The one thing every first deploy needs and no build can do for the operator:
-// the D1 tables. Printed only when there is a schema to apply.
+// the D1 tables. Printed only when there is a schema to apply. The order is
+// deliberate and printed as one: the tables must exist in the remote D1 BEFORE
+// the worker serves requests against them, so `d1 execute` comes first. The
+// build never runs either command for you — both need a Cloudflare account and
+// an auth token, and creating a database is provisioning, not compiling.
 if (schemaTableCount) {
   console.log(
-    `  schema: ${relPath(join(distFinal, 'schema.sql'))} (${schemaTableCount} table(s)) -- apply ONCE, by hand:\n` +
+    `  schema: ${relPath(join(distFinal, 'schema.sql'))} (${schemaTableCount} table(s)) -- run ONCE, BEFORE the first deploy:\n` +
       '    npx wrangler d1 execute DB --file=dist/schema.sql --remote'
   );
 }
-console.log('  next: npx wrangler dev   (local)     npx wrangler deploy   (edge)');
+const deployLabel = schemaTableCount ? 'then' : 'next'; // after the schema, or right away
+console.log(
+  `  ${deployLabel}:   npx wrangler deploy            (the worker + the static assets)\n` +
+    '  local:  npx wrangler dev               (preview without deploying)'
+);

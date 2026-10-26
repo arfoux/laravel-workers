@@ -210,3 +210,39 @@ if ($outputPath !== null) {
 } else {
     echo $json . "\n";
 }
+
+// ---- optional argv[2]: materialise a build-time SQLite with this schema ----
+// The build boots the app to prerender pages, and a Laravel app's own session
+// middleware reads its session table on every request — so a fresh skeleton
+// with no database file cannot boot at all ("DOES NOT RUN" on the simplest
+// possible project). This throwaway sandbox gives prerender what a developer's
+// `touch database/database.sqlite && php artisan migrate` gives them: the
+// tables, empty. It is NOT the app's database and NOT the deployed D1 — the
+// deploy-time `wrangler d1 execute DB --file=dist/schema.sql --remote` (schema
+// plus the operator's data) stays manual and unchanged.
+$sandboxPath = $argv[2] ?? null;
+if ($sandboxPath !== null) {
+    $dir = dirname($sandboxPath);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0777, true);
+    }
+    if (is_file($sandboxPath)) {
+        unlink($sandboxPath);
+    }
+    $sandbox = new PDO('sqlite:' . $sandboxPath);
+    $sandbox->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    foreach ($out['tables'] as $table) {
+        $ddl = rtrim(trim((string) ($table['sql'] ?? '')), ';');
+        if ($ddl !== '') {
+            $sandbox->exec($ddl);
+        }
+    }
+    // Named indexes carry their own DDL; sqlite's auto-indexes have NULL sql and
+    // are recreated by the constraints inside the table DDL above.
+    foreach (DB::select("SELECT sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL") as $index) {
+        $ddl = rtrim(trim((string) ($index->sql ?? '')), ';');
+        if ($ddl !== '') {
+            $sandbox->exec($ddl);
+        }
+    }
+}
