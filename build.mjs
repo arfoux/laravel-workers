@@ -492,7 +492,7 @@ try {
     if (res.status < 200 || res.status >= 300) {
       const rawDetail = res.error ? String(res.error) : (res.body ? String(res.body) : '');
       const detail = res.error ? `: ${res.error}` : (res.body ? `: ${String(res.body).slice(0, 150).replace(/\n/g, ' ')}` : '');
-      note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: rawDetail.includes('key:generate') ? 'run `php artisan key:generate` in the app' : isRuntimeBindingError(rawDetail) ? 'this static entry reads a D1 binding the build cannot reach -- a static entry must prerender clean, so give the app a local sqlite fallback for the build (config/database.php) or make the route dynamic' : rawDetail.includes('database') ? 'prepare the DB: touch database/database.sqlite && php artisan migrate --force (the build prerenders every page it serves)' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
+      note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: rawDetail.includes('key:generate') ? 'run `npx laravel-workers init` to write .env + APP_KEY' : isRuntimeBindingError(rawDetail) ? 'this static entry reads a D1 binding the build cannot reach -- a static entry must prerender clean, so give the app a local sqlite fallback for the build (config/database.php) or make the route dynamic' : rawDetail.includes('database') ? 'prerender renders this route for real, so it needs live data: prepare a local DB with data (touch database/database.sqlite && php artisan migrate --seed). Note: the D1 schema itself does NOT need this — schema-compile derives it from migrations in memory' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
       fail(`static route ${route} returned HTTP ${res.status}${detail}`);
     }
     const { bytes, fixed } = writePage(file, res.body);
@@ -602,7 +602,7 @@ try {
 {
   const problems = [];
   const problem = (cause, fix) => { problems.push(cause); note({ route: null, area: 'config', severity: BLOCK, cause, fix }); };
-  if (!runtimeConfig['app.key']) problem('app.key is empty', 'run `php artisan key:generate` (the edge signs cookies and sessions with it)');
+  if (!runtimeConfig['app.key']) problem('app.key is empty', 'run `npx laravel-workers init` (it writes .env + APP_KEY in pure JS; `php artisan key:generate` works too) — the edge signs cookies and sessions with it');
   const driver = runtimeConfig['session.driver'];
   if (driver !== 'database' && driver !== 'cookie') {
     problem(`session.driver '${driver}' is not supported by the compiled rung (database/cookie only)`);
