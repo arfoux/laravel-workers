@@ -51,3 +51,34 @@ test('rt-semantics2: a negative string offset answers the last character (PHP 7.
   assert.equal(rt2.strOffset('abc', -3), 'a');
   assert.equal(rt2.strOffset('abc', 0), 'a');
 });
+
+test('rt-semantics2: rt.Arr.except matches Arr.php (Laravel 11.34 reference)', () => {
+  // Arr::except($array, $keys) = forget() on a value, then return it
+  // (vendor/…/Arr.php:150). forget() answers an EXACT key first, then walks the
+  // dot path — and because PHP passes arrays by value, the caller's array must
+  // never change.
+  const data = { __data: 1, __path: 2, keep: 'x', nested: { a: 1, b: 2 } };
+  const out = rt.Arr.except(data, ['__data', '__path']);
+  assert.deepEqual(out, { keep: 'x', nested: { a: 1, b: 2 } });
+  assert.deepEqual(data, { __data: 1, __path: 2, keep: 'x', nested: { a: 1, b: 2 } }, 'the caller keeps its keys');
+
+  // Dot path: gone from the copy, caller's nested array untouched.
+  const dot = rt.Arr.except({ nested: { a: 1, b: 2 }, keep: 1 }, ['nested.a']);
+  assert.deepEqual(dot, { nested: { b: 2 }, keep: 1 });
+  assert.deepEqual(data.nested, { a: 1, b: 2 });
+
+  // A literal top-level key named 'a.b' beats the dot path (Arr::forget order).
+  assert.deepEqual(rt.Arr.except({ 'a.b': 1, a: { b: 2 } }, ['a.b']), { a: { b: 2 } });
+
+  // Integer keys: unset keeps later positions — still an ARRAY, with a hole
+  // (PHP: $a=[10,20,30]; unset($a[1]); => keys 0 and 2 stay put).
+  const intKeyed = rt.Arr.except([10, 20, 30], [1]);
+  assert.ok(Array.isArray(intKeyed), 'still an array');
+  assert.equal(1 in intKeyed, false, 'the unset key is gone');
+  assert.equal(intKeyed[0], 10);
+  assert.equal(intKeyed[2], 30);
+
+  // The exact Blade call shape that made this helper necessary.
+  const vars = { __data: 'd', __path: 'p', posts: [] };
+  assert.deepEqual(rt.Arr.except(vars, ['__data', '__path']), { posts: [] });
+});

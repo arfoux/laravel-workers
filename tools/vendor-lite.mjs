@@ -89,7 +89,9 @@ function readLockPackages(appDir) {
       vendor,
       pkg,
       version: String(p.version || ''),
-      url: (p.dist && p.dist.url) || (p.source && p.source.url) || null,
+      url: (p.dist && p.dist.url) || null,
+      shasum: (p.dist && p.dist.shasum) || null,
+      source: (p.source && p.source.url) || null,
       autoload: p.autoload || {},
       pkgdir: join('vendor', vendor, pkg),
     });
@@ -127,11 +129,42 @@ function extractZip(zipPath, destDir) {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-async function downloadFile(url, out) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`vendor fetch failed: ${url} -> HTTP ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  writeFileSync(out, buf);
+async function downloadFile(url, out, expectSha, label) {
+  // Real failures observed: HTTP 403/429 rate limits from api.github.com,
+  // transient transport errors after ~60 zipballs ("fetch failed" with NO url
+  // in the message), and bytes that do not match the lock. Name the package,
+  // retry the recoverable ones, verify when the lock carries a shasum — the
+  // code below becomes executed PHP, so a mismatched payload must never load.
+  const attempts = 3;
+  let lastErr = null;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await fetch(url, { headers: { 'user-agent': 'laravel-workers/vendor-lite' } });
+      if (res.ok) {
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (expectSha) {
+          const want = String(expectSha).toLowerCase();
+          const got = /^[0-9a-f]{40}$/.test(want)
+            ? createHash('sha1').update(buf).digest('hex')
+            : createHash('sha256').update(buf).digest('hex');
+          if (got !== want) {
+            throw new Error(
+              `${label || 'package'}: checksum mismatch for ${url} (lock says ${want}, got ${got}) — refusing the bytes`
+            );
+          }
+        }
+        writeFileSync(out, buf);
+        return;
+      }
+      lastErr = new Error(`${label || 'package'}: HTTP ${res.status} fetching ${url}`);
+      if (res.status !== 429 && res.status < 500) break; // 404/403 will not heal
+    } catch (e) {
+      if (String(e.message).includes('checksum mismatch')) { lastErr = e; break; } // never retry a bad payload
+      lastErr = new Error(`${label || 'package'}: ${e.cause?.code || e.message} fetching ${url}`);
+    }
+    if (i < attempts) await new Promise((r) => setTimeout(r, 700 * i));
+  }
+  throw new Error(`vendor fetch failed after ${attempts} attempt(s): ${lastErr ? lastErr.message : url}`);
 }
 
 function phpStr(s) {
@@ -270,8 +303,13 @@ export async function ensureVendorLite(appDir, opts = {}) {
     if (!e.url) throw new Error(`vendor-lite: no dist url for ${e.name}`);
     const pkgDir = join(destRoot, e.pkgdir);
     if (existsSync(pkgDir)) continue; // already extracted: resume without re-downloading
+    if (!e.url) {
+      throw new Error(
+        `${e.pkg}: the lock carries no dist archive (source-only package${e.source ? ': ' + e.source : ''}) — vendor-lite only fetches dist zips; use composer install for this project`
+      );
+    }
     const zip = join(tmpdir(), `lw-vendor-${process.pid}-${Date.now()}-${e.pkg}.zip`);
-    await downloadFile(e.url, zip);
+    await downloadFile(e.url, zip, e.shasum, e.pkg);
     extractZip(zip, pkgDir);
     rmSync(zip, { force: true });
   }

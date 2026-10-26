@@ -23,6 +23,16 @@ $request = Illuminate\Http\Request::create($argv[3] ?? '/', 'GET');
 $response = $kernel->handle($request);
 $kernel->terminate($request, $response);
 
+// The app may have registered an exception handler (Ignition renders the page
+// and PHP then exits 0), which turns every failure into a silent missing dump —
+// the build can only report ENOENT instead of the real cause. Register ours
+// AFTER the kernel bootstrapped so it wins: honest stderr + non-zero exit.
+set_exception_handler(static function (\Throwable $e): void {
+    fwrite(STDERR, 'compile-view: ' . get_class($e) . ': ' . $e->getMessage()
+        . ' @ ' . $e->getFile() . ':' . $e->getLine() . PHP_EOL);
+    exit(1);
+});
+
 $name = $argv[1] ?? 'welcome';
 
 // The FRAMEWORK's error views (`errors::404`): Laravel registers that namespace
@@ -157,7 +167,11 @@ if (preg_match('/app\(\s*([\'"])Illuminate\\\\Foundation\\\\Vite\1\s*\)\s*\(/', 
 $app->forgetInstance(Illuminate\Foundation\Vite::class);
 $vite = $app->make(Illuminate\Foundation\Vite::class);
 
-$viteFonts = (string) $vite->fonts();
+// Laravel gained Vite::fonts() in 12.x. On 11 and older the method does not
+// exist, and a bare call there threw — rendered by the app's exception handler
+// with exit 0, so the build saw only "dump missing". No fonts feature on that
+// major = nothing to capture.
+$viteFonts = method_exists($vite, 'fonts') ? (string) $vite->fonts() : '';
 
 $viteInvoke = '';
 if ($viteInvokeArgs !== null) {

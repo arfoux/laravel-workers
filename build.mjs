@@ -187,7 +187,14 @@ for (const p of registryCandidates) if (existsSync(p)) { registryPath = p; break
 if (lwConfig && registryPath === lwConfig) console.log(`• registry: LW_CONFIG -> ${registryPath}`);
 let registry = {};
 if (registryPath) {
-  registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+  try {
+    registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+  } catch (e) {
+    fail(
+      `the registry (${relPath(registryPath)}) is not valid JSON: ${e.message} — fix the file; ` +
+        'it is read as-is, so comments and trailing commas are not allowed'
+    );
+  }
 } else {
   registryPath = join(appDir, 'registry.json');
   console.log('• registry: none found — using defaults (autoSnapshot on, no ports/ignore); add registry.json or set LW_CONFIG to declare routes');
@@ -386,10 +393,16 @@ if (dbSandboxPath) {
 }
 
 // ---------- 1. export routes from the Laravel app ----------
-console.log('• exporting routes via `php artisan route:list --json` (booted through the resolved autoloader)');
+console.log('• exporting routes from the route files with the static parser (no PHP boot)');
 let listed;
 try {
-  const rawRoutes = execFileSync('node', [join(pkgDir, 'tools', 'routes-dump.mjs')], { cwd: appDir, env: childEnv() }).toString('utf8');
+  // stderr = the static walk's scope disclosures and parse issues (streamed,
+  // not captured: they belong in the build log even on success).
+  const rawRoutes = execFileSync('node', [join(pkgDir, 'tools', 'routes-dump.mjs')], {
+    cwd: appDir,
+    env: childEnv(),
+    stdio: ['ignore', 'pipe', 'inherit'],
+  }).toString('utf8');
   try {
     listed = JSON.parse(rawRoutes);
   } catch {
@@ -405,26 +418,25 @@ try {
     );
   }
 } catch (e) {
-  // PHP compile/boot errors print to STDOUT even when the process exits
-  // non-zero, so both streams matter here. Reporting only stderr shipped a
-  // generic "missing env vars" hint for what was really a PHP parse error.
+  // The scan is pure JS now, so a crash here is a parser/tooling failure, not
+  // a boot failure — say that instead of pointing at .env/APP_KEY/DB.
   const stderr = e.stderr ? e.stderr.toString().trim() : '';
   const stdout = e.stdout ? e.stdout.toString().trim() : '';
   const outTail = stdout ? stdout.split('\n').slice(-15).join('\n') : '';
   const errTail = stderr ? stderr.split('\n').slice(-15).join('\n') : '';
   const combined = [errTail, outTail].filter(Boolean).join('\n');
-  const errDetail = combined ? '\n  PHP output:\n    ' + combined.replace(/\n/g, '\n    ') : '';
+  const errDetail = combined ? '\n  scanner output:\n    ' + combined.replace(/\n/g, '\n    ') : '';
   note({
     severity: BLOCK,
     area: 'route',
-    cause: 'the app failed to boot during route export' + (combined ? ': ' + combined.split('\n').pop().trim() : ''),
-    fix: 'check that the app has a .env with APP_KEY, DB connection and all required vars; then re-run',
+    cause: 'the static route scan failed' + (combined ? ': ' + combined.split('\n').pop().trim() : ''),
+    fix: 'run `node tools/routes-dump.mjs` in the app directory to see the raw error',
   });
   fail(
     'route export crashed' + errDetail +
-    '\n  the build cannot continue without the route table — this usually means\n' +
-    '  the app failed to boot (missing env vars, DB connection, etc.)\n' +
-    '  -> fix the root cause in the app, then re-run the build'
+      '\n  the build cannot continue without the route table — this is a failure\n' +
+      '  of the static scanner itself (a route file it cannot parse, most likely)\n' +
+      '  -> run `node tools/routes-dump.mjs` in the app directory, fix what it prints'
   );
 }
 // Laravel only reports `path` for closure routes — controller-action routes
@@ -546,7 +558,31 @@ if (skippedRoutes.length) {
 }
 
 // ---------- 2. prerender helper (boots the real app, build time only) ----------
-const originRe = /(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//g;
+// Origins a snapshot must turn relative: localhost (what prerender renders
+// against) AND the app's own APP_URL. A Herd/Valet domain (myapp.test) is just
+// as much a dev origin — keeping it absolute ships dead links to the edge.
+// External origins (laravel.com, fonts, APIs) are never touched.
+const appUrlOrigin = (() => {
+  let raw = process.env.APP_URL || '';
+  try {
+    const envPath = join(appDir, '.env');
+    if (existsSync(envPath)) {
+      const m = readFileSync(envPath, 'utf8').match(/^APP_URL=[ \t]*(.*)$/m);
+      if (m && m[1].trim()) raw = m[1].trim();
+    }
+  } catch { /* keep whatever process.env said */ }
+  try {
+    const u = new URL(raw);
+    return u.host ? u.protocol + '//' + u.host : '';
+  } catch {
+    return ''; // no APP_URL / not an absolute URL
+  }
+})();
+const originRe = new RegExp(
+  '(?:https?:)?//(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::\\d+)?/|' +
+    (appUrlOrigin ? appUrlOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/' : '(?!)'),
+  'g'
+);
 
 // The framework can write an error page to stdout around our payload (console
 // exception renderers bypass PHP output buffering), so prerender.php terminates
@@ -792,18 +828,16 @@ const corsPaths = (() => {
   }
   return out;
 })();
-// Laravel's Str::is(): the pattern may end with '*' (a prefix match).
+// Laravel matches CORS paths with `$request->is($pattern)` -> Str::is(): '*'
+// matches any run of characters ANYWHERE in the pattern (full match), on the
+// slash-trimmed path. `fullUrlIs()` is path-only too unless the pattern carries
+// a scheme/host, which no sane cors.paths entry does.
 const corsPathFor = (uri) => {
-  const clean = (s) => '/' + String(s == null ? '' : s).replace(/^\/+/, '').replace(/\/+$/, '');
-  const path = clean(uri);
+  const path = String(uri == null ? '' : uri).replace(/^\/+/, '').replace(/\/+$/, '');
   for (const pattern of corsPaths) {
-    const p = clean(pattern);
-    if (p === '/') return pattern;
-    if (p.endsWith('*')) {
-      if (path.startsWith(p.slice(0, -1))) return pattern;
-    } else if (path === p) {
-      return pattern;
-    }
+    const p = pattern === '/' ? '/' : String(pattern).replace(/^\/+/, '').replace(/\/+$/, '');
+    const re = new RegExp('^' + p.split('*').map((seg) => seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
+    if (re.test(path)) return pattern;
   }
   return null;
 };
@@ -829,11 +863,16 @@ let cronTriggers = [];
     }).toString('utf8');
     schedule = JSON.parse(raw);
   } catch (e) {
-    console.log(
-      `  schedule dump failed — the artifact ships an empty schedule: ${String(e.stderr || e.message || '')
-        .trim()
-        .slice(0, 200)}`
-    );
+    const detail = String(e.stderr || e.message || '').trim().slice(0, 300);
+    console.log(`  schedule dump failed — the artifact ships an empty schedule: ${detail.slice(0, 200)}`);
+    // A schedule that failed to compile is a missing cron trigger: the build
+    // must say so in the verdict, not only in scrollback.
+    note({
+      route: null,
+      severity: BLOCK,
+      cause: `the schedule did not compile (${detail})`,
+      fix: 'the edge ships no cron triggers until schedule-dump succeeds — run `node tools/schedule-dump.mjs` alone to see the full error',
+    });
   }
   const events = Array.isArray(schedule.events) ? schedule.events : [];
   writeFileSync(
@@ -883,7 +922,7 @@ function hasBinding(appRoot, product, name) {
   const jsonc = join(appRoot, 'wrangler.jsonc');
   if (existsSync(jsonc)) {
     try {
-      const text = readFileSync(jsonc, 'utf8').replace(/^\s*\/\/.*$/gm, '');
+      const text = readFileSync(jsonc, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
       const cfg = JSON.parse(text);
       const list = cfg[product];
       if (Array.isArray(list) && list.some((b) => b && b.binding === name)) return true;
@@ -934,6 +973,20 @@ const bladeLaravel = (() => {
     return null; // no composer.json / no constraint: blade2php's own default
   }
 })();
+// The EXACT framework version from composer.lock (no boot, no vendor). Laravel
+// changed bytes WITHIN a major — the view-data filter switched in v11.43.0 —
+// so apps pinned to an older 11.x would diverge on every include if only the
+// major reached blade2php.
+const bladeInstalled = (() => {
+  try {
+    const lock = JSON.parse(readFileSync(join(appDir, 'composer.lock'), 'utf8'));
+    const pkgs = [...(lock.packages || []), ...(lock['packages-dev'] || [])];
+    const fw = pkgs.find((p) => p && p.name === 'laravel/framework');
+    return fw && fw.version ? String(fw.version).replace(/^v/, '') : null;
+  } catch {
+    return null;
+  }
+})();
 const bladeOff = process.env.LW_BLADE_JS === '0';
 const blade = { checked: 0, diverged: 0, failed: 0 };
 
@@ -952,6 +1005,7 @@ function bladeCompile(dump, label) {
   try {
     out = compileView(readFileSync(dump.path, 'utf8'), {
       laravel: bladeLaravel ?? undefined,
+      installed: bladeInstalled ?? undefined,
       app: appDir,
       path: dump.path,
     });
@@ -985,17 +1039,37 @@ for (const [route, view] of viewMap) {
   const slug = slugifyRoute(route);
   const dumpPath = join(cacheDir, view + '.compiled.json');
   console.log(`compiling view ${view} for ${route}`);
-  execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, route], {
-    cwd: appDir,
-    env: childEnv(),
-  });
+  try {
+    execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), view, dumpPath, route], {
+      cwd: appDir,
+      env: childEnv(),
+    });
+  } catch (e) {
+    // A view that fails to compile must land in the verdict, not only in
+    // scrollback: the route would otherwise ship with no handler at all.
+    const detail = String(e.stdout || e.stderr || e.message || '').trim().split('\n').slice(-4).join(' / ');
+    console.log(`  view ${view}: compile FAILED — ${detail.slice(0, 300)}`);
+    needsPort.push({ route, reason: `the view for ${route} did not compile (${view}): ${detail.slice(0, 200)}` });
+    continue;
+  }
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
   if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + route);
 
   bladeCompile(dump, route);
 
   const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
-  execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
+  try {
+    execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
+  } catch (e) {
+    // A transpiler refusal used to escape here as a raw stack dump with NO
+    // READINESS block. fail() keeps the invariant: verdict first, staging thrown.
+    const detail = String(e.stderr || e.message || '').trim().split('\n').slice(-4).join(' / ');
+    fail(
+      `transpiling the view for ${route} failed (${view}): ${detail}\n` +
+        '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
+        `    node compiler/bin/transpile.mjs ${dumpPath} --json`
+    );
+  }
 
   const contextPath = join(dist, 'src', 'contexts', view + '.mjs');
   writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
@@ -1082,7 +1156,18 @@ if (errorViewCodes.length) {
     bladeCompile(dump, viewName);
 
     const viewModulePath = join(dist, 'src', 'views', 'errors.' + code + '.mjs');
-    execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
+    try {
+      execFileSync('node', [join(pkgDir, 'compiler', 'bin', 'transpile.mjs'), dumpPath, '--json', '--out', viewModulePath], { cwd: appDir });
+    } catch (e) {
+      // This site crashed the build with a raw execFileSync dump and no READINESS
+      // block (seen: LW003 on Arr::except for a Laravel 11 app) — fail() instead.
+      const detail = String(e.stderr || e.message || '').trim().split('\n').slice(-4).join(' / ');
+      fail(
+        `transpiling the error view errors::${code} failed: ${detail}\n` +
+          '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
+          `    node compiler/bin/transpile.mjs ${dumpPath} --json`
+      );
+    }
 
     const contextPath = join(dist, 'src', 'contexts', 'errors.' + code + '.mjs');
     writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
@@ -2409,14 +2494,19 @@ console.log('  -> dist/schema.json');
 }
 
 // ---------- 4. copy static assets ----------
-for (const f of ['build', 'favicon.ico', 'robots.txt']) {
-  const src = join(appDir, 'public', f);
-  if (!existsSync(src)) {
-    console.log(`  ! public/${f} missing — skipped`);
+// Static Assets IS the document root at the edge: every public entry ships or
+// the URL 404s. Only PHP entrypoints and dotfiles stay behind (index.php is the
+// front controller — shipping it would expose PHP source; .htaccess is Apache).
+for (const ent of readdirSync(join(appDir, 'public'), { withFileTypes: true })) {
+  if (ent.name === 'index.php' || ent.name === '.htaccess') continue;
+  if (ent.name.startsWith('.')) continue;
+  const src = join(appDir, 'public', ent.name);
+  if (lstatSync(src).isSymbolicLink()) {
+    console.log(`  ! public/${ent.name} is a symlink — skipped (Storage files arrive through the R2/blob binding)`);
     continue;
   }
-  cpSync(src, join(dist, 'public', f), { recursive: true });
-  console.log(`• copied public/${f}`);
+  cpSync(src, join(dist, 'public', ent.name), { recursive: true });
+  console.log(`• copied public/${ent.name}`);
 }
 
 // ---------- 5. worker + ports + routes ----------

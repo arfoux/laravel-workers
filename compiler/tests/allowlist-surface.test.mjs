@@ -22,6 +22,7 @@ import {
   COLLECTION_METHODS,
 } from '../src/transpiler.mjs';
 import { Model } from '../../kernel/model.mjs';
+import { ARR_METHODS, arr as arrHelpers } from '../../kernel/arr.mjs';
 import { Collection } from '../../kernel/collections.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 
@@ -104,4 +105,13 @@ test('allowlist: the allowed model methods answer what Laravel answers', () => {
   // `toJSON()` method).
   assert.equal(typeof post.toJSON(), 'object');
   assert.deepEqual(post.toJSON(), post.toArray());
+});
+
+test('allowlist: every Arr method the compiler allows exists on rt.Arr', () => {
+  // Arr::except() is not an app nicety — Blade's own compiled view-data filter
+  // is Arr::except(...) on Laravel 11.0-11.42, so a view dies without it.
+  const surface = surfaceOf(arrHelpers);
+  const missing = [...ARR_METHODS].filter((name) => !surface.has(name));
+  assert.deepEqual(missing, [], `rt.Arr has no ${missing.join(', ')}() — the call would throw at request time`);
+  assert.ok(ARR_METHODS.has('except'), 'Arr::except() must be allowed: Blade emits it');
 });

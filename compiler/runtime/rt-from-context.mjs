@@ -3,6 +3,7 @@ import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } 
 import { Validator } from '../../kernel/validator.mjs';
 import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
+import { arr as arrHelpers } from '../../kernel/arr.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { phpJsonEncode } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
@@ -429,6 +430,9 @@ export function buildRt(context, opts = {}) {
   // Illuminate\Support\Str - the string helpers (PHP-exact, kernel/str.mjs).
   // (`rt.str` is the PHP (string) cast, so the facade goes to rt.Str.)
   rt.Str = strHelpers;
+  // Arr::except() is what Blade's own view-data filter compiles to on Laravel
+  // 11.0–11.42, so every view of an app on those versions needs rt.Arr.
+  rt.Arr = arrHelpers;
   // back(): the session's url.previous, else the Referer, else the fallback.
   rt.back = (fallback = '/') => {
     const previous =

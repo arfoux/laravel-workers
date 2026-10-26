@@ -2,7 +2,29 @@
 
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 
-## v0.4.3 (prepared)
+## v0.4.4 (prepared)
+
+A full audit sweep of both repos, verified against a **real Laravel 11.34.2 project** (`blogkit`: Breeze, Livewire, Sanctum, `Route::resource`, real `composer install`), differential-tested against `artisan route:list` / a booting app as ground truth.
+
+- **Fix (P0): the static route scan now sees what Laravel registers.** Ground truth on the audited app: artisan listed **37 routes, the scan saw 5**, and the build still reported full coverage. `tools/routes-dump.mjs` now follows `require __DIR__.'/x.php'` (15 Breeze routes), expands `Route::resource`/`apiResource` (`only`/`except`/`names`/`parameters`, nested `posts.comments`), accepts the verb at **either** end of a chain (`Route::middleware(...)->get(...)`), reads route files registered by providers (`Route::prefix('api')->group(base_path('routes/api.php'))` — the Laravel 9/10-era shape), decides `if (config(...))`/`if (env(...))` conditions with the same static config the build uses (a route behind a false branch is no longer invented), and reads controller-level `$this->middleware('auth', ['except'=>…])` — without it `POST /posts/{post}/publish` shipped **without `auth`** at the edge. Array-entry keys (`['only' => …]`) were dropped because php-parser stores keys as STRING nodes. Result: **28/28 app routes, 0 invented**; the 9 package-registered routes no source scan can see are disclosed in one scope note on stderr.
+- Fix: a `registry.json` that is not valid JSON, and a failing `registry.views` entry, crashed with a raw stack and **no READINESS block** (the C1 class the repo had already fixed elsewhere) — both now go through `fail()`.
+- Fix: the `public/` copy is the whole document root now — only `index.php`/`.htaccess`/dotfiles/symlinks stay behind. The old three-name whitelist silently left `images/`, `sitemap.xml`, `manifest.webmanifest` and package assets 404ing at the edge.
+- Fix: `corsPathFor` matches Laravel's `Str::is()` (`*` anywhere, not only as a suffix).
+- Fix: framework default config (`cors.paths`, `hashing.*`, …) is loaded when the app ships no config file for it (Laravel 11+ skeletons stopped shipping `cors.php`), resolving the framework through `LW_VENDOR_DIR` as well as `vendor/` — an empty `cors.paths` had silently disabled the CORS-route skip.
+- Fix: snapshot origin rewriting also covers the app's own `APP_URL`, so a Herd/Valet domain (`myapp.test`) no longer bakes dead links into snapshots.
+- Fix: a schedule dump that fails is a BLOCK finding now, not a scrollback line — cron triggers used to vanish silently.
+- Fix: `tools/_root.php` auto-`APP_KEY` was dead code (`!putenv('APP_KEY')` is never true: `putenv` without `=` unsets and answers true), so tool runs on a checkout without `.env` died with `MissingAppKeyException`.
+- Fix: `tools/compile-view.php` on Laravel ≤ 11 — `Vite::fonts()` (12.x+) threw and the app's exception handler rendered it with **exit 0**, so the build only ever saw "dump missing": guarded with `method_exists`, plus an exception handler that exits 1 with the real cause.
+- Fix: transpile failures at the error-view and registry-view sites crashed with a raw `execFileSync` dump (no READINESS block); both now `fail()` carrying the LW error and the standalone command.
+- Improvement: `vendor-lite` verifies `dist.shasum` from the lock (the bytes become executed PHP), retries transport failures three times naming the package and URL (`fetch failed` with no URL was measured on a real 80-package lock, dying at package 59), and refuses source-only locks with a pointer to `composer install`. Its 3 tests are wired into `npm test` — they had never run.
+- Improvement: the build streams the route scanner's stderr (scope disclosures, parse issues) into its log; the routes log line no longer claims `php artisan route:list`; the route-crash message no longer blames `.env`/DB for what is now a JS scan.
+- Improvement: `hasBinding` strips `/* */` comments from `wrangler.jsonc`, not only `//`.
+- Port: `kernel/arr.mjs` — `Arr::except()`, the view-data filter Blade itself emits on Laravel 11.0–11.42, with `Arr::forget` semantics (exact key first, then dot paths, copy-on-write so the caller's array never changes). Without it **no view** of an app on those versions transpiled (`LW003`).
+- The build passes `installed` (the exact framework version from `composer.lock`) to blade2php — see blade2php 0.1.2: Laravel changed bytes **within** 11.x (v11.43.0).
+- Dependencies: `blade2php` pinned to `^0.1.2` (was `latest` — any future release would have changed user builds while CI stayed green on the lock); the lock carries 0.1.2 with its integrity hash.
+- Suite: **773/773** (three vendor-lite tests joined), docs gate **105/105**, e2e build green on the audited Laravel 11.34.2 app.
+
+## v0.4.3 — 2026-10-27
 
 - New: **conditional frontend-manifest check** — `build.mjs` pre-scans `resources/views/**` for `@vite()`/`mix()` instead of demanding a manifest from every app. A fullstack app without one fails up front, naming the exact view and the one-time `npm install && npm run build`; a backend-only API app (no view touches the frontend) needs no manifest at all and used to be failed by the old unconditional check.
 - New: **build-time DB sandbox** — `tools/schema-compile.php` takes an optional second argument and materialises a throwaway SQLite with the schema it just compiled. `build.mjs` seeds `.cache/laravel-workers/build.sqlite` when the app's own SQLite database is absent or was `touch`ed but never migrated, so a fresh `laravel new` project boots for prerender and reports `RUNS ON THE EDGE` instead of `DOES NOT RUN` (Laravel's session middleware reads `sessions` on every request). Your own database file, when real, is used as-is and never written to; the remote `d1 execute` stays manual and is now printed as the step that runs **before** `wrangler deploy`.

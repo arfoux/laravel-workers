@@ -115,7 +115,11 @@ function lw_boot_app(?string $root = null)
     // Generate and inject APP_KEY if missing. The app cannot boot without a valid
     // key. Setting it in $_ENV / $_SERVER makes `config('app.key')` pick it up
     // at boot time — no need to write the .env file, which keeps the checkout clean.
-    if (!putenv('APP_KEY')) {
+    // FIXED: putenv('APP_KEY') with no '=' UNSETS the variable and returns true,
+    // so `! putenv('APP_KEY')` was never true and no key was ever injected — a
+    // checkout without .env then died with MissingAppKeyException. getenv()
+    // returns false exactly when the variable is absent.
+    if (getenv('APP_KEY') === false || getenv('APP_KEY') === '') {
         $key = 'base64:' . base64_encode(random_bytes(32));
         $_ENV['APP_KEY'] = $key;
         $_SERVER['APP_KEY'] = $key;

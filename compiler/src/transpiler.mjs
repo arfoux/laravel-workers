@@ -2,6 +2,7 @@
 import parser from 'php-parser';
 import { Collection } from '../../kernel/collections.mjs';
 import { STR_METHODS } from '../../kernel/str.mjs';
+import { ARR_METHODS } from '../../kernel/arr.mjs';
 import { ADAPTER_ASYNC } from '../../kernel/service-adapters.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
@@ -1776,6 +1777,21 @@ function txCall(node) {
         node.loc,
         PORT_HINT
       );
+    }
+    // Illuminate\Support\Arr — the array helpers. Blade's OWN compiled output
+    // uses it: the view-data filter of @include/@extends on Laravel 11.0–11.42
+    // is Arr::except(get_defined_vars(), [...]), so views (not only
+    // controllers) must transpile it — hence no CTX.controller gate.
+    if (cls === 'Arr' || cls === 'Illuminate\\Support\\Arr') {
+      if (!ARR_METHODS.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Arr::' + meth + '() is not supported - allowed: ' + [...ARR_METHODS].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.Arr.' + meth + '(' + args + ')';
     }
     // Illuminate\Support\Str - the string helpers (the PHP-exact subset).
     if ((cls === 'Str' || cls === 'Illuminate\\Support\\Str') && CTX && CTX.controller) {

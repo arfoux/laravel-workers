@@ -883,8 +883,17 @@ export function loadConfig(appDir, env = {}) {
     } catch (e) { error = e.message || String(e); }
   }
 
-  const frameworkConfigDir = join(appDir, 'vendor', 'laravel', 'framework', 'config');
-  if (existsSync(frameworkConfigDir)) {
+  // The framework config lives wherever the autoloader put it: a composer
+  // checkout (`<app>/vendor/...`) or LW_VENDOR_DIR (vendor-lite's cache, or a
+  // vendor dir mounted from elsewhere). Laravel's own LoadConfiguration reads it
+  // from __DIR__ — here we resolve both layouts so a vendor-less checkout still
+  // gets cors/hashing/view defaults whenever a framework copy is reachable.
+  const frameworkConfigDir = [
+    process.env.LW_VENDOR_DIR ? join(process.env.LW_VENDOR_DIR, 'laravel', 'framework', 'config') : null,
+    process.env.LW_VENDOR_DIR ? join(process.env.LW_VENDOR_DIR, 'vendor', 'laravel', 'framework', 'config') : null,
+    join(appDir, 'vendor', 'laravel', 'framework', 'config'),
+  ].find((p) => p && existsSync(p)) || null;
+  if (frameworkConfigDir) {
     try {
       for (const f of readdirSync(frameworkConfigDir)) {
         const name = f.replace(/\.php$/, '');
