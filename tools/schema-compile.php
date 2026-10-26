@@ -21,9 +21,10 @@
 require_once __DIR__ . '/_root.php';
 $root = lw_app_root();
 
-require lw_vendor_autoload();
-
-$app = require $root . '/bootstrap/app.php';
+// `lw_boot_app()` resolves the autoloader (own vendor/ or LW_VENDOR_DIR), registers
+// the checkout's App\ namespace, and injects a generated APP_KEY when the env has
+// none — so a fresh clone with no .env can still boot and compile.
+$app = lw_boot_app();
 
 // A console kernel is what knows how to run `artisan migrate`; boot it (it also
 // registers the migration repository service that `migrate` depends on).

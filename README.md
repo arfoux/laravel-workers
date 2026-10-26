@@ -133,14 +133,14 @@ Every build step (route export, view compilation, schema extraction, config dump
 |---|---|---|
 | PHP vendor files | `composer install` (379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader. No composer binary. Same result, different path. |
 | Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots the app, runs migrations against an in-memory SQLite (Laravel emits SQLite DDL regardless of the app's actual driver), dumps the schema. No DB file, no migrate step. Driver-agnostic: MySQL/Postgres/SQLite source apps all produce the same D1-SQLite output. |
-| `.env` with `APP_KEY` | `php artisan key:generate` | **`npx laravel-workers init`** — generates `base64:<32 random bytes>` in pure Node.js (`crypto.randomBytes`), copies `.env.example` → `.env` when absent. No PHP, no Laravel, no artisan. |
+| `.env` with `APP_KEY` | `php artisan key:generate` | **the build injects one automatically** (`tools/_root.php` → `lw_boot_app()`: generates `base64:<32 random bytes>` and sets `$_ENV`/`$_SERVER`/`putenv` when the env has none — no `.env` write, no PHP binary needed). `npx laravel-workers init` also writes it into `.env` for the *deployed* runtime, which needs a stable key. |
 | `composer install` binary | required on cold clone | **not required** — vendor-lite handles it. If the app already has `vendor/`, nothing runs. |
 
 ### What "zero config" actually means
 
 The build needs three things:
 1. **`vendor/autoload.php`** — on an existing app this already exists; on a fresh clone vendor-lite provisions it in seconds (content-addressed cache, pays once per `composer.lock`, not once per build).
-2. **`.env` with a valid `APP_KEY`** — `npx laravel-workers init` creates both (copies `.env.example`, generates the key with Node's `crypto.randomBytes(32)` — the same 32 bytes `artisan key:generate` produces).
+2. **`APP_KEY`** — the build generates and injects one if the env has none (`lw_boot_app()`), so a build never fails for it. But the **deployed** worker needs a *stable* key (it encrypts cookies/sessions), so `npx laravel-workers init` writes one into `.env` — pure Node.js `crypto.randomBytes(32)`, the same 32 bytes `artisan key:generate` produces.
 3. **`registry.json` + `wrangler.jsonc`** — written by `npx laravel-workers init` or copy-pasted from below.
 
 That is all. No `composer install`, no `migrate`, no pre-existing SQLite file.
