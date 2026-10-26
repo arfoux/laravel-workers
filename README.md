@@ -77,9 +77,8 @@ Versions actually tested (byte-parity corpus + CI + live deploy):
 # 1) As an npm package in a real Laravel app (recommended):
 cd my-laravel-app             # artisan + vendor + public/build there
 npm i laravel-workers
-npx laravel-workers init             # writes registry.json + wrangler.jsonc, updates .gitignore
-# no composer install needed - the build provisions the app's PHP vendor itself (composer-free vendor-lite)
-npx laravel-workers build --strict   # dist/ (cwd-based, no edge/ required); --scaffold for port stubs
+npx laravel-workers init             # writes registry.json + wrangler.jsonc + .env (APP_KEY via pure JS), updates .gitignore
+npx laravel-workers build --strict   # dist/ (cwd-based); vendor + schema handled automatically — no separate steps
 # local preview/deploy: npx wrangler deploy
 
 # 2) From checkout (tests / legacy edge layout):
@@ -134,14 +133,14 @@ Every build step (route export, view compilation, schema extraction, config dump
 |---|---|---|
 | PHP vendor files | `composer install` (379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader. No composer binary. Same result, different path. |
 | Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots the app, runs migrations against an in-memory SQLite (Laravel emits SQLite DDL regardless of the app's actual driver), dumps the schema. No DB file, no migrate step. Driver-agnostic: MySQL/Postgres/SQLite source apps all produce the same D1-SQLite output. |
-| `.env` with `APP_KEY` | **always required** | **still required** — Laravel cannot boot without it. Run `cp .env.example .env && php artisan key:generate` once per clone. |
+| `.env` with `APP_KEY` | `php artisan key:generate` | **`npx laravel-workers init`** — generates `base64:<32 random bytes>` in pure Node.js (`crypto.randomBytes`), copies `.env.example` → `.env` when absent. No PHP, no Laravel, no artisan. |
 | `composer install` binary | required on cold clone | **not required** — vendor-lite handles it. If the app already has `vendor/`, nothing runs. |
 
 ### What "zero config" actually means
 
 The build needs three things:
 1. **`vendor/autoload.php`** — on an existing app this already exists; on a fresh clone vendor-lite provisions it in seconds (content-addressed cache, pays once per `composer.lock`, not once per build).
-2. **`.env` with a valid `APP_KEY`** — one `php artisan key:generate` per clone.
+2. **`.env` with a valid `APP_KEY`** — `npx laravel-workers init` creates both (copies `.env.example`, generates the key with Node's `crypto.randomBytes(32)` — the same 32 bytes `artisan key:generate` produces).
 3. **`registry.json` + `wrangler.jsonc`** — written by `npx laravel-workers init` or copy-pasted from below.
 
 That is all. No `composer install`, no `migrate`, no pre-existing SQLite file.
@@ -162,8 +161,7 @@ cat > wrangler.jsonc <<'JSONC'
   "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<from: npx wrangler d1 create my-app>" } ],
   "observability": { "enabled": true } }
 JSONC
-cp .env.example .env && php artisan key:generate
-npm run build
+npx -y laravel-workers@0.4.0 init    # registry.json + wrangler.jsonc + .env/APP_KEY (pure JS)
 npx -y laravel-workers@0.4.0 build --strict
 # D1 schema (tables from migrations + lw_blobs if the app uses Storage::)
 npx wrangler d1 execute DB --file=dist/schema.sql --remote

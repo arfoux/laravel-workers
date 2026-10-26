@@ -4,6 +4,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const appDir = process.cwd();
@@ -46,6 +47,49 @@ if (!existsSync(wranglerPath)) {
   console.log('wrangler.jsonc exists — skipped');
 }
 
+// .env — copy from .env.example and/or add APP_KEY if missing
+// APP_KEY = base64:<32 random bytes> — pure JS, no PHP, no Laravel needed
+const envPath = join(appDir, '.env');
+const envExamplePath = join(appDir, '.env.example');
+
+function generateAppKey() {
+  const bytes = randomBytes(32);
+  return 'base64:' + bytes.toString('base64');
+}
+
+function setEnvVar(content, key, value) {
+  const pattern = new RegExp('^' + key + '=.*', 'm');
+  if (pattern.test(content)) {
+    return content.replace(pattern, key + '=' + value);
+  }
+  return content + (content.endsWith('\n') ? '' : '\n') + key + '=' + value + '\n';
+}
+
+let envContent = '';
+let appKeySet = false;
+
+if (existsSync(envPath)) {
+  envContent = readFileSync(envPath, 'utf8');
+} else if (existsSync(envExamplePath)) {
+  envContent = readFileSync(envExamplePath, 'utf8');
+  writeFileSync(envPath, envContent);
+  console.log('created .env from .env.example');
+} else {
+  // Bare .env — start fresh
+  writeFileSync(envPath, '');
+  console.log('created empty .env');
+}
+
+if (!/^APP_KEY=./m.test(envContent)) {
+  const newKey = generateAppKey();
+  envContent = setEnvVar(envContent, 'APP_KEY', newKey);
+  writeFileSync(envPath, envContent);
+  console.log('APP_KEY set: ' + newKey + '  (no PHP, no Laravel — pure Node.js)');
+  appKeySet = true;
+} else {
+  console.log('.env already has APP_KEY — skipped');
+}
+
 // .gitignore — append missing build artifacts under a marker comment
 const gitignorePath = join(appDir, '.gitignore');
 const wanted = ['dist/', '.cache/', '.wrangler/'];
@@ -66,8 +110,9 @@ if (existsSync(gitignorePath)) {
 
 console.log('');
 console.log('Next steps:');
-console.log('  npx laravel-workers vendor:ensure   # fetch the PHP deps (no composer install needed)');
-console.log('  npm run build');
-console.log('  npx laravel-workers build --strict');
+if (!appKeySet) {
+  console.log('  # APP_KEY already present in .env — no action needed');
+}
+console.log('  npx laravel-workers build --strict   # vendor + schema handled automatically');
 console.log('  npx wrangler dev      # local preview');
 console.log('  npx wrangler deploy   # ship to Cloudflare');
