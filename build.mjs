@@ -222,7 +222,7 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
 {
   const envPath = join(appDir, '.env');
   let envText = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
-  const hasKeyInEnvFile = /^APP_KEY=\s*\S/m.test(envText);
+  const hasKeyInEnvFile = /^APP_KEY=[ \t]*\S/m.test(envText);
   const hasKeyInProcess = !!(process.env.APP_KEY && String(process.env.APP_KEY).trim());
   if (!hasKeyInEnvFile && !hasKeyInProcess) {
     if (!existsSync(envPath)) {
