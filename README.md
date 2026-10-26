@@ -124,15 +124,31 @@ npm run verify
 
 ## Zero-touch / CI (Workers Builds)
 
-The build works on any Laravel ≥ 10 app — fresh installs and existing projects alike. The tool that extracts the D1 schema now compiles migrations directly (no pre-migrated DB needed), so the only hard requirement is an `.env` with a valid `APP_KEY`.
+Works on any Laravel ≥ 10 project — a clone you just pulled, or an app you've been running for two years. The two questions the docs always dodge:
 
-Keep the repo pure Laravel — config and ports can live outside it:
+### What does the build actually need?
 
-- `LW_CONFIG=../edge-config/registry.json` — registry path override (relative to the app root; a set-but-missing file **fails the build**).
-- `LW_PORTS_DIR=../edge-ports` — port directory override, checked before `src/ports`, `ports/`, `edge/src/ports` (a set-but-missing dir **fails the build**).
-- `registry.json` is **optional**: without it the build uses defaults (`autoSnapshot` on, no ports/ignore). Unhandled routes still fail `--strict`, and a registered port without a matching file fails the build. Static entries must prerender clean; a static entry that reads a D1 binding the build cannot reach fails the build — a D1 app needs a local sqlite fallback for the build (config/database.php).
-- `--scaffold` stubs carry a `laravel-workers:stub` marker and return `501`; `build --strict` keeps failing until every stub is implemented.
-- Building while `wrangler dev` is running is safe: if the OS locks `dist/`, the build wipes its contents (keeping the dir shells) and the dev server hot-reloads the fresh output.
+Every build step (route export, view compilation, schema extraction, config dump, model introspection — all of it) boots the real Laravel app through `vendor/autoload.php`. That is the one thing that cannot be skipped. Everything else has been removed.
+
+| Requirement | Old way | Current way |
+|---|---|---|
+| PHP vendor files | `composer install` (379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader. No composer binary. Same result, different path. |
+| Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots the app, runs migrations against an in-memory SQLite (Laravel emits SQLite DDL regardless of the app's actual driver), dumps the schema. No DB file, no migrate step. Driver-agnostic: MySQL/Postgres/SQLite source apps all produce the same D1-SQLite output. |
+| `.env` with `APP_KEY` | **always required** | **still required** — Laravel cannot boot without it. Run `cp .env.example .env && php artisan key:generate` once per clone. |
+| `composer install` binary | required on cold clone | **not required** — vendor-lite handles it. If the app already has `vendor/`, nothing runs. |
+
+### What "zero config" actually means
+
+The build needs three things:
+1. **`vendor/autoload.php`** — on an existing app this already exists; on a fresh clone vendor-lite provisions it in seconds (content-addressed cache, pays once per `composer.lock`, not once per build).
+2. **`.env` with a valid `APP_KEY`** — one `php artisan key:generate` per clone.
+3. **`registry.json` + `wrangler.jsonc`** — written by `npx laravel-workers init` or copy-pasted from below.
+
+That is all. No `composer install`, no `migrate`, no pre-existing SQLite file.
+
+### One honest caveat
+
+`vendor-lite` fetches from packagist and writes a minimal autoloader from the lock-resolved package list. If an app's `composer.json` has custom autoload entries that reference the app's own files (`"autoload": { "psr-4": { "App\\": "app/" } }` is fine — that's Laravel's default), vendor-lite handles it. If an app has `"autoload-files"` pointing at files outside the vendor tree, vendor-lite detects this and tells you to run `composer install --no-dev` instead. The goal is that **vendor-lite works for the normal case and tells you clearly when it cannot**.
 
 Workers Builds (Dashboard → Workers → connect the GitHub repo) — config is injected in the build command, nothing is committed:
 
@@ -143,18 +159,18 @@ JSON
 cat > wrangler.jsonc <<'JSONC'
 { "name": "my-app", "main": "./dist/src/worker.mjs", "compatibility_date": "2026-10-01",
   "assets": { "directory": "./dist/public", "binding": "ASSETS" },
-  "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<the id from: npx wrangler d1 create my-app>" } ],
+  "d1_databases": [ { "binding": "DB", "database_name": "my-app", "database_id": "<from: npx wrangler d1 create my-app>" } ],
   "observability": { "enabled": true } }
 JSONC
 cp .env.example .env && php artisan key:generate
 npm run build
 npx -y laravel-workers@0.4.0 build --strict
-# the D1 schema: the app's tables (+ lw_blobs when the app uses Storage::)
+# D1 schema (tables from migrations + lw_blobs if the app uses Storage::)
 npx wrangler d1 execute DB --file=dist/schema.sql --remote
-# deploy command: npx wrangler deploy
+# deploy: npx wrangler deploy
 ```
 
-The build image must provide PHP >= 8.3 (Composer is NOT needed anymore - the build provisions vendor itself via composer-free vendor-lite).
+The build image must provide PHP >= 8.3. Composer is not needed — the build provisions the vendor tree itself.
 
 ## Architecture (30 s)
 
