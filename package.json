@@ -1,33 +1,7 @@
 {
   "name": "laravel-workers",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Compile your Laravel app to a tiny JS bundle that runs on Cloudflare Workers. No PHP at the edge. No WASM. No cold-start drama.",
-  "keywords": [
-    "laravel",
-    "cloudflare-workers",
-    "d1",
-    "blade",
-    "blade-compiler",
-    "compile-time",
-    "serverless",
-    "edge-computing",
-    "v8",
-    "transpiler",
-    "laravel-workers",
-    "bun-compatible",
-    "free-plan"
-  ],
-  "type": "module",
-  "license": "MIT",
-  "author": "arfoux",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/arfoux/laravel-workers.git"
-  },
-  "homepage": "https://github.com/arfoux/laravel-workers#readme",
-  "bugs": {
-    "url": "https://github.com/arfoux/laravel-workers/issues"
-  },
   "keywords": [
     "laravel",
     "cloudflare",
@@ -40,6 +14,17 @@
     "build-time",
     "toolchain"
   ],
+  "type": "module",
+  "license": "MIT",
+  "author": "arfoux",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arfoux/laravel-workers.git"
+  },
+  "homepage": "https://github.com/arfoux/laravel-workers#readme",
+  "bugs": {
+    "url": "https://github.com/arfoux/laravel-workers/issues"
+  },
   "bin": {
     "laravel-workers": "bin/laravel-workers.mjs"
   },
