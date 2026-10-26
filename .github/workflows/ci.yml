@@ -20,8 +20,25 @@ jobs:
       - run: node tools/bench.mjs
       - name: Syntax check shipped ESM
         run: find build.mjs kernel compiler/src compiler/runtime bin tools -name '*.mjs' -print0 | xargs -0 -n1 node --check
-      - name: Pack dry-run
-        run: npm pack --dry-run
+      - name: Pack dry-run — asserted tarball gate
+        # The build runs out of the installed tarball (a user installs the
+        # artifact, not the repo). Every module build.mjs loads must ship in
+        # the tarball; a missing file only surfaces in e2e far too late.
+        run: |
+          npm pack --dry-run > /tmp/packed-list.txt 2>&1
+          require() { grep -q "npm notice .* ${1}$" /tmp/packed-list.txt || { echo "tarball gate FAILED: ${1} is not shipped"; exit 1; }; }
+          require compiler/blade.mjs
+          require tools/routes-dump.mjs
+          require tools/config-dump.mjs
+          require tools/schedule-dump.mjs
+          require tools/event-dump.mjs
+          require tools/class-dump.mjs
+          require tools/constants-dump.mjs
+          require tools/model-dump.mjs
+          require tools/policy-dump.mjs
+          require tools/static.mjs
+          require tools/php-runtime.mjs
+          echo "tarball gate OK: every file build.mjs needs is shipped"
 
   # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
   # Laravel app — the `test` job has none, so those tests skip there. This job
@@ -88,6 +105,20 @@ jobs:
           npm run build
       - name: Pack the published artifact
         run: npm pack --pack-destination "$GITHUB_WORKSPACE"
+      - name: Gate — the tarball ships every file the build needs
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          for f in \
+            compiler/blade.mjs \
+            build.mjs \
+            tools/routes-dump.mjs tools/config-dump.mjs tools/schedule-dump.mjs \
+            tools/event-dump.mjs tools/class-dump.mjs tools/constants-dump.mjs \
+            tools/model-dump.mjs tools/policy-dump.mjs \
+            tools/static.mjs tools/php-runtime.mjs; do
+            tar tzf laravel-workers-*.tgz | grep -qx "package/$f" || {
+              echo "tarball gate FAILED: $f is missing from the packed artifact"; exit 1; }
+          done
+          echo "tarball gate OK: all build-time modules are shipped"
       - name: Zero-config strict build with laravel-workers (from the tarball)
         run: |
           cd e2e-app
