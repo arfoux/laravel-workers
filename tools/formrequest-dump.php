@@ -221,15 +221,37 @@ $isHook = static function (ReflectionClass $rc, string $method): bool {
 }
 
 if (!defined('LW_METADATA_LIB')) {
-    $root = lw_app_root();
-    $app = lw_boot_app();
+    $bootError = null;
+    try {
+        $root = lw_app_root();
+        $app = lw_boot_app();
 
-    $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-    $request = Illuminate\Http\Request::create('/', 'GET');
-    $response = $kernel->handle($request);
-    $kernel->terminate($request, $response);
+        $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+        $request = Illuminate\Http\Request::create('/', 'GET');
+        $response = $kernel->handle($request);
+        $kernel->terminate($request, $response);
 
-    $app->instance('request', $request);
+        $app->instance('request', $request);
+    } catch (Throwable $e) {
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        $bootError = get_class($e) . ': ' . $e->getMessage();
+    }
 
-    echo json_encode(lw_dump_formrequests(array_slice($argv, 1)));
+    $fqcns = array_slice($argv, 1);
+    $entries = $fqcns
+        ? lw_dump_formrequests($fqcns)
+        : [];
+
+    if ($bootError !== null) {
+        foreach ($entries as &$entry) {
+            if ($entry['error'] === null) {
+                $entry['error'] = 'boot: ' . $bootError;
+            }
+        }
+        unset($entry);
+    }
+
+    echo json_encode($entries, JSON_INVALID_UTF8_SUBSTITUTE);
 }
