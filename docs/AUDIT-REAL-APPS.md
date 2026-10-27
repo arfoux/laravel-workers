@@ -75,6 +75,29 @@ that boots Laravel once and serves every helper over a JSON-lines protocol on
 stdin/stdout — turns the remaining N boots into 1 without changing any dump
 output. Secondary win: batch the three `model-dump` calls into one.
 
+**Track F (landed 2026-10-27) — phase workers + a content build cache.** This
+supersedes the proposal above: the helpers became phase workers, ONE Laravel
+boot each (or none when its queue is empty) — `schema-compile.php` (1),
+`prerender.php` (0–1), the route/error view batch (`compile-view.php`, 1),
+`metadata-phase.php` (0–1 — recursive models + policies + FormRequests in the
+SAME boot, so the model-dump rounds, the policy dump, the extra model dump and
+the FormRequest dump are gone), and the controller view batch
+(`compile-view.php`, 0–1, dependencies closed recursively — no more one boot
+per wave). Routes, config, schedule, events, class metadata, constants and
+controller extraction are pure Node now (`routes-dump.mjs`, `config-dump.mjs`,
+`schedule-dump.mjs`, `event-dump.mjs`, `constants-dump.mjs`,
+`controller.mjs extract --batch`; `class-dump.mjs` is still one Node process
+per Gate-callback class). **Measured** (every PHP process logged via
+`PHP_INI_SCAN_DIR` + `auto_prepend_file`): **5 Laravel boots** on the 43-route
+fixture for a full build, plus one `php -r` interpreter probe. On top of that,
+the build cache (`tools/build-cache.mjs`) hashes every build input by CONTENT
+(199 files / ~3 MB on the fixture, plus the PHP version, the CLI flags and the
+curated `LW_*` env keys); a hit — the stamp AND the five dist artifacts
+present — runs **0 Laravel boots** (≈1.3 s vs ≈35 s measured). `--no-cache`
+is read-opt-out but write-through: a forced build mutates hashed inputs itself
+(the prerender boots write sessions through the app's sqlite cache table), so
+the stamp is refreshed anyway.
+
 **Redundant work:** inside a batch, one view name shared by two jobs compiles
 once (dedup by dump path). A warm rebuild reads the `.cache/laravel-workers/`
 dumps back only when the compiled module is also present — a half-written cache

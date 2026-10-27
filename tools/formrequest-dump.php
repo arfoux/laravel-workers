@@ -1,18 +1,10 @@
 <?php
 
 require_once __DIR__ . '/_root.php';
-$root = lw_app_root();
 
-$app = lw_boot_app();
-
-$kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-$request = Illuminate\Http\Request::create('/', 'GET');
-$response = $kernel->handle($request);
-$kernel->terminate($request, $response);
-
-$app->instance('request', $request);
-
-$out = [];
+function lw_dump_formrequests(array $fqcns): array
+{
+    $out = [];
 
 // The hooks Laravel runs on a FormRequest that the compiled rung does NOT
 // run. The others (prepareForValidation, authorize, validationData,
@@ -48,17 +40,16 @@ $hooks = [
 // (a trait method belongs to the class that uses it), so a method declared
 // anywhere else is the app's hook - an app base class counts too: Laravel
 // would run that hook.
-function lw_formrequest_hook(ReflectionClass $rc, string $method): bool
-{
+$isHook = static function (ReflectionClass $rc, string $method): bool {
     if (!$rc->hasMethod($method)) {
         return false;
     }
 
     return $rc->getMethod($method)->getDeclaringClass()->getName()
         !== Illuminate\Foundation\Http\FormRequest::class;
-}
+};
 
-foreach (array_slice($argv, 1) as $fqcn) {
+    foreach ($fqcns as $fqcn) {
     $entry = [
         'fqcn' => $fqcn,
         'rules' => [],
@@ -98,7 +89,7 @@ foreach (array_slice($argv, 1) as $fqcn) {
         // The dump reports them; the compiled lifecycle runs them.
         $entry['hooks'] = [];
         foreach (['prepareForValidation', 'authorize', 'validationData', 'withValidator', 'after', 'passedValidation'] as $method) {
-            if (lw_formrequest_hook($rc, $method)) {
+            if ($isHook($rc, $method)) {
                 $entry['hooks'][] = $method;
             }
         }
@@ -109,7 +100,7 @@ foreach (array_slice($argv, 1) as $fqcn) {
         // factory (its extensions, its custom rules) is what validates. The
         // edge has ONE validator factory (the kernel's), so this one stays
         // refused - the other hooks are the edge's.
-        if (lw_formrequest_hook($rc, 'validator')) {
+        if ($isHook($rc, 'validator')) {
             $entry['error'] = $hooks['validator'];
             $out[] = $entry;
             continue;
@@ -224,6 +215,21 @@ foreach (array_slice($argv, 1) as $fqcn) {
     }
 
     $out[] = $entry;
+    }
+
+    return $out;
 }
 
-echo json_encode($out);
+if (!defined('LW_METADATA_LIB')) {
+    $root = lw_app_root();
+    $app = lw_boot_app();
+
+    $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+    $request = Illuminate\Http\Request::create('/', 'GET');
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+
+    $app->instance('request', $request);
+
+    echo json_encode(lw_dump_formrequests(array_slice($argv, 1)));
+}

@@ -42,6 +42,15 @@ vendor question mostly disappear: pay the install once, then have fast builds.
 > measurements in this plan are unchanged — they justify the vendor decision as
 > recorded.
 
+> **Update (Track F, landed 2026-10-27):** the boot count is now **measured**,
+> not static: **5 Laravel boots** on the 43-route fixture (schema, snapshots,
+> route/error views, metadata, controller views) + 1 `php -r` interpreter
+> probe; routes, config, schedule, events, class metadata, constants and
+> controller extraction are pure Node. The build cache
+> (`tools/build-cache.mjs`, content key over the build inputs) makes an
+> unchanged-input rebuild run **0 boots** (≈1.3 s vs ≈35 s measured). The
+> per-boot costs above remain the model for what a changed input still pays.
+
 ## 3. Options, cheapest first
 
 ### A. Explain it (no code risk, do first)

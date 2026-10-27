@@ -29,6 +29,7 @@ import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
 import { compileView } from './compiler/blade.mjs';
 import { transpile } from './compiler/src/transpiler.mjs';
 import { provisionPhp } from './tools/php-provision.mjs';
+import { computeBuildCacheKey } from './tools/build-cache.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import {
   cpSync,
@@ -65,6 +66,10 @@ const dist = distFinal + '.building';
 const cacheDir = isNpmMode ? join(appDir, '.cache', 'laravel-workers') : join(pkgDir, '.cache');
 const strict = process.argv.includes('--strict');
 const scaffold = process.argv.includes('--scaffold');
+// A cache HIT is a no-op build: no PHP boots, no vendor provisioning, no
+// APP_KEY write. The escape hatch must exist because the key is a model, not a
+// proof: an operator can always force the full pipeline.
+const noCache = process.argv.includes('--no-cache') || process.env.LW_NO_BUILD_CACHE === '1';
 // The interpreter that boots the app. It is RESOLVED below, once composer.json
 // has been read: the app's own `require.php` decides which installed PHP can
 // parse it, and hard-coding `php` from PATH fails for every user whose default
@@ -209,6 +214,66 @@ const staticMap = Object.entries(registry.static || {});
 const portEntries = Object.entries(registry.ports || {});
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
+// ---- unchanged-input build cache -------------------------------------------
+// The cache is checked BEFORE vendor provisioning and APP_KEY mutation: on a
+// hit the only PHP process is the version probe inside resolvePhp(), not a
+// Laravel boot. A missing/incomplete dist is a miss, so a crashed or manually
+// deleted artifact never masquerades as current.
+const cacheStampPath = join(cacheDir, 'build-cache.json');
+// A stamp with a matching key is not enough: an interrupted deploy cleanup, an
+// antivirus quarantine or a manual `rm` can leave a partial dist. These files
+// are emitted by every successful build (worker entry, generated route/config
+// tables, schema and the Static Assets route manifest); if one is gone the
+// build must run again rather than serve a half-worker.
+const cacheArtifactFiles = [
+  'src/worker.mjs',
+  'src/routes.generated.mjs',
+  'src/config.generated.mjs',
+  'schema.json',
+  'public/_routes.json',
+];
+const missingCacheArtifacts = () =>
+  cacheArtifactFiles.filter((file) => !existsSync(join(distFinal, file)));
+let buildCacheKey = null;
+let buildCacheInfo = null;
+try {
+  buildCacheInfo = computeBuildCacheKey({
+    appDir,
+    pkgDir,
+    registryPath,
+    vendorDir,
+    php: resolved,
+    flags: { strict, scaffold, argv: process.argv.slice(2).filter((a) => a !== '--no-cache') },
+    env: process.env,
+  });
+  buildCacheKey = buildCacheInfo.key;
+} catch (e) {
+  console.log(`  build cache: key could not be computed (${String(e.message || e).slice(0, 160)}) — running the full build`);
+}
+if (noCache) {
+  console.log('• build cache: disabled (--no-cache / LW_NO_BUILD_CACHE=1)');
+} else if (buildCacheKey) {
+  let stamp = null;
+  try {
+    stamp = JSON.parse(readFileSync(cacheStampPath, 'utf8'));
+  } catch {
+    /* no stamp or unreadable: miss */
+  }
+  if (stamp && stamp.version === 1 && stamp.key === buildCacheKey) {
+    const missing = missingCacheArtifacts();
+    if (!missing.length) {
+      console.log(
+        `• build cache: hit (${buildCacheInfo.files} input files unchanged; built with PHP ${stamp.phpVersion || '?'}) — dist/ is current`
+      );
+      console.log('  (pass --no-cache or set LW_NO_BUILD_CACHE=1 to rebuild anyway)');
+      process.exit(0);
+    }
+    console.log(`• build cache: miss (dist artifact missing: ${missing.join(', ')}) — running the build`);
+  } else {
+    console.log(`• build cache: miss (${buildCacheInfo.files} input files hashed) — running the build`);
+  }
+}
+
 if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
   // No vendor/ and no override: provision a composer-free vendor-lite cache
   // (fetch dist zips + write our own autoloader - no composer install).
@@ -1185,17 +1250,53 @@ const transpileToModule = (dumpPath, viewModulePath) => {
   renameSync(tmp, viewModulePath);
 };
 
+// Read one dump, run the pure-JS Blade check, and emit the view + context
+// modules. The manifest pass below uses this for the dependency closure that
+// compile-view.php just compiled in the same boot.
+const emitViewModule = (view, dumpPath, viewModulePath, viewDataKinds) => {
+  const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+  if (!dump || typeof dump.compiled !== 'string') {
+    throw new Error('compile-view produced no compiled PHP');
+  }
+  bladeCompile(dump, view);
+  if (viewDataKinds) {
+    dump.viewDataKinds = viewDataKinds;
+    writeFileSync(dumpPath, JSON.stringify(dump));
+  }
+  transpileToModule(dumpPath, viewModulePath);
+  writeFileSync(
+    join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'),
+    'export default ' + JSON.stringify(dump.context) + ';\n'
+  );
+  return dump;
+};
+
 // Track E (compile-view-batch): compile-view.php boots the whole framework per
 // call; --batch runs the identical single-view steps for every job in ONE boot.
 // A failed job leaves its dump unwritten and reports `view <name>: <error>` on
 // stderr; every other job still writes its dump. The batch exits 1 if any job
 // failed, but the dumps it did write are the per-view signal below.
 const viewJobs = [];
-const runViewJobs = () => {
+let lastViewManifest = null;
+const runViewJobs = (opts = {}) => {
   if (!viewJobs.length) return '';
   const jobsPath = join(cacheDir, 'view-jobs.json');
+  const manifestPath = join(cacheDir, 'view-manifest.json');
   mkdirSync(cacheDir, { recursive: true });
-  writeFileSync(jobsPath, JSON.stringify(viewJobs));
+  // The phase plan, not a bare wave: `recursive` lets compile-view.php walk
+  // the compiled `make('...')` dependency closure in the same boot. The old
+  // shape (an array) remains accepted by the tool for standalone callers.
+  writeFileSync(
+    jobsPath,
+    JSON.stringify({
+      jobs: viewJobs,
+      outDir: cacheDir,
+      recursive: opts.recursive === true,
+      manifest: manifestPath,
+    })
+  );
+  rmSync(manifestPath, { force: true });
+  lastViewManifest = null;
   let stderr = '';
   try {
     execFileSync(PHP, [join(pkgDir, 'tools', 'compile-view.php'), '--batch', jobsPath], {
@@ -1207,6 +1308,11 @@ const runViewJobs = () => {
     stderr = String(e.stderr || e.stdout || e.message || '');
   } finally {
     rmSync(jobsPath, { force: true });
+    try {
+      lastViewManifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    } catch {
+      lastViewManifest = null;
+    }
   }
   viewJobs.length = 0;
   return stderr;
@@ -1259,7 +1365,7 @@ for (const code of errorViewCodes) {
   const viewName = frameworkOnly.has(code) ? 'errors::' + code : 'errors.' + code;
   queueViewJob(viewName, join(cacheDir, 'errors.' + code + '.compiled.json'), '/');
 }
-const viewStderr = runViewJobs();
+const viewStderr = runViewJobs({ recursive: true });
 
 for (const [route, view] of viewMap) {
   const slug = slugifyRoute(route);
@@ -1540,15 +1646,17 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
   if (targets.length) {
     console.log(`• controller routes: trying to transpile ${targets.length} route(s)`);
 
+    const formatControllerErrors = (errs) =>
+      Array.isArray(errs) && errs.length
+        ? errs
+            .map((x) => `${x.code || 'LW'} ${x.message || ''}${x.line ? ` (line ${x.line})` : ''}`)
+            .join('; ')
+        : 'unknown error';
     const formatControllerError = (e) => {
       const raw = String(e.stderr || e.stdout || e.message || '').trim();
       try {
         const errs = JSON.parse(raw);
-        if (Array.isArray(errs) && errs.length) {
-          return errs
-            .map((x) => `${x.code || 'LW'} ${x.message || ''}${x.line ? ` (line ${x.line})` : ''}`)
-            .join('; ');
-        }
+        if (Array.isArray(errs) && errs.length) return formatControllerErrors(errs);
       } catch {
         /* not a JSON error payload */
       }
@@ -1588,23 +1696,43 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
     const metaDir = join(cacheDir, 'controllers');
     mkdirSync(metaDir, { recursive: true });
 
-    // phase A: extract method metadata (params, model classes, views)
+    // phase A: extract method metadata (params, model classes, views).
+    // One Node process for every controller: extraction is pure AST work, so
+    // spawning one process per method only adds startup overhead and makes the
+    // build's process count O(routes).
     const prepared = [];
+    const resolvable = [];
     for (const t of targets) {
       const file = resolvePsr4(t.fqcn);
       if (!file) {
         console.log(`  controller ${t.route}: skipped — cannot resolve ${t.fqcn} via composer autoload`);
         continue;
       }
+      resolvable.push({ ...t, file });
+    }
+    if (resolvable.length) {
+      const batchPath = join(metaDir, 'extract-jobs.json');
+      writeFileSync(batchPath, JSON.stringify(resolvable.map((t) => ({ file: t.file, method: t.method }))));
       try {
-        const out = execFileSync(
+        const raw = execFileSync(
           process.execPath,
-          [join(pkgDir, 'compiler', 'bin', 'controller.mjs'), 'extract', '--file', file, '--method', t.method],
-          { cwd: appDir }
+          [join(pkgDir, 'compiler', 'bin', 'controller.mjs'), 'extract', '--batch', batchPath],
+          { cwd: appDir, maxBuffer: 1 << 28 }
         ).toString('utf8');
-        prepared.push({ ...t, file, meta: JSON.parse(out) });
+        const results = JSON.parse(raw);
+        for (let i = 0; i < resolvable.length; i++) {
+          const t = resolvable[i];
+          const r = results[i];
+          if (!r || !r.ok) {
+            console.log(`  controller ${t.route}: skipped — ${formatControllerErrors(r && r.errors)}`);
+            continue;
+          }
+          prepared.push({ ...t, meta: r });
+        }
       } catch (e) {
-        console.log(`  controller ${t.route}: skipped — ${formatControllerError(e)}`);
+        console.log(`  controller metadata batch failed — ${formatControllerError(e)}`);
+      } finally {
+        rmSync(batchPath, { force: true });
       }
     }
 
@@ -1662,41 +1790,39 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
       }
       const modelDump = new Map();
-      if (allFqcns.length) {
-        console.log(`• dumping model metadata (${allFqcns.length}): ${allFqcns.join(', ')}`);
+      let policyDump = { globals: { before: 0, after: 0, abilities: [], definitions: {} }, models: [] };
+      const formRequestDump = new Map();
+      const formRequestList = [...formRequestFqcns];
+
+      // One PHP boot for every metadata oracle: model reflection (recursive
+      // relation closure), Gate/policy inspection and FormRequest rule
+      // evaluation all read the same booted application. This replaced the
+      // model-dump rounds + policy dump + extra model dump + FormRequest dump
+      // (up to 6 boots) with one phase worker.
+      if (allFqcns.length || formRequestList.length) {
+        const planPath = join(metaDir, 'metadata-plan.json');
+        writeFileSync(
+          planPath,
+          JSON.stringify({ models: allFqcns, formRequests: formRequestList })
+        );
+        console.log(
+          `• metadata phase: one PHP boot (${allFqcns.length} model(s), ${formRequestList.length} FormRequest(s))`
+        );
         try {
-          const raw = execFileSync('node', [join(pkgDir, 'tools', 'model-dump.mjs'), ...allFqcns], {
+          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'metadata-phase.php'), planPath], {
             cwd: appDir,
             env: childEnv(),
+            maxBuffer: 1 << 28,
           }).toString('utf8');
-          for (const d of JSON.parse(raw)) modelDump.set(d.fqcn, d);
-          // A DECLARED relation names its related model (`$post->comments` is a
-          // Comment), and the compiled read needs that class to exist at the
-          // edge. The related models are not in any controller body, so they
-          // are pulled in here - transitively, until nothing new arrives.
-          const dumpMore = (fqcns) => {
-            if (!fqcns.length) return;
-            const more = execFileSync('node', [join(pkgDir, 'tools', 'model-dump.mjs'), ...fqcns], {
-              cwd: appDir,
-              env: childEnv(),
-            }).toString('utf8');
-            for (const d of JSON.parse(more)) modelDump.set(d.fqcn, d);
-          };
-          const seenRel = new Set();
-          for (let round = 0; round < 4; round++) {
-            const pending = [];
-            for (const d of modelDump.values()) {
-              for (const rel of Array.isArray(d.relations) ? d.relations : []) {
-                if (seenRel.has(rel.related) || modelDump.has(rel.related)) continue;
-                seenRel.add(rel.related);
-                pending.push(rel.related);
-              }
-            }
-            if (!pending.length) break;
-            dumpMore(pending);
+          const data = JSON.parse(raw);
+          for (const d of data.models || []) modelDump.set(d.fqcn, d);
+          if (data.policy) policyDump = data.policy;
+          for (const d of data.formRequests || []) formRequestDump.set(d.fqcn, d);
+          for (const err of data.errors || []) {
+            console.log(`  metadata ${err.section}: ${err.message}`);
           }
-          // The related models are compiled too (the emit loop walks
-          // `aliasToFqcns`), and their short name is the alias.
+          // Relations and policy models pulled in by the phase are compiled too
+          // (the emit loop walks `aliasToFqcns`); their short name is the alias.
           for (const fqcn of modelDump.keys()) {
             const short = fqcn.split('\\').pop();
             if (!aliasToFqcns.has(short)) aliasToFqcns.set(short, new Set());
@@ -1705,31 +1831,12 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
         } catch (e) {
           console.log(
-            `  model dump failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
+            `  metadata phase failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
               .trim()
               .slice(0, 200)}`
           );
-        }
-      }
-
-      // The Gate/policy metadata: which policy answers for a model, which
-      // abilities it has, whether a guest may call them, and whether the app
-      // registers global Gate callbacks (before/after/define).
-      let policyDump = { globals: { before: 0, after: 0, abilities: [] }, models: [] };
-      if (allFqcns.length) {
-        console.log(`• dumping the Gate policies (${allFqcns.length})`);
-        try {
-          const raw = execFileSync('node', [join(pkgDir, 'tools', 'policy-dump.mjs'), ...allFqcns], {
-            cwd: appDir,
-            env: childEnv(),
-          }).toString('utf8');
-          policyDump = JSON.parse(raw);
-        } catch (e) {
-          console.log(
-            `  policy dump failed — the routes that check the Gate stay blocked: ${String(e.stderr || e.message || '')
-              .trim()
-              .slice(0, 200)}`
-          );
+        } finally {
+          rmSync(planPath, { force: true });
         }
       }
 
@@ -1782,8 +1889,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         }
       }
 
-      // The models the policies mention (the user, the subject) need their
-      // metadata too: a relation read inside a policy must fail loud.
+      // The models the policies mention (the user, the subject) join the
+      // generated registry. metadata-phase.php already dumped them recursively,
+      // so this is alias bookkeeping only — no extra PHP boot.
       const policyModelFqcns = new Set();
       for (const pm of policyDump.models || []) {
         const paramLists = Object.values(pm.methods || {}).map((x) => x.params || []);
@@ -1794,48 +1902,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
         }
       }
-      const extraModelFqcns = [...policyModelFqcns].filter((fqcn) => !modelDump.has(fqcn));
-      if (extraModelFqcns.length) {
-        console.log(`• dumping the policy models (${extraModelFqcns.length}): ${extraModelFqcns.join(', ')}`);
-        try {
-          const raw = execFileSync('node', [join(pkgDir, 'tools', 'model-dump.mjs'), ...extraModelFqcns], {
-            cwd: appDir,
-            env: childEnv(),
-          }).toString('utf8');
-          for (const d of JSON.parse(raw)) modelDump.set(d.fqcn, d);
-        } catch (e) {
-          console.log(
-            `  policy model dump failed — the policies that use those models stay blocked: ${String(e.stderr || e.message || '')
-              .trim()
-              .slice(0, 200)}`
-          );
-        }
-      }
-      // The policy models join the generated registry (a policy may read them).
       for (const fqcn of policyModelFqcns) {
         const short = fqcn.split('\\').pop();
         if (!aliasToFqcns.has(short)) aliasToFqcns.set(short, new Set());
         aliasToFqcns.get(short).add(fqcn);
-      }
-
-      // FormRequest rules (rules/messages/attributes) — dumped at build time.
-      const formRequestDump = new Map();
-      if (formRequestFqcns.size) {
-        const list = [...formRequestFqcns];
-        console.log(`• dumping FormRequest rules (${list.length}): ${list.join(', ')}`);
-        try {
-          const raw = execFileSync(PHP, [join(pkgDir, 'tools', 'formrequest-dump.php'), ...list], {
-            cwd: appDir,
-            env: childEnv(),
-          }).toString('utf8');
-          for (const d of JSON.parse(raw)) formRequestDump.set(d.fqcn, d);
-        } catch (e) {
-          console.log(
-            `  form request dump failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
-              .trim()
-              .slice(0, 200)}`
-          );
-        }
+        if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
       }
 
       // A policy (and a compiled class) may read a class constant too
@@ -1957,7 +2028,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           console.log(`compiling view ${view} (controller)`);
           viewJobs.push({ name: view, out: dumpPath, uri: '/' });
         }
-        const waveStderr = runViewJobs();
+        const waveStderr = runViewJobs({ recursive: true });
         for (const view of wave) {
           const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
           const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
@@ -1980,6 +2051,42 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             }
             transpileToModule(dumpPath, viewModulePath);
             writeFileSync(join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
+            compiledViews.add(view);
+            for (const d of scanViewDeps(view, dump.compiled)) {
+              if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
+            }
+          } catch (e) {
+            failedViews.add(view);
+            console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
+          }
+        }
+
+        // A dependency the recursive batch could not compile is a routing
+        // failure too: mark it before the readiness check so `viewsFor()` does
+        // not accept a parent whose layout/include is missing from the dump set.
+        for (const [view, detail] of Object.entries(
+          (lastViewManifest && lastViewManifest.failed) || {}
+        )) {
+          if (compiledViews.has(view) || failedViews.has(view)) continue;
+          failedViews.add(view);
+          console.log(`  view ${view}: skipped — ${String(detail).slice(0, 300)}`);
+        }
+
+        // compile-view.php's recursive batch already compiled the dependency
+        // closure into dumps. Emit those modules now so the next loop iteration
+        // sees them as complete instead of paying another PHP boot for a wave
+        // that is already on disk.
+        const waveSet = new Set(wave);
+        for (const view of (lastViewManifest && lastViewManifest.views) || []) {
+          if (waveSet.has(view) || compiledViews.has(view) || failedViews.has(view)) continue;
+          const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
+          const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
+          if (!existsSync(dumpPath)) {
+            failedViews.add(view);
+            continue;
+          }
+          try {
+            const dump = emitViewModule(view, dumpPath, viewModulePath, viewDataKinds[view]);
             compiledViews.add(view);
             for (const d of scanViewDeps(view, dump.compiled)) {
               if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
@@ -3110,6 +3217,48 @@ commitDist(dist, distFinal, (file) =>
     `  (warning: ${relative(appDir, file)} is locked by a running process — restart the dev server if build output looks stale)`
   )
 );
+
+// The cache check ran before APP_KEY generation and vendor provisioning. Those
+// steps mutate inputs (.env, vendor/composer/installed.php), so hash again now:
+// the stamp must describe the tree the next build will actually see, otherwise
+// the first build after `key:generate`/`vendor:ensure` can never hit.
+//
+// --no-cache is read-opt-out, not write-blind: a forced build still mutates
+// hashed inputs itself (the prerender boots write sessions through the app's
+// sqlite cache table, and `database/` hashing tracks that file), so without
+// this write-through every build after a forced one would first pay an
+// unexplained full rebuild.
+try {
+  const finalInfo = computeBuildCacheKey({
+    appDir,
+    pkgDir,
+    registryPath,
+    vendorDir,
+    php: resolved,
+    flags: { strict, scaffold, argv: process.argv.slice(2).filter((a) => a !== '--no-cache') },
+    env: process.env,
+  });
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(
+    cacheStampPath,
+    JSON.stringify(
+      {
+        version: 1,
+        key: finalInfo.key,
+        createdAt: new Date().toISOString(),
+        files: finalInfo.files,
+        bytes: finalInfo.bytes,
+        phpVersion: resolved && resolved.version,
+        dist: relPath(distFinal),
+      },
+      null,
+      2
+    )
+  );
+  if (noCache) console.log('  build cache: stamp refreshed — the next run without --no-cache can hit');
+} catch (e) {
+  console.log(`  (warning: build cache stamp not written: ${String(e.message || e).slice(0, 160)})`);
+}
 
 console.log(
   `done. dist: ${relative(appDir, distFinal)}  (static: ${staticMap.length}, snapshots: ${snapshots.length}, ports: ${portEntries.length}, controllers: ${controllerRoutes.size}, ignored: ${ignoreMap.length})`

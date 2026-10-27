@@ -6,6 +6,11 @@
 > composer-free vendor-lite autoloader, the conditional frontend-manifest check,
 > and the auto frontend build) — see CHANGELOG v0.4.3–v0.4.5. Treat the table in
 > `PRIORITIZED BACKLOG` below as historical, not current.
+> Track F (2026-10-27) adds two more resolutions the backlog read on: the PHP
+> helpers are now phase workers (one Laravel boot each, **measured 5** on the
+> 43-route fixture) and `.cache/` is ACTIVE state now — `build.mjs` reads
+> `.cache/laravel-workers/build-cache.json` (the content-keyed build stamp) on
+> every run, not just writes to the directory.
 
 Tanggal: 2026-10-24
 Repo: laravel-workers (main, commit 751c348 + vendor-lite fix)

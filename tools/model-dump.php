@@ -1,28 +1,23 @@
 <?php
 
 // Dump Eloquent model metadata for the edge build — build time only.
-// Usage: php tools/model-dump.php "App\Models\Post" ["App\Models\User" ...]
+// Usage: php tools/model-dump.php [--recursive] "App\Models\Post" ["App\Models\User" ...]
 // Output (stdout): JSON array of
 //   {fqcn, model, table, primaryKey, fillable, casts, timestamps, softDeletes,
 //    hidden, appends, error}
 // `model` is false and `error` explains why when the class is not a usable model.
 //
+// --recursive follows the DECLARED relations (`$post->comments`) transitively, so
+// the build can send one request for the whole model closure instead of one boot
+// per relation depth.
+//
 // The app is booted through the same HTTP-kernel path as tools/prerender.php so the
 // container/config (DB, casts, global scopes) is exactly what a real request sees.
 
 require_once __DIR__ . '/_root.php';
-$root = lw_app_root();
 
-$app = lw_boot_app();
-
-$kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-$request = Illuminate\Http\Request::create('/', 'GET');
-$response = $kernel->handle($request);
-$kernel->terminate($request, $response);
-
-$out = [];
-
-foreach (array_slice($argv, 1) as $fqcn) {
+function lw_dump_model_entry(string $fqcn): array
+{
     $entry = [
         'fqcn' => $fqcn,
         'model' => false,
@@ -44,19 +39,16 @@ foreach (array_slice($argv, 1) as $fqcn) {
     try {
         if (!class_exists($fqcn)) {
             $entry['error'] = 'class not found';
-            $out[] = $entry;
-            continue;
+            return $entry;
         }
         $rc = new ReflectionClass($fqcn);
         if (!$rc->isSubclassOf(Illuminate\Database\Eloquent\Model::class)) {
             $entry['error'] = 'not an Eloquent model';
-            $out[] = $entry;
-            continue;
+            return $entry;
         }
         if ($rc->isAbstract()) {
             $entry['error'] = 'abstract class';
-            $out[] = $entry;
-            continue;
+            return $entry;
         }
 
         /** @var Illuminate\Database\Eloquent\Model $instance */
@@ -92,107 +84,153 @@ foreach (array_slice($argv, 1) as $fqcn) {
         $entry['hidden'] = array_values($instance->getHidden());
         $entry['appends'] = array_values($instance->getAppends());
 
-    // The methods the model declares itself (the relations + the custom
-    // methods) and the accessor attribute names (getFooAttribute -> foo).
-    // The compiled model has none of them, so the build must know them.
-    $notCompiled = [];
-    foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
-        if ($m->getDeclaringClass()->getName() !== $fqcn) {
-            continue; // inherited from Eloquent: the compiled rung has it
+        // The methods the model declares itself (the relations + the custom
+        // methods) and the accessor attribute names (getFooAttribute -> foo).
+        // The compiled model has none of them, so the build must know them.
+        $notCompiled = [];
+        foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
+            if ($m->getDeclaringClass()->getName() !== $fqcn) {
+                continue; // inherited from Eloquent: the compiled rung has it
+            }
+            $mname = $m->getName();
+            if (preg_match('/^get(.+)Attribute$/', $mname, $mm)) {
+                $notCompiled[] = lcfirst($mm[1]); // an accessor: not compiled
+                continue;
+            }
+            $notCompiled[] = $mname;
         }
-        $mname = $m->getName();
-        if (preg_match('/^get(.+)Attribute$/', $mname, $mm)) {
-            $notCompiled[] = lcfirst($mm[1]); // an accessor: not compiled
-            continue;
-        }
-        $notCompiled[] = $mname;
-    }
-    $entry['notCompiled'] = array_values(array_unique($notCompiled));
+        $entry['notCompiled'] = array_values(array_unique($notCompiled));
 
-    // The ACCESSORS (`public function getFullNameAttribute($value)`): the app's
-    // own method, so the compiled rung has to carry it - Eloquent calls it
-    // whenever the attribute is read (HasAttributes::getAttributeValue ->
-    // transformModelValue). The build compiles the body and attaches it to the
-    // generated model class; the dump names it and its file.
-    $accessors = [];
-    foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
-        if ($m->getDeclaringClass()->getName() !== $fqcn || $m->isStatic()) {
-            continue;
+        // The ACCESSORS (`public function getFullNameAttribute($value)`): the app's
+        // own method, so the compiled rung has to carry it - Eloquent calls it
+        // whenever the attribute is read (HasAttributes::getAttributeValue ->
+        // transformModelValue). The build compiles the body and attaches it to the
+        // generated model class; the dump names it and its file.
+        $accessors = [];
+        foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
+            if ($m->getDeclaringClass()->getName() !== $fqcn || $m->isStatic()) {
+                continue;
+            }
+            if (!preg_match('/^get(.+)Attribute$/', $m->getName(), $mm)) {
+                continue;
+            }
+            if ($m->getNumberOfParameters() !== 1) {
+                // Eloquent's accessor takes exactly the value; anything else is a
+                // different method that happens to share the name.
+                continue;
+            }
+            $accessors[] = [
+                'name' => lcfirst($mm[1]),
+                'method' => $m->getName(),
+                'file' => $rc->getFileName(),
+            ];
         }
-        if (!preg_match('/^get(.+)Attribute$/', $m->getName(), $mm)) {
-            continue;
-        }
-        if ($m->getNumberOfParameters() !== 1) {
-            // Eloquent's accessor takes exactly the value; anything else is a
-            // different method that happens to share the name.
-            continue;
-        }
-        $accessors[] = [
-            'name' => lcfirst($mm[1]),
-            'method' => $m->getName(),
-            'file' => $rc->getFileName(),
-        ];
-    }
-    $entry['accessors'] = $accessors;
+        $entry['accessors'] = $accessors;
 
-    // The RELATIONS the model declares (`public function comments(): HasMany`).
-    // Eloquent loads one lazily when it is read as a property
-    // (Model::getRelationValue()), so the edge must know the relation's shape
-    // at BUILD time: the compiled read becomes a query. A relation is
-    // recognised by its declared RETURN TYPE (a Relation subclass) and its
-    // keys come from the relation object's own getters - calling the method on
-    // a fresh instance touches no database.
-    $relations = [];
-    foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
-        if ($m->isStatic() || $m->getDeclaringClass()->getName() !== $fqcn) {
-            continue;
+        // The RELATIONS the model declares (`public function comments(): HasMany`).
+        // Eloquent loads one lazily when it is read as a property
+        // (Model::getRelationValue()), so the edge must know the relation's shape
+        // at BUILD time: the compiled read becomes a query. A relation is
+        // recognised by its declared RETURN TYPE (a Relation subclass) and its
+        // keys come from the relation object's own getters - calling the method on
+        // a fresh instance touches no database.
+        $relations = [];
+        foreach ($rc->getMethods(ReflectionMethod::IS_PUBLIC) as $m) {
+            if ($m->isStatic() || $m->getDeclaringClass()->getName() !== $fqcn) {
+                continue;
+            }
+            $returnType = $m->getReturnType();
+            if (!$returnType instanceof ReflectionNamedType || $returnType->isBuiltin()) {
+                continue;
+            }
+            $typeName = $returnType->getName();
+            if (!class_exists($typeName) || !is_subclass_of($typeName, 'Illuminate\Database\Eloquent\Relations\Relation')) {
+                continue;
+            }
+            // Only the shapes the kernel's loader answers: hasMany and belongsTo.
+            // A morph / hasOne / through relation is LEFT OUT on purpose - reading
+            // it stays a build error instead of answering the wrong shape.
+            $kind = null;
+            if (is_a($typeName, 'Illuminate\Database\Eloquent\Relations\HasMany', true)) {
+                $kind = 'hasMany';
+            } elseif (is_a($typeName, 'Illuminate\Database\Eloquent\Relations\BelongsTo', true)) {
+                $kind = 'belongsTo';
+            }
+            if ($kind === null) {
+                continue;
+            }
+            try {
+                $relation = $m->invoke($instance);
+            } catch (Throwable $e) {
+                // The relation needs state the build does not have: leave it out
+                // (the read keeps failing loud).
+                continue;
+            }
+            $rel = [
+                'name' => $m->getName(),
+                'type' => $kind,
+                'related' => get_class($relation->getRelated()),
+                'foreignKey' => $relation->getForeignKeyName(),
+            ];
+            if ($kind === 'belongsTo') {
+                $rel['ownerKey'] = $relation->getOwnerKeyName();
+            } else {
+                $rel['localKey'] = $relation->getLocalKeyName();
+            }
+            $relations[] = $rel;
         }
-        $returnType = $m->getReturnType();
-        if (!$returnType instanceof ReflectionNamedType || $returnType->isBuiltin()) {
-            continue;
-        }
-        $typeName = $returnType->getName();
-        if (!class_exists($typeName) || !is_subclass_of($typeName, 'Illuminate\\Database\\Eloquent\\Relations\\Relation')) {
-            continue;
-        }
-        // Only the shapes the kernel's loader answers: hasMany and belongsTo.
-        // A morph / hasOne / through relation is LEFT OUT on purpose - reading
-        // it stays a build error instead of answering the wrong shape.
-        $kind = null;
-        if (is_a($typeName, 'Illuminate\\Database\\Eloquent\\Relations\\HasMany', true)) {
-            $kind = 'hasMany';
-        } elseif (is_a($typeName, 'Illuminate\\Database\\Eloquent\\Relations\\BelongsTo', true)) {
-            $kind = 'belongsTo';
-        }
-        if ($kind === null) {
-            continue;
-        }
-        try {
-            $relation = $m->invoke($instance);
-        } catch (Throwable $e) {
-            // The relation needs state the build does not have: leave it out
-            // (the read keeps failing loud).
-            continue;
-        }
-        $rel = [
-            'name' => $m->getName(),
-            'type' => $kind,
-            'related' => get_class($relation->getRelated()),
-            'foreignKey' => $relation->getForeignKeyName(),
-        ];
-        if ($kind === 'belongsTo') {
-            $rel['ownerKey'] = $relation->getOwnerKeyName();
-        } else {
-            $rel['localKey'] = $relation->getLocalKeyName();
-        }
-        $relations[] = $rel;
-    }
-    $entry['relations'] = $relations;
+        $entry['relations'] = $relations;
     } catch (Throwable $e) {
         $entry['error'] = get_class($e) . ': ' . $e->getMessage();
     }
 
-    $out[] = $entry;
+    return $entry;
 }
 
-echo json_encode($out);
+function lw_dump_models(array $fqcns, bool $recursive = false): array
+{
+    $out = [];
+    $seen = [];
+    $queue = array_values($fqcns);
+    while ($queue) {
+        $fqcn = array_shift($queue);
+        if (!is_string($fqcn) || $fqcn === '' || isset($seen[$fqcn])) {
+            continue;
+        }
+        $seen[$fqcn] = true;
+        $entry = lw_dump_model_entry($fqcn);
+        $out[] = $entry;
+        if ($recursive && !empty($entry['relations'])) {
+            foreach ($entry['relations'] as $rel) {
+                $related = $rel['related'] ?? null;
+                if (is_string($related) && $related !== '' && !isset($seen[$related])) {
+                    $queue[] = $related;
+                }
+            }
+        }
+        // A cycle-safe guard for a pathological relation graph; ordinary apps
+        // have a handful of models.
+        if (count($out) >= 512) break;
+    }
+    return $out;
+}
+
+if (!defined('LW_METADATA_LIB')) {
+    $root = lw_app_root();
+
+    $app = lw_boot_app();
+
+    $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+    $request = Illuminate\Http\Request::create('/', 'GET');
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+
+    $args = array_slice($argv, 1);
+    $recursive = false;
+    if (($args[0] ?? '') === '--recursive') {
+        $recursive = true;
+        array_shift($args);
+    }
+
+    echo json_encode(lw_dump_models($args, $recursive));
+}

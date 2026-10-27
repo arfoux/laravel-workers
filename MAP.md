@@ -103,13 +103,25 @@ Examples: eventual consistency (KV) · async-by-queue instead of synchronous · 
 
 | Stage | What | Where | Tool |
 |---|---|---|---|
-| S0 | Dump routes / compiled Blade / schema / config / lang | build (PHP boots) | `edge/tools/*.php` |
+| S0 | Phase workers — schema, snapshots, view render, metadata | build (≤1 PHP boot per phase) | `tools/*.php` |
 | S1 | Transpile: Blade→JS, PHP-subset→JS, routes→router, schema→models | build (Node) | `edge/tools/*.mjs` |
 | S2 | Bundle: kernel + generated modules → worker ESM | build | edge bundler |
 | S3 | Parity tests: Laravel output vs compiled output | build/CI | golden tests |
 | S4 | Coverage + `--strict` gate | build | `build.mjs` |
 | S5 | Assets: snapshots + `public/` copy | build | `build.mjs` |
 | S6 | Deploy | Cloudflare | `wrangler deploy` after build |
+
+**Phase map (Track F):** one Laravel boot per phase that has work — schema
+(`schema-compile.php`, always 1), snapshots (`prerender.php`, 0–1), route/error
+views (`compile-view.php --batch` + recursive `make()` closure, always 1),
+metadata (`metadata-phase.php`: recursive models + policies + FormRequests,
+0–1), controller views (`compile-view.php --batch`, 0–1). Routes, config,
+schedule, events, class metadata, constants and controller extraction are pure
+Node (`php-parser`) — zero PHP. **Measured** (every PHP process logged via
+`PHP_INI_SCAN_DIR` + `auto_prepend_file`) on the 43-route fixture: **5 Laravel
+boots** for a full `--no-cache` build, plus one `php -r` interpreter probe; a
+build-cache hit (content-hash of the build inputs) runs **0** Laravel boots.
+Anything the cache key does not model has `--no-cache` as its escape hatch.
 
 The **single transpiler** (PHP-subset→JS) serves the compiled Blade views *and* compiled controllers today, plus generated model metadata. Routes outside the compiled subset (relations, pagination, multi-verb actions, custom middleware) still ship as hand-written `ports/*.mjs`.
 
@@ -381,6 +393,8 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 - **A58h - `find([1, 2])` mengembalikan koleksi (2026-10-21):** Laravel's `find()` dengan array id → `findMany` → **koleksi** model yang ditemukan ✓ (`Eloquent/Builder.php:607-616`); edge memb>array itu sebagai **satu** nilai ✗ → query yang tidak match apa pun ✗. `findOrFail([1, 9])` juga: id yang hilang disebut ✗ (Laravel ✓).
 - **A67 - view mailable ditempel per route (2026-10-21):** dump menempel **semua** view mailable ke **semua** route ✗ — kalau view satu mailable gagal compile ✗, **setiap** route jadi "skipped" ✗ (app jalan tanpa route ✗). Dump sekarang membawa view **per mailable** ✓ dan build hanya menempelkan view mailable yang **dikirim route itu** ✓ (kelas yang di-`new` oleh body ✓) — route yang tidak kirim mail tidak ikut terpengaruh ✓.
 
+- **Track F — phase workers + the build cache (2026-10-27):** the build's PHP-live steps are phase-scoped workers, each ONE Laravel boot (or none when its queue is empty): schema, snapshots (`prerender.php --batch`), route/error views (`compile-view.php --batch` + a recursive `make()` closure — no more one boot per dependency wave), metadata (`metadata-phase.php`: recursive models + policies + FormRequests in ONE boot, replacing the model rounds + the policy dump + the extra model dump + the FormRequest dump), and controller views. The controller extraction runs ONE `controller.mjs extract --batch` process (Node, `php-parser` — no PHP). **Measured** (every PHP process logged via `PHP_INI_SCAN_DIR` + `auto_prepend_file`): **5 Laravel boots** on the 43-route fixture (the pre-split typical was 5–11+ by static trace), plus one `php -r` interpreter probe. The **build cache** (`tools/build-cache.mjs`) hashes the build inputs by CONTENT — 199 files / ~3 MB on the fixture, plus the PHP version, the CLI flags and the curated `LW_*` env keys; a hit requires the stamp AND the five dist artifacts, then runs **0 Laravel boots** (≈1.3 s vs ≈35 s measured on the same machine). `--no-cache` is read-opt-out but **write-through**: a forced build mutates hashed inputs itself (the prerender boots write sessions through the app's sqlite cache table), so the stamp is refreshed anyway and the next normal run can hit.
+
 ## B. Current state
 
 | Component | State |
@@ -393,7 +407,7 @@ Policy: the compiler **never silently mistranslates**. Anything outside the supp
 | Controller transpilation (M10/M17/M22/M23) | ✅ GET/POST/PUT/PATCH/DELETE, one handler per verb; FormRequests, `Cache`/`Hash` facades, class constants, Eloquent writes, `auth.basic`; anything outside the subset fails the build |
 | Shadow harness (M24) | ✅ the real app (PHP 8.3 + sqlite) vs the compiled worker, byte-wise diff of status/headers/body; construct app 17/19 byte-identical (2 documented divergences), fresh app 9/10 (1), 0 unexplained |
 | CI (M25) | ✅ `test` + `parity` (the PHP oracle parity runs for real against a fresh app, `migrate` needed for DB-dependent tests) + `e2e` (fresh Laravel, **zero config** — schema-compile derives the D1 schema from migrations, build auto-generates `APP_KEY` + `wrangler.jsonc`; the only prepared steps are Vite's `npm install`/`build` and a sqlite file for prerender/session) |
-| Test counts | npm test 359/359 · corpus 51/51 · docs-check 105/105 |
+| Test counts | npm test 800/800 · corpus 51/51 · docs-check 105/105 |
 | W1–W10 (M1–M8) | ✅ **M1–M8 complete**: view parity (51/51) · router+DB (+model relations) · packaging+CI · hash+encrypter · validator · services · final gates (128/128 + 105/105 + bench p95<=5ms) |
 | This map | v1.1 (this file) |
 

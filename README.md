@@ -105,17 +105,22 @@ kernel/                   Workers-native runtime (request time, 0 PHP)
 
 tools/                    build-time PHP + JS helpers (boot the real app)
   schema-compile.php       migrations → in-memory SQLite → D1 DDL (driver-agnostic)
-  compile-view.php  model-dump.php  constants-dump.php  formrequest-dump.php
-  policy-dump.php  event-dump.php  class-dump.php  schedule-dump.php
+  compile-view.php         phase worker: view batches, recursive `make()` closure
+  model-dump.php  constants-dump.php  formrequest-dump.php  policy-dump.php
+  metadata-phase.php       ONE boot: recursive models + policies + FormRequests
+  event-dump.php  class-dump.php  schedule-dump.php
   routes-dump.mjs  config-dump.mjs  constants-dump.mjs  (pure JS re-implementations)
+  build-cache.mjs          SHA-256 content key for the unchanged-input fast path
   _root.php  init.mjs  vendor-lite.mjs  php-provision.mjs  php-runtime.mjs
   verify-s0.php  pack-smoke.mjs  docs-check.mjs  bench.mjs  constructs.json
 
 shadow/                   M24 proof machine: real Laravel app (PHP 8.3) vs the
                           compiled worker, byte-wise diff of status/headers/body
 
-build.mjs                 the pipeline: routes → controllers → views → schema →
-                          config → prerender → readiness gate → dist/
+build.mjs                 phase-scoped workers — ONE Laravel boot per phase that
+                          has work (schema → prerender → route/error views →
+                          metadata → controller views) + the unchanged-input
+                          build cache → readiness gate → dist/
 ```
 
 ---
@@ -196,7 +201,7 @@ npm run audit:constructs # facade coverage audit
 
 ## Zero-touch / CI (Workers Builds)
 
-Works on any Laravel ≥ 10 project — a fresh clone or an app you've been running for years. Every PHP helper boots the real Laravel app through `vendor/autoload.php` — **that is the one thing that cannot be skipped**. Everything else is automatic.
+Works on any Laravel ≥ 10 project — a fresh clone or an app you've been running for years. Every **PHP phase worker** boots the real Laravel app through `vendor/autoload.php` — the one thing only a cache hit can skip (see the *build phases* below). Everything else is automatic.
 
 | Requirement | Old way | Now |
 |---|---|---|
@@ -205,6 +210,62 @@ Works on any Laravel ≥ 10 project — a fresh clone or an app you've been runn
 | `APP_KEY` | `php artisan key:generate` | **Automatic** — `build.mjs` writes `base64:<32 bytes>` into `.env` if absent. Stable across rebuilds (the worker encrypts cookies with it). `tools/_root.php` also auto-injects it for standalone tool runs. |
 
 `registry.json` and `wrangler.jsonc` are **optional** — the build uses sensible defaults and auto-writes `wrangler.jsonc` when absent (worker name from the app-dir slug; `database_id` is a placeholder). So even the scaffolding happens at build time.
+
+### Build phases: one Laravel boot per phase (measured)
+
+A full build runs every PHP-live step as a phase-scoped worker. Each phase boots
+Laravel **at most once** — not at all when its job list is empty — and processes
+each closure inside that same boot (view `make()` dependency closure, model
+relation closure, policy models). Route export, config, schedule, events, class
+metadata, constants and controller extraction never call PHP:
+
+| Phase | Worker | Laravel boots | When |
+|---|---|---|---|
+| schema | `tools/schema-compile.php` | 1 | always |
+| snapshots | `tools/prerender.php` | 0–1 | when prerender URIs exist |
+| render: route + error views | `tools/compile-view.php` (`--batch`, recursive) | 1 | always (10 framework error views always queue) |
+| metadata | `tools/metadata-phase.php` | 0–1 | when models / FormRequests exist |
+| render: controller views | `tools/compile-view.php` (`--batch`, recursive) | 0–1 | when controllers exist |
+
+**Measured, not estimated:** instrumenting every PHP process a `--no-cache`
+build spawns (`PHP_INI_SCAN_DIR` + `auto_prepend_file` logger) on the 43-route
+fixture recorded **exactly 5 Laravel boots** — schema → snapshots →
+route/error views → metadata → controller views — plus one `php -r` version
+probe from `resolvePhp` (a process, no app boot). The pre-Track-F typical was
+5–11+ boots by static trace; a boot measured 2.8–5.1 s cold in
+`docs/PLAN-VENDOR.md`.
+
+### Build cache: unchanged inputs → 0 Laravel boots
+
+Before any live work, `build.mjs` (`tools/build-cache.mjs`) hashes its inputs by
+**content**, not mtime — 199 files / ~3.0 MB on the fixture app: app sources
+(`app/`, `bootstrap/`, `config/`, `database/`, `routes/`, `lang/`,
+`resources/views`, `resources/lang`, `public/`), Composer identity files + the
+installed autoloader, build-tool sources (`tools/`, `compiler/`, `kernel/`,
+`bin/`, `src/`), Vite/Tailwind/PostCSS configs + manifests, `.env`, the PHP
+version, CLI flags and the curated `LW_*` env keys.
+
+- **Hit** = the stamp at `<app>/.cache/laravel-workers/build-cache.json` carries
+  the same key **and** `dist/` still contains the files every build emits
+  (`src/worker.mjs`, `src/routes.generated.mjs`, `src/config.generated.mjs`,
+  `schema.json`, `public/_routes.json`). A deleted or half-written dist is a
+  miss, never a stale worker. Measured: **≈1.3 s** vs **≈35 s** full on the same
+  machine (0 Laravel boots, 1 PHP version probe).
+- **Not hashed** — identified by cheaper files instead: `vendor/` bytes
+  (`composer.lock` + `vendor/composer/installed.php` + the autoloader are
+  hashed), `node_modules/` (`package.json` + lock), `storage/`, `tests/`,
+  `.cache/`, `dist/`.
+- **Write-through**: `--no-cache` / `LW_NO_BUILD_CACHE=1` skips only the hit
+  check; a successful forced build still refreshes the stamp. Reason: a forced
+  build mutates hashed inputs itself (the prerender boots write sessions
+  through the app's sqlite cache table, inside hashed `database/`) — without
+  the write-through, the build right after a forced one paid an unexplained
+  full rebuild.
+- **Escape hatch for the unmodelled**: the cache models input *content*; it
+  cannot see out-of-band `storage/` edits or vendor sources changed without a
+  lock change — the same `--no-cache` is the answer. Stated plainly: a data-only
+  change to the sqlite file under `database/` invalidates correctly; anything
+  the key does not hash does not invalidate.
 
 ### The one manual step
 

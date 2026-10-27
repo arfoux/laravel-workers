@@ -11,7 +11,7 @@
 // (the declared literal): the JS inflector only ever supplies the derived
 // default.
 //
-// Usage: node tools/model-dump.mjs "App\Models\Post" ["App\Models\User" ...]
+// Usage: node tools/model-dump.mjs [--recursive] "App\Models\Post" ["App\Models\User" ...]
 // Output (stdout): the same JSON array the PHP tool emitted, with the derived
 // `table` values recomputed by the JS inflector when the model leaves the
 // table name to Laravel's default.
@@ -202,17 +202,23 @@ if (isMain) {
     process.exit(1);
   }
 
-  const fqcns = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  const recursive = rawArgs[0] === '--recursive';
+  const fqcns = recursive ? rawArgs.slice(1) : rawArgs;
   if (!fqcns.length) {
     process.stderr.write('model-dump.mjs: no FQCNs given\n');
     process.exit(1);
   }
 
   const php = resolvePhp({ requirement: '>=8.1' });
-  const raw = execFileSync(php.bin, [join(__dirname, 'model-dump.php'), ...fqcns], {
-    cwd: appDir,
-    env: { ...process.env, LW_APP_ROOT: appDir },
-  }).toString('utf8');
+  const raw = execFileSync(
+    php.bin,
+    [join(__dirname, 'model-dump.php'), ...(recursive ? ['--recursive'] : []), ...fqcns],
+    {
+      cwd: appDir,
+      env: { ...process.env, LW_APP_ROOT: appDir },
+    }
+  ).toString('utf8');
 
   const entries = JSON.parse(raw);
   for (const entry of entries) {

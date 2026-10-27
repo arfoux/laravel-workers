@@ -5,6 +5,9 @@
 //   php tools/compile-view.php <view-name> [out.json] [uri]   one view — one boot
 //   php tools/compile-view.php --batch <jobs.json>            every view — ONE boot
 // jobs.json: [{"name": "...", "out": "...", "uri": "..."}, ...]
+// or a phase plan: {"jobs": [...], "outDir": "...", "recursive": true,
+//                    "manifest": "..."} — recursive compiles the `make('...')`
+//                   dependency closure in the SAME boot and writes a manifest.
 // Output: JSON {view, path, compiled, context:{config, app, vite, files, auth, routes, route_names, urls, app_version, vfs}}
 //
 // The context is captured under the SAME boot path as tools/prerender.php
@@ -290,22 +293,109 @@ $capture = function (string $name, ?string $out, string $uri) use ($app, $root, 
 
 // --- main ---------------------------------------------------------------------
 
+// Keep this identical to compiler/src/view-name.mjs: a view name is a dotted
+// path or a namespaced one (`pagination::tailwind`); `:` is illegal on Windows.
+$viewFileName = static function (string $name): string {
+    $safe = preg_replace('/[^A-Za-z0-9._-]/', '-', $name);
+    $safe = preg_replace('/^\.+/', '_', (string) $safe);
+    return $safe === '' ? '_' : $safe;
+};
+
+// The compiled Blade names its dependencies through `$__env->make('...')`.
+// The build already uses this contract; the recursive batch uses it to close
+// the dependency graph without a second PHP boot per depth level.
+$viewDeps = static function (string $compiled): array {
+    $deps = [];
+    if (preg_match_all('/make\(\s*\'([^\']+)\'/', $compiled, $m)) {
+        foreach ($m[1] as $dep) {
+            if ($dep !== '' && ! in_array($dep, $deps, true)) $deps[] = $dep;
+        }
+    }
+    return $deps;
+};
+
 if (($argv[1] ?? '') === '--batch') {
     $jobsFile = $argv[2] ?? '';
-    $jobs = json_decode((string) @file_get_contents($jobsFile), true);
-    if (!is_array($jobs)) {
+    $plan = json_decode((string) @file_get_contents($jobsFile), true);
+    if (!is_array($plan)) {
         fwrite(STDERR, "compile-view: cannot read the jobs file {$jobsFile}\n");
         exit(1);
     }
+
+    // Backwards-compatible: a bare array is a one-wave batch. The phase plan
+    // adds outDir/recursive/manifest so the closure is one boot, not one per wave.
+    $jobs = isset($plan['jobs']) ? $plan['jobs'] : $plan;
+    if (!is_array($jobs)) {
+        fwrite(STDERR, "compile-view: the jobs file has no jobs array\n");
+        exit(1);
+    }
+    $recursive = !empty($plan['recursive']);
+    $outDir = isset($plan['outDir']) ? (string) $plan['outDir'] : null;
+    $manifestPath = isset($plan['manifest']) ? (string) $plan['manifest'] : null;
+    $queue = array_values($jobs);
+    $seen = [];
+    $compiled = [];
+    $failed = [];
+    $deps = [];
     $failures = 0;
-    foreach ($jobs as $job) {
+
+    while ($queue) {
+        $job = array_shift($queue);
         $name = (string) ($job['name'] ?? '');
+        if ($name === '' || isset($seen[$name])) continue;
+        $seen[$name] = true;
+        // A dependency is captured under its parent's request URI, not a
+        // hard-coded `/`: a layout that reads the current request path must see
+        // the same URL the parent view saw.
+        $parentUri = (string) ($job['uri'] ?? '/');
+        $out = $job['out'] ?? null;
+        if (! $out && $outDir) {
+            $out = rtrim($outDir, '/\\') . DIRECTORY_SEPARATOR . $viewFileName($name) . '.compiled.json';
+        }
+
+        // A view already compiled by the route phase in THIS build can be
+        // reused: its dump carries the context captured for that route.
+        if (!empty($job['reuse']) && $out && is_file($out)) {
+            $dump = json_decode((string) file_get_contents($out), true);
+            if (is_array($dump) && isset($dump['compiled'])) {
+                $compiled[$name] = $out;
+                $deps[$name] = $viewDeps((string) $dump['compiled']);
+                foreach ($deps[$name] as $dep) {
+                    if (!isset($seen[$dep])) $queue[] = ['name' => $dep, 'uri' => $parentUri];
+                }
+                continue;
+            }
+        }
+
         try {
-            $capture($name, $job['out'] ?? null, (string) ($job['uri'] ?? '/'));
+            $capture($name, $out, $parentUri);
+            $dump = ($out && is_file($out)) ? json_decode((string) file_get_contents($out), true) : null;
+            $compiled[$name] = $out;
+            $deps[$name] = is_array($dump) ? $viewDeps((string) ($dump['compiled'] ?? '')) : [];
+            if ($recursive && $outDir) {
+                foreach ($deps[$name] as $dep) {
+                    if (isset($seen[$dep])) continue;
+                    $queue[] = [
+                        'name' => $dep,
+                        'uri' => '/',
+                        'out' => rtrim($outDir, '/\\') . DIRECTORY_SEPARATOR . $viewFileName($dep) . '.compiled.json',
+                    ];
+                }
+            }
         } catch (\Throwable $e) {
             $failures++;
+            $failed[$name] = get_class($e) . ': ' . $e->getMessage();
             fwrite(STDERR, 'view ' . $name . ': ' . get_class($e) . ': ' . $e->getMessage() . "\n");
         }
+    }
+
+    if ($manifestPath) {
+        @mkdir(dirname($manifestPath), 0777, true);
+        @file_put_contents($manifestPath, json_encode([
+            'views' => array_keys($compiled),
+            'failed' => $failed,
+            'deps' => $deps,
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
     }
     exit($failures ? 1 : 0);
 }
