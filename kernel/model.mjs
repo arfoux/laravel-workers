@@ -173,9 +173,6 @@ export function setModelRuntime(rt) {
 export function setModelTimezone(tz) {
   modelTimezone.value = tz ? String(tz) : 'UTC';
 }
-export function modelTimezoneName() {
-  return modelTimezone.value;
-}
 
 const tzFormatters = new Map();
 function zonePartsIn(d, tz) {
