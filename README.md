@@ -220,20 +220,16 @@ npx wrangler deploy
 
 ### Fullstack app vs backend-only API
 
-Laravel is two halves and the build treats them as two halves. Which one you have decides whether `npm run build` is needed:
+Laravel is two halves and the build treats them as two halves. Which one you have decides whether the frontend needs building at all:
 
 | Your app | Needs `public/build/`? | What the build does |
 |---|---|---|
-| **Fullstack** — any Blade view calls `@vite()`/`mix()` (a stock `laravel new` is one: `welcome.blade.php`) | **Yes** — the compiled HTML embeds the hashed asset URLs read from `public/build/manifest.json` | fails at once, naming the exact view and the exact command to run |
+| **Fullstack** — any Blade view calls `@vite()`/`mix()` (a stock `laravel new` is one: `welcome.blade.php`) | **Yes** — the compiled HTML embeds the hashed asset URLs read from `public/build/manifest.json` | builds the frontend itself: your own `package.json`'s `build` script, run with **bun** (installed first if `node_modules` is absent) and **npm as the automatic fallback**, then verifies the manifest |
 | **Backend-only** — no view touches the frontend (a JSON API) | **No** — nothing reads it | logs `backend-only (no frontend build needed)` and proceeds |
 
-`build.mjs` pre-scans `resources/views/**` before compiling, so the failure is upfront and specific — not a build that shipped `<script src>` tags pointing at files that were never built. The fix is one command, once:
+`build.mjs` pre-scans `resources/views/**` before compiling — it decides upfront, not after shipping `<script src>` tags that point at files nobody built. When there is nothing it *can* run — no `package.json`, no `build` script, neither `bun` nor `npm` on `PATH`, or the frontend build itself fails — it stops with the exact view named and the exact command that failed.
 
-```bash
-npm install && npm run build    # your app's own Vite; the build never runs it for you
-```
-
-`laravel-workers` compiles the **backend**; **Vite** builds the **frontend**. Running `npm` from the build would make your toolchain depend on the network, the registry and an auth token — so the build tells you instead, then copies `public/build` → `dist/public`, where Workers Static Assets serves it **from the same origin as the worker**. There is no second port in production: the `artisan :8000` + `vite :5173` pair exists only under `composer run dev`.
+`laravel-workers` compiles the **backend**; **Vite** builds the **frontend** — and the build runs that step for you, in your app directory, with your own toolchain. **Bun is tried first** (it is an engine of this toolchain); **npm takes over automatically** when bun is not on `PATH` or its install/build fails. Dependencies are installed only when `node_modules` is absent, so an existing tree is never touched; a fresh install is the only network this step takes. The result (`public/build`) is copied to `dist/public`, where Workers Static Assets serves it **from the same origin as the worker**. There is no second port in production: the `artisan :8000` + `vite :5173` pair exists only under `composer run dev`.
 
 ### What `RUNS ON THE EDGE` claims (and what it does not)
 

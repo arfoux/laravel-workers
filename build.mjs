@@ -14,6 +14,7 @@
 // Usage: node build.mjs [--strict] [--scaffold]
 
 import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import { buildRoutesJson } from './tools/routes-json.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
@@ -292,8 +293,13 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
 //     the real reason. No silent-wrong HTML ships.
 //   - no view touches the frontend manifests (a backend-only API app) → nothing
 //     needs them; defer here used to fail the whole build for NO reason.
-// So this block only records WHICH manifest exists; it does not fail on its
-// own. Vite-first: the path the build WOULD write if its own `npm run build` ran.
+// So this block records WHICH manifest exists. A fullstack app without one no
+// longer stops here with a to-do: the build runs the app's OWN frontend
+// toolchain — bun first (probed once at the start of this step), npm as the
+// automatic fallback — and re-checks. It only stops when there is nothing to
+// run (no package.json, no "build" script, neither bun nor npm on PATH) or the
+// frontend build itself fails: loud, above the compile table. The path is the
+// one the app's own `bun run build` / `npm run build` writes.
 {
   const manifestCandidates = [
     join(appDir, 'public/build/manifest.json'),
@@ -303,10 +309,12 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
   const manifestPath = manifestCandidates.find((p) => existsSync(p));
   if (!manifestPath) {
     // The app is fullstack iff some Blade view calls the frontend (Vite's
-    // @vite() or Laravel Mix's mix()). A missing manifest then means the
-    // compiled HTML would reference asset URLs that don't exist — silent-wrong
-    // — so fail NOW with the view that needs it. A backend-only API app (no
-    // view touches the frontend) sails past: no manifest needed at all.
+    // @vite() or Laravel Mix's mix()). `mix` must stand alone — a lookbehind
+    // keeps CSS `color-mix(...)` inside a welcome page's inline <style> from
+    // reading as a frontend build (it did: a backend-only run installed bun
+    // dependencies for nothing). A missing manifest means the compiled HTML
+    // would reference asset URLs that don't exist — silent-wrong — so build
+    // NOW with the view that needs it. Backend-only: no manifest needed.
     const viewsRoot = join(appDir, 'resources', 'views');
     const viteViews = [];
     const scan = (dir) => {
@@ -316,27 +324,120 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
         if (ent.isDirectory()) scan(p);
         else if (/\.blade\.php$/.test(ent.name)) {
           const src = readFileSync(p, 'utf8');
-          if (/@vite\s*\(|mix\s*\(/.test(src)) viteViews.push(relPath(p));
+          if (/@vite\s*\(|(?<![-\w])mix\s*\(/.test(src)) viteViews.push(relPath(p));
         }
       }
     };
     scan(viewsRoot);
     if (viteViews.length) {
-      fail(
-        'this is a FULLSTACK app: ' +
-          (viteViews.length > 1 ? viteViews.length + ' Blade views' : viteViews[0]) +
-          ' call @vite()/mix(), but no frontend manifest is built (' +
+      const viewList =
+        viteViews.length > 1 ? viteViews.length + ' Blade views (' + viteViews.join(', ') + ')' : viteViews[0];
+      const candidates = manifestCandidates.map((p) => relPath(p)).join(', ');
+      let scripts = {};
+      try {
+        scripts = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8')).scripts || {};
+      } catch {
+        // no package.json / unreadable — scripts stays empty
+      }
+      if (!scripts.build) {
+        fail(
+          'this is a FULLSTACK app: ' +
+            viewList +
+            ' call @vite()/mix(), but no frontend manifest is built (' +
+            candidates +
+            ') and there is no package.json "build" script to run automatically. ' +
+            'Add the Vite frontend (package.json with scripts.build) or drop @vite()/mix() from those views. ' +
+            'A backend-only API app (no @vite in any view) needs no manifest at all.'
+        );
+      }
+      // Runner choice is probed ONCE, at the start: bun first — it is an
+      // engine of this toolchain and keeps its installs fast — with npm as the
+      // automatic fallback when bun is absent from PATH or its install/build
+      // fails. Install runs only when node_modules is absent: touching an
+      // existing tree would be a surprise.
+      const hadDeps = existsSync(join(appDir, 'node_modules'));
+      const has = (cmd) => {
+        try {
+          execFileSync(cmd, ['--version'], { cwd: appDir, stdio: 'ignore', shell: process.platform === 'win32' });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const run = (cmd, args) => {
+        console.log(`\u2022 manifest: no frontend manifest — running \`${cmd} ${args.join(' ')}\` (the app's own Vite)`);
+        execFileSync(cmd, args, { cwd: appDir, stdio: 'inherit', shell: process.platform === 'win32' });
+      };
+      const attempt = (cmd) => {
+        if (!hadDeps) {
+          // bun on Windows can take bunfig's `dir = "~/.bun/install/cache"`
+          // as a path RELATIVE TO THE APP and litter `~/` inside the project
+          // (observed on every local install). Pin an absolute cache dir:
+          // same global cache, clean tree.
+          const install =
+            cmd === 'bun' ? ['install', '--cache-dir=' + join(homedir(), '.bun', 'install', 'cache')] : ['install'];
+          run(cmd, install);
+        }
+        run(cmd, ['run', 'build']);
+      };
+      const exitOf = (e) => (e && e.status != null ? e.status : 'unknown');
+      const bunTried = has('bun');
+      let runner = null;
+      if (bunTried) {
+        try {
+          attempt('bun');
+          runner = hadDeps ? 'bun run build' : 'bun install + bun run build';
+        } catch (e) {
+          console.log(
+            `\u2022 manifest: bun failed (exit ${exitOf(e)}) — falling back to npm (output above)`
+          );
+        }
+      }
+      if (!runner) {
+        if (!has('npm')) {
+          fail(
+            'this is a FULLSTACK app: ' +
+              viewList +
+              ' call @vite()/mix(), but no frontend manifest is built (' +
+              candidates +
+              ') and neither `bun` nor `npm` is on PATH to run the app\u2019s frontend build. ' +
+              'Install bun (or npm), or run the frontend build yourself, then re-run.'
+          );
+        }
+        try {
+          attempt('npm');
+          runner = hadDeps ? 'npm run build' : 'npm install + npm run build';
+        } catch (e) {
+          fail(
+            'this is a FULLSTACK app: ' +
+              viewList +
+              ' call @vite()/mix(), and the automatic frontend build failed (' +
+              (bunTried ? 'bun fell back to npm; ' : '') +
+              'exit ' +
+              exitOf(e) +
+              ', output above). Fix the app\u2019s frontend (`bun run build` / `npm install && npm run build`) and re-run. ' +
+              'With no manifest at (' +
+              candidates +
+              ') the compiled HTML would reference assets that 404 at the edge.'
+          );
+        }
+      }
+      const built = manifestCandidates.find((p) => existsSync(p));
+      if (!built) {
+        fail(
+          'the frontend build finished but wrote none of the expected manifests (' +
+            candidates +
+            ') — check the output path in vite.config / webpack.mix.js.'
+        );
+      }
+      console.log(`\u2022 manifest: ${relPath(built)} (frontend built automatically — ${runner})`);
+    } else {
+      console.log(
+        '\u2022 manifest: no frontend manifest found (' +
           manifestCandidates.map((p) => relPath(p)).join(', ') +
-          '). Run the app\'s frontend build once: `npm install && npm run build` (Vite). ' +
-          'The built assets (public/build) are copied to dist/public and served via Cloudflare Static Assets. ' +
-          'A backend-only API app (no @vite in any view) needs no manifest at all.'
+          ') — no Blade view calls @vite()/mix(), treating this as backend-only (no frontend build needed)'
       );
     }
-    console.log(
-      '\u2022 manifest: no frontend manifest found (' +
-        manifestCandidates.map((p) => relPath(p)).join(', ') +
-        ') — no Blade view calls @vite()/mix(), treating this as backend-only (no frontend build needed)'
-    );
   } else {
     console.log(`\u2022 manifest: ${relPath(manifestPath)}`);
   }
