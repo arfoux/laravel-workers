@@ -25,14 +25,6 @@ function notOk(name,g,exp,extra){
 function check(name, got, expected){
   if(isEqual(got,expected)) ok(name); else notOk(name,got,expected);
 }
-function checkSkipTodo(name, got, expected, isByRef){
-  if(isEqual(got,expected)) ok(name);
-  else {
-    // mark as todo/skip but still ok so harness PASS
-    total++; passed++;
-    console.log(`ok ${total} - ${name} # TODO byref not yet supported (expected ${JSON.stringify(expected)} got ${JSON.stringify(got)})`);
-  }
-}
 
 function runPhp(phpSrc){
   const {code, errors}=transpile(phpSrc);
@@ -84,17 +76,15 @@ function runPhpSafe(src){
 {
   const src="<?php\n$x=10;\n$fn=function() use(&$x){ return $x; };\n$x=20;\necho $fn();\n";
   const {out,err}=runPhpSafe(src);
-  if(err) checkSkipTodo('closure use(&$x) by-ref shared binding', 'ERR:'+String(err), '20', true);
-  else if(out==='20') check('closure use(&$x) by-ref shared binding', out, '20');
-  else checkSkipTodo('closure use(&$x) by-ref shared binding', out, '20', true);
+  if(err) notOk('closure use(&$x) by-ref shared binding', 'ERR:'+String(err), '20');
+  else check('closure use(&$x) by-ref shared binding', out, '20');
 }
 // 6 by-ref mutation inside affects outer
 {
   const src="<?php\n$x=10;\n$fn=function() use(&$x){ $x++; return $x; };\necho $fn();\necho \",\";\necho $x;\n";
   const {out,err}=runPhpSafe(src);
-  if(err) checkSkipTodo('closure use(&$x) inner ++ affects outer', 'ERR:'+String(err), '11,11', true);
-  else if(out==='11,11') check('closure use(&$x) inner ++ affects outer', out, '11,11');
-  else checkSkipTodo('closure use(&$x) inner ++ affects outer', out, '11,11', true);
+  if(err) notOk('closure use(&$x) inner ++ affects outer', 'ERR:'+String(err), '11,11');
+  else check('closure use(&$x) inner ++ affects outer', out, '11,11');
 }
 // 7 arrow func single param
 {
@@ -114,8 +104,7 @@ function runPhpSafe(src){
 {
   const src="<?php\n$f=fn()=> 99;\necho $f();\n";
   const {out,err}=runPhpSafe(src);
-  // php-parser may not support zero-arg arrow with no parens? fallback skip if err
-  if(err) { total++; passed++; console.log(`ok ${total} - arrow fn()=>99 # SKIP arrow zero-arg not supported`); }
+  if(err) notOk('arrow fn()=>99', String(err), '99');
   else check('arrow fn()=>99', out, '99');
 }
 // 10 closure passed to collect()->filter
@@ -166,14 +155,15 @@ function runPhpSafe(src){
 }
 // 16 basic S2 still pass: collect chain via transpiler
 {
-  const src="<?php\n$c=collect([1,2,3,4])->filter(function($v){ return $v>1; })->map(function($v){ return $v*2; });\necho json_encode($c->toArray());\n";
+  const src="<?php\necho json_encode(collect([1,2,3,4])->filter(function($v){ return $v>1; })->map(function($v){ return $v*2; })->toArray());\n";
   const {out,err}=runPhpSafe(src);
   if(err) notOk('S2 chain filter->map', String(err), '[4,6,8]');
   else check('S2 chain filter->map', out, '[4,6,8]');
 }
-// 17 extra: closure chained arrow mix + S2 collect count via php
+// 17 extra: collect()->count() as a direct chain - the $c = collect(); $c->count()
+// form is controller context: a view refuses method calls on vars (LW002 by design)
 {
-  const src="<?php\n$c=collect([1,2,3]);\necho $c->count();\n";
+  const src="<?php\necho collect([1,2,3])->count();\n";
   const {out,err}=runPhpSafe(src);
   if(err) notOk('collect count via php', String(err), '3');
   else check('collect count via php', out, '3');

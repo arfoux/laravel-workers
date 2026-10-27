@@ -1,5 +1,12 @@
 # SWEEP-FINDINGS — Real Laravel Project Audit
 
+> **READ FIRST — superseded.** This is the dated running log of the 2026-10-24
+> real-app sweep. Its P0/P1/P2 backlog was largely resolved afterwards (auto
+> APP_KEY + wrangler.jsonc + vendor, the one-time boot batching, the
+> composer-free vendor-lite autoloader, the conditional frontend-manifest check,
+> and the auto frontend build) — see CHANGELOG v0.4.3–v0.4.5. Treat the table in
+> `PRIORITIZED BACKLOG` below as historical, not current.
+
 Tanggal: 2026-10-24
 Repo: laravel-workers (main, commit 751c348 + vendor-lite fix)
 Tool: `build.mjs --strict` per app, vendor-lite dari content-addressed cache.

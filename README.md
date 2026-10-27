@@ -101,7 +101,7 @@ kernel/                   Workers-native runtime (request time, 0 PHP)
   session.mjs csrf.mjs auth.mjs ratelimit.mjs hash.mjs encrypter.mjs
   validator.mjs validation.mjs php-serialize.mjs php-json.mjs
   cache.mjs storage.mjs mail.mjs queue.mjs scheduler.mjs paginator.mjs
-  tests/                   502/502 (see npm run test:all)
+  tests/                   526/526 (see npm test)
 
 tools/                    build-time PHP + JS helpers (boot the real app)
   schema-compile.php       migrations → in-memory SQLite → D1 DDL (driver-agnostic)
@@ -128,7 +128,7 @@ build.mjs                 the pipeline: routes → controllers → views → sch
 | PHP — build time only | `8.3.30` (ZTS x64, Windows) | **≥ 8.3**; parity oracle is 8.3.30 |
 | Composer | none | not needed — vendor-lite provisions deps; app's own `vendor/` works too |
 | Node | `22.18.0` | **≥ 22** (`engines`) |
-| Bun | `1.4.0` | **≥ 1.0** (full test suite passes — `bun run test` → 768/768) |
+| Bun | `1.4.0` | **≥ 1.0** (full test suite passes — `bun run test` → 800/800) |
 | npm | `10.9.3` | ≥ 10 |
 | Cloudflare Workers | `wrangler` `4.151.1` | 4.x; `compatibility_date` `2026-10-01` |
 | PHP extensions (build only) | `pdo_sqlite`, `sqlite3` | for `tools/schema-compile.php` |
@@ -166,7 +166,7 @@ From checkout (developing the toolchain, tests):
 git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup               # root + compiler deps
-npm test                    # 502 kernel + corpus/parity/oracle
+npm test                    # 800/800 — kernel + compiler + parity harnesses
 npm run test:corpus         # 51/51 — M1 transpiler corpus
 npm run test:sqlite         # real in-memory SQLite integration
 npx laravel-workers verify  # VERIFY-S0 15/15 (else SKIP — needs parent vendor/)
@@ -183,7 +183,7 @@ laravel-workers verify          # php tools/verify-s0.php (SKIP when no parent v
 laravel-workers shadow --app <root>   # compare real PHP app (oracle) vs compiled worker, byte-diff
 
 # npm aliases:
-npm test                # 768/768 tests
+npm test                # 800/800 tests
 npm run test:corpus     # 51/51 transpiler corpus
 npm run test:hash       # hash + encrypter only
 npm run test:sqlite     # in-memory SQLite integration
