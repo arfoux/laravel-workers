@@ -42,6 +42,7 @@ $errors = [];
 $models = [];
 $policy = ['globals' => ['before' => 0, 'after' => 0, 'abilities' => [], 'definitions' => []], 'models' => []];
 $formRequests = [];
+$bootError = null;
 
 try {
     $root = lw_app_root();
@@ -123,7 +124,29 @@ try {
     while (ob_get_level() > 0) {
         ob_end_clean();
     }
-    $errors[] = ['section' => 'boot', 'message' => get_class($e) . ': ' . $e->getMessage()];
+    $bootError = get_class($e) . ': ' . $e->getMessage();
+    $errors[] = ['section' => 'boot', 'message' => $bootError];
+
+    // The boot failed so no dump ran: stamp the boot error on every planned
+    // entry so the failure is visible per-entry, not only in errors[].  The
+    // errors[] entry remains too (build reads it); the per-entry stamp gives
+    // the same signal in entry form — consistent with formrequest-dump.php.
+    foreach ((array) ($plan['models'] ?? []) as $fqcn) {
+        if (is_string($fqcn)) {
+            $models[] = ['fqcn' => $fqcn, 'error' => 'boot: ' . $bootError];
+        }
+    }
+    // Policy models are keyed by 'model', not 'fqcn' (lw_dump_policies return shape).
+    foreach ((array) ($plan['models'] ?? []) as $fqcn) {
+        if (is_string($fqcn)) {
+            $policy['models'][] = ['model' => $fqcn, 'error' => 'boot: ' . $bootError];
+        }
+    }
+    foreach ((array) ($plan['formRequests'] ?? []) as $fqcn) {
+        if (is_string($fqcn)) {
+            $formRequests[] = ['fqcn' => $fqcn, 'error' => 'boot: ' . $bootError];
+        }
+    }
 }
 
 echo json_encode([
