@@ -14,6 +14,7 @@
 // Usage: node build.mjs [--strict] [--scaffold]
 
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { buildRoutesJson } from './tools/routes-json.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
@@ -108,6 +109,34 @@ const childEnv = () => ({
 const findings = [];
 const note = (f) => findings.push(f);
 const relPath = (p) => relative(appDir, p).split('\\').join('/');
+
+// A missing wrangler.jsonc is deploy input, not a dist artifact, so it must be
+// restored even on a build-cache hit: otherwise the next `deploy` fails after a
+// successful (cached) build. Scaffolding is local and never provisions a D1.
+function ensureWranglerConfig() {
+  const wranglerPath = join(appDir, 'wrangler.jsonc');
+  if (existsSync(wranglerPath)) {
+    console.log('  -> wrangler.jsonc already exists - left as-is (run `npx laravel-workers deploy` to provision/fill database_id)');
+    return;
+  }
+  const appSlug = basename(appDir)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const slug = appSlug.slice(0, 63).replace(/-+$/g, '') || 'laravel-workers-app';
+  const dbSlug = (slug.slice(0, 60).replace(/-+$/g, '') || 'laravel-workers-app') + '-db';
+  writeFileSync(wranglerPath, `{
+  "name": "${slug}",
+  "main": "./dist/src/worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+  "d1_databases": [ { "binding": "DB", "database_name": "${dbSlug}", "database_id": "REPLACE_WITH_D1_ID" } ],
+  "observability": { "enabled": true }
+}
+`);
+  console.log(`  -> wrangler.jsonc: written (worker name "${slug}") — run \`npx laravel-workers deploy\` (guided) or \`npx wrangler d1 create ${dbSlug}\` (manual)`);
+}
 
 const fail = (msg) => {
   console.error('BUILD FAILED: ' + msg);
@@ -214,6 +243,10 @@ const staticMap = Object.entries(registry.static || {});
 const portEntries = Object.entries(registry.ports || {});
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
+// Ensure the local deploy config before the cache short-circuit: the file is
+// not part of dist/, so a cache hit must still restore a config the operator
+// deleted. The build never provisions the D1 it names.
+ensureWranglerConfig();
 // ---- unchanged-input build cache -------------------------------------------
 // The cache is checked BEFORE vendor provisioning and APP_KEY mutation: on a
 // hit the only PHP process is the version probe inside resolvePhp(), not a
@@ -325,30 +358,6 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
   }
 }
 
-// ---- ensure wrangler.jsonc (optional; deploy config, NOT cloud provisioning) ----
-// We write a minimal wrangler.jsonc when none exists so the user lands in a
-// deploy-ready state: the worker name is derived from the app directory slug,
-// and the D1 database_id is a placeholder (obtaining it is `npx wrangler d1
-// create <name>` — a cloud-provisioning step the build deliberately does NOT
-// do). If wrangler.jsonc exists, it is untouched.
-{
-  const wranglerPath = join(appDir, 'wrangler.jsonc');
-  if (existsSync(wranglerPath)) {
-    console.log('  -> wrangler.jsonc already exists — left as-is (set "database_id" after `npx wrangler d1 create <name>`)');
-  } else {
-    const slug = basename(appDir).toLowerCase().replace(/[^a-z0-9-]+/g, '-') || 'laravel-workers-app';
-    writeFileSync(wranglerPath, `{
-  "name": "${slug}",
-  "main": "./dist/src/worker.mjs",
-  "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
-  "d1_databases": [ { "binding": "DB", "database_name": "${slug}", "database_id": "REPLACE_WITH_D1_ID" } ],
-  "observability": { "enabled": true }
-}
-`);
-    console.log(`  -> wrangler.jsonc: written (worker name "${slug}") — run \`npx wrangler d1 create ${slug}\` and paste the returned id into "database_id"`);
-  }
-}
 // A Vite app writes public/build/manifest.json; a Mix/webpack app writes
 // public/mix-manifest.json. Whether the build NEEDS the frontend manifests is
 // a property of the app, not of the repo:
@@ -516,9 +525,9 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
 // without one (the session middleware reads `sessions` on every request), which
 // used to read as "DOES NOT RUN" on the simplest possible project. The sandbox
 // is NOT the app's database and NOT the cloud D1: it lives in the build cache,
-// lasts only for the build, and the deploy-time
-// `wrangler d1 execute DB --file=dist/schema.sql --remote` (schema + the
-// operator's own data) is unchanged and still manual.
+// lasts only for the build. Applying dist/schema.sql to the remote D1 is done
+// by `laravel-workers deploy` (or manually with
+// `wrangler d1 execute DB --file=dist/schema.sql --remote`).
 console.log('\u2022 compiling migrations \u2192 schema (D1 SQLite dialect, in-memory)');
 mkdirSync(cacheDir, { recursive: true });
 const schemaPath = join(cacheDir, 'schema.json');
@@ -554,8 +563,8 @@ execFileSync(
 if (dbSandboxPath) {
   console.log(
     `  -> build-time DB sandbox: ${dbSandboxPath}\n` +
-      '     (the schema is applied so the app boots for prerender; the deploy-time\n' +
-      '      `wrangler d1 execute DB --file=dist/schema.sql --remote` is still yours to run)'
+      '     (the schema is applied so the app boots for prerender; the guided deploy\n' +
+      '      applies it; manual: `wrangler d1 execute DB --file=dist/schema.sql --remote`)'
   );
 }
 
@@ -2790,9 +2799,10 @@ let schemaTableCount = 0;
 cpSync(schemaPath, join(dist, 'schema.json'));
 console.log('  -> dist/schema.json');
 
-// The same schema as plain SQL, so the D1 tables can be created with one
-// command: `wrangler d1 execute DB --file=dist/schema.sql`. The blob store
-// table (the Storage facade on D1) is included when the app uses Storage::.
+// The same schema as plain SQL. `npx laravel-workers deploy` applies it to the
+// selected D1; the manual equivalent is
+// `wrangler d1 execute DB --file=dist/schema.sql`. The blob store table (the
+// Storage facade on D1) is included when the app uses Storage::.
 {
   let tables = [];
   try {
@@ -2806,7 +2816,8 @@ console.log('  -> dist/schema.json');
   }
   const head =
     '-- laravel-workers: the D1 schema for this app\n' +
-    '-- wrangler d1 execute DB --file=dist/schema.sql\n';
+    '-- apply: npx laravel-workers deploy --mode 3\n' +
+    '-- manual: npx wrangler d1 execute DB --file=dist/schema.sql --remote\n';
   const blob = usesStorage
     ? '\n-- the Storage facade on D1 (one row per object)\n' + BLOB_DDL + ';\n'
     : '';
@@ -2872,10 +2883,20 @@ cpSync(join(pkgDir, 'kernel'), join(dist, 'kernel'), { recursive: true });
 // fallback). The dist tree is what Wrangler bundles, so the package must live
 // inside it: a bare `bcryptjs` import from <app>/dist resolves only if
 // <app>/dist/node_modules/bcryptjs exists (the app itself need not depend on it).
-const bcryptSrc = [join(pkgDir, 'node_modules', 'bcryptjs'), join(appDir, 'node_modules', 'bcryptjs')].find((p) =>
+let bcryptSrc = [join(pkgDir, 'node_modules', 'bcryptjs'), join(appDir, 'node_modules', 'bcryptjs')].find((p) =>
   existsSync(join(p, 'index.js'))
 );
-if (bcryptSrc) {
+if (!bcryptSrc) {
+  // npm hoists a package dependency to the consumer's top-level node_modules,
+  // so it is often NOT under <pkgDir>/node_modules. Resolve it the same way
+  // Node resolves the import, then copy the resulting package.
+  try {
+    bcryptSrc = dirname(createRequire(import.meta.url).resolve('bcryptjs'));
+  } catch {
+    // reported below
+  }
+}
+if (bcryptSrc && existsSync(join(bcryptSrc, 'index.js'))) {
   cpSync(bcryptSrc, join(dist, 'node_modules', 'bcryptjs'), { recursive: true });
 } else {
   fail(
@@ -3269,20 +3290,20 @@ console.log(
 // must see the difference here - not discover it at the edge.
 console.log(renderReadiness(findings));
 
-// The one thing every first deploy needs and no build can do for the operator:
-// the D1 tables. Printed only when there is a schema to apply. The order is
-// deliberate and printed as one: the tables must exist in the remote D1 BEFORE
-// the worker serves requests against them, so `d1 execute` comes first. The
-// build never runs either command for you — both need a Cloudflare account and
-// an auth token, and creating a database is provisioning, not compiling.
+// The first deploy needs the D1 schema to exist before the worker serves
+// requests. `npx laravel-workers deploy` does that (and D1 provisioning) in one
+// guided command; the manual Wrangler route is printed for operators who
+// manage Cloudflare themselves. The build runs neither: both need an account
+// and auth token, and creating a database is provisioning, not compiling.
 if (schemaTableCount) {
   console.log(
-    `  schema: ${relPath(join(distFinal, 'schema.sql'))} (${schemaTableCount} table(s)) -- run ONCE, BEFORE the first deploy:\n` +
-      '    npx wrangler d1 execute DB --file=dist/schema.sql --remote'
+    `  schema: ${relPath(join(distFinal, 'schema.sql'))} (${schemaTableCount} table(s))\n` +
+      '    apply:  npx laravel-workers deploy --mode 3  (guided: also creates/reuses D1)\n' +
+      '    manual: npx wrangler d1 execute DB --file=dist/schema.sql --remote'
   );
 }
-const deployLabel = schemaTableCount ? 'then' : 'next'; // after the schema, or right away
 console.log(
-  `  ${deployLabel}:   npx wrangler deploy            (the worker + the static assets)\n` +
-    '  local:  npx wrangler dev               (preview without deploying)'
+  '  next:   npx laravel-workers deploy --mode 3  (guided: build + D1 + schema + deploy)\n' +
+    '  manual: npx wrangler deploy               (after the D1 schema exists)\n' +
+    '  local:  npx wrangler dev                  (preview without deploying)'
 );

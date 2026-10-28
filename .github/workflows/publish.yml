@@ -12,7 +12,38 @@ on:
 # for tags. Publishing on every push to main would be worse: a mid-development
 # merge would cut a release and npm rejects a version that already exists.
 jobs:
+  # The shadow harness is the release gate: a real Laravel app (PHP 8.3 + the
+  # PHP oracle) is replayed against the compiled worker and diffed byte-wise.
+  # Publishing must not proceed unless parity holds; `publish` and `publish-gpr`
+  # both `needs` it, so a regression here blocks the release outright.
+  shadow:
+    name: shadow harness (real Laravel vs compiled worker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, sqlite3
+      - name: Create a fresh Laravel app (the oracle's app)
+        run: composer create-project laravel/laravel shadow-app --no-interaction --prefer-dist
+      - name: Prepare the app
+        run: |
+          cd shadow-app
+          touch database/database.sqlite
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force
+      - run: npm install
+      - name: Shadow — real PHP app vs the compiled worker (byte-wise diff)
+        run: node shadow/run.mjs --app shadow-app --scenarios shadow/scenarios/fresh-app.mjs --build
+
   publish:
+    needs: shadow
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -43,6 +74,7 @@ jobs:
       - run: npm install -g npm@latest
       - run: npm publish --provenance --access public
   publish-gpr:
+    needs: shadow
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -73,6 +105,9 @@ jobs:
           npm publish --registry=https://npm.pkg.github.com --access public
           cp /tmp/package.json.bak package.json
   release:
+    # A GitHub release must not appear unless npm actually published the tag —
+    # without this the Release could go green while `npm publish` failed.
+    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

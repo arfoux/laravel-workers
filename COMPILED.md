@@ -163,11 +163,15 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   repo, installs the tarball into an empty project and runs the *installed*
   toolchain against a real Laravel app (the CLI build, the compiler import, the
   shadow harness). The published file set is proven, not assumed - a file missing
-  from `package.json#files` or an undeclared dependency fails the gate. The CI
-  e2e job installs the tarball (not the workspace) for the same reason.
-- `laravel-workers report`: reachability graph, compiled %, fail-loud list per class/route
-- `laravel-workers ports:scaffold <route>`: emit a stub port from the extracted controller
-- `laravel-workers shadow`: run the 1.3 harness locally
+  from `package.json#files`, an undeclared dependency, or a dependency Node cannot
+  resolve from the installed package fails the gate. The CI e2e job installs the
+  tarball (not the workspace) for the same reason.
+- `npm run audit:constructs` (`tools/construct-audit.mjs`): probes every construct in `tools/constructs.json`, prints the compile / fail-loud / build-level split and the facade coverage, and writes the table into this document between its markers (`--check` fails when the table is stale)
+- `npx laravel-workers deploy`: build → (D1) → (deploy) with `--plan` (zero-mutation preview; `--check` adds read-only D1 lookups), D1 create/reuse, schema guard (including `d1 execute` via a throwaway config bound to the resolved UUID), state, and exit codes `2` usage/config/state · `1` build/Cloudflare · `0` success. `wrangler.jsonc` edits go through `tools/jsonc.mjs` (comments/trailing commas preserved, re-parsed after edit), `lw-state.json` is read/written by `tools/lw-state.mjs`, and a Cloudflare account guard (`tools/cloud-account.mjs`) resolves the account Wrangler will use (config pin → env → the sole `whoami` account, never guessed among several) and fails closed on a mismatch before any D1/deploy action unless `--allow-account-change` is passed.
+- `npx laravel-workers status` / `doctor [--cloud]`: read the recorded deploy state strictly; `doctor` preflights PHP/vendor/APP_KEY/wrangler/auth without deploying, compares the current Cloudflare account with the recorded one (offline `status` shows the recorded account only), and labels a state without a deploy timestamp as recorded rather than deployed.
+- The npm tarball excludes `tools/tests/` and `tools/pack-smoke.mjs`. The `LW_BUILD_BIN`/`LW_WRANGLER_BIN` seams are active only when both fake fixtures exist in the package tree, so they are inert in an installed tarball.
+- `npx laravel-workers build --scaffold`: emit stub ports for every route that needs one (each answers 501 until implemented)
+- `npm run test:shadow` (or `npx laravel-workers shadow --app <root>`): run the 1.3 harness locally (real PHP app vs compiled worker)
 
 ## 2. HTTP surface
 

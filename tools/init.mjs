@@ -2,18 +2,22 @@
 // tools/init.mjs — Scaffold registry.json + wrangler.jsonc for a Laravel app.
 // Run from the Laravel app root: npx laravel-workers init
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const appDir = process.cwd();
 
 if (!existsSync(join(appDir, 'artisan'))) {
   console.warn('warning: artisan not found in ' + appDir + ' — run init from your Laravel app root.');
 }
 
-const slug = basename(appDir).toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+const appSlug = basename(appDir)
+  .toLowerCase()
+  .replace(/[^a-z0-9-]+/g, '-')
+  .replace(/-{2,}/g, '-')
+  .replace(/^-+|-+$/g, '');
+const slug = appSlug.slice(0, 63).replace(/-+$/g, '') || 'laravel-workers-app';
+const dbSlug = (slug.slice(0, 60).replace(/-+$/g, '') || 'laravel-workers-app') + '-db';
 
 // registry.json — tier maps read by build.mjs
 const registryPath = join(appDir, 'registry.json');
@@ -24,7 +28,7 @@ if (!existsSync(registryPath)) {
   console.log('registry.json exists — skipped');
 }
 
-// wrangler.jsonc — minimal Workers config; fill database_id after `wrangler d1 create`
+// wrangler.jsonc — minimal Workers config; guided deploy fills database_id
 const wranglerPath = join(appDir, 'wrangler.jsonc');
 if (!existsSync(wranglerPath)) {
   writeFileSync(wranglerPath, `{
@@ -32,7 +36,7 @@ if (!existsSync(wranglerPath)) {
   "main": "./dist/src/worker.mjs",
   "compatibility_date": "2026-10-01",
   "assets": { "directory": "./dist/public", "binding": "ASSETS" },
-  "d1_databases": [ { "binding": "DB", "database_name": "${slug}", "database_id": "REPLACE_WITH_D1_ID" } ],
+  "d1_databases": [ { "binding": "DB", "database_name": "${dbSlug}", "database_id": "REPLACE_WITH_D1_ID" } ],
     // The Storage facade (Storage::put/get/exists/delete) writes to R2 — the edge
     // has no local filesystem. Uncomment and fill in a bucket:
     // "r2_buckets": [ { "binding": "R2", "bucket_name": "REPLACE_WITH_R2_BUCKET" } ],
@@ -42,7 +46,7 @@ if (!existsSync(wranglerPath)) {
   "observability": { "enabled": true }
 }
 `);
-  console.log('created wrangler.jsonc (set database_id after `npx wrangler d1 create ' + slug + '`)');
+  console.log('created wrangler.jsonc (run `npx laravel-workers deploy` to create/reuse D1 and fill database_id)');
 } else {
   console.log('wrangler.jsonc exists — skipped');
 }
@@ -66,7 +70,6 @@ function setEnvVar(content, key, value) {
 }
 
 let envContent = '';
-let appKeySet = false;
 
 if (existsSync(envPath)) {
   envContent = readFileSync(envPath, 'utf8');
@@ -85,7 +88,6 @@ if (!/^APP_KEY=./m.test(envContent)) {
   envContent = setEnvVar(envContent, 'APP_KEY', newKey);
   writeFileSync(envPath, envContent);
   console.log('APP_KEY set: ' + newKey + '  (no PHP, no Laravel — pure Node.js)');
-  appKeySet = true;
 } else {
   console.log('.env already has APP_KEY — skipped');
 }
@@ -110,9 +112,7 @@ if (existsSync(gitignorePath)) {
 
 console.log('');
 console.log('Next steps:');
-if (!appKeySet) {
-  console.log('  # APP_KEY already present in .env — no action needed');
-}
-console.log('  npx laravel-workers build --strict   # vendor + schema handled automatically');
-console.log('  npx wrangler dev      # local preview');
-console.log('  npx wrangler deploy   # ship to Cloudflare');
+console.log('  npx laravel-workers deploy --plan --mode 3 --d1-auto   # preview (no writes)');
+console.log('  npx laravel-workers deploy --mode 3 --d1-auto         # guided: build + D1 + schema + deploy');
+console.log('  npx laravel-workers build --strict                    # build only (readiness verdict)');
+console.log('  npx wrangler dev                                      # local preview');

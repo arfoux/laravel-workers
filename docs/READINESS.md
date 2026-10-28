@@ -36,7 +36,7 @@ This guide maps every Laravel 13.x documentation page to a clear verdict:
 | csrf | RUNS ON THE EDGE | session token; @csrf/@method |
 | database | RUNS WITH DECLARED GAPS | D1 builder: where/or/join/group/having |
 | database-testing | RUNS WITH DECLARED GAPS | sqlite↔D1 parity harness |
-| deployment | RUNS ON THE EDGE | build → `wrangler deploy` (D1 + assets) |
+| deployment | RUNS ON THE EDGE | manual `wrangler deploy` is the established path; guided `npx laravel-workers deploy` (preview with `--plan`, then build + D1 + schema + assets) passed a live mode 2/3 smoke on a stock Laravel 13 app with Wrangler 4.151.1 (HTTP 200); an account guard compares the account id `wrangler whoami` resolves (config pin → env → sole account) with the one recorded in `lw-state.json` and refuses a mismatch or an ambiguous multi-account login before any D1/deploy call (fake-binary tests + a read-only live `whoami`) |
 | documentation | NOT APPLICABLE AT EDGE | meta (TOC page) |
 | dusk | NOT APPLICABLE AT EDGE | local browser tests |
 | eloquent | RUNS WITH DECLARED GAPS | schema-driven ORM subset |

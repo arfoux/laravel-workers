@@ -38,7 +38,16 @@ jobs:
           require tools/policy-dump.mjs
           require tools/static.mjs
           require tools/php-runtime.mjs
-          echo "tarball gate OK: every file build.mjs needs is shipped"
+          # the guided deploy CLI surface — shipped to users, so it must not
+          # silently vanish from the tarball either
+          require tools/deploy.mjs
+          require tools/lw-state.mjs
+          require tools/status.mjs
+          require tools/doctor.mjs
+          require tools/run.mjs
+          require tools/jsonc.mjs
+          require tools/cloud-account.mjs
+          echo "tarball gate OK: every file build.mjs and the deploy CLI need is shipped"
 
   # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
   # Laravel app — the `test` job has none, so those tests skip there. This job

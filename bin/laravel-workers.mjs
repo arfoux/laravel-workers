@@ -6,7 +6,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const appDir = process.cwd();
-const cmd = process.argv[2] ?? 'test';
+const cmd = process.argv[2] ?? 'help';
+
+// The Laravel app root is not always the cwd. `npx laravel-workers …` may run
+// from a subdirectory, and an npm install puts this package at
+// <app>/node_modules/laravel-workers — so the cwd is <app> but the package's
+// parent is node_modules, never the app. Walk up from both the cwd and the
+// package directory until an `artisan` file turns up.
+function findAppRoot(start) {
+  let dir = start;
+  for (;;) {
+    if (existsSync(join(dir, 'artisan'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null; // filesystem root
+    dir = parent;
+  }
+}
+
+const appRoot = findAppRoot(appDir) ?? findAppRoot(pkgDir) ?? appDir;
 
 const run = (command, args, options = {}) => {
   const { cwd = pkgDir, ...rest } = options;
@@ -18,55 +35,70 @@ const run = (command, args, options = {}) => {
   if (res.status !== 0) process.exit(res.status ?? 1);
 };
 
-if (cmd === 'test') {
-  run(process.execPath, ['--test', 'kernel/tests/router.test.mjs', 'kernel/tests/db.test.mjs', 'kernel/tests/sqlite-integration.test.mjs', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs', 'kernel/tests/validator.test.mjs', 'kernel/tests/services.test.mjs', 'kernel/tests/routes-json.test.mjs', 'kernel/tests/registry-json.test.mjs', 'kernel/tests/ports.test.mjs', 'kernel/tests/budget.test.mjs', 'compiler/tests/controller.test.mjs'], { cwd: pkgDir });
-} else if (cmd === 'test:db') {
-  run(process.execPath, ['--test', 'kernel/tests/db.test.mjs'], { cwd: pkgDir });
-} else if (cmd === 'test:sqlite') {
-  run(process.execPath, ['--test', 'kernel/tests/sqlite-integration.test.mjs'], { cwd: pkgDir });
-} else if (cmd === 'test:hash') {
-  run(process.execPath, ['--test', 'kernel/tests/hash.test.mjs', 'kernel/tests/encrypter.test.mjs'], { cwd: pkgDir });
-} else if (cmd === 'test:validator') {
-  run(process.execPath, ['--test', 'kernel/tests/validator.test.mjs'], { cwd: pkgDir });
-} else if (cmd === 'test:services') {
-  run(process.execPath, ['--test', 'kernel/tests/services.test.mjs'], { cwd: pkgDir });
-} else if (cmd === 'test:budget') {
-  run(process.execPath, ['--test', 'kernel/tests/budget.test.mjs'], { cwd: pkgDir });
-} else if (cmd === 'test:corpus') {
-  run(process.execPath, ['compiler/tests/run-corpus.mjs'], { cwd: pkgDir });
-} else if (cmd === 'bench') {
-  run(process.execPath, ['tools/bench.mjs'], { cwd: pkgDir });
-} else if (cmd === 'check:docs') {
-  run(process.execPath, ['tools/docs-check.mjs'], { cwd: pkgDir });
+const HELP = `laravel-workers — compile a Laravel app to a JS bundle for Cloudflare Workers
+
+Usage: npx laravel-workers <command> [options]
+
+Commands:
+  build [--strict] [--scaffold] [--no-cache]   compile the app to dist/ (no cloud)
+  deploy [options]                              build, then (optionally) provision D1 and deploy
+      --mode <1|2|3>         1=build only · 2=+D1 · 3=+D1+deploy (prompted when a TTY)
+      --deploy               shorthand for --mode 3
+      --db                   shorthand for --mode 2
+      --name <worker>        worker name (modes 2/3)
+      --d1-auto              auto create/reuse <worker>-db
+      --d1-id <uuid>         use an existing D1 by id
+      --skip-schema          don't apply dist/schema.sql
+      --schema=apply         apply the schema even when the D1 has tables
+      --plan [--check]       preview; no writes (--check adds read-only D1 checks)
+      --allow-account-change  allow a different Cloudflare account than recorded
+      --yes / -y             skip prompts (CI); drift/unconfirmed account change fails
+  init                        scaffold registry.json + wrangler.jsonc (idempotent)
+  status                     show the recorded deploy state (lw-state.json)
+  doctor [--cloud] [--strict]  preflight checks (PHP, vendor, wrangler, deploy state)
+  shadow [--app <root>]      proof harness: real PHP app vs the compiled worker
+  verify                     VERIFY-S0 — does this app boot under the build?
+  vendor:ensure              provision a composer-free vendor tree (CI prewarm)
+  php:ensure                 resolve or provision the PHP interpreter (CI prewarm)
+
+  --version                  print version and exit
+  --help | -h                show this help
+
+Developer tasks (test/bench/docs) run via the package.json scripts:
+  npm test · npm run bench · npm run check:docs · npm run test:corpus
+`;
+
+if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
+  process.stdout.write(HELP);
+  process.exit(0);
+}
+if (cmd === '--version' || cmd === '-v') {
+  process.stdout.write('laravel-workers ' + JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version + '\n');
+  process.exit(0);
+}
+
+
+if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'test:hash' || cmd === 'test:validator' || cmd === 'test:services' || cmd === 'test:budget' || cmd === 'test:corpus' || cmd === 'bench' || cmd === 'check:docs') {
+  console.error(`laravel-workers: developer tasks run via the package.json scripts (npm test / npm run bench / npm run check:docs / npm run test:corpus), not through the CLI. Run from the laravel-workers checkout.`);
+  process.exit(2);
 } else if (cmd === 'init') {
   const initPath = join(pkgDir, 'tools', 'init.mjs');
   if (!existsSync(initPath)) {
     console.error('laravel-workers init: tools/init.mjs not found in package — reinstall laravel-workers.');
     process.exit(1);
   }
-  let cwd = appDir;
-  if (!existsSync(join(appDir, 'artisan')) && existsSync(join(dirname(pkgDir), 'artisan'))) {
-    cwd = dirname(pkgDir);
-  }
-  run(process.execPath, [initPath], { cwd });
+  run(process.execPath, [initPath], { cwd: appRoot });
 } else if (cmd === 'build') {
   const buildPath = join(pkgDir, 'build.mjs');
   if (!existsSync(buildPath)) {
     console.error('laravel-workers build: build.mjs not found in package — reinstall laravel-workers. Run from your Laravel app root via npx laravel-workers build.');
     process.exit(1);
   }
-  let cwd = appDir;
-  if (existsSync(join(appDir, 'artisan'))) {
-    cwd = appDir;
-  } else if (existsSync(join(dirname(pkgDir), 'artisan'))) {
-    cwd = dirname(pkgDir);
-  } else {
-    cwd = appDir;
+  if (!existsSync(join(appRoot, 'artisan'))) {
+    console.error('laravel-workers build: artisan not found — run from your Laravel app root via npx laravel-workers build (a directory containing artisan is required).');
+    process.exit(1);
   }
-  if (!existsSync(join(cwd, 'artisan'))) {
-    console.error('laravel-workers build: artisan not found — run from your Laravel app root via npx laravel-workers build (cwd must contain artisan).');
-  }
-  run(process.execPath, [buildPath, '--strict', ...process.argv.slice(3)], { cwd });
+  run(process.execPath, [buildPath, '--strict', ...process.argv.slice(3)], { cwd: appRoot });
 } else if (cmd === 'shadow') {
   // The shadow harness: the real app (PHP oracle) vs the compiled worker.
   const shadowPath = join(pkgDir, 'shadow', 'run.mjs');
@@ -89,7 +121,7 @@ if (cmd === 'test') {
     console.error('laravel-workers vendor:ensure: tools/vendor-lite.mjs not found in package — reinstall laravel-workers.');
     process.exit(1);
   }
-  run(process.execPath, [litePath, ...process.argv.slice(3)], { cwd: appDir });
+  run(process.execPath, [litePath, ...process.argv.slice(3)], { cwd: appRoot });
 } else if (cmd === 'php:ensure') {
   // Resolve (or provision) the interpreter that can boot THIS app. The build
   // does this automatically; the explicit command exists for CI prewarming and
@@ -98,7 +130,7 @@ if (cmd === 'test') {
   const { provisionPhp } = await import(pathToFileURL(join(pkgDir, 'tools', 'php-provision.mjs')).href);
   let requirement = null;
   try {
-    requirement = JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8')).require?.php || null;
+    requirement = JSON.parse(readFileSync(join(appRoot, 'composer.json'), 'utf8')).require?.php || null;
   } catch {
     requirement = null;
   }
@@ -128,14 +160,35 @@ if (cmd === 'test') {
     console.error('laravel-workers verify: tools/verify-s0.php not found in package.');
     process.exit(1);
   }
-  const vendorInApp = existsSync(join(appDir, 'vendor', 'autoload.php'));
+  const vendorInApp = existsSync(join(appRoot, 'vendor', 'autoload.php'));
   const vendorInParent = existsSync(join(dirname(pkgDir), 'vendor', 'autoload.php'));
   if (!vendorInApp && !vendorInParent) {
     console.log('VERIFY-S0: SKIP (no Laravel vendor/ found — run from your Laravel app root via npx laravel-workers verify).');
     process.exit(0);
   }
-  run(php, [verifyPath], { cwd: appDir, env: { ...process.env, LW_APP_ROOT: appDir } });
+  run(php, [verifyPath], { cwd: appRoot, env: { ...process.env, LW_APP_ROOT: appRoot } });
+} else if (cmd === 'deploy') {
+  const deployPath = join(pkgDir, 'tools', 'deploy.mjs');
+  if (!existsSync(deployPath)) {
+    console.error('laravel-workers deploy: tools/deploy.mjs not found — reinstall laravel-workers.');
+    process.exit(1);
+  }
+  run(process.execPath, [deployPath, ...process.argv.slice(3)], { cwd: appRoot });
+} else if (cmd === 'status') {
+  const statusPath = join(pkgDir, 'tools', 'status.mjs');
+  if (!existsSync(statusPath)) {
+    console.error('laravel-workers status: tools/status.mjs not found — reinstall laravel-workers.');
+    process.exit(1);
+  }
+  run(process.execPath, [statusPath], { cwd: appRoot });
+} else if (cmd === 'doctor') {
+  const doctorPath = join(pkgDir, 'tools', 'doctor.mjs');
+  if (!existsSync(doctorPath)) {
+    console.error('laravel-workers doctor: tools/doctor.mjs not found — reinstall laravel-workers.');
+    process.exit(1);
+  }
+  run(process.execPath, [doctorPath, ...process.argv.slice(3)], { cwd: appRoot });
 } else {
-  console.error(`laravel-workers: unknown command "${cmd}". Try: test | test:db | test:sqlite | test:hash | test:validator | test:services | test:budget | test:corpus | bench | check:docs | init | build | verify | vendor:ensure | php:ensure`);
+  console.error(`laravel-workers: unknown command "${cmd}". Try: build | deploy | init | status | doctor | shadow | verify | vendor:ensure | php:ensure | help`);
   process.exit(1);
 }
