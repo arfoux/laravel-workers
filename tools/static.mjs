@@ -17,6 +17,16 @@ import { join, resolve } from 'node:path';
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 /**
+ * Parse PHP source into an AST with the SHARED php-parser instance (3.x).
+ * Exported for the dump tools that need the raw tree (event-dump.mjs walks
+ * provider files for bind()/singleton()); it replaces the old
+ * `require.presolve.parserClass`, which is undefined in ESM.
+ */
+export function parsePhpSource(source) {
+  return phpParser.parseCode(String(source));
+}
+
+/**
  * Detect the Laravel major version of an app from composer.json.
  * @returns {number|null} the major (9..13), or null when undetectable.
  */
@@ -147,7 +157,10 @@ export function classFile(appDir, fqcn) {
   // No composer mapping matched — try the conventional App\ -> app/ directly.
   if (full.startsWith('App\\')) {
     const fb = join(appDir, 'app', full.slice(4).replace(/\\/g, '/') + '.php');
-    return resolve(fb);
+    // MUST verify: without this every `App\...` FQCN answered a path, so
+    // isAppClass() said true for classes that do not exist and a namespaced
+    // global (App\Mail\DateTimeInterface) was treated as an app class.
+    if (existsSync(fb)) return resolve(fb);
   }
   return null;
 }
@@ -338,28 +351,138 @@ export function evalConstantExpr(node, ctx, depth = 0, stack = []) {
   }
 }
 
-/** The evaluated constants map of a class (used for `OtherClass::CONST`). */
+/**
+ * The evaluated constants map of a class, following PHP's inheritance
+ * (`ReflectionClass::getConstants()`): the class's own constants, its traits
+ * (flattened into the class), the interfaces it implements, then the parent
+ * chain - each ancestor contributing its own/trait/interface constants.
+ * A private constant of an ANCESTOR is NOT part of the child's table (PHP
+ * 8.3 verified), while the class's own private ones are.
+ * Verified against tools/constants-dump.php: a model answers the inherited
+ * `CREATED_AT`/`UPDATED_AT`, `Foo extends Base implements Iface` answers all
+ * three, and the PHP tool's scalar filter still drops arrays.
+ */
 function collectConstants(appDir, parsed, clsNode, file) {
-  const selfConstants = {};
-  let ctx0 = { appDir, parsed, parsedCache: {} };
-  for (const stmt of (clsNode.body || [])) {
-    if (stmt.kind !== 'classconstant') continue;
-    for (const c of stmt.constants || []) {
-      const name = nodeName(c.name);
-      if (!name) continue;
-      selfConstants[name] = evalConstantExpr(c.value, { ...ctx0, selfConstantsMap: {} });
+  const sources = [];
+  // A PHP file may declare several classes: look in the CURRENT parse first,
+  // then fall back to the FQCN -> file lookup.
+  const resolveNode = (p, fqcn, seen) => {
+    const key = String(fqcn || '');
+    const short = key.split('\\').pop();
+    const ns = key.includes('\\') ? key.slice(0, key.lastIndexOf('\\')) : null;
+    // Same-file lookup ONLY when the namespace matches too - otherwise a
+    // parent in another namespace (Model\User -> Foundation\Auth\User) would
+    // resolve back to the child itself and the chain would stop there.
+    if (short && (ns === null || ns === (p.namespace || ''))) {
+      const same = (p.classes || []).find((c) => c && c.name && nodeName(c.name) === short);
+      if (same) return { parsed: p, node: same };
+    }
+    return nodeFor(appDir, fqcn, seen);
+  };
+  const walkClass = (p, node, allowPrivate, depth, seen) => {
+    if (!node || depth > 20) return;
+    sources.push({ parsed: p, node, allowPrivate });
+    for (const t of traitNamesOf(p, node)) {
+      const tgt = resolveNode(p, t, seen);
+      if (tgt) walkClass(tgt.parsed, tgt.node, true, depth + 1, seen);
+    }
+    for (const i of interfaceNamesOf(p, node)) {
+      const tgt = resolveNode(p, i, seen);
+      if (tgt) walkClass(tgt.parsed, tgt.node, false, depth + 1, seen);
+    }
+  };
+  const seen = new Set();
+  walkClass(parsed, clsNode, true, 0, seen);
+  // The parent chain (a class, or an interface's own `extends`).
+  let p = parsed;
+  let node = clsNode;
+  for (let depth = 0; depth < 20 && node; depth += 1) {
+    const parent = extendsNameOf(p, node);
+    if (!parent || seen.has(parent)) break;
+    const tgt = resolveNode(p, parent, seen);
+    if (!tgt) break;
+    seen.add(parent);
+    walkClass(tgt.parsed, tgt.node, false, depth + 1, seen);
+    p = tgt.parsed;
+    node = tgt.node;
+  }
+  // Merged name set, nearest declaration wins (a child overrides a parent).
+  const raw = new Map();
+  for (const s of sources) {
+    for (const stmt of (s.node.body || [])) {
+      if (stmt.kind !== 'classconstant') continue;
+      if (!s.allowPrivate && stmt.visibility === 'private') continue;
+      for (const c of (stmt.constants || [])) {
+        const name = nodeName(c.name);
+        if (!name || raw.has(name)) continue;
+        raw.set(name, { value: c.value, parsed: s.parsed });
+      }
     }
   }
+  // Pass 1: literal values, so `self::OTHER` can be resolved in pass 2.
+  const selfMap = {};
+  for (const [name, rec] of raw) {
+    selfMap[name] = evalConstantExpr(rec.value, { appDir, parsed: rec.parsed });
+  }
   const out = {};
-  for (const stmt of (clsNode.body || [])) {
-    if (stmt.kind !== 'classconstant') continue;
-    for (const c of stmt.constants || []) {
-      const name = nodeName(c.name);
-      if (!name) continue;
-      const val = evalConstantExpr(c.value, { ...ctx0, selfConstantsMap: selfConstants });
-      if (val === null && !(c.value && (c.value.kind === 'nullkeyword' || c.value.kind === 'null'))) continue;
-      out[name] = val;
+  for (const [name, rec] of raw) {
+    const val = evalConstantExpr(rec.value, {
+      appDir, parsed: rec.parsed, selfConstantsMap: selfMap, selfConstants: selfMap,
+    });
+    if (val === null && !isNullLiteral(rec.value)) continue;
+    out[name] = val;
+  }
+  return out;
+}
+
+/** The parsed file + class node for an FQCN (any namespace, app or vendor). */
+const nodeFileCache = new Map();
+function nodeFor(appDir, fqcn, seen) {
+  const key = String(fqcn || '');
+  if (!key) return null;
+  if (seen && seen.has(key)) return null;
+  if (nodeFileCache.has(key)) return nodeFileCache.get(key);
+  const file = classFile(appDir, key);
+  let result = null;
+  if (file && existsSync(file)) {
+    const parsed2 = parsePhpFile(file);
+    if (!parsed2.error) {
+      const short = key.split('\\').pop();
+      const node = (parsed2.classes || []).find((c) => c && c.name && nodeName(c.name) === short);
+      if (node) result = { parsed: parsed2, node, file };
     }
+  }
+  nodeFileCache.set(key, result);
+  return result;
+}
+
+/** The resolved FQCN of a class's `extends` (a class or an interface). */
+function extendsNameOf(parsed, node) {
+  const e = node.extends;
+  if (!e) return null;
+  const raw = e.name || e.raw;
+  return raw ? resolveClassName(String(raw), e, { parsed }) : null;
+}
+
+/** The resolved FQCNs of a class's `use Trait;` statements. */
+function traitNamesOf(parsed, node) {
+  const out = [];
+  for (const stmt of (node.body || [])) {
+    if (stmt.kind !== 'traituse') continue;
+    for (const t of (stmt.traits || [])) {
+      const raw = t.name || t.raw;
+      if (raw) out.push(resolveClassName(String(raw), t, { parsed }));
+    }
+  }
+  return out;
+}
+
+/** The resolved FQCNs of a class's `implements` interface list. */
+function interfaceNamesOf(parsed, node) {
+  const out = [];
+  for (const i of (node.implements || [])) {
+    const raw = i.name || i.raw;
+    if (raw) out.push(resolveClassName(String(raw), i, { parsed }));
   }
   return out;
 }
@@ -394,29 +517,41 @@ const argByName = (args, name) => {
   return null;
 };
 
+/** One literal string node -> its value (null when the literal is not a string). */
+function oneString(node) {
+  if (!node) return null;
+  if (node.kind === 'string') return node.value;
+  if (node.kind === 'stringliteral' && typeof node.value === 'string') return node.value;
+  return null;
+}
+const isArrayNode = (node) => !!node && (node.kind === 'array' || node.kind === 'arrayexpression');
+/** The item nodes of an array literal (php-parser's `entry` wrappers unwrapped). */
+function arrayItems(node) {
+  return (node.items || []).map((e) => (e && e.kind === 'entry' ? e.value : e));
+}
 /** String array literal -> JS array of strings (a static `except: [...]`). */
 function stringArray(node) {
-  if (!node || node.kind !== 'array') return null;
+  const v = argValue(node);
+  if (!isArrayNode(v)) return null;
   const out = [];
-  for (const e of (node.items || [])) {
-    if (!e || e.kind !== 'entry') return null;
-    const v = e.value;
-    if (!v || v.kind !== 'string') return null;
-    out.push(v.value);
+  for (const item of arrayItems(v)) {
+    const one = oneString(item);
+    if (one === null) return null;
+    out.push(one);
   }
   return out;
 }
 
 /** The name of a class-referencing argument node (`[\X\Y::class]` -> 'X\Y'). */
 function classListOf(node) {
-  if (!node || node.kind !== 'array') return null;
+  const v = argValue(node);
+  if (!isArrayNode(v)) return null;
   const out = [];
-  for (const e of (node.items || [])) {
-    if (!e || e.kind !== 'entry') return null;
-    const v = e.value;
-    if (!v || v.kind !== 'staticlookup') return null;
-    const raw = (v.what && (v.what.raw || v.what.name)) || '';
-    out.push(raw.replace(/^\\/, ''));
+  for (const item of arrayItems(v)) {
+    const raw = (item && item.what && (item.what.raw || item.what.name)) || '';
+    const name = raw.replace(/^\\+/, '');
+    if (!name) return null;
+    out.push(name);
   }
   return out;
 }
@@ -442,16 +577,29 @@ export const argValue = (a) => {
 /**
  * Extract the middleware configurator state from bootstrap/app.php (Laravel
  * 11+ `->withMiddleware(...)` shape). Returns:
- *   { cookiesExcept, csrfExcept, allowSameSite, originOnly, globalMiddleware }
+ *   { cookiesExcept, csrfExcept, allowSameSite, originOnly, globalMiddleware,
+ *     trimConfigured, emptyConfigured, transformers }
  * Unknown/unparseable calls are skipped (the app gets default state), never
  * guessed. For Laravel 9/10 the middleware callbacks live on the Kernel
  * classes; this returns null and the caller uses the defaults.
  */
-export function appMiddlewareState(appDir) {
+export function appMiddlewareState(appDir, report = {}) {
+  let failure = null;
   const bootFile = join(appDir, 'bootstrap', 'app.php');
-  if (!existsSync(bootFile)) return null;
+  if (!existsSync(bootFile)) {
+    // Laravel 9/10 keep the middleware on the Kernel classes instead of
+    // bootstrap/app.php `->withMiddleware(...)`; that shape is not read here.
+    // The defaults are the honest answer here: an app without a
+    // bootstrap/app.php has no `->withMiddleware(...)` state to read.
+    return null;
+  }
+  // An UNREADABLE bootstrap/app.php is not "no middleware" (the app's global
+  // stack may replace TrimStrings, drop the CSRF, ...): it is a refusal.
   const parsed = parsePhpFile(bootFile);
-  if (parsed.error) return null;
+  if (parsed.error) {
+    failure = 'cannot parse bootstrap/app.php: ' + (parsed.error && parsed.error.message ? parsed.error.message : parsed.error);
+    return null;
+  }
 
   const state = {
     cookiesExcept: [],
@@ -459,6 +607,14 @@ export function appMiddlewareState(appDir) {
     allowSameSite: false,
     originOnly: false,
     globalMiddleware: [],
+    // `TrimStrings::skipWhen()` / `ConvertEmptyStringsToNull::skipWhen()` seen
+    // as static calls anywhere in the file (a transformer that skips a request
+    // cannot be modelled; the spec says so).
+    trimSkipConfigured: false,
+    emptySkipConfigured: false,
+    trimExcept: [],
+    trimExceptUnreadable: false,
+    transformers: null,
   };
 
   // Find `->withMiddleware(closure)`, then each `$x->method(...)` in the
@@ -473,7 +629,16 @@ export function appMiddlewareState(appDir) {
       if (closure && closure.body && closure.body.children) {
         for (const st of closure.body.children) {
           if (st && st.kind === 'expressionstatement' && st.expression) {
-            applyConfigCall(st.expression, state);
+            const verdict = applyConfigCall(st.expression, state);
+            if (verdict) {
+              failure = verdict;
+              return;
+            }
+            // The transformer CONFIGURATION does not live on the `->withMiddleware()`
+            // chain in this walk: `->trimStrings()` / `->convertEmptyStringsToNull()`
+            // are handled inside applyConfigCall (see transformerSpec), and the
+            // facade calls (`TrimStrings::except()`, `::skipWhen()`) are read
+            // from the whole file below.
           }
         }
       }
@@ -483,13 +648,30 @@ export function appMiddlewareState(appDir) {
       walker(n[k]);
     }
   };
-  walker(phpParser.parseCode(parsed.source));
+  const ast = phpParser.parseCode(parsed.source);
+  walker(ast);
+  // The facade calls the app makes anywhere in the file: `TrimStrings::except()`
+  // and `::skipWhen()` write STATIC state on the middleware class (vendor
+  // TrimStrings.php:90-106), so they do not live in the `->withMiddleware()`
+  // chain. `ConvertEmptyStringsToNull::skipWhen()` is the same (vendor :52-55).
+  scanTransformerFacades(ast, state);
+  if (failure !== null) {
+    report.failure = failure;
+    return state;
+  }
+  // The request-input transformer spec: the app's static calls on
+  // TrimStrings/ConvertEmptyStringsToNull start it, a `->use()` list fixes the
+  // global stack (Illuminate\Foundation\Configuration\Middleware::use()).
+  const spec = transformerSpec(ast, state, phpParser);
+  if (spec.refusal) report.failure = spec.refusal;
+  state.transformers = spec;
   return state;
 }
 
+/** Returns a refusal message when the call cannot be read faithfully. */
 function applyConfigCall(expr, state) {
   const name = callMethodName(expr);
-  if (!name) return;
+  if (!name) return null;
   const args = callArgs(expr);
   const named = (n) => {
     for (const a of args) if (a && a.kind === 'namedargument' && a.name === n) return argValue(a);
@@ -512,16 +694,295 @@ function applyConfigCall(expr, state) {
       break;
     }
     case 'use': {
+      // `->use()` REPLACES the global stack (Ml 231-236). Only the fact that the
+      // app configured a replacement is recorded here; transformerSpec replays
+      // the whole call set against the vendor rules.
       const v = named('middleware') || argValue(args[0]);
-      const list = classListOf(v);
-      if (list) state.globalMiddleware = list;
+      if (classListOf(v) === null) {
+        return 'bootstrap/app.php: `->use(middleware: [...])` holds an entry the build cannot read statically - the compiled rung cannot tell which middlewares run; add a port';
+      }
+      break;
+    }
+    case 'trimStrings': {
+      // Middleware::trimStrings(array $except) (Ml 656-670): Closures become
+      // `TrimStrings::skipWhen()` (per-request), strings go to
+      // `TrimStrings::except()` (a STATIC list, so calls accumulate).
+      const split = splitClosuresAndStrings(argValue(args[0]));
+      if (split === null) return REFUSE_TRIM('->trimStrings([...])');
+      state.trimSkipConfigured = state.trimSkipConfigured || split.closures > 0;
+      state.trimExcept = [...state.trimExcept, ...split.strings];
+      break;
+    }
+    case 'convertEmptyStringsToNull': {
+      // Middleware::convertEmptyStringsToNull(array $except) (Ml 645-653): every
+      // entry is typed `Closure`; a string there raises a TypeError in PHP, never
+      // a key list, so a literal entry is an app bug the build refuses.
+      const split = splitClosuresAndStrings(argValue(args[0]));
+      if (split === null) return REFUSE_TRIM('->convertEmptyStringsToNull([...])');
+      if (split.strings.length) {
+        return 'bootstrap/app.php: `->convertEmptyStringsToNull([...])` holds a non-Closure entry (the vendor signature is array<int, Closure>); the compiled rung cannot read it; add a port';
+      }
+      state.emptySkipConfigured = state.emptySkipConfigured || split.closures > 0;
       break;
     }
     default:
       break;
   }
+  return null;
+}
+const REFUSE_TRIM = (call) =>
+  'bootstrap/app.php: `' + call + '` holds an entry the build cannot read statically (a closure skip-when callback) - the compiled rung would trim/convert a different set of fields; add a port';
+/**
+ * `Middleware::trimStrings()`'s array: Closures (a per-request skip) and string
+ * keys (the skip list). Any other node is unreadable -> null.
+ */
+function splitClosuresAndStrings(arg) {
+  const v = argValue(arg);
+  if (v === null || v === undefined) return { closures: 0, strings: [] };
+  if (!isArrayNode(v)) return null;
+  let closures = 0;
+  const strings = [];
+  for (const item of arrayItems(v)) {
+    if (!item) return null;
+    if (item.kind === 'closure' || item.kind === 'arrowfunc' || item.kind === 'arrowfunction') { closures += 1; continue; }
+    const one = oneString(item);
+    if (one === null) return null;
+    strings.push(one);
+  }
+  return { closures, strings };
 }
 
+/**
+ * The framework's DEFAULT global middleware
+ * (Illuminate\Foundation\Configuration\Middleware::getGlobalMiddleware(),
+ * Middleware.php:120-141), as the build sees it. Anything here that the compiled
+ * rung does not implement is reported (config `middleware.prevented`).
+ */
+export const FRAMEWORK_GLOBAL_MIDDLEWARE = [
+  'Illuminate\\Http\\Middleware\\ValidatePathEncoding',
+  'Illuminate\\Foundation\\Http\\Middleware\\InvokeDeferredCallbacks',
+  'Illuminate\\Http\\Middleware\\TrustHosts',
+  'Illuminate\\Http\\Middleware\\TrustProxies',
+  'Illuminate\\Http\\Middleware\\HandleCors',
+  'Illuminate\\Foundation\\Http\\Middleware\\PreventRequestsDuringMaintenance',
+  'Illuminate\\Http\\Middleware\\ValidatePostSize',
+  'Illuminate\\Foundation\\Http\\Middleware\\TrimStrings',
+  'Illuminate\\Foundation\\Http\\Middleware\\ConvertEmptyStringsToNull',
+];
+const TRIM_STRINGS = 'Illuminate\\Foundation\\Http\\Middleware\\TrimStrings';
+/** `TrimStrings::$except` (vendor TrimStrings.php:16-20). */
+export const FRAMEWORK_TRIM_EXCEPT = ['current_password', 'password', 'password_confirmation'];
+/**
+ * The global middleware kernel/http.mjs reproduces itself: the two input
+ * transformers it runs (see buildRequest), the deferred callbacks the app never
+ * observes on a request path, and the path validator the edge cannot run (the
+ * platform decodes the path before the worker sees it).
+ */
+export const MW_IMPLEMENTED_BY_KERNEL = new Set([
+  'TrimStrings',
+  'ConvertEmptyStringsToNull',
+  'InvokeDeferredCallbacks',
+  'ValidatePathEncoding',
+]);
+const EMPTY_TO_NULL = 'Illuminate\\Foundation\\Http\\Middleware\\ConvertEmptyStringsToNull';
+/**
+ * `TrimStrings::except([...])` / `TrimStrings::skipWhen(...)` /
+ * `ConvertEmptyStringsToNull::skipWhen(...)` anywhere in the file.
+ */
+function scanTransformerFacades(ast, state) {
+  const walk = (n) => {
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (!n || typeof n !== 'object') return;
+    // `TrimStrings::except(...)` is a CALL whose `what` is a staticlookup
+    // (php-parser's shape), not a `staticcall` node.
+    if (n.kind === 'call' && n.what && n.what.kind === 'staticlookup') {
+      const clsNode = n.what.what;
+      const cls = clsNode && (clsNode.raw || clsNode.name);
+      const short = cls ? String(cls).replace(/^\\+/, '').split('\\').pop() : null;
+      const method = callMethodName(n);
+      const args = callArgs(n);
+      if (short === 'TrimStrings' || short === 'ConvertEmptyStringsToNull') {
+        if (method === 'skipWhen') {
+          if (short === 'TrimStrings') state.trimSkipConfigured = true;
+          else state.emptySkipConfigured = true;
+        } else if (method === 'except' && short === 'TrimStrings') {
+          const list = stringArray(args[0]);
+          if (list === null) {
+            state.trimExceptUnreadable = true;
+          } else {
+            state.trimExcept = [...state.trimExcept, ...list];
+          }
+        }
+      }
+    }
+    for (const key of Object.keys(n)) {
+      const v = n[key];
+      if (v && typeof v === 'object') walk(v);
+    }
+  };
+  walk(ast);
+}
+/** One entry of a middleware list, as an FQCN (null when the literal is not a class name). */
+function middlewareName(v) {
+  const node = argValue(v);
+  if (!node) return null;
+  // `\App\Http\Middleware\Foo::class` -> staticlookup{ what: name, offset: 'class' }
+  if (node.kind === 'staticlookup') {
+    const cls = node.what && (node.what.raw || node.what.name);
+    if (!cls) return null;
+    return String(cls).replace(/^\\+/, '');
+  }
+  if (node.kind === 'string') return node.value;
+  return null;
+}
+/** A `->prepend()`/`->append()`/`->remove()` argument as a list (`array|string`). */
+function middlewareList(arg) {
+  const v = argValue(arg);
+  if (v === null || v === undefined) return [];
+  const single = middlewareName(v);
+  if (single !== null) return [single];
+  if (!isArrayNode(v)) return null;
+  const out = [];
+  for (const item of arrayItems(v)) {
+    const one = middlewareName(item);
+    if (one === null) return null;
+    out.push(one);
+  }
+  return out;
+}
+/**
+ * Is `expr` a static call on the TrimStrings / ConvertEmptyStringsToNull facade
+ * (`TrimStrings::except([...])`, `TrimStrings::skipWhen(fn () => true)`)?
+ */
+function isTransformerConfigCall(expr, simpleName) {
+  if (!expr || expr.kind !== 'staticcall') return false;
+  const cls = expr.class && expr.class.kind === 'name' ? String(expr.class.name) : null;
+  if (!cls) return false;
+  return cls.split('\\').pop() === simpleName;
+}
+const sameMiddleware = (a, b) => String(a).split('\\').pop() === String(b).split('\\').pop();
+/**
+ * The compiled request's transform spec, read from the app's own bootstrap.
+ *
+ * `Illuminate\Foundation\Configuration\Middleware` does NOT edit one stack:
+ *   - `use()` sets `$global` (a REPLACEMENT for the default list, Ml 231-236);
+ *   - `prepend()`/`append()`/`remove()` accumulate into `$prepends`/`$appends`/
+ *     `$removals` (Ml 169-207), applied in getGlobalMiddleware():
+ *     `array_merge($prepends, $middleware, $appends)` minus `$removals` (Ml
+ *     460-476);
+ *   - `replace($search, $replace)` maps classes (Ml 218-224).
+ * so the ORDER OF CALLS does not matter and an `->append(...)` after a `->use()`
+ * still applies. `trimStrings(array $except)` (Ml 656-670) partitions its array:
+ * Closures become `TrimStrings::skipWhen()` (a per-request skip), strings go to
+ * `TrimStrings::except()` (STATIC, so several calls accumulate);
+ * `convertEmptyStringsToNull()` takes closures only (Ml 645-653).
+ *
+ * Returns { trim, emptyToNull, trimExcept } or { refusal } - never a guess.
+ */
+function transformerSpec(ast, state, phpParser) {
+  const edits = { global: null, prepends: [], appends: [], removals: [], replacements: {} };
+  const walk = (n) => {
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (!n || typeof n !== 'object') return;
+    if (callMethodName(n) === 'withMiddleware') {
+      const closure = callArgs(n).map(argValue).find((v) => v && v.kind === 'closure');
+      if (closure && closure.body && closure.body.children) {
+        for (const st of closure.body.children) {
+          if (!st || st.kind !== 'expressionstatement' || !st.expression) continue;
+          const name = callMethodName(st.expression);
+          if (!name) continue;
+          const args = callArgs(st.expression).map(argValue);
+          if (name !== 'use' && name !== 'prepend' && name !== 'append' && name !== 'remove' && name !== 'replace') continue;
+          edits.calls = (edits.calls || []).concat([{ name, args }]);
+        }
+      }
+    }
+    for (const key of Object.keys(n)) {
+      const v = n[key];
+        if (v && typeof v === 'object') walk(v);
+    }
+  };
+  walk(ast);
+  const calls = edits.calls || [];
+  for (const call of calls) {
+    if (call.name === 'use') {
+      const list = middlewareList(call.args[0]);
+      if (list === null) {
+        return { refusal: 'bootstrap/app.php: `->use(middleware: [...])` holds an entry the build cannot read statically - the compiled rung cannot tell which input transformers run; add a port' };
+      }
+      edits.global = list;
+    } else if (call.name === 'replace') {
+      const search = middlewareName(call.args[0]);
+      const replacement = middlewareName(call.args[1]);
+      if (search === null || replacement === null) {
+        return { refusal: 'bootstrap/app.php: `->replace(...)` names a middleware the build cannot read statically; add a port' };
+      }
+      edits.replacements[search] = replacement;
+    } else {
+      const list = middlewareList(call.args[0]);
+      if (list === null) {
+        return { refusal: 'bootstrap/app.php: `->' + call.name + '(...)` holds a middleware entry the build cannot read statically; add a port' };
+      }
+      if (call.name === 'prepend') edits.prepends = [...list, ...edits.prepends];
+      else if (call.name === 'append') edits.appends = [...edits.appends, ...list];
+      else edits.removals = [...edits.removals, ...list];
+    }
+  }
+  // getGlobalMiddleware() order (Ml 452-476): the base list, then
+  // array_merge(prepends, base, appends), minus removals, then the replacements
+  // map is applied - so removing `TrimStrings` removes the CLASS STACK ENTRY and
+  // a `replace()` for a removed class never rescues it.
+  const base = edits.global !== null ? edits.global : FRAMEWORK_GLOBAL_MIDDLEWARE;
+  const stack = [...edits.prepends, ...base, ...edits.appends]
+    .filter((c) => !edits.removals.some((r) => sameMiddleware(r, c)))
+    .map((c) => edits.replacements[c] ?? c);
+  // Dedupe the way array_unique() does (first occurrence wins).
+  const seen = new Set();
+  const finalStack = stack.filter((c) => {
+    const key = String(c);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const inStack = (simple) => finalStack.some((c) => String(c).split('\\').pop() === simple);
+  // An app that configured a transformer which is then not on the stack simply
+  // never runs it; the stack decides, the configuration only adds skips.
+  const trimInStack = inStack('TrimStrings');
+  const emptyInStack = inStack('ConvertEmptyStringsToNull');
+  if (state.trimExceptUnreadable) {
+    return { refusal: 'bootstrap/app.php: `TrimStrings::except([...])` holds an entry the build cannot read statically - the compiled rung would trim a different set of fields; add a port' };
+  }
+  // A skipWhen() callback is a per-request decision the compiled rung cannot
+  // make (it never sees the app's closure): refuse, never guess.
+  if (trimInStack && state.trimSkipConfigured) {
+    return { refusal: 'bootstrap/app.php registers a TrimStrings::skipWhen() callback (or a Closure in ->trimStrings()) - which requests skip the trim is decided at run time and the compiled rung cannot reproduce it; add a port' };
+  }
+  if (emptyInStack && state.emptySkipConfigured) {
+    return { refusal: 'bootstrap/app.php registers a ConvertEmptyStringsToNull::skipWhen() callback - which requests skip the empty-to-null pass is decided at run time and the compiled rung cannot reproduce it; add a port' };
+  }
+  // Everything else on the final stack that the compiled kernel does not run.
+  // The framework's own defaults (TrustHosts, HandleCors, TrustProxies, ...) are
+  // not reported: their behaviour is tracked elsewhere and an untouched app must
+  // keep building. An app-changed stack is held to it: whatever it puts on the
+  // stack beyond the defaults AND beyond the kernel's own set is a divergence.
+  const touched = new Set([...edits.prepends, ...edits.appends, ...Object.values(edits.replacements)]);
+  const customised = edits.global !== null || calls.length > 0;
+  const prevented = customised
+    ? finalStack.filter(
+        (c) =>
+          !MW_IMPLEMENTED_BY_KERNEL.has(String(c).split('\\').pop()) &&
+          (edits.global !== null || touched.has(c))
+      )
+    : [];
+  return {
+    trim: trimInStack,
+    emptyToNull: emptyInStack,
+    // The framework's own list (`TrimStrings::$except`) plus the strings the
+    // app added (`TrimStrings::except()`, STATIC and accumulating).
+    trimExcept: [...FRAMEWORK_TRIM_EXCEPT, ...(state.trimExcept || [])],
+    prevented,
+  };
+}
 /**
  * The route file paths bootstrap/app.php registers (`withRouting`). Returns
  * { web, api, commands, health, pages? } with absolute paths; missing files
@@ -595,27 +1056,84 @@ function abs(appDir, p) {
  */
 export function readEnvFile(appDir, extra = {}) {
   const env = { ...extra };
+  // Laravel loads the app's .env into an IMMUTABLE repository: a variable that
+  // the process environment already defines (passed in as `extra`, the shape
+  // Env::getRepository() reads through $_SERVER/$_ENV) is never overwritten by
+  // the file. Within the file itself the last line wins.
+  const seeded = new Set(Object.keys(extra));
   const p = join(appDir, '.env');
   if (!existsSync(p)) return env;
   let text;
   try { text = readFileSync(p, 'utf8'); } catch { return env; }
+  const assign = (key, raw) => {
+    if (seeded.has(key)) return;
+    // vlucas/dotenv v5.7: the value is parsed (quotes/escapes) and THEN the
+    // Loader runs Resolver::resolve() against the repository. Only `${NAME}`
+    // counts as a variable (Value::getVars() records nothing for a bare `$`,
+    // so `A=$B` stays literal), an unresolved reference stays literal
+    // (Option::getOrElse($matches[0])), and a SINGLE-quoted value is never
+    // interpolated (EntryParser's SINGLE_QUOTED_STATE records no variable).
+    const singleQuoted = raw.length >= 2 && raw[0] === "'" && raw[raw.length - 1] === "'";
+    const value = dotenvValue(raw);
+    env[key] = singleQuoted ? value : resolveEnvRefs(value, env);
+  };
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('#') || line.startsWith('export ')) {
-      if (line.startsWith('export ')) {
-        const body = line.slice(7).trim();
-        const eq = body.indexOf('=');
-        if (eq <= 0) continue;
-        env[body.slice(0, eq).trim()] = dotenvValue(body.slice(eq + 1).trim());
-      }
-      continue;
-    }
-    const eq = line.indexOf('=');
+    if (!line || line.startsWith('#')) continue;
+    const body = line.startsWith('export ') ? line.slice(7).trim() : line;
+    const eq = body.indexOf('=');
     if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    env[key] = dotenvValue(line.slice(eq + 1).trim());
+    // A `#` outside quotes opens a comment (EntryParser: UNQUOTED -> COMMENT).
+    assign(body.slice(0, eq).trim(), stripEnvComment(body.slice(eq + 1)));
   }
   return env;
+}
+
+/** Everything from an unquoted `#` on is a comment (EntryParser COMMENT_STATE). */
+function stripEnvComment(raw) {
+  const s = raw.trim();
+  let quote = null;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (quote) {
+      if (quote === '"' && ch === '\\') { i += 1; continue; }
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '#') return s.slice(0, i).trim();
+  }
+  return s;
+}
+
+/**
+ * dotenv's Resolver::resolve (v5.7): the Loader walks the recorded variable
+ * positions right-to-left and applies `/\A\${([a-zA-Z0-9_.]+)}/` at each one -
+ * so a `${NAME}` is replaced by the repository's value but a bare `$NAME` (no
+ * braces) is left alone, exactly like phpdotenv. An unresolved reference stays
+ * as written (`Option::getOrElse($matches[0])`).
+ */
+function resolveEnvRefs(text, env) {
+  if (typeof text !== 'string' || !text.includes('${')) return text;
+  return text.replace(/\$\{([a-zA-Z0-9_.]+)\}/g, (m, name) =>
+    Object.prototype.hasOwnProperty.call(env, name) && env[name] !== null && env[name] !== undefined
+      ? String(env[name])
+      : m);
+}
+
+/**
+ * Env::getOption() (Env.php:252-284) — the coercion Env::get() applies to every
+ * repository value, which is always the RAW string the source defined.
+ */
+export function coerceEnvValue(value) {
+  if (typeof value !== 'string') return value;
+  switch (value.toLowerCase()) {
+    case 'true': case '(true)': return true;
+    case 'false': case '(false)': return false;
+    case 'empty': case '(empty)': return '';
+    case 'null': case '(null)': return null;
+    default: break;
+  }
+  const m = /^(['"])([\s\S]*)\1$/.exec(value);
+  return m ? m[2] : value;
 }
 
 /** Dotenv Parser::value semantics — the exact typed forms vlucas/dotenv uses. */
@@ -634,11 +1152,31 @@ function dotenvValue(s) {
   return s;
 }
 
+/** PHP's string cast for a scalar (concat operands). */
+function phpStr(v) {
+  if (v === null || v === undefined) return '';
+  if (v === true) return '1';
+  if (v === false) return '';
+  if (Array.isArray(v)) return 'Array';
+  if (typeof v === 'object') return 'Object';
+  return String(v);
+}
+
 /** The Illuminate\Support\Str helpers the config files use — the pure ones. */
 const StrMethod = {
+  // `Str::slug()` (Str.php slug() + ascii()): the transliteration table keeps
+  // the LETTERS of an HTML entity and drops the '&' and ';' — verified against
+  // PHP 8.3 + Laravel 13.37: 'A &amp; B' -> 'a-amp-b', 'A & B' -> 'a-b',
+  // 'A&nbsp;B' -> 'anbspb', 'A &amp;amp; B' -> 'a-ampamp-b'. Dropping the whole
+  // entity (the old `/&[a-z]+;/ -> ''` with a dead `{'&': 'and'}` map) answered
+  // 'a-b' where PHP answers 'a-amp-b'.
+  // Known limitation: a non-ASCII letter is REMOVED here where PHP's ascii()
+  // transliterates it ('Ünïcode' -> PHP 'unicode', this -> 'ncode') — a JS
+  // build has no portable-ascii table.
   slug: (value, sep = '-') => String(value)
     .toLowerCase()
-    .replace(/&[a-z]+;/g, (e) => ({ '&': 'and' })[e] || '')
+    .replace(/&[a-z]+;/g, (e) => e.slice(1, -1))
+    .replace(/[&;]/g, '')
     .replace(/[^a-z0-9-]+/g, sep)
     .split(sep + sep).join(sep)
     .replace(new RegExp(sep + '$'), ''),
@@ -737,8 +1275,11 @@ export function evalConfigExpr(node, ctx, depth = 0) {
       if (node.type === '.') {
         const l = evalConfigExpr(node.left, ctx, depth + 1);
         const r = evalConfigExpr(node.right, ctx, depth + 1);
-        if (l === undefined || l === null || r === undefined || r === null) return undefined;
-        return String(l) + String(r);
+        // undefined = "not statically evaluable"; null is a REAL PHP null,
+        // which casts to '' in a concat — `env('X') . '/y'` with X unset is
+        // '/y' in PHP, while the old code dropped the whole entry (undefined).
+        if (l === undefined || r === undefined) return undefined;
+        return phpStr(l) + phpStr(r);
       }
       if (['+', '-', '*', '/', '%', '**'].includes(node.type)) {
         const l = evalConfigExpr(node.left, ctx, depth + 1);
@@ -792,8 +1333,11 @@ export function evalConfigExpr(node, ctx, depth = 0) {
         case 'env': {
           const key = margs[0];
           if (typeof key !== 'string') return undefined;
-          // Process.env wins (Dotenv immutable semantics), then .env, then default.
-          if (Object.prototype.hasOwnProperty.call(env, key)) return env[key] === '' ? (margs.length > 1 ? margs[1] : null) : env[key];
+          // Env::get() (Env.php:252-284): a key PRESENT in the repository answers
+          // its value - Option::fromValue('')->map() keeps the empty string, so
+          // `env('X', $default)` does NOT fall back for a defined-but-empty X.
+          // Only a missing key reaches getOrCall(value($default)).
+          if (Object.prototype.hasOwnProperty.call(env, key)) return coerceEnvValue(env[key]);
           return margs.length > 1 ? margs[1] : null;
         }
         // PHP's storage_path() = realpath(storage) . DIRECTORY_SEPARATOR . $path,
@@ -948,29 +1492,10 @@ export function configGet(cfg, path, def = undefined) {
 }
 
 export function classConstants(appDir, parsed, clsNode) {
-  const selfConstants = {};
-  for (const stmt of (clsNode.body || [])) {
-    if (stmt.kind !== 'classconstant') continue;
-    for (const c of stmt.constants || []) {
-      const name = nodeName(c.name);
-      if (!name) continue;
-      selfConstants[name] = evalConstantExpr(c.value, { appDir, parsed });
-    }
-  }
-  // Resolve `self::X` references (possibly chained) with the full map known.
-  const resolved = {};
-  for (const stmt of (clsNode.body || [])) {
-    if (stmt.kind !== 'classconstant') continue;
-    for (const c of stmt.constants || []) {
-      const name = nodeName(c.name);
-      if (!name) continue;
-      const ctx = { appDir, parsed, selfConstantsMap: selfConstants, selfConstants, selfName: name };
-      const val = evalConstantExpr(c.value, ctx);
-      if (val === null && !(c.value && (c.value.kind === 'nullkeyword' || c.value.kind === 'null'))) continue;
-      resolved[name] = val;
-    }
-  }
-  return { constants: resolved };
+  // The whole constant table - own, traits, interfaces, parent chain
+  // (collectConstants() above), exactly what ReflectionClass::getConstants()
+  // answers for the class.
+  return { constants: collectConstants(appDir, parsed, clsNode) };
 }
 
-export default { classFile, parsePhpFile, classConstants, evalConstantExpr, laravelVersion, appMiddlewareState, appRouteFiles, readEnvFile, evalConfigExpr, loadConfig, configGet };
+export default { classFile, parsePhpFile, classConstants, evalConstantExpr, laravelVersion, appMiddlewareState, appRouteFiles, readEnvFile, coerceEnvValue, evalConfigExpr, loadConfig, configGet };

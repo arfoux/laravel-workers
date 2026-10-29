@@ -53,6 +53,11 @@ $put('app.debug', $config->get('app.debug'));
 // The app's locale: the validation messages (and the translations) are read
 // from the app's own lang file for that locale.
 $put('app.locale', $config->get('app.locale'));
+// The FALLBACK locale (config/app.php `fallback_locale`, 'en' in a stock app):
+// Laravel's translator answers a missing key from it, group by group and key by
+// key, so the runtime needs it to answer the same string. Keep in sync with
+// tools/config-dump.mjs.
+$put('app.fallback_locale', $config->get('app.fallback_locale'));
 // The app's timezone (config/app.php `timezone`): Laravel sets it as PHP's
 // default and every Carbon date renders in it. The compiled rung renders its
 // Carbon stub in the same zone, so a date in a body is the same string.

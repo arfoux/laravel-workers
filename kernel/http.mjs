@@ -69,6 +69,7 @@ import {
   applyAuthenticatable,
 } from './auth.mjs';
 import { phpJsonDecode, phpJsonEncode } from './php-json.mjs';
+import { strIs } from './csrf.mjs';
 import { parseMultipart } from './multipart.mjs';
 import {
   ValidationException,
@@ -76,6 +77,38 @@ import {
   sessionErrorBag,
   DEFAULT_DONT_FLASH,
 } from './validation.mjs';
+// Illuminate\Support\Str::trim() (Str.php:1717-1726): the DEFAULT character
+// set is " \n\r\t\x0B\0" (not JavaScript's WhiteSpace+LineTerminator, which
+// also strips \f and U+00A0) and the invisible characters (INVISIBLE_CHARACTERS,
+// Str.php:33) are trimmed too; the fallback when the Unicode pass fails is
+// a plain trim() over that same default set.
+const STR_TRIM_DEFAULT = ' \n\r\t\u000B\u0000';
+const STR_TRIM_INVISIBLE = new Set([
+  ...[0x0009, 0x0020, 0x00a0, 0x00ad, 0x034f, 0x061c, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180e, 0x2000,
+    0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x200b, 0x200c,
+    0x200d, 0x200e, 0x200f, 0x202f, 0x205f, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x2065, 0x206a,
+    0x206b, 0x206c, 0x206d, 0x206e, 0x206f, 0x3000, 0x2800, 0x3164, 0xfeff, 0xffa0, 0x1d159,
+    0x1d173, 0x1d174, 0x1d175, 0x1d176, 0x1d177, 0x1d178, 0x1d179, 0x1d17a, 0xe0020],
+].map((c) => String.fromCodePoint(c)));
+const isStrTrimSpace = (ch) => {
+  if (STR_TRIM_DEFAULT.includes(ch)) return true;
+  // `\s` in the source regex (PCRE without /u beyond the explicit list below).
+  if (/\s/.test(ch)) return true;
+  return STR_TRIM_INVISIBLE.has(ch);
+};
+/** Illuminate\Support\Str::trim($value) — no charlist argument. */
+export function phpTrim(value) {
+  const chars = String(value).split('');
+  let i = 0;
+  let j = chars.length;
+  while (i < j && isStrTrimSpace(chars[i])) i += 1;
+  while (j > i && isStrTrimSpace(chars[j - 1])) j -= 1;
+  // A lone surrogate cannot survive a UTF-8 round trip on the edge.
+  return chars
+    .slice(i, j)
+    .join('')
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+}
 
 export class HttpError extends Error {
   constructor(message, status = 500, headers = null) {
@@ -564,6 +597,56 @@ export function buildRequest(raw, options = {}) {
     || String(headers.get('x-forwarded-for') || '').split(',')[0].trim()
     || '127.0.0.1';
 
+  // Laravel's GLOBAL middleware runs before the router and rewrites the input
+  // bags in place: TrimStrings then ConvertEmptyStringsToNull
+  // (Foundation\Configuration\Middleware::getGlobalMiddleware()). The compiled
+  // rung applies the same two passes to the very bags Request reads, so
+  // `$request->input()`/`validated()`/`_old_input` see the transformed values.
+  //   TransformsRequest::clean(): `$request->query` ALWAYS, then `$request->json`
+  //   when the body is JSON, else the `$request->request` bag (the body).
+  // TrimStrings::transform(): `Str::is($except, $key)` skips a key and a
+  // non-string value is left alone (TrimStrings.php:61-70); then
+  // ConvertEmptyStringsToNull maps a lone '' to null (:41-44).
+  const transformers = options.transformers || {};
+  const trimOn = transformers.trim !== false;
+  const emptyToNullOn = transformers.emptyToNull !== false;
+  if (trimOn || emptyToNullOn) {
+    const except = (transformers.trimExcept || []).map(String);
+    // TrimStrings::transform(): the key is checked against the list
+    // (`Str::is`, so `password` also covers `password.confirm`) and a
+    // non-string value is left alone - nothing else.
+    const trimOne = (key, value) => {
+      if (typeof value !== 'string') return value;
+      if (except.some((pattern) => strIs(pattern, key))) return value;
+      return phpTrim(value);
+    };
+    const convertOne = (value) => (value === '' ? null : value);
+    const cleanBag = (node, prefix) => {
+      if (Array.isArray(node)) return node.map((v) => cleanBag(v, prefix));
+      if (!isPlainObject(node)) return node;
+      const out = {};
+      for (const key of Object.keys(node)) {
+        const path = prefix + key;
+        let value = cleanBag(node[key], path + '.');
+        if (trimOn) value = trimOne(path, value);
+        if (emptyToNullOn) value = convertOne(value);
+        out[key] = value;
+      }
+      return out;
+    };
+    const retrim = (node) => {
+      if (!isPlainObject(node)) return node;
+      const next = cleanBag(node, '');
+      for (const key of Object.keys(node)) delete node[key];
+      // The bag's own order log (parsePhpQuery) is dropped with the keys; the
+      // key order of `next` is the bag order the transformer produced.
+      Object.assign(node, next);
+      return node;
+    };
+    if (Object.keys(query).length) retrim(query);
+    if (isJson && isPlainObject(json)) retrim(json);
+    else if (isPlainObject(post)) retrim(post);
+  }
   const inputSource = () => {
     if (isJson && json !== null) return json;
     if (rawMethod === 'GET' || rawMethod === 'HEAD') return query;
@@ -590,15 +673,20 @@ export function buildRequest(raw, options = {}) {
   };
 
   // InteractsWithData support (see phpKeyList/phpFilterVarBoolean above).
-  const inputSourceSafe = () => inputSource();
-  // Illuminate\Http\Concerns\InteractsWithInput::input(): the input source
-  // UNION the query bag (`$this->getInputSource()->all() + $this->query->all()`)
-  // - the source's keys win (the `+` keeps the left operand's keys).
-  const inputUnion = () => Object.assign({}, query, inputSource());
-  const inputHas = (key) => dataGet(inputSourceSafe(), key, ARR_MISSING) !== ARR_MISSING;
-  const inputMissing = (key) => dataGet(inputSourceSafe(), key, ARR_MISSING) === ARR_MISSING;
+  // `Request::input()` is `$this->getInputSource()->all() + $this->query->all()`
+  // (InteractsWithInput.php:117-124) and `all()` unions the query bag the same
+  // way: the SOURCE's keys come first and the source WINS on a shared key.
+  // `Object.assign({}, query, source)` answered the same VALUES in the other
+  // ORDER, so a body that echoes `$request->all()` (or
+  // `json_encode($request->all())`) differed from PHP's byte for byte.
+  const inputUnion = () => Object.assign({}, inputSource(), query);
+  // InteractsWithData::isEmptyString(): `$value = $this->data($key)` — `data()`
+  // is `input()`, which unions the query bag in (`inputUnion`); oracle:
+  // `filled('flag')` is true for `POST /x?flag=1`. A file-only key is absent
+  // from the input, so it reads as an empty string (oracle: filled('avatar') =
+  // false for a multipart upload).
   const isEmptyString = (key) => {
-    const v = dataGet(inputSourceSafe(), key, null);
+    const v = dataGet(inputUnion(), key, null);
     return typeof v !== 'boolean' && !Array.isArray(v) && String(v == null ? '' : v).trim() === '';
   };
 
@@ -731,8 +819,8 @@ export function buildRequest(raw, options = {}) {
     // Illuminate\Http\Request::file(): data_get($this->allFiles(), $key, $default).
     file(key = null, def = null) {
       if (key === null) return fileObjects();
-      const found = dataGet(fileObjects(), key, undefined);
-      return found === undefined ? def : found;
+      const found = dataGet(fileObjects(), key, ARR_MISSING);
+      return found === ARR_MISSING ? def : found;
     },
     // allFiles(): every uploaded file (the files of a field with `name[]` are
     // an array).
@@ -741,8 +829,8 @@ export function buildRequest(raw, options = {}) {
     },
     // Illuminate\Http\Request::hasFile(): the field holds a valid file.
     hasFile(key) {
-      const found = dataGet(fileObjects(), key, undefined);
-      if (found === undefined) return false;
+      const found = dataGet(fileObjects(), key, ARR_MISSING);
+      if (found === ARR_MISSING) return false;
       const list = Array.isArray(found) ? found : [found];
       return list.some((f) => f && f.isValid());
     },
@@ -750,10 +838,16 @@ export function buildRequest(raw, options = {}) {
       if (key === null) return json;
       return dataGet(json ?? {}, key, def);
     },
-    has(key) {
-      const source = inputSource();
-      if (Array.isArray(key)) return key.every((k) => dataGet(source, k, undefined) !== undefined);
-      return dataGet(source, key, undefined) !== undefined;
+    // InteractsWithData::has(): `array_all($keys, fn ($v) => Arr::has($data, $v))`
+    // over `$this->all()` (input + query + uploaded files). Oracle-verified:
+    // `has('nope')` = false, `has(['a','nope'])` = false, `has(['a','title'])` = true.
+    has(...args) {
+      const keys = phpKeyList(args);
+      if (keys.length === 0) return false;
+      // A null key is a miss: Arr::exists($array, null) reads the key ''.
+      if (keys.some((k) => k === null || k === undefined)) return false;
+      const data = request.all();
+      return keys.every((k) => dataGet(data, k, ARR_MISSING) !== ARR_MISSING);
     },
     session() {
       return session;
@@ -787,18 +881,32 @@ export function buildRequest(raw, options = {}) {
       const u = request.user();
       return u && typeof u.getAuthIdentifier === 'function' ? u.getAuthIdentifier() : null;
     },
-    all() {
-      // Illuminate\Http\Request::all(): the input (the source UNION the query
-      // bag) + the uploaded files (the input wins on a key that is in both).
+    all(...args) {
+      // Illuminate\Http\Concerns\InteractsWithInput::all($keys = null)
+      // (:87-105): the input (the source UNION the query bag) + the uploaded
+      // files (the input wins on a key that is in both), and with arguments an
+      // `Arr::only`-shaped SUBSET built with `Arr::set`/`Arr::get` - so the
+      // DOT NOTATION works and an absent key answers null. The edge ignored the
+      // argument, so `all(['name'])` answered the whole input (an app that
+      // validates or creates from `$request->all(['name'])` saw every field).
       const out = Object.assign({}, fileObjects());
-      return Object.assign(out, inputUnion());
+      const data = Object.assign(out, inputUnion());
+      const keys = phpKeyList(args);
+      if (keys.length === 0) return data;
+      const results = {};
+      for (const key of keys) arrSetRef(results, key, dataGet(data, key, null), false);
+      return results;
     },
     // --- InteractsWithData (Illuminate\Support\Traits\InteractsWithData) ----
     // `has`/`all` above predate this block; the accessors below mirror the trait
     // exactly (rest args collapse to `$keys` via phpKeyList, which reproduces
     // `is_array($keys) ? $keys : func_get_args()`).
     hasAny(...args) {
-      return phpKeyList(args).some((k) => inputHas(k));
+      const keys = phpKeyList(args);
+      if (keys.length === 0) return false;
+      if (keys.some((k) => k === null || k === undefined)) return false;
+      const data = request.all();
+      return keys.some((k) => dataGet(data, k, ARR_MISSING) !== ARR_MISSING);
     },
     filled(...args) {
       return phpKeyList(args).every((k) => !isEmptyString(k));
@@ -806,8 +914,10 @@ export function buildRequest(raw, options = {}) {
     isNotFilled(...args) {
       return phpKeyList(args).every((k) => isEmptyString(k));
     },
+    // InteractsWithData::missing(): `! $this->has($keys)` — the same all()
+    // source, so a file-only key is present (oracle: missing('avatar') = false).
     missing(...args) {
-      return !phpKeyList(args).every((k) => !inputMissing(k));
+      return !request.has(...args);
     },
     only(...args) {
       const out = {};
@@ -1427,15 +1537,35 @@ function withDefaultCacheControl(res) {
 // The app's validation messages (the build dumps the app's lang/ files with the
 // translations: the app's own file wins over the framework's copy, exactly
 // like Laravel's translator). The app's locale wins over the fallback locale
-// ('en'), like Laravel's FileLoader.
-function validationMessagesOf(config) {
+// (app.fallback_locale, 'en' by default), and the two are merged
+// RECURSIVELY - Illuminate\Translation\FileLoader merges its paths with
+// `array_replace_recursive` (:134) and Translator::get() falls back per KEY,
+// so a locale file that redefines only part of `validation.custom` keeps the
+// framework's other keys there. `Object.assign` dropped them wholesale.
+function replaceRecursive(base, override) {
+  if (base === null || typeof base !== 'object') return override;
+  if (override === null || override === undefined) return base;
+  if (typeof override !== 'object') return override;
+  const out = Array.isArray(base) ? base.slice() : { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const current = out[key];
+    out[key] =
+      current !== null && typeof current === 'object' && value !== null && typeof value === 'object'
+        ? replaceRecursive(current, value)
+        : value;
+  }
+  return out;
+}
+
+export function validationMessagesOf(config) {
   const translations = config && config.translations;
   if (!translations || typeof translations !== 'object') return null;
   const locale = String((config && config['app.locale']) || 'en');
-  const base = translations.en && translations.en.validation;
+  const fallback = String((config && config['app.fallback_locale']) || 'en');
+  const base = translations[fallback] && translations[fallback].validation;
   const local = translations[locale] && translations[locale].validation;
   if (!base && !local) return null;
-  return Object.assign({}, base || {}, local || {});
+  return replaceRecursive(base || {}, local || {});
 }
 
 /**
@@ -1461,6 +1591,19 @@ export async function handleHttp(raw, options = {}) {
   if (!appKey) throw new HttpError('app.key is missing from config.generated.mjs', 500);
 
   const routeRegistry = makeRouteRegistry(table);
+  // --- GLOBAL MIDDLEWARE THE COMPILED KERNEL DOES NOT RUN -----------------
+  // The app's final stack (bootstrap/app.php `->withMiddleware()`, written by the
+  // build as `middleware.prevented`): TrustHosts rejects a host, HandleCors adds
+  // headers, PreventRequestsDuringMaintenance answers 503, an app class does
+  // anything - none of it runs here, so every request fails loud instead of
+  // answering bytes the real app never would.
+  const prevented = (Array.isArray(config['middleware.prevented']) ? config['middleware.prevented'] : []).map(String);
+  if (prevented.length) {
+    throw new HttpError(
+      `the app's global middleware stack holds ${prevented.join(', ')} — the compiled rung does not run it, so every response would diverge; add a port`,
+      500
+    );
+  }
   const request = buildRequest(raw, {
     clientIp: options.clientIp,
     // The uploaded file stores itself: the object store + the app's default
@@ -1469,6 +1612,19 @@ export async function handleHttp(raw, options = {}) {
     defaultDisk: config['filesystems.default'] || null,
     // Str::random(40) (the hash of `store()`'s name).
     randomString: options.strRandom || ((n) => phpRandomString(n)),
+    // The input transformers the app's global stack runs: the two booleans
+    // `transform.trim` / `transform.empty_to_null` come from the app's final
+    // stack (a stack that dropped a transformer runs neither pass), and
+    // `transform.trim.except` is the full skip list (`TrimStrings::$except` +
+    // `TrimStrings::except()`). An older dump without them gets both passes.
+    transformers:
+      options.transformers ?? {
+        trim: config['transform.trim'] !== false,
+        emptyToNull: config['transform.empty_to_null'] !== false,
+        trimExcept: Array.isArray(config['transform.trim.except'])
+          ? config['transform.trim.except']
+          : ['current_password', 'password', 'password_confirmation'],
+      },
   });
   // $request->validate() / validateWithBag() — compiled controllers call these
   // through rt.request(); the rule engine gets the D1 binding for unique/exists.

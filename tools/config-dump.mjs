@@ -33,9 +33,26 @@ if (!appDir) {
 // Normalise path separators to what PHP emits (forward slashes everywhere).
 const phpPath = (p) => String(p || '').replace(/\\/g, '/');
 
-const env = readEnvFile(appDir);
+// Laravel's Env reads the process environment FIRST (Env::getRepository() is
+// immutable), so the build's own child environment — the same one the PHP
+// oracle boots with — has to be the seed here too. Without it a config value
+// that only lives in the shell (CI: CACHE_STORE, APP_URL, ...) would fold
+// differently from the app's own boot.
+const env = readEnvFile(appDir, process.env);
 const { config, error } = loadConfig(appDir, env);
-const mw = appMiddlewareState(appDir) || {};
+const mwReport = {};
+const mw = appMiddlewareState(appDir, mwReport) || {};
+// `transformers` carries its own refusal (a skipWhen() callback or an
+// unreadable `->use()` entry): the input our worker sees would differ from the
+// app's.
+if (mw.transformers && mw.transformers.refusal) mwReport.failure = mw.transformers.refusal;
+// A middleware shape the build cannot read is a REFUSAL, not "no middleware":
+// the global stack would transform input (trim / empty→null) the compiled
+// request never sees, and the edge would answer different bytes.
+if (mwReport.failure) {
+  process.stderr.write('config-dump: ' + mwReport.failure + '\n');
+  process.exit(1);
+}
 
 const dump = {};
 const $put = (key, val) => { dump[key] = val; };
@@ -52,6 +69,11 @@ $put('app.cipher', c('app.cipher'));
 $put('app.env', c('app.env'));
 $put('app.debug', c('app.debug'));
 $put('app.locale', c('app.locale'));
+// The FALLBACK locale (config/app.php `fallback_locale`): Laravel's translator
+// answers a missing key from it, group by group and key by key. The runtime
+// used to assume 'en', so an app with a `fr` fallback answered the wrong
+// message (or the key itself) at the edge.
+$put('app.fallback_locale', c('app.fallback_locale'));
 $put('app.timezone', c('app.timezone'));
 
 // ---------- pagination ----------
@@ -64,8 +86,13 @@ const langPaths = [];
 {
   const frameworkLang = join(appDir, 'vendor', 'laravel', 'framework', 'src', 'Illuminate', 'Translation', 'lang');
   if (existsSync(frameworkLang)) langPaths.push(frameworkLang);
-  const langDir = join(appDir, 'lang');
-  if (existsSync(langDir)) langPaths.push(langDir);
+  // Laravel's lang_path(): `resources/lang` WINS when that directory exists,
+  // otherwise `<base>/lang` (Application::useLangPath(), :440-443). An app that
+  // kept the L9/L10 layout would otherwise lose every translation the worker
+  // renders. FileLoader merges framework-first / app-last, per locale+group.
+  const legacyLang = join(appDir, 'resources', 'lang');
+  const appLangDir = existsSync(legacyLang) ? legacyLang : join(appDir, 'lang');
+  if (existsSync(appLangDir)) langPaths.push(appLangDir);
 }
 for (const langPath of langPaths) {
   let locales = [];
@@ -117,6 +144,29 @@ for (const key of ['driver', 'lifetime', 'expire_on_close', 'encrypt', 'serializ
 
 // ---------- cookies (EncryptCookies) ----------
 $put('cookies.except', mw.cookiesExcept || []);
+// The input transformers Laravel's global stack runs BEFORE the router
+// (TrimStrings -> ConvertEmptyStringsToNull). `trim.except` is the framework's
+// own list (`TrimStrings::$except`) plus the app's `->trimStrings(except:)`
+// entries (`TrimStrings::except()` merges them).
+// The input transformers the app's final global stack runs (read from its own
+// bootstrap/app.php; `transformers` is null for an app whose shape this dump
+// cannot read - a Laravel 9/10 Kernel, or an unsupported transformer call).
+const transform = mw.transformers || null;
+$put('transform.trim', transform ? transform.trim !== false : true);
+$put('transform.empty_to_null', transform ? transform.emptyToNull !== false : true);
+// TrimStrings::transform() merges the framework's own list
+// (`TrimStrings::$except`, the three password fields) with the app's
+// `TrimStrings::except()` / `->trimStrings(except:)` entries; the skip is
+// `Str::is($except, $key)`, so a nested key matches through the pattern.
+$put('transform.trim.except', [
+  'current_password',
+  'password',
+  'password_confirmation',
+]);
+// Global middleware on the app's final stack that the compiled kernel does not
+// implement (TrustHosts, HandleCors, TrustProxies, an app class, ...). Every
+// request fails loud in the worker; the build reports them.
+$put('middleware.prevented', transform && Array.isArray(transform.prevented) ? transform.prevented : []);
 $put('cookies.serialize', false);
 
 // ---------- csrf (PreventRequestForgery) ----------

@@ -37,7 +37,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCookieEncryptor } from '../cookies.mjs';
-import { handleHttp, parsePhpQuery, buildRequest } from '../http.mjs';
+import { handleHttp, parsePhpQuery, buildRequest, validationMessagesOf } from '../http.mjs';
 import { createDatabaseCache } from '../cache.mjs';
 import { applyAuthenticatable } from '../auth.mjs';
 import { Model } from '../model.mjs';
@@ -1179,4 +1179,62 @@ test('request: merge() follows Laravel (the input source, replace not deep merge
   const get = buildRequest({ method: 'GET', url: 'http://localhost/x?q=1' });
   get.merge({ q: '2' });
   assert.equal(get.input('q'), '2');
+});
+
+test('request: all() answers the source union the query bag, source keys first', () => {
+  // InteractsWithInput::all($keys = null) (:87-105): the input is
+  // `getInputSource()->all() + query->all()` (the SOURCE's keys first, the
+  // source wins), plus the files; with arguments it answers an Arr::only-shaped
+  // subset built through Arr::set/Arr::get — the dot notation works, an absent
+  // key answers null, and an EMPTY array means "everything" (`! $keys`).
+  // Probed against the real Request: all(['name']) is `{"name":"Ada"}`.
+  const req = buildRequest({
+    method: 'POST',
+    url: 'http://localhost/x?q=1&nested%5Ba%5D=1',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'name=Ada&email=a%40b&empty=',
+  });
+  assert.deepEqual(Object.keys(req.all()), ['name', 'email', 'empty', 'q', 'nested'], 'the POST keys come first');
+  assert.deepEqual(req.all(['name']), { name: 'Ada' });
+  assert.deepEqual(req.all(['name', 'email']), { name: 'Ada', email: 'a@b' });
+  assert.deepEqual(req.all(['nested.a']), { nested: { a: '1' } }, 'the dot notation is honoured');
+  assert.deepEqual(req.all(['nope']), { nope: null }, 'an absent key answers null');
+  assert.deepEqual(req.all([]), req.all(), 'an empty array is no filter');
+  assert.deepEqual(req.all('name', 'email'), { name: 'Ada', email: 'a@b' });
+});
+
+test('the app validation messages merge with the fallback locale RECURSIVELY', () => {
+  // Illuminate\Translation\FileLoader merges its language paths with
+  // `array_replace_recursive` (:134) and Translator::get() falls back per KEY,
+  // so a locale file that redefines `validation.custom.only_this` keeps the
+  // fallback's other `custom` entries. `Object.assign` replaced the whole
+  // top-level key, so those rules named themselves at the edge.
+  const merged = validationMessagesOf({
+    'app.locale': 'de',
+    'app.fallback_locale': 'en',
+    translations: {
+      en: {
+        validation: {
+          required: 'The :attribute field is required.',
+          custom: { email: { required: 'Email is required.' }, name: 'Name is wrong.' },
+        },
+      },
+      de: { validation: { custom: { name: 'Name ist falsch.' } } },
+    },
+  });
+  assert.equal(merged.required, 'The :attribute field is required.', 'the fallback answers the rule');
+  assert.deepEqual(
+    merged.custom,
+    { email: { required: 'Email is required.' }, name: 'Name ist falsch.' },
+    'the locale wins leaf-by-leaf and the fallback keeps its siblings'
+  );
+  // The fallback locale is the app's own `fallback_locale`, not a hardcoded en.
+  const fr = validationMessagesOf({
+    'app.locale': 'de',
+    'app.fallback_locale': 'fr',
+    translations: { fr: { validation: { required: 'Requis.' } }, de: { validation: { max: 'Trop long.' } } },
+  });
+  assert.deepEqual(fr, { required: 'Requis.', max: 'Trop long.' });
+  // No dumped translations at all: no defaults (the runtime's own table wins).
+  assert.equal(validationMessagesOf({ translations: {} }), null);
 });
