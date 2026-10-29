@@ -44,6 +44,23 @@ test('map/filter/reject/each answer Laravel values', () => {
   assert.deepEqual(collect([1, 2, 3]).reject((v) => v > 1).values().all(), [1]);
 });
 
+test('the callbacks receive the PHP KEYS (map/each/filter/first/sole)', () => {
+  // `Arr::map`/`Arr::each`/`first($callback)` hand the callback the array's own
+  // key (EnumeratesValues.php:899-901, Collection::first(), :1524-1530), so a
+  // keyed collection passes 'a'/'b', not 0/1 - the callback used to read the JS
+  // index, so `->map(fn ($v, $k) => $k)` over `['a' => 1]` answered 0.
+  const keyed = new Collection({ a: 1, b: 2 });
+  assert.deepEqual(keyed.map((v, k) => k).all(), { a: 'a', b: 'b' });
+  const seen = [];
+  keyed.each((v, k) => seen.push(k));
+  assert.deepEqual(seen, ['a', 'b']);
+  assert.deepEqual(keyed.filter((v, k) => k === 'b').all(), { b: 2 });
+  assert.equal(keyed.first((v, k) => k === 'b'), 2);
+  assert.equal(keyed.sole((v, k) => k === 'b'), 2);
+  // A plain list keeps 0..n-1.
+  assert.deepEqual(collect([7, 8]).map((v, k) => k).all(), [0, 1]);
+});
+
 test('sortBy/sortByDesc/sum/avg/max/min', () => {
   // A probe: sortBy = [1,2,3], sortByDesc = [3,2,1], sum = 6, avg = 2,
   // max = 9, min = 3.
@@ -55,6 +72,32 @@ test('sortBy/sortByDesc/sum/avg/max/min', () => {
   assert.equal(collect([4, 9, 3]).min(), 3);
   // sum with a key (a probe: 5 for [{v:2},{v:3}]).
   assert.equal(collect([{ v: 2 }, { v: 3 }]).sum('v'), 5);
+  // PHP 8.3 (probed) walks TWO different failure paths, and Laravel's error
+  // handler turns a warning into an exception:
+  //   collect(['abc'])->sum()  => TypeError: Unsupported operand types: int + string
+  //   collect(['5a'])->sum()   => ErrorException: A non-numeric value encountered
+  // (the string has a numeric PREFIX, so PHP adds 5 and warns - it never
+  // answers 5 silently). Not-numeric-but-prefixed must not be read as numeric.
+  assert.throws(
+    () => collect(['abc']).sum(),
+    (e) => e.name === 'TypeError' && /Unsupported operand types: int \+ string/.test(e.message)
+  );
+  assert.throws(
+    () => collect(['5a']).sum(),
+    (e) => e.name === 'ErrorException' && /A non-numeric value encountered/.test(e.message)
+  );
+  assert.throws(
+    () => collect(['abc']).avg(),
+    (e) => e.name === 'TypeError' && /Unsupported operand types: int \+ string/.test(e.message)
+  );
+  assert.throws(
+    () => collect(['5a']).avg(),
+    (e) => e.name === 'ErrorException' && /A non-numeric value encountered/.test(e.message)
+  );
+  // A numeric string stays numeric ('5a' vs ' 5 ': PHP accepts the ASCII
+  // whitespace around a whole numeric literal).
+  assert.equal(collect([' 5 ']).sum(), 5);
+  assert.equal(collect(['5a']).count(), 1);
 });
 
 test('groupBy and keyBy answer KEYED arrays (Laravel\'s own shape)', () => {
@@ -114,6 +157,20 @@ test('where/whereIn/whereNotNull/unique/flatten/merge/slice', () => {
   assert.deepEqual(collect([1, 2, 3]).reverse().values().all(), [3, 2, 1]);
   assert.equal(collect([1, 2]).contains(2), true);
   assert.equal(collect([2, 4]).every((v) => v % 2 === 0), true);
+});
+
+test('where family keeps the receiver keys (Laravel filters through Arr::where)', () => {
+  // Probes (PHP 8.3 + Laravel 13.37): collect(['a'=>1,'b'=>2,'c'=>3])->where(fn($v)=>$v>1)->all()
+  // = {"b":2,"c":3}; ->whereIn(null,[1]) = {"a":1}; ->whereNotIn(null,[1]) on
+  // ['a'=>1,'b'=>2] = {"b":2}; ->whereNull() with NO argument filters the null
+  // ITEMS (data_get($item,null) is the item) = {"1":null,"3":null}.
+  assert.deepEqual(collect({ a: 1, b: 2, c: 3 }).where((v) => v > 1).all(), { b: 2, c: 3 });
+  assert.deepEqual(collect({ a: 1, b: 2, c: 3 }).whereIn(null, [1]).all(), { a: 1 });
+  assert.deepEqual(collect({ a: 1, b: 2 }).whereNotIn(null, [1]).all(), { b: 2 });
+  assert.deepEqual(collect({ a: 1, b: null, c: 3 }).whereNull('b').all(), { a: 1, b: null, c: 3 });
+  assert.deepEqual(collect([1, null, 2, null]).whereNull().all(), { 1: null, 3: null });
+  assert.deepEqual(collect([{ a: 1 }, { b: 2 }]).whereNull('a').all(), { 1: { b: 2 } });
+  assert.deepEqual(collect({ 5: 1, 9: 2 }).where((v) => v > 1).all(), { 9: 2 });
 });
 
 test('when/unless/whenEmpty/tap/pipe answer the callback\'s value', () => {
@@ -531,4 +588,84 @@ test('collections: sortBy/sortByDesc keep the original keys', () => {
   assert.deepEqual(keyed.sortBy((v) => v).all(), { b: 1, c: 2, a: 3 });
   assert.deepEqual(keyed.sortByDesc((v) => v).all(), { a: 3, c: 2, b: 1 });
   assert.deepEqual(new Collection([3, 1]).sortBy((v) => v).all(), [1, 3]);
+});
+
+// ---------------------------------------------------------------------------
+// The mutators and the groupers keep PHP's KEYS.
+//
+// Ground truth (probed, PHP 8.3): `Collection::forget()` is a plain
+// `unset($items[$key])`, so a LIST keeps a HOLE; `$items[] = $v` (push, and
+// `put(null)`) appends after the HIGHEST integer key; `keyBy` keeps the LAST
+// item per key; `groupBy($key, $preserveKeys)` (and the multi-spec array form,
+// and a callback that answers several keys) keeps the source keys.
+// ---------------------------------------------------------------------------
+test('collections: forget() leaves a HOLE (a list stops being a list)', () => {
+  //      collect([1,2,3])->forget(1)->all()  => {"0":1,"2":3}
+  //      collect([1,2,3])->forget(0)->all()  => {"1":2,"2":3}
+  //      collect([1,2,3])->forget([0,2])->all() => {"1":2}
+  //      collect(['a'=>1,'b'=>2])->forget('a')->all() => {"b":2}
+  //      collect(['a.b'=>1,'a'=>['b'=>2]])->forget('a.b')->all() => {"a":{"b":2}}
+  assert.deepEqual(new Collection([1, 2, 3]).forget(1).all(), { 0: 1, 2: 3 });
+  assert.deepEqual(new Collection([1, 2, 3]).forget(0).all(), { 1: 2, 2: 3 });
+  assert.deepEqual(new Collection([1, 2, 3]).forget([0, 2]).all(), { 1: 2 });
+  assert.deepEqual(new Collection({ a: 1, b: 2 }).forget('a').all(), { b: 2 });
+  assert.deepEqual(new Collection({ 'a.b': 1, a: { b: 2 } }).forget('a.b').all(), { a: { b: 2 } });
+  assert.deepEqual(new Collection([1, 2]).forget(9).all(), [1, 2], 'a missing key is a no-op');
+  const pulled = new Collection([1, 2, 3]);
+  assert.equal(pulled.pull(1), 2);
+  assert.deepEqual(pulled.all(), { 0: 1, 2: 3 }, 'pull() forgets the key, so the hole stays');
+});
+
+test('collections: push()/put() use PHP\'s next free integer key', () => {
+  //      collect(['a','b'])->push('c','d')->all() => ["a","b","c","d"]
+  //      collect(['a'=>1, 5=>'x'])->push('y')->all() => {"5":"x","6":"y","a":1}
+  //      collect(['a','b'])->put('x','y')->all() => {"0":"a","1":"b","x":"y"}
+  //      collect(['a','b'])->put(1,'B')->all() => ["a","B"]
+  //      collect(['a','b'])->put(5,'z')->all() => {"0":"a","1":"b","5":"z"}
+  //      collect(['a'])->put(null,'x')->all() => ["a","x"]
+  assert.deepEqual(new Collection(['a', 'b']).push('c', 'd').all(), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(new Collection({ 5: 'x', a: 1 }).push('y').all(), { 5: 'x', 6: 'y', a: 1 });
+  assert.deepEqual(new Collection(['a', 'b']).put('x', 'y').all(), { 0: 'a', 1: 'b', x: 'y' });
+  assert.deepEqual(new Collection(['a', 'b']).put(1, 'B').all(), ['a', 'B']);
+  assert.deepEqual(new Collection(['a', 'b']).put(5, 'z').all(), { 0: 'a', 1: 'b', 5: 'z' });
+  assert.deepEqual(new Collection(['a']).put(null, 'x').all(), ['a', 'x']);
+});
+
+test('collections: pop($count) answers the popped items in POP order', () => {
+  //      collect([1,2,3])->pop()   => 3   (and the collection is [1,2])
+  //      collect([1,2,3])->pop(2)->toJson() => "[3,2]"
+  //      collect(['a'=>1,'b'=>2,'c'=>3])->pop(2)->all() => [3,2]
+  //      collect([1,2,3])->pop(0)->all() => []
+  //      collect([1,2])->pop(5)->all() => [2,1]
+  const one = new Collection([1, 2, 3]);
+  assert.equal(one.pop(), 3);
+  assert.deepEqual(one.all(), [1, 2]);
+  assert.equal(new Collection([1, 2, 3]).pop(2).toJson(), '[3,2]');
+  assert.deepEqual(new Collection({ a: 1, b: 2, c: 3 }).pop(2).all(), [3, 2]);
+  assert.deepEqual(new Collection([1, 2, 3]).pop(0).all(), []);
+  assert.deepEqual(new Collection([1, 2]).pop(5).all(), [2, 1]);
+  assert.equal(new Collection([]).pop(), null);
+});
+
+test('collections: groupBy($key, $preserveKeys) and the multi-spec form', () => {
+  //      collect(['a','b','c','d'])->groupBy($v <= 'b' ? 'x' : 'y', true)->toJson()
+  //        => {"x":["a","b"],"y":{"2":"c","3":"d"}}
+  //      collect([['a'=>1,'b'=>2],['a'=>1,'b'=>3]])->groupBy(['a','b'])->toJson()
+  //        => {"1":{"2":[{"a":1,"b":2}],"3":[{"a":1,"b":3}]}}
+  //      collect([1,2])->groupBy(fn ($v) => ['a','b'])->toJson() => {"a":[1,2],"b":[1,2]}
+  const letters = new Collection(['a', 'b', 'c', 'd']);
+  assert.equal(letters.groupBy((v) => (v <= 'b' ? 'x' : 'y'), true).toJson(), '{"x":["a","b"],"y":{"2":"c","3":"d"}}');
+  const rows = new Collection([{ a: 1, b: 2 }, { a: 1, b: 3 }]);
+  assert.equal(rows.groupBy(['a', 'b']).toJson(), '{"1":{"2":[{"a":1,"b":2}],"3":[{"a":1,"b":3}]}}');
+  assert.equal(rows.groupBy(['a', 'b'], true).toJson(), '{"1":{"2":[{"a":1,"b":2}],"3":{"1":{"a":1,"b":3}}}}');
+  assert.equal(new Collection([1, 2]).groupBy(() => ['a', 'b']).toJson(), '{"a":[1,2],"b":[1,2]}');
+});
+
+test('collections: keyBy keeps the LAST item for a duplicate key', () => {
+  //      collect([['id'=>1,'v'=>'a'],['id'=>1,'v'=>'b']])->keyBy('id')->toJson()
+  //        => {"1":{"id":1,"v":"b"}}
+  assert.equal(
+    new Collection([{ id: 1, v: 'a' }, { id: 1, v: 'b' }]).keyBy('id').toJson(),
+    '{"1":{"id":1,"v":"b"}}'
+  );
 });

@@ -7,6 +7,8 @@
 //                        covers it (100k row writes/day, 5M row reads/day).
 //   - memory          — tests only; the worker never falls back to it (the
 //                        runtime fails loud instead of losing writes).
+import { timingSafeEqual } from './encrypter.mjs';
+
 async function hmacHex(secret, message) {
   const enc = new TextEncoder();
   const key = await globalThis.crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -252,7 +254,9 @@ function makeStorage({ r2, d1, secret: cfgSecret, mem } = {}) {
     if (!expires || !sig) return false;
     if (Date.now() > expires) return false;
     const expected = await hmacHex(secret, key + ':' + expires);
-    return expected === sig;
+    // Constant-time, like every other secret comparison in the kernel
+    // (auth/csrf/encrypter all go through timingSafeEqual).
+    return timingSafeEqual(expected, sig);
   }
 
   return Object.assign({}, base, { temporaryUrl, verifyTemporaryUrl, getText, getBytes, exists });

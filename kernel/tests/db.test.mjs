@@ -1029,12 +1029,17 @@ test('orderBy refuses a direction that is not asc/desc (Laravel throws)', () => 
 
 test('sum() answers 0 on an empty set (Laravel: `$result ?: 0`)', async () => {
   // Laravel's sum() (Query/Builder.php:4099-4104): `return $result ?: 0;` - an
-  // empty set (or an all-NULL column) answers 0, not null (the JSON body
-  // differed: null vs 0).
+  // empty set (or an all-NULL column) answers the integer 0, not null (the
+  // JSON body differed: null vs 0).
   const db = mockDb({ first: () => ({ aggregate: null }) });
   assert.equal(await table(db, 'posts').sum('views'), 0);
-  const db2 = mockDb({ first: () => ({ aggregate: '7' }) });
-  assert.equal(await table(db2, 'posts').sum('views'), 7);
+  // A PHP-falsy driver value ('0' from a stringifying driver) is the integer 0
+  // too; anything else comes back VERBATIM - `?:` does not coerce '7' to 7 the
+  // way the edge's old Number() did (a JSON body changed 7 -> "7").
+  const db2 = mockDb({ first: () => ({ aggregate: '0' }) });
+  assert.equal(await table(db2, 'posts').sum('views'), 0);
+  const db3 = mockDb({ first: () => ({ aggregate: '7' }) });
+  assert.equal(await table(db3, 'posts').sum('views'), '7');
 });
 
 test('a Date is bound with the grammar date format (Laravel: Y-m-d H:i:s)', async () => {

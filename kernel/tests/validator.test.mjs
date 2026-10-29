@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Validator, validate, strGetcsv } from '../validator.mjs';
+import { Validator, validate, strGetcsv, splitRuleString } from '../validator.mjs';
+import { buildRequest } from '../http.mjs';
 
 test('required/nullable/sometimes', async () => {
   let v = new Validator({ a: '' }, { a: 'required' });
@@ -22,6 +23,12 @@ test('string/integer/numeric/boolean/array', async () => {
   assert.equal(await new Validator({ x: 'a' }, { x: 'numeric' }).passes(), false);
   assert.equal(await new Validator({ x: true }, { x: 'boolean' }).passes(), true);
   assert.equal(await new Validator({ x: '1' }, { x: 'boolean' }).passes(), true);
+  // `boolean:strict` narrows the acceptable list to the booleans themselves
+  // (ValidatesAttributes::validateBoolean() :536-545 compares strictly).
+  assert.equal(await new Validator({ x: '1' }, { x: 'boolean:strict' }).passes(), false);
+  assert.equal(await new Validator({ x: 0 }, { x: 'boolean:strict' }).passes(), false);
+  assert.equal(await new Validator({ x: true }, { x: 'boolean:strict' }).passes(), true);
+  assert.equal(await new Validator({ x: false }, { x: 'boolean:strict' }).passes(), true);
   assert.equal(await new Validator({ x: [] }, { x: 'array' }).passes(), true);
 });
 
@@ -94,22 +101,28 @@ test('same/different/confirmed', async () => {
   assert.equal(await new Validator({ pw: 'a', pw_confirmation: 'b' }, { pw: 'confirmed' }).passes(), false);
 });
 
-test('regex/not_regex with pipe preservation', async () => {
+test('regex/not_regex: a plain pattern validates as one rule', async () => {
   assert.equal(await new Validator({ x: 'abc123' }, { x: 'regex:/^[a-z]+[0-9]+$/' }).passes(), true);
   assert.equal(await new Validator({ x: '123' }, { x: 'regex:/^[a-z]+$/' }).passes(), false);
-  assert.equal(await new Validator({ x: 'a|b' }, { x: 'regex:/^a\\|b$/' }).passes(), true);
   assert.equal(await new Validator({ x: 'hello' }, { x: 'not_regex:/^hello$/' }).passes(), false);
   assert.equal(await new Validator({ x: 'world' }, { x: 'not_regex:/^hello$/' }).passes(), true);
 });
 
-test('regex pipe does not split', async () => {
-  // rules string with regex containing | must stay one rule
-  const v = new Validator({ x: 'a' }, { x: 'required|regex:/^(a|b)$/|string' });
-  assert.equal(await v.passes(), true);
-  const v2 = new Validator({ x: 'c' }, { x: 'required|regex:/^(a|b)$/' });
-  assert.equal(await v2.fails(), true);
+test('regex pipe splits a string rule set, like Laravel', async () => {
+  // ValidationRuleParser::explodeExplicitRule (:92-96) is a naive
+  // explode('|', $rule), so 'regex:/^(a|b)$/' becomes the pattern part
+  // 'regex:/^(a' - an unterminated pattern - and the token 'b)$/', for which
+  // no validateX() method exists: BadMethodCallException in PHP (probed on
+  // 13.37). The edge answers the same class instead of validating quietly.
+  let err = null;
+  try {
+    new Validator({ x: 'a' }, { x: 'regex:/^(a|b)$/' });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'the split half must fail loud');
+  assert.equal(err.phpClass, 'BadMethodCallException');
 });
-
 test('array input rules and custom messages', async () => {
   const v = new Validator({ email: 'bad' }, { email: ['required', 'email'] }, { 'email.email': 'use real email' });
   await v.fails();
@@ -184,8 +197,20 @@ test('gt/gte/lt/lte field compare', async () => {
 });
 
 test('distinct array', async () => {
+  // ValidatesAttributes.php:919-968 (a probe against the vendored framework):
+  // `distinct` compares the value against the values at the SAME wildcard path
+  // (the sibling entries), not against the array's own elements - so a plain
+  // array passes and a repeated wildcard entry fails.
   assert.equal(await new Validator({ a: [1, 2, 3] }, { a: 'array|distinct' }).passes(), true);
-  assert.equal(await new Validator({ a: [1, 1] }, { a: 'array|distinct' }).passes(), false);
+  assert.equal(await new Validator({ a: [1, 1] }, { a: 'array|distinct' }).passes(), true);
+  assert.equal(
+    await new Validator({ items: [{ id: 1 }, { id: 2 }] }, { 'items.*.id': 'distinct' }).passes(),
+    true
+  );
+  assert.equal(
+    await new Validator({ items: [{ id: 1 }, { id: 1 }] }, { 'items.*.id': 'distinct' }).passes(),
+    false
+  );
 });
 
 test('conditional required: if/unless/with/without', async () => {
@@ -445,9 +470,174 @@ test('required conditional error shape has field/rule/message', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// The rules added in batch #12 - every expectation comes from the PHP oracle
+// (Illuminate 13.37 on PHP 8.3, rnd/rule-probe.php: 89 cases, 0 diffs).
+// ---------------------------------------------------------------------------
+const passes = async (data, rules) => new Validator(data, rules).passes();
+test('base64: the strict decode must re-encode to the same string', async () => {
+  // validateBase64 (:183-192): `$decoded !== false && base64_encode($decoded) === $value`,
+  // so a non-canonical encoding passes the decoder but fails the rule.
+  for (const ok of ['AA==', 'aGk=', 'YQ==', 'YWJj']) {
+    assert.equal(await passes({ x: ok }, { x: 'base64' }), true, ok);
+  }
+  // ('' passes: an empty string only meets the implicit rules.)
+  for (const bad of ['AB==', 'aGk', 'aGk===', '!!!!', 'YQ', 'AA=A']) {
+    assert.equal(await passes({ x: bad }, { x: 'base64' }), false, bad);
+  }
+});
+test('ulid: 26 Crockford base32 characters, case-insensitive', async () => {
+  for (const ok of ['01ARZ3NDEKTSV4RRFFQ69G5FAV', '01arz3ndektsv4rrffq69g5fav', '00000000000000000000000000']) {
+    assert.equal(await passes({ x: ok }, { x: 'ulid' }), true, ok);
+  }
+  // I, L and O are not Crockford digits; the length is exactly 26.
+  // (An EMPTY string passes every non-implicit rule - Laravel's
+  // presentOrRuleIsImplicit - so it is not in this list.)
+  for (const bad of ['01ARZ3NDEKTSV4RRFFQ69G5FA', 12]) {
+    assert.equal(await passes({ x: bad }, { x: 'ulid' }), false, String(bad));
+  }
+  assert.equal(await passes({ x: '01ARZ3NDEKTSV4RRFFQ69G5FAI' }, { x: 'ulid' }), false, 'I is not a digit');
+  assert.equal(await passes({ x: '01ARZ3NDEKTSV4RRFFQ69G5FAL' }, { x: 'ulid' }), false, 'L is not a digit');
+  assert.equal(await passes({ x: '8ZZZZZZZZZZZZZZZZZZZZZZZZZ' }, { x: 'ulid' }), false, 'first char > 7');
+  assert.equal(await passes({ x: '7ZZZZZZZZZZZZZZZZZZZZZZZZZ' }, { x: 'ulid' }), true, 'the maximum ulid');
+});
+test('contains/doesnt_contain: array_all over the parameters', async () => {
+  // validateContains (:331-338) uses the LOOSE in_array, validateDoesntContain
+  // (:345-352) the STRICT one.
+  assert.equal(await passes({ x: ['a', 'b'] }, { x: 'contains:a,b' }), true);
+  assert.equal(await passes({ x: ['a', 'c'] }, { x: 'contains:a,b' }), false);
+  assert.equal(await passes({ x: ['a'] }, { x: 'contains:a,b' }), false);
+  assert.equal(await passes({ x: 'x' }, { x: 'contains:a,b' }), false);
+  assert.equal(await passes({ x: [['a']] }, { x: 'contains:a,b' }), false);
+  assert.equal(await passes({ x: ['a'] }, { x: 'doesnt_contain:a,b' }), false);
+  assert.equal(await passes({ x: ['c', 'd'] }, { x: 'doesnt_contain:a,b' }), true);
+  assert.equal(await passes({ x: 'x' }, { x: 'doesnt_contain:a,b' }), false);
+});
+test('in_array_keys: array_any over the parameters (Arr::exists)', async () => {
+  assert.equal(await passes({ x: { a: 1 } }, { x: 'in_array_keys:a,b' }), true);
+  assert.equal(await passes({ x: { b: 1 } }, { x: 'in_array_keys:a,b' }), true);
+  assert.equal(await passes({ x: { c: 1 } }, { x: 'in_array_keys:a,b' }), false);
+  assert.equal(await passes({ x: [1, 2] }, { x: 'in_array_keys:a,b' }), false);
+  assert.equal(await passes({ x: [1, 2] }, { x: 'in_array_keys:0' }), true);
+  assert.equal(await passes({ x: 'x' }, { x: 'in_array_keys:a,b' }), false);
+  // No parameter at all is a fail (validateInArrayKeys :359-368).
+  assert.equal(await passes({ x: { a: 1 } }, { x: 'in_array_keys' }), false);
+});
+test('max_digits/min_digits: every character is a digit', async () => {
+  assert.equal(await passes({ x: '123' }, { x: 'max_digits:3' }), true);
+  assert.equal(await passes({ x: 123 }, { x: 'max_digits:3' }), true);
+  assert.equal(await passes({ x: '0012' }, { x: 'max_digits:3' }), false);
+  assert.equal(await passes({ x: '1234' }, { x: 'max_digits:3' }), false);
+  assert.equal(await passes({ x: 12.5 }, { x: 'max_digits:3' }), false);
+  assert.equal(await passes({ x: '-1' }, { x: 'max_digits:3' }), false);
+  assert.equal(await passes({ x: '1e3' }, { x: 'max_digits:3' }), false);
+  assert.equal(await passes({ x: 'abc' }, { x: 'max_digits:3' }), false);
+  assert.equal(await passes({ x: '123' }, { x: 'min_digits:3' }), true);
+  assert.equal(await passes({ x: '12' }, { x: 'min_digits:3' }), false);
+  assert.equal(await passes({ x: '1234' }, { x: 'min_digits:3' }), true);
+  assert.equal(await passes({ x: 1 }, { x: 'min_digits:3' }), false);
+});
+test('prohibits: a present attribute refuses the named ones', async () => {
+  // validateProhibits (:2346-2357): both sides use validateRequired.
+  assert.equal(await passes({ x: 'v', other: '1' }, { x: 'prohibits:other' }), false);
+  assert.equal(await passes({ x: 'v' }, { x: 'prohibits:other' }), true);
+  assert.equal(await passes({ x: 'v', other: '' }, { x: 'prohibits:other' }), true);
+  // An absent/blank attribute never refuses anything.
+  assert.equal(await passes({ other: '1' }, { x: 'prohibits:other' }), true);
+  assert.equal(await passes({ x: '   ', other: '1' }, { x: 'prohibits:other' }), true);
+});
+test('uuid: the version parameter follows Str::isUuid', async () => {
+  const v4 = 'a0eebc99-1c0b-4efb-b6c3-a0a5c7a1b123';
+  assert.equal(await passes({ x: v4 }, { x: 'uuid' }), true);
+  assert.equal(await passes({ x: 'a0eebc991c0b4efbb6c3a0a5c7a1b123' }, { x: 'uuid' }), false);
+  assert.equal(await passes({ x: v4 }, { x: 'uuid:4' }), true);
+  assert.equal(await passes({ x: v4 }, { x: 'uuid:1' }), false);
+  // Str::isUuid accepts the 32-character form once a version is given.
+  assert.equal(await passes({ x: 'a0eebc991c0b4efbb6c3a0a5c7a1b123' }, { x: 'uuid:4' }), true);
+  // The variant nibble must be [89ab] in the parameterised form.
+  assert.equal(await passes({ x: 'a0eebc99-1c0b-4efb-0b6c-a0a5c7a1b123' }, { x: 'uuid:4' }), false);
+  assert.equal(await passes({ x: 'a0eebc99-1c0b-9efb-86c3-a0a5c7a1b123' }, { x: 'uuid:9' }), false);
+  assert.equal(await passes({ x: '00000000-0000-0000-0000-000000000000' }, { x: 'uuid:0' }), true);
+  assert.equal(await passes({ x: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }, { x: 'uuid:max' }), true);
+  assert.equal(await passes({ x: v4 }, { x: 'uuid:max' }), false);
+  assert.equal(await passes({ x: v4 }, { x: 'uuid:abc' }), false);
+});
+test('extensions: the client extension, and a PHP extension is refused', async () => {
+  const boundary = 'LWEXT';
+  const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x78, 0x78]);
+  const file = (name) => {
+    const head = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="f"; filename="${name}"\r\n` +
+        'Content-Type: image/png\r\n\r\n',
+      'utf8'
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+    const body = new Uint8Array(head.length + bytes.length + tail.length);
+    body.set(head, 0);
+    body.set(bytes, head.length);
+    body.set(tail, head.length + bytes.length);
+    return buildRequest({
+      method: 'POST',
+      path: '/u',
+      query: {},
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      body,
+      cookies: {},
+    }).file('f');
+  };
+  assert.equal(await passes({ f: file('a.PNG') }, { f: 'extensions:png' }), true);
+  assert.equal(await passes({ f: file('a.php') }, { f: 'extensions:png' }), false);
+  // shouldBlockPhpUpload: 'php' in the list whitelists the PHP extensions.
+  assert.equal(await passes({ f: file('a.php') }, { f: 'extensions:php' }), true);
+  assert.equal(await passes({ f: file('a.txt') }, { f: 'extensions:png,php' }), false);
+  assert.equal(await passes({ f: 'not-a-file' }, { f: 'extensions:png' }), false);
+});
+test('the ARRAY form of a rule set is not split', async () => {
+  // A rule set the FormRequest dump writes as an array keeps one element per
+  // rule, so an alternation inside the regex is one rule. (The STRING form is
+  // split - see the test above - because Laravel explodes it.)
+  assert.deepEqual(splitRuleString('regex:/^(a|b)$/'), ['regex:/^(a', 'b)$/']);
+  assert.equal(await passes({ x: 'a' }, { x: ['regex:/^(a|b)$/'] }), true);
+  assert.equal(await passes({ x: 'c' }, { x: ['regex:/^(a|b)$/'] }), false);
+  assert.equal(await passes({ x: 'a,b' }, { x: ['required', 'regex:/^(a,b|c)$/'] }), true);
+  assert.equal(await passes({ x: 'a,b' }, { x: ['in:"a,b"'] }), true);
+});
+test('an unknown rule is a BadMethodCallException, like Laravel', () => {
+  // Validator::__call (Validator.php:1746-1756) raises BadMethodCallException
+  // when no validateX() method exists; the kernel answers the same class.
+  let err = null;
+  try {
+    new Validator({ x: 'a' }, { x: 'nope_rule' });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'the constructor must throw');
+  assert.equal(err.phpClass, 'BadMethodCallException');
+});
+// ---------------------------------------------------------------------------
 // $attributes display names (Laravel FormatsMessages oracle, 13.37 / PHP 8.3)
 // ---------------------------------------------------------------------------
 
+test('messages() is the container and errors() its shortcut (oracle)', async () => {
+  // Validator::messages() (Validator.php:1145-1152) answers the MessageBag and
+  // errors() is `return $this->messages()` (Validator.php:1159-1161) - a probe
+  // on Laravel 13.37 answers `messages() === errors()` TRUE, with the bag
+  // methods on the MESSAGE BAG (isEmpty/isNotEmpty/getMessages/toArray), not on
+  // the validator. The compiled `$validator->messages()` used to be allowlisted
+  // while the kernel had no such method: a green build and a 500 at request time.
+  const v = new Validator({ a: '', b: 'x' }, { a: 'required', b: 'integer' });
+  await v.fails();
+  assert.equal(v.messages(), v.errors());
+  assert.deepEqual(Object.keys(v.messages()), ['a', 'b']);
+  assert.equal(v.messages().isEmpty(), false);
+  assert.equal(v.messages().isNotEmpty(), true);
+  assert.deepEqual(Object.keys(v.messages().getMessages()), ['a', 'b']);
+  assert.deepEqual(Object.keys(v.messages().toArray()), ['a', 'b']);
+  // A clean pass answers an EMPTY bag, not null.
+  const ok = new Validator({ a: 'x' }, { a: 'required' });
+  await ok.passes();
+  assert.deepEqual(Object.keys(ok.messages()), []);
+  assert.equal(ok.messages().isEmpty(), true);
+});
 test('display names: default humanisation matches Str::snake + underscores', async () => {
   const cases = [
     ['first_name', 'first name'],
@@ -802,4 +992,88 @@ test('the dimensions rule applies the named checks like Laravel', async () => {
     'image/svg+xml'
   );
   assert.equal(await new Validator({ photo: svg }, { photo: 'dimensions:min_width=1000' }).passes(), true);
+});
+
+test('rules added for 13.37: base64/ulid/contains/doesnt_contain/in_array_keys/max_digits/min_digits/prohibits/extensions', async () => {
+  // Every expected value below comes from the PHP 8.3 + framework 13.37 oracle
+  // (rnd/rule-php.json, 89 cases, 0 diff against the kernel).
+  const pass = async (data, rules) => new Validator(data, rules).passes();
+  // base64: a strict decode that re-encodes to the SAME bytes ('AB==' decodes to
+  // one byte and re-encodes to 'AA==', so Laravel rejects it).
+  assert.equal(await pass({ x: 'aGk=' }, { x: 'base64' }), true);
+  assert.equal(await pass({ x: 'AB==' }, { x: 'base64' }), false);
+  assert.equal(await pass({ x: 'not base64!' }, { x: 'base64' }), false);
+  // ulid: 26 Crockford chars, I/L/O/U rejected, the first char <= '7'.
+  assert.equal(await pass({ x: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, { x: 'ulid' }), true);
+  assert.equal(await pass({ x: '01ARZ3NDEKTSV4RRFFQ69G5FAI' }, { x: 'ulid' }), false);
+  assert.equal(await pass({ x: '81ARZ3NDEKTSV4RRFFQ69G5FAV' }, { x: 'ulid' }), false);
+  // contains: every parameter must appear in the array, compared LOOSELY
+  // (a request value is always a string, so a numeric parameter matches text).
+  assert.equal(await pass({ x: ['a', 'b'] }, { x: 'contains:a,b' }), true);
+  assert.equal(await pass({ x: ['a'] }, { x: 'contains:a,b' }), false);
+  assert.equal(await pass({ x: ['1'] }, { x: 'contains:1' }), true);
+  // doesnt_contain: parameters are always STRINGS (the rule token is text), and
+  // the comparison is strict `in_array($p, $value, true)`, so a real integer in
+  // the array does not match (true) while the string '1' does (false).
+  assert.equal(await pass({ x: [1] }, { x: 'doesnt_contain:1' }), true);
+  assert.equal(await pass({ x: ['1'] }, { x: 'doesnt_contain:1' }), false);
+  // in_array_keys: any ONE key (Arr::exists) satisfies; no parameter fails.
+  assert.equal(await pass({ x: { a: 1, b: 2 } }, { x: 'in_array_keys:a' }), true);
+  assert.equal(await pass({ x: { a: 1 } }, { x: 'in_array_keys:b' }), false);
+  assert.equal(await pass({ x: { a: 1 } }, { x: 'in_array_keys' }), false);
+  // max_digits/min_digits: the value must be all digits; the width is compared.
+  assert.equal(await pass({ x: '12345' }, { x: 'max_digits:5' }), true);
+  assert.equal(await pass({ x: '123456' }, { x: 'max_digits:5' }), false);
+  assert.equal(await pass({ x: '12a' }, { x: 'max_digits:5' }), false);
+  assert.equal(await pass({ x: '1234' }, { x: 'min_digits:5' }), false);
+  // prohibits: the field must be empty/absent, and the other side is validated.
+  assert.equal(await pass({ a: 'x' }, { a: 'prohibits:b' }), true);
+  assert.equal(await pass({ a: 'x', b: 'y' }, { a: 'prohibits:b' }), false);
+  assert.equal(await pass({}, { a: 'prohibits:b' }), true);
+  // extensions: the client extension is in the list OR implied by the MIME
+  // guess; `php` in the list means PHP uploads are allowed (shouldBlockPhpUpload).
+  const file = (name, type) => ({
+    __uploadedFile: true,
+    name,
+    filename: name,
+    mime: type,
+    size: 10,
+    bytes: new Uint8Array(10),
+    isValid: () => true,
+    getClientOriginalExtension: () => name.split('.').pop(),
+  });
+  assert.equal(await pass({ f: file('a.png', 'image/png') }, { f: 'extensions:png,jpg' }), true);
+  assert.equal(await pass({ f: file('a.txt', 'text/plain') }, { f: 'extensions:png,jpg' }), false);
+  assert.equal(await pass({ f: file('a.php', 'application/x-php') }, { f: 'extensions:php' }), true);
+  assert.equal(await pass({ f: file('a.php', 'application/x-php') }, { f: 'extensions:txt' }), false);
+});
+
+test('uuid: the version parameter narrows like Str::isUuid', async () => {
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  const v4 = 'a0eea2b0-1c4d-4c0e-9d1e-1a2b3c4d5e6f';
+  assert.equal(await pass(v4, 'uuid:4'), true);
+  assert.equal(await pass(v4, 'uuid:1'), false);
+  // A bare 32-hex value is a uuid only WITH a version rule.
+  assert.equal(await pass('a0eea2b01c4d4c0e9d1e1a2b3c4d5e6f', 'uuid:4'), true);
+  assert.equal(await pass('a0eea2b01c4d4c0e9d1e1a2b3c4d5e6f', 'uuid'), false);
+  // The variant nibble must be 8/9/a/b.
+  assert.equal(await pass('a0eea2b0-1c4d-4c0e-1d1e-1a2b3c4d5e6f', 'uuid:4'), false);
+  assert.equal(await pass('00000000-0000-0000-0000-000000000000', 'uuid:0'), true);
+  assert.equal(await pass('ffffffff-ffff-ffff-ffff-ffffffffffff', 'uuid:max'), true);
+});
+
+test('a pipe inside a regex rule splits the string exactly like Laravel', async () => {
+  // ValidationRuleParser::explodeExplicitRule() is a plain explode('|'); the
+  // array form keeps each element whole.
+  assert.deepEqual(splitRuleString('required|regex:/^(a|b)$/'), ['required', 'regex:/^(a', 'b)$/']);
+  let err = null;
+  try {
+    await new Validator({ x: 'a' }, { x: 'regex:/^(a|b)$/' }).passes();
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'the split produced a rule name that does not exist');
+  assert.equal(err.name, 'BadMethodCallException');
+  // The array form is not split, so the regex stays intact.
+  assert.equal(await new Validator({ x: 'a' }, { x: ['required', 'regex:/^(a|b)$/'] }).passes(), true);
 });

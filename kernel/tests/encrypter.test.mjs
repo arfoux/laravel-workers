@@ -40,6 +40,26 @@ test('encrypter wrong key rejects', async () => {
   const wrongKey = b64(32);
   await assert.rejects(() => decryptString(payload, wrongKey));
 });
+test('encrypter malformed payload is a DecryptException, not a SyntaxError', async () => {
+  // PHP's Encrypter::decrypt() answers DecryptException for a payload it cannot
+  // decode ('The payload is invalid.', Encrypter.php:232-241); callers such as
+  // EncryptCookies and PreventRequestForgery catch exactly that class, so a raw
+  // SyntaxError/TypeError used to escape them (a 500 instead of "cookie
+  // absent"). Every decryption failure now answers DecryptError.
+  const bad = async (payload) => {
+    const err = await decryptString(payload, key).then(
+      () => null,
+      (e) => e
+    );
+    assert.ok(err, 'expected a rejection');
+    assert.equal(err.name, 'DecryptException');
+    assert.equal(err.phpClass, 'Illuminate\\Contracts\\Encryption\\DecryptException');
+  };
+  await bad(btoa('not json at all')); // JSON.parse throws
+  await bad(btoa('[1,2,3]')); // decoded, but not an envelope object
+  await bad(btoa('{"iv":"a","value":"b"}')); // missing mac
+  await bad('!!!not-base64!!!'); // atob throws
+});
 
 test('encrypter tampered MAC/tag fails', async () => {
   const payload = await encryptString('mac-test', key);

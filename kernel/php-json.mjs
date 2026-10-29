@@ -50,7 +50,8 @@ function isPlainObject(v) {
 
 const HEX4 = (c) => c.toString(16).padStart(4, '0');
 
-function writeString(s, out) {
+function writeString(s, out, opts) {
+  const raw = opts.unescapedUnicode;
   out.push('"');
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
@@ -59,7 +60,8 @@ function writeString(s, out) {
       if (n < 0xdc00 || n > 0xdfff) {
         throw new PhpJsonError('malformed UTF-16 (lone high surrogate)');
       }
-      out.push('\\u', HEX4(c), '\\u', HEX4(n));
+      if (raw) out.push(s.slice(i, i + 2));
+      else out.push('\\u', HEX4(c), '\\u', HEX4(n));
       i++;
       continue;
     }
@@ -94,13 +96,14 @@ function writeString(s, out) {
       default:
         if (c < 0x20) out.push('\\u', HEX4(c));
         else if (c <= 0x7f) out.push(String.fromCharCode(c));
+        else if (raw) out.push(String.fromCharCode(c));
         else out.push('\\u', HEX4(c));
     }
   }
   out.push('"');
 }
 
-function writeValue(value, out) {
+function writeValue(value, out, opts) {
   if (value === null) {
     out.push('null');
     return;
@@ -129,7 +132,7 @@ function writeValue(value, out) {
     return;
   }
   if (t === 'string') {
-    writeString(value, out);
+    writeString(value, out, opts);
     return;
   }
   if (t === 'bigint') {
@@ -139,9 +142,21 @@ function writeValue(value, out) {
     out.push('[');
     for (let i = 0; i < value.length; i++) {
       if (i > 0) out.push(',');
-      writeValue(value[i], out);
+      writeValue(value[i], out, opts);
     }
     out.push(']');
+    return;
+  }
+  // A JsonResource is JsonSerializable (`JsonResource::jsonSerialize()` ->
+  // `resolve()`), so PHP's `json_encode($resource)` answers the RESOLVED data -
+  // and a resource NESTED inside another resource's array is resolved at the
+  // same moment, with the request the application is handling
+  // (`resolve($request = null)` -> `app('request')`). Without this the encoder
+  // failed loud ("unsupported value (UserResource)") for an API that nests
+  // resources, which PHP answers 200. `instanceof` cannot be used: the kernel's
+  // property proxy replaces the prototype, so the instance carries the marker.
+  if (value && value.__lwResource === true) {
+    writeValue(value.jsonSerialize(), out, opts);
     return;
   }
   if (isPlainObject(value)) {
@@ -170,7 +185,7 @@ function writeValue(value, out) {
       out.push('[');
       for (let i = 0; i < norm.length; i++) {
         if (i > 0) out.push(',');
-        writeValue(value[keys[i]], out);
+        writeValue(value[keys[i]], out, opts);
       }
       out.push(']');
       return;
@@ -178,9 +193,9 @@ function writeValue(value, out) {
     out.push('{');
     for (let i = 0; i < norm.length; i++) {
       if (i > 0) out.push(',');
-      writeString(typeof norm[i] === 'number' ? String(norm[i]) : norm[i], out);
+      writeString(typeof norm[i] === 'number' ? String(norm[i]) : norm[i], out, opts);
       out.push(':');
-      writeValue(value[keys[i]], out);
+      writeValue(value[keys[i]], out, opts);
     }
     out.push('}');
     return;
@@ -193,16 +208,24 @@ function writeValue(value, out) {
     value && typeof value === 'object' && typeof value.toJSON === 'function' &&
     value.constructor && value.constructor.__lwModel
   ) {
-    writeValue(value.toJSON(), out);
+    writeValue(value.toJSON(), out, opts);
+    return;
+  }
+  // A kernel Collection is JsonSerializable too (`jsonSerialize()` -> `all()`),
+  // so `json_encode($collection)` writes the underlying array - the same bytes
+  // a JSON CAST of a `collection` attribute stores.
+  if (value && typeof value === 'object' && value.constructor && value.constructor.__lwCollection) {
+    writeValue(value.all(), out, opts);
     return;
   }
   const name = value?.constructor?.name || t;
   throw new PhpJsonError(`unsupported value (${name}) — PHP objects are outside the subset`);
 }
 
-export function phpJsonEncode(value) {
+export function phpJsonEncode(value, options = undefined) {
+  const opts = { unescapedUnicode: !!(options && options.unescapedUnicode) };
   const out = [];
-  writeValue(value, out);
+  writeValue(value, out, opts);
   return out.join('');
 }
 

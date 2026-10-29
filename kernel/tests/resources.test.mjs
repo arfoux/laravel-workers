@@ -16,6 +16,8 @@ import {
 } from '../resources.mjs';
 import { Model } from '../model.mjs';
 import { LengthAwarePaginator } from '../paginator.mjs';
+import { phpJsonEncode } from '../php-json.mjs';
+import { setRequestProvider } from '../request-scope.mjs';
 
 // The app's own resource: `toArray()` is the app's, the base never merges
 // Laravel's defaults over it (JsonResource.php:170-178).
@@ -59,6 +61,23 @@ test('the resource wraps its data in `data` (the default wrapper)', () => {
     }
   }
   assert.equal(resourceResponse(new DataKeyResource(user(1, 'Ada'))).body, '{"data":"inner","id":1}');
+});
+
+test('the 201 status needs an actual Model (calculateStatus)', () => {
+  // ResourceResponse::calculateStatus() (:120-124) is
+  // `$this->resource->resource instanceof Model && ...wasRecentlyCreated`, so a
+  // payload that merely carries the key (an array, a DTO) stays a 200.
+  const created = user(1, 'Ada');
+  created.wasRecentlyCreated = true;
+  assert.equal(resourceResponse(new UserResource(created)).status, 201);
+  created.wasRecentlyCreated = false;
+  assert.equal(resourceResponse(new UserResource(created)).status, 200, 'an update is not a fresh insert');
+  const plain = { id: 1, name: 'Ada', wasRecentlyCreated: true };
+  assert.equal(
+    resourceResponse(new UserResource(plain)).status,
+    200,
+    'a plain array is not a Model, whatever keys it carries'
+  );
 });
 
 test('the resource resolves its own data (the app\'s toArray wins)', () => {
@@ -272,4 +291,54 @@ test('a collection finds the resource class it collects (the class-name conventi
   } finally {
     setResourceResolver(null);
   }
+});
+test('a resource resolves the resources it NESTS (JsonSerializable at encode time)', () => {
+  // PHP 8.3 oracle (the fixture app, `json_encode($resource)` with a request
+  // bound to the container): a nested resource is NOT resolved by filter() -
+  // it is resolved at ENCODE time through JsonSerializable ->
+  // jsonSerialize() -> `resolve($request = null)` -> `app('request')`, so the
+  // child sees the same request the parent got. Probed bytes:
+  //   json_encode(new ParentRes(['id'=>42])) =>
+  //     {"id":42,"child":{"cid":7,"req":true},"list":[{"cid":1,"req":true},{"cid":2,"req":true}]}
+  //   json_encode(new ChildRes(['id'=>9]))  => {"cid":9,"req":true}  (NO `data` wrapper)
+  // and a resource that WRAPS a MissingValue (`new ChildRes($this->when(false,
+  // 'x'))`) disappears from the payload (ConditionallyLoadsAttributes.php:86-89).
+  class ChildRes extends JsonResource {
+    toArray(request) {
+      return { cid: this.resource.id, req: !!(request && request.probe) };
+    }
+  }
+  class ParentRes extends JsonResource {
+    toArray() {
+      return {
+        id: this.resource.id,
+        child: new ChildRes({ id: 7 }),
+        list: [new ChildRes({ id: 1 }), new ChildRes({ id: 2 })],
+        missing: new ChildRes(this.when(false, 'x')),
+        whened: this.when(false, 'nope'),
+      };
+    }
+  }
+  const request = { probe: true };
+  setRequestProvider(() => request);
+  try {
+    // The response path (ResourceResponse wraps in `data`).
+    assert.equal(
+      resourceResponse(new ParentRes({ id: 42 }), request).body,
+      '{"data":{"id":42,"child":{"cid":7,"req":true},"list":[{"cid":1,"req":true},{"cid":2,"req":true}]}}'
+    );
+    // `$resource->resolve()` / `json_encode($resource)`: no wrapper, and the
+    // ambient request reaches the child.
+    assert.equal(
+      phpJsonEncode(new ParentRes({ id: 42 }).resolve()),
+      '{"id":42,"child":{"cid":7,"req":true},"list":[{"cid":1,"req":true},{"cid":2,"req":true}]}'
+    );
+    assert.equal(phpJsonEncode(new ChildRes({ id: 9 })), '{"cid":9,"req":true}');
+    // `resolve($request)` keeps an EXPLICIT request (`$request ?: app('request')`).
+    assert.equal(phpJsonEncode(new ChildRes({ id: 9 }).resolve({ probe: false })), '{"cid":9,"req":false}');
+  } finally {
+    setRequestProvider(null);
+  }
+  // No provider (a CLI/static path): the request is null, never a stale one.
+  assert.equal(phpJsonEncode(new ChildRes({ id: 9 })), '{"cid":9,"req":false}');
 });

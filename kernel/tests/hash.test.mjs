@@ -36,6 +36,12 @@ test('hash needsRehash', async () => {
   assert.equal(needsRehash(h4, { rounds: 4 }), false);
   assert.equal(needsRehash(h4, { rounds: 10 }), true);
   assert.equal(needsRehash('not a hash', { rounds: 10 }), true);
+  // The DEFAULT cost is Laravel's BcryptHasher::$rounds = 12
+  // (vendor Hashing/BcryptHasher.php:17), not bcryptjs' 10: calling
+  // `needsRehash($hash)` without options used to claim a $2y$12$ digest (the
+  // app's own default) needed rehashing - a rehash on every login.
+  assert.equal(needsRehash(HASH12), false);
+  assert.equal(needsRehash(HASH10), true);
 });
 
 test('isHashed detects bcrypt/argon2 digests', async () => {

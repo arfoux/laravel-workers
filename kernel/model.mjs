@@ -5,6 +5,43 @@ import { Collection } from './collections.mjs';
 import { phpJsonEncode } from './php-json.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
+/**
+ * The JSON-cast family of a `casts` entry, or null. `castAttribute()`
+ * (HasAttributes.php:886-893) answers fromJson() for `array`/`json`/
+ * `json:unicode` and `new Collection(fromJson())` for `collection`; `object` is
+ * the stdClass flavour (`fromJson($value, true)`). `isJsonCastable()`
+ * (:1788-1791) lists `json:unicode` separately, and `getJsonCastFlags()`
+ * (:1415-1424) encodes it with JSON_UNESCAPED_UNICODE.
+ */
+const jsonCastSpec = (cast) => {
+  if (cast === null || cast === undefined) return null;
+  const spec = String(cast).toLowerCase();
+  if (spec === 'json:unicode') return { unicode: true, collection: false };
+  if (!JSON_CASTS.has(spec)) return null;
+  return { unicode: false, collection: spec === 'collection' };
+};
+/** `castAttributeAsJson($key, $value)`: Json::encode() - PHP's bytes. */
+function encodeJsonCast(value, spec) {
+  if (value === null || value === undefined) return null;
+  return phpJsonEncode(value, spec.unicode ? { unescapedUnicode: true } : undefined);
+}
+/**
+ * `fromJson($value, $asObject = false)` (:1445-1452): a null or EMPTY string is
+ * null, otherwise `Json::decode()` = plain `json_decode()` - which answers null
+ * for malformed JSON (PHP only throws with JSON_THROW_ON_ERROR, and Laravel
+ * does not pass it).
+ */
+function decodeJsonCast(value, spec) {
+  if (typeof value !== 'string') return value;
+  if (value === '') return null;
+  let decoded;
+  try {
+    decoded = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  return spec.collection ? new Collection(decoded) : decoded;
+}
 
 // Eloquent `castAttributeAsHashedString()`: plaintext is hashed with Hash::make()
 // at set-time; an already-hashed value is passed through only when it matches the
@@ -110,18 +147,91 @@ export function isoDateString(value, tz = modelTimezone.value) {
 
 // The attributes Laravel treats as dates: the timestamps + the date casts
 // (HasAttributes::getDates()).
+// A CUSTOM format cast (`date:Y-m-d`, `datetime:d/m/Y H:i`, `immutable_date:Y`)
+// is the same date type with a serialization format (HasAttributes
+// ::isCustomDateTimeCast / isDateCastable), so it is a date attribute too - the
+// old check compared the whole string and answered false, leaving the stored
+// text unformatted (`d` stays '2025-10-23 07:00:00' where Laravel answers a
+// Carbon reading '2025-10-23').
+export function castDateSpec(cast) {
+  if (cast == null) return null;
+  const s = String(cast);
+  const i = s.indexOf(':');
+  const base = (i === -1 ? s : s.slice(0, i)).toLowerCase();
+  if (base === 'date' || base === 'datetime' || base === 'immutable_date' || base === 'immutable_datetime') {
+    return { base, format: i === -1 ? null : s.slice(i + 1) };
+  }
+  return null;
+}
 function isDateAttribute(ctor, key) {
   if (key === 'created_at' || key === 'updated_at') return true;
   const cast = ctor.casts && ctor.casts[key];
-  if (cast == null) return false;
-  const spec = String(cast).toLowerCase();
-  return spec === 'date' || spec === 'datetime' || spec === 'immutable_date' || spec === 'immutable_datetime';
+  return castDateSpec(cast) !== null;
 }
 
+// Laravel's snapshot of a date cast with a custom format
+// (HasAttributes::serializeDate -> Carbon::format($format)): the stored value
+// is `Y-m-d H:i:s` (the model's own date format), so the PHP `date()` letters
+// the app wrote are applied to it. The common letters are supported; anything
+// else is a build-visible port (the format is not guessed).
+export function formatCustomDate(value, format) {
+  if (value === null || value === undefined) return value;
+  const s = String(value);
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/.exec(s);
+  if (!m) return value;
+  const parts = {
+    Y: m[1],
+    y: m[1].slice(2),
+    m: m[2],
+    n: String(Number(m[2])),
+    d: m[3],
+    j: String(Number(m[3])),
+    H: m[4] || '00',
+    G: String(Number(m[4] || '0')),
+    i: m[5] || '00',
+    s: m[6] || '00',
+  };
+  const names = { January: 1, February: 2, March: 3, April: 4, May: 5, June: 6, July: 7, August: 8, September: 9, October: 10, November: 11, December: 12 };
+  const monthName = Object.keys(names)[Number(m[2]) - 1] || m[2];
+  Object.assign(parts, { F: monthName, M: monthName.slice(0, 3) });
+  return String(format).replace(/[\\](.)|([YymndjHGisFMWDtlNS])/g, (all, escaped, letter) => {
+    if (escaped !== undefined) return escaped;
+    if (letter === 'M') return parts.M;
+    if (letter === 'F') return parts.F;
+    if (letter === 'D') {
+      const wd = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay();
+      return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][wd];
+    }
+    if (letter === 'l') {
+      const wd = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay();
+      return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][wd];
+    }
+    if (letter === 'N') {
+      const wd = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay();
+      return String(wd === 0 ? 7 : wd);
+    }
+    if (letter === 'S') {
+      const d = Number(m[3]);
+      return d % 10 === 1 && d !== 11 ? 'st' : d % 10 === 2 && d !== 12 ? 'nd' : d % 10 === 3 && d !== 13 ? 'rd' : 'th';
+    }
+    if (letter === 't') return String(new Date(Date.UTC(Number(m[1]), Number(m[2]), 0)).getUTCDate());
+    if (letter === 'W') {
+      const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+      const day = (date.getUTCDay() + 6) % 7;
+      date.setUTCDate(date.getUTCDate() - day + 3);
+      const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
+      const ftDay = (firstThursday.getUTCDay() + 6) % 7;
+      firstThursday.setUTCDate(firstThursday.getUTCDate() - ftDay + 3);
+      return String(1 + Math.round((date - firstThursday) / (7 * 24 * 3600 * 1000)));
+    }
+    return parts[letter] !== undefined ? parts[letter] : all;
+  });
+}
 function applyCast(value, cast) {
   if (value == null) return value;
   const spec = String(cast).toLowerCase();
-  if (JSON_CASTS.has(spec)) return typeof value === 'string' ? JSON.parse(value) : value;
+  const jcast = jsonCastSpec(cast);
+  if (jcast) return decodeJsonCast(value, jcast);
   if (spec.startsWith('decimal:')) {
     const places = Number(spec.slice('decimal:'.length)) || 0;
     return phpDecimalCast(value, places);
@@ -131,6 +241,11 @@ function applyCast(value, cast) {
   if (spec === 'float' || spec === 'double' || spec === 'real') return phpFloatCast(value);
   if (spec === 'bool' || spec === 'boolean') return phpBoolCast(value);
   if (spec === 'string') return String(value);
+  // A date cast WITH a format serializes in that format (Laravel hands the
+  // column to Carbon and the model's serializeDate() writes the custom
+  // format); a bare date/datetime keeps the stored text as-is.
+  const dspec = castDateSpec(cast);
+  if (dspec && dspec.format) return formatCustomDate(value, dspec.format);
   // date/datetime/immutable_* and unknown casts pass through (strings in D1).
   return value;
 }
@@ -146,11 +261,16 @@ function phpIsNumeric(value) {
 
 // Laravel's json-cast branch of `originalIsEquivalent()`:
 // `$this->fromJson($attribute) === $this->fromJson($original)` - the decoded
-// values must match (the decoded arrays compare key for key, in order).
-function jsonEquivalent(a, b) {
-  if (a === b) return true;
+// values must match (key for key and in order, `===` on the arrays). The
+// decode goes through the same `fromJson()` as the read path, so '' and 'null'
+// both read as null (they are equivalent, exactly as in PHP).
+function jsonEquivalent(cast, a, b) {
+  const spec = jsonCastSpec(cast) || { unicode: false, collection: false };
+  const da = decodeJsonCast(a, spec);
+  const db = decodeJsonCast(b, spec);
+  if (da === db) return true;
   try {
-    return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b));
+    return JSON.stringify(da) === JSON.stringify(db);
   } catch {
     return false;
   }
@@ -338,7 +458,7 @@ export class Model {
     if (cast != null) {
       const spec = String(cast).toLowerCase();
       // The json-ish casts compare the decoded values.
-      if (JSON_CASTS.has(spec)) return jsonEquivalent(attribute, original);
+      if (jsonCastSpec(cast)) return jsonEquivalent(cast, attribute, original);
       // The float casts compare with an epsilon.
       if (spec === 'float' || spec === 'double' || spec === 'real') {
         return Math.abs(applyCast(attribute, cast) - applyCast(original, cast)) < Number.EPSILON * 4;
@@ -438,8 +558,9 @@ export class Model {
         const spec = String(cast).toLowerCase();
         if (spec === 'hashed') {
           next = castAttributeAsHashedString(value, this.constructor.hashRounds);
-        } else if (JSON_CASTS.has(spec)) {
-          next = value == null ? null : JSON.stringify(value);
+        } else {
+          const jcast = jsonCastSpec(cast);
+          if (jcast) next = encodeJsonCast(value, jcast);
         }
       }
     }
@@ -556,8 +677,11 @@ export class Model {
       if (hidden.includes(key)) continue;
       if (visible.length && !visible.includes(key)) continue;
       const value = this.get(key);
-      // Laravel serialises the date attributes through Carbon::toJSON().
-      out[key] = isDateAttribute(ctor, key) ? isoDateString(value) : value;
+      // Laravel serialises the date attributes through Carbon::toJSON(), or
+      // through the cast's OWN format when it has one (`date:Y-m-d` ->
+      // serializeDate(Carbon::format(...)) - the app reads '2025-10-23').
+      const dspec = castDateSpec(ctor.casts && ctor.casts[key]);
+      out[key] = dspec && dspec.format ? value : isDateAttribute(ctor, key) ? isoDateString(value) : value;
     }
     for (const key of ctor.appends || []) {
       // Laravel's attributesToArray() runs the appended attributes through
@@ -698,9 +822,9 @@ export class Model {
 
   _storeValue(key) {
     const value = this.attributes[key];
-    const cast = this.constructor.casts[key];
-    if (value != null && cast != null && JSON_CASTS.has(String(cast).toLowerCase())) {
-      return typeof value === 'string' ? value : JSON.stringify(value);
+    const spec = jsonCastSpec(this.constructor.casts[key]);
+    if (value != null && spec) {
+      return typeof value === 'string' ? value : encodeJsonCast(value, spec);
     }
     return value;
   }
@@ -1185,6 +1309,37 @@ function addAggregate(builder, ModelClass, name, fn, column) {
   return builder;
 }
 
+// SQLite's text -> number coercion (sqlite3AtoF): the longest numeric PREFIX
+// (`'5abc'` -> 5), and 0 when there is none (`'abc'` -> 0, `''` -> 0). This is
+// what the DB does inside SUM()/AVG(), and `withSum`/`withAvg` compile to a real
+// SQL aggregate sub-select (`sprintf('%s(%s)', $function, $aggregateColumn)`,
+// QueriesRelationships::withAggregate :899) - NOT to Collection::sum(), which is
+// why a text column answers a number where the old `phpAggregateNumber` threw a
+// PHP TypeError (a 500 Laravel never raises). Probed on PHP 8.3 + SQLite:
+// SUM over ('abc','def','5',NULL) = 5.0, AVG = 1.6666666666666667, and over
+// ('1','abc','5.5','9',NULL) SUM = 15.5 / AVG = 3.875.
+function sqliteNumeric(v) {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v !== 'string') return 0;
+  const m = /^[ \t\n\r\f\v]*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/.exec(v);
+  return m ? Number(m[1]) : 0;
+}
+// SQLite orders values by STORAGE CLASS: numbers sort before text (BLOB/NULL
+// aside), then by value - numeric order among numbers, binary order among
+// strings. MIN/MAX answer the ORIGINAL value (probed: MIN over
+// ('abc','def','5') is the STRING '5', MAX is 'def'; over ('1','abc','5.5','9')
+// MIN is '1' and MAX is 'abc' - all TEXT, so the ordering is the byte order).
+function sqliteCompare(a, b) {
+  const rank = (v) => (typeof v === 'number' ? 0 : 1);
+  const ra = rank(a);
+  const rb = rank(b);
+  if (ra !== rb) return ra < rb ? -1 : 1;
+  if (ra === 0) return a < b ? -1 : a > b ? 1 : 0;
+  const x = String(a);
+  const y = String(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
 // Compute aggregate attributes with one query per relation (no N+1 per row).
 async function loadAggregates(db, ModelClass, rows, specs) {
   if (!rows || !rows.length || !specs || !specs.length) return;
@@ -1202,14 +1357,31 @@ async function loadAggregates(db, ModelClass, rows, specs) {
     }
     for (const r of rows) {
       const list = buckets.get(String(r.get(parentRef))) || [];
-      const nums = list.map((v) => Number(v)).filter((v) => !Number.isNaN(v));
       let value = null;
       if (list.length) {
-        const total = nums.reduce((a, b) => a + b, 0);
-        if (spec.fn === 'sum') value = total;
-        else if (spec.fn === 'avg') value = total / nums.length;
-        else if (spec.fn === 'min') value = Math.min(...nums);
-        else value = Math.max(...nums);
+        // SUM/AVG coerce with the SQLite numeric prefix, SKIP NULLs, and answer
+        // NULL when every value is NULL (probed: SUM/AVG over an all-NULL set is
+        // NULL, not 0). MIN/MAX answer the ORIGINAL value with the SQLite
+        // storage-class order (numbers before text).
+        if (spec.fn === 'sum' || spec.fn === 'avg') {
+          let total = 0;
+          let count = 0;
+          for (const v of list) {
+            if (v === null || v === undefined) continue;
+            total += sqliteNumeric(v);
+            count += 1;
+          }
+          value = count === 0 ? null : spec.fn === 'sum' ? total : total / count;
+        } else {
+          const values = list.filter((v) => v !== null && v !== undefined);
+          if (values.length) {
+            value = values[0];
+            for (let i = 1; i < values.length; i++) {
+              const v = values[i];
+              if (spec.fn === 'min' ? sqliteCompare(v, value) < 0 : sqliteCompare(v, value) > 0) value = v;
+            }
+          }
+        }
       }
       r.attributes[spec.alias] = value;
       // Eloquent reads the aggregate as a column of the row, so it is part of
@@ -1220,4 +1392,4 @@ async function loadAggregates(db, ModelClass, rows, specs) {
   }
 }
 
-export default { Model, applyCast };
+export default { Model, applyCast, castDateSpec, formatCustomDate };

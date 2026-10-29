@@ -16,6 +16,12 @@
 // plumbing of the response factory (the runtime builds the response).
 
 import { phpJsonEncode } from './php-json.mjs';
+// `JsonResource::resolve($request = null)` falls back to the request the
+// application is handling (`app('request')`).
+import { currentRequest } from './request-scope.mjs';
+// The `instanceof Model` half of ResourceResponse::calculateStatus()
+// (ResourceResponse.php:120-124): a model created this request answers 201.
+import { Model } from './model.mjs';
 
 // Laravel's `MissingValue` (Illuminate\Http\Resources\MissingValue): the
 // sentinel a conditional attribute returns when it must NOT appear in the
@@ -50,15 +56,19 @@ function phpValue(value, ...args) {
 }
 
 // PHP's `array_merge()`: a string key is overwritten by the later array, a
-// numeric key is APPENDED (re-indexed), and the order follows the arguments.
+// numeric key is APPENDED (re-indexed from 0 in order), and the order follows
+// the arguments. The numeric keys are counted SEPARATELY: `array_merge(
+// ['a' => 1], [5 => 'x'])` is `['a' => 1, 0 => 'x']`, so the total key count is
+// the wrong index (it answered `{'a':1,'1':'x'}`, a different JSON payload).
 function phpArrayMerge(...arrays) {
   const out = {};
+  let numeric = 0;
   for (const array of arrays) {
     if (!array || typeof array !== 'object') continue;
     for (const key of phpKeysOf(array)) {
       const value = array[key];
       if (isNumericKey(key)) {
-        out[Object.keys(out).length] = value;
+        out[String(numeric++)] = value;
         continue;
       }
       out[key] = value;
@@ -70,14 +80,21 @@ function phpArrayMerge(...arrays) {
 // PHP's `array_merge_recursive()`: the numeric keys are appended, the string
 // keys are merged - two arrays under the same key are merged, two values
 // under the same key become an array of both.
+//
+// `out[out.length]` was the slot used here, and `out` is a PLAIN OBJECT: its
+// `length` is `undefined`, so EVERY numeric key wrote the same "undefined" key.
+// A resource whose `toArray()` answers a LIST (wrapping disabled, no extra
+// information) reached this path and answered `{"undefined":3}` instead of
+// `[1,2,3]` - a corrupted response body.
 function phpArrayMergeRecursive(...arrays) {
   const out = {};
+  let numeric = 0;
   for (const array of arrays) {
     if (!array || typeof array !== 'object') continue;
     for (const key of Object.keys(array)) {
       const value = array[key];
       if (isNumericKey(key)) {
-        out[out.length] = value;
+        out[String(numeric++)] = value;
         continue;
       }
       if (Object.prototype.hasOwnProperty.call(out, key)) {
@@ -365,9 +382,14 @@ export class JsonResource {
    * `JsonResource::resolve()` (JsonResource.php:117-133): the data of the
    * resource, filtered (the missing values dropped, the merged values folded
    * into the parent).
+   *
+   * `$request ?: Container::getInstance()->make('request')`: a caller that
+   * passes no request (jsonSerialize, an explicit `$resource->resolve()`)
+   * gets the request the application is handling.
    */
   resolve(request) {
-    const data = this.resolveResourceData(request);
+    const req = request ? request : currentRequest();
+    const data = this.resolveResourceData(req);
     return this.filter(toArrayOf(data));
   }
 
@@ -583,6 +605,14 @@ export class JsonResource {
     for (const key of Object.keys(data)) {
       const value = data[key];
       if (value instanceof MissingValue) continue;
+      // `ConditionallyLoadsAttributes.php:86-89` ALSO drops a RESOURCE that
+      // wraps a PotentiallyMissing: `$value instanceof self && $value->resource
+      // instanceof PotentiallyMissing && $value->isMissing()` - the trait's
+      // `isMissing()` call forwards through JsonResource::__call() to the
+      // wrapped value, so `new ChildResource(new MissingValue)` disappears
+      // (probed on PHP 8.3: the key is absent from both resolve() and
+      // json_encode()).
+      if (value && value.__lwResource === true && value.resource instanceof MissingValue) continue;
       if (!isNumericKey(key)) numericKeys = false;
       out[key] = value;
     }
@@ -838,8 +868,12 @@ function wrapPayload(resource, data, withKeys, additional) {
  * (ResourceResponse::toResponse() - ResourceResponse.php:31-52).
  */
 export function resourceResponse(resource, request) {
-  const status =
-    resource.resource && resource.resource.wasRecentlyCreated ? 201 : 200;
+  // `calculateStatus()` (ResourceResponse.php:120-124) is
+  // `$this->resource->resource instanceof Model && ...->wasRecentlyCreated`,
+  // so a payload that merely CARRIES a `wasRecentlyCreated` key (an array the
+  // app returned, a DTO) stays a 200 - the edge answered 201 for any truthy key.
+  const inner = resource.resource;
+  const status = inner instanceof Model && inner.wasRecentlyCreated ? 201 : 200;
   return {
     status,
     headers: { 'content-type': 'application/json' },

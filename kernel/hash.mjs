@@ -24,7 +24,7 @@ export function timingSafeEqual(a, b) {
   return diff === 0;
 }
 
-export async function make(value, { rounds = 10 } = {}) {
+export async function make(value, { rounds = 12 } = {}) {
   const salt = await bcrypt.genSalt(rounds);
   const hash = await bcrypt.hash(String(value), salt);
   // PHP 8.3 password_hash() emits `$2y$`; bcryptjs emits `$2a$`. Store the
@@ -91,7 +91,7 @@ export async function check(value, hashed) {
   return timingSafeEqual(ok ? '1' : '0', '1');
 }
 
-export function needsRehash(hashed, { rounds = 10 } = {}) {
+export function needsRehash(hashed, { rounds = 12 } = {}) {
   if (!hashed || typeof hashed !== 'string') return true;
   try {
     const r = bcrypt.getRounds(hashed);

@@ -318,7 +318,12 @@ export function endsWith(haystack, needles) {
 export function after(subject, search) {
   const s = String(subject == null ? '' : subject);
   const needle = String(search == null ? '' : search);
-  return needle === '' ? s : s.slice(s.indexOf(needle) + needle.length);
+  if (needle === '') return s;
+  // Laravel: `array_reverse(explode($search, $subject, 2))[0]` — a needle that
+  // does not occur answers the WHOLE subject (explode has one piece), not an
+  // empty string. The plain indexOf slice would cut the wrong tail.
+  const at = s.indexOf(needle);
+  return at === -1 ? s : s.slice(at + needle.length);
 }
 
 /** Str::before() */

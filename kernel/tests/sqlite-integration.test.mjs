@@ -60,6 +60,9 @@ Post.table = 'posts';
 Post.fillable = ['title', 'published', 'body', 'slug'];
 Post.softDeletes = true;
 Post.relations = { comments: { type: 'hasMany', model: Comment } };
+class Note extends Model {}
+Note.table = 'notes';
+Post.relations.notes = { type: 'hasMany', model: Note };
 Post.prototype.scopePublished = (q) => q.where('published', 1);
 class Author extends Model {}
 Author.table = 'authors';
@@ -87,6 +90,7 @@ function fixture() {
     CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
     CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author_id INTEGER);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE notes (id INTEGER PRIMARY KEY, post_id INTEGER, label TEXT);
     CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount TEXT, meta TEXT, paid INTEGER, secret TEXT, created_at TEXT, updated_at TEXT);
   `);
   sqlite.exec(`
@@ -96,6 +100,8 @@ function fixture() {
       (3, 'c', 1, '2024-02-04 05:06:07');
     INSERT INTO posts (id, title, published, created_at, deleted_at) VALUES (4, 'd', 1, '2024-02-05 06:07:08', '2020-01-01 00:00:00');
     INSERT INTO comments (id, post_id, body, votes) VALUES (10, 1, 'x', 5), (11, 1, 'y', 3), (12, 2, 'z', 1);
+    -- Text labels: the aggregate probes for withSum/withMin (PHP 8.3 + SQLite).
+    INSERT INTO notes (id, post_id, label) VALUES (20, 1, 'abc'), (21, 1, 'def'), (22, 1, '5'), (23, 1, NULL), (24, 3, NULL);
     INSERT INTO authors (id, name) VALUES (7, 'Ada'), (8, 'Bob');
     INSERT INTO books (id, title, author_id) VALUES (1, 'b1', 7), (2, 'b2', 8), (3, 'b3', NULL);
     INSERT INTO invoices (id, amount, meta, paid, secret, created_at, updated_at)
@@ -305,6 +311,40 @@ test('sqlite: withSum/withAvg/withMin/withMax expose aggregate attributes', { sk
   assert.deepEqual(maxes.map((p) => p.get('comments_max_votes')), [5, 1, null]);
   assert.throws(() => Post.query(db).withSum('comments'), /needs a column/);
   assert.throws(() => Post.query(db).withSum('nope', 'votes'), /unknown relation/);
+});
+test('sqlite: the aggregate is the SQL AGGREGATE, not Collection::sum', { skip }, async () => {
+  const db = fixture();
+  // `withSum`/`withAvg`/`withMin`/`withMax` compile to a real SQL sub-select
+  // (`sprintf('%s(%s)', $function, $aggregateColumn)`,
+  // QueriesRelationships::withAggregate :899), so a TEXT column answers SQLite's
+  // coercion and the storage-class order - not Collection::sum()'s TypeError.
+  // PHP 8.3 + SQLite, probed over ('abc','def','5',NULL): SUM 5.0,
+  // AVG 1.6666666666666667, MIN the STRING '5' (byte order), MAX 'def'; a post
+  // whose only value is NULL answers NULL for every function (not 0).
+  const rows = await Post.query(db)
+    .orderBy('id')
+    .withSum('notes', 'label')
+    .withAvg('notes', 'label')
+    .withMin('notes', 'label')
+    .withMax('notes', 'label')
+    .get();
+  assert.deepEqual(rows.map((r) => r.get('notes_sum_label')), [5, null, null]);
+  assert.deepEqual(rows.map((r) => r.get('notes_avg_label')), [5 / 3, null, null]);
+  assert.deepEqual(rows.map((r) => r.get('notes_min_label')), ['5', null, null]);
+  assert.deepEqual(rows.map((r) => r.get('notes_max_label')), ['def', null, null]);
+});
+test('sqlite: whereBetween with a short value list binds NULL like PHP', { skip }, async () => {
+  const db = fixture();
+  // `whereBetween($col, $values)` pushes `cleanBindings($values)` - a SHORT list
+  // binds fewer values than the two placeholders, and SQLite reads the missing
+  // parameter as NULL, so the query matches nothing. PHP 8.3 + SQLite probed:
+  // [1] -> 0 rows, [] -> 0 rows, [1,2,3] -> the first two. The executor's
+  // `bindValue` maps the absent bound to null, so the compiled query cannot
+  // reach node:sqlite with an `undefined` parameter (which would throw).
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').whereBetween('id', [1]).get()), []);
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').whereBetween('id', []).get()), []);
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').whereBetween('id', [1, 3]).get()), [1, 2, 3]);
+  assert.deepEqual(ids(await Post.query(db).orderBy('id').whereNotBetween('id', [1]).get()), []);
 });
 
 test('sqlite: Model casts (json/decimal/boolean) + accessor/appends/hidden on real rows', { skip }, async () => {

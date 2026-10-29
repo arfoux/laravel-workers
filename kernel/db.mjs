@@ -41,6 +41,15 @@ function isPlainObject(v) {
   return v != null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// PHP truthiness for a scalar a database driver can hand back ('0', 0, 0.0,
+// '', null, false are falsy; NaN and every other value are truthy). Used where
+// Laravel applies a PHP `?:` to a raw driver value (Query/Builder::sum()).
+function phpFalsyScalar(value) {
+  if (value === null || value === undefined || value === false) return true;
+  if (typeof value === 'number') return value === 0;
+  return value === '' || value === '0';
+}
+
 // Normalize the (column, operatorOrValue, value) trio used by where-like APIs.
 function normalizeOp(operatorOrValue, value) {
   let operator = '=';
@@ -209,6 +218,12 @@ export class QueryBuilder {
     return this;
   }
 
+  // PHP's `whereBetween($col, $values)` pushes `cleanBindings($values)`, so a
+  // SHORT list is legal: `whereBetween('id', [1])` binds ONE value for
+  // `between ? and ?`, and SQLite reads the missing parameter as NULL - the
+  // query matches nothing (probed on PHP 8.3 + SQLite: `[1]` -> 0 rows, `[]` ->
+  // 0 rows, `[1,2,3]` -> the first two). The executor binds an absent bound as
+  // null (`bindValue`), which reproduces exactly that.
   whereBetween(column, [min, max]) {
     this.wheres.push({ type: 'between', boolean: 'and', column: String(column), min, max });
     return this;
@@ -480,15 +495,20 @@ export class QueryBuilder {
     const stmt = this._prepare(sql, params);
     const res = await stmt.first();
     const row = res || {};
-    return row.aggregate == null ? null : Number(row.aggregate);
+    // Laravel's aggregate() answers the driver value verbatim (Builder::aggregate
+    // -> `$results[0]->aggregate`), so MIN/MAX over a TEXT column stays the raw
+    // string ('007' stays '007', not 7) and an all-text SUM keeps SQLite's 0.
+    // Number() here used to turn every non-numeric MIN/MAX into NaN.
+    return row.aggregate == null ? null : row.aggregate;
   }
 
   async sum(column) {
     // Laravel's sum() (Query/Builder.php:4099-4104): `$result = $this->aggregate(
-    // __FUNCTION__, [$column]); return $result ?: 0;` - an empty set (or an
-    // all-NULL column) answers 0, not null (the JSON body differed).
+    // __FUNCTION__, [$column]); return $result ?: 0;` - the driver value comes
+    // back verbatim and only a PHP-falsy result ('0', 0, 0.0, null, '') becomes
+    // the integer 0.
     const value = await this._aggregate('SUM', column);
-    return value == null ? 0 : value;
+    return phpFalsyScalar(value) ? 0 : value;
   }
   async avg(column) { return this._aggregate('AVG', column); }
   async min(column) { return this._aggregate('MIN', column); }

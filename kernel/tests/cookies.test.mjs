@@ -72,6 +72,11 @@ test('rawUrlDecode is PHP rawurldecode() semantics (no plus-to-space)', () => {
   assert.equal(rawUrlDecode('%C3%BC'), 'ü');
   assert.equal(rawUrlDecode('100%'), '100%');
   assert.equal(rawUrlDecode('%zz'), '%zz');
+  // PHP requires TWO hex digits: a partially-valid pair stays literal.
+  // parseInt() alone read "%1x" as 0x01 (a different byte on the wire).
+  assert.equal(rawUrlDecode('%1x'), '%1x');
+  assert.equal(rawUrlDecode('%x1'), '%x1');
+  assert.equal(rawUrlDecode('%1'), '%1');
   // Round-trip
   const s = '{"iv":"a+b/c=","value":"ü"}';
   assert.equal(rawUrlDecode(rawUrlEncode(s)), s);

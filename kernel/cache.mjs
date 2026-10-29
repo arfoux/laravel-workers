@@ -173,15 +173,22 @@ export class DatabaseCacheStore {
     return this.putMany({ [key]: value }, seconds);
   }
 
-  /** DatabaseStore::add() — INSERT OR IGNORE, false when the key already lives. */
+  /**
+   * DatabaseStore::add() wrapped in Repository::add() — INSERT OR IGNORE, false
+   * when the key already lives. A non-null ttl that rounds to <= 0 seconds is
+   * never stored (`Repository::add`: `if ($seconds <= 0) { return false; }`);
+   * only a NULL ttl means "forever".
+   */
   async add(key, value, seconds) {
+    const ttl = seconds === undefined || seconds === null ? null : phpIntCastValue(seconds);
+    if (ttl !== null && ttl <= 0) return false;
     if ((await this.get(key)) !== null) return false;
     const res = await this.db
       .prepare(`INSERT OR IGNORE INTO ${this.table} ("key", "value", "expiration") VALUES (?, ?, ?)`)
       .bind(
         this.prefix + key,
         this._serialize(value),
-        phpIntCastValue(seconds) > 0 ? this.currentTime() + phpIntCastValue(seconds) : this.currentTime() + FOREVER_SECONDS
+        ttl === null ? this.currentTime() + FOREVER_SECONDS : this.currentTime() + ttl
       )
       .run();
     return Number((res && res.meta && res.meta.changes) || 0) > 0;

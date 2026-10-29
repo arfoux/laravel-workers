@@ -87,7 +87,12 @@ assert.equal(m.route.uri, '/');
 
 // response helpers
 assert.deepEqual(html('a'), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: 'a' });
+// PHP's JsonResponse body is json_encode($data) - the slash is escaped by
+// default and the UTF-8 is written raw only with JSON_UNESCAPED_UNICODE
+// (probed: json_encode(['u' => 'a/b']) is {"u":"a\/b"}).
 assert.deepEqual(json({ b: 1 }), { status: 200, headers: { 'content-type': 'application/json' }, body: '{"b":1}' });
+assert.deepEqual(json({ u: 'a/b' }).body, '{"u":"a\\/b"}');
+assert.deepEqual(json({ u: 'é' }).body, '{"u":"\\u00e9"}');
 assert.deepEqual(redirect('/x'), { status: 302, headers: { location: '/x' }, body: '' });
 assert.deepEqual(notFound(), { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' }, body: 'Not Found' });
 assert.deepEqual(text('t', 201), { status: 201, headers: { 'content-type': 'text/plain; charset=utf-8' }, body: 't' });
@@ -278,4 +283,41 @@ assert.ok(rres);
 assert.equal(rres.status, 200);
 assert.equal(rres.body, 'healthy ');
 
+// ---- route PRECEDENCE: the first declared pattern wins (PHP-verified) ----
+// Laravel's RouteCollection::match() walks the method's routes in REGISTRATION
+// order and answers the first one whose pattern fits. A probe on Laravel 13:
+// with `products/{id}` declared before `products/new`, GET /products/new
+// answers `products/{id}`; swapping the declaration swaps the answer. The build
+// therefore emits the route table in DECLARATION order (never uri-sorted).
+const ptable = normalizeTable([
+  { uri: '/products/{id}', name: 'products.show', methods: ['GET'], domain: null },
+  { uri: '/products/new', name: 'products.new', methods: ['GET'], domain: null },
+]);
+assert.equal(match(ptable, { method: 'GET', path: '/products/new' }).route.name, 'products.show');
+const ptable2 = normalizeTable([
+  { uri: '/products/new', name: 'products.new', methods: ['GET'], domain: null },
+  { uri: '/products/{id}', name: 'products.show', methods: ['GET'], domain: null },
+]);
+assert.equal(match(ptable2, { method: 'GET', path: '/products/new' }).route.name, 'products.new');
+// A uri-lexicographic table would answer `products/new` in the FIRST table:
+// guard the ordering the build relies on.
+assert.ok('/products/{id}' > '/products/new', 'lexicographic order differs from declaration order');
 console.log('ROUTER TESTS: PASS');
+
+// dispatch: the body may be the raw bytes, not only a string. A handler that
+// answers an uploaded file's Uint8Array reaches `new Response(body)` in the
+// worker, which takes both; a Buffer/ArrayBuffer is refused loudly.
+const binTable = normalizeTable([{ uri: '/bin', name: 'bin', methods: ['GET'], domain: null }]);
+const bytes = new Uint8Array([1, 2, 3]);
+const binRes = await dispatch({ method: 'GET', path: '/bin' }, binTable, {
+  'GET /bin': async () => ({ status: 200, headers: {}, body: bytes }),
+});
+assert.equal(binRes.status, 200);
+assert.equal(binRes.body, bytes);
+await assert.rejects(
+  () =>
+    dispatch({ method: 'GET', path: '/bin' }, binTable, {
+      'GET /bin': async () => ({ status: 200, headers: {}, body: new ArrayBuffer(2) }),
+    }),
+  /invalid response shape/
+);

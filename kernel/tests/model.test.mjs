@@ -322,3 +322,28 @@ test('response()->json() serialises a model and a collection', async () => {
   assert.equal(String(rt.json().body), '[]');
   assert.equal(rt.json({}, 201).status, 201);
 });
+
+test('a date cast with a custom format serialises in that format', () => {
+  // `date:Y-m-d` / `datetime:d/m/Y H:i` are date casts WITH a format
+  // (HasAttributes::isCustomDateTimeCast), so the attribute is a date and the
+  // model writes the app's format - the old isDateAttribute() compared the whole
+  // string and left the stored text alone (`d` stayed '2025-10-23 07:00:00').
+  const { Model, formatCustomDate, castDateSpec } = model;
+  class P extends Model {
+    static casts = { d: 'date:Y-m-d', dt: 'datetime:d/m/Y H:i', plain: 'datetime' };
+  }
+  const p = new P({ id: 1, d: '2025-10-23 07:00:00', dt: '2025-10-23 07:30:00', plain: '2025-10-23 07:00:00' });
+  const json = p.toJSON();
+  assert.equal(json.d, '2025-10-23');
+  assert.equal(json.dt, '23/10/2025 07:30');
+  // A bare date cast keeps the ISO-form rule (Carbon::toJSON -> UTC + Z).
+  assert.match(json.plain, /^2025-10-23T\d{2}:00:00\.000000Z$/);
+  assert.deepEqual(castDateSpec('immutable_date:Y'), { base: 'immutable_date', format: 'Y' });
+  assert.equal(castDateSpec('json'), null);
+  // The PHP date() letters the common formats use.
+  assert.equal(formatCustomDate('2025-01-05 09:05:07', 'jS F Y, H:i:s'), '5th January 2025, 09:05:07');
+  assert.equal(formatCustomDate('2025-10-23 07:30:00', 'D, d M y'), 'Thu, 23 Oct 25');
+  assert.equal(formatCustomDate('2025-10-23 07:30:00', 'N t Y'), '4 31 2025');
+  // An escaped letter is literal.
+  assert.equal(formatCustomDate('2025-10-23 07:30:00', '\\Y=Y'), 'Y=2025');
+});

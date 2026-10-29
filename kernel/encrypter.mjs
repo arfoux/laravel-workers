@@ -1,5 +1,18 @@
-// kernel/encrypter.mjs — Encrypter (AES-256-CBC, Laravel-compatible)
+// kernel/encrypter.mjs - Encrypter (AES-256-CBC, Laravel-compatible)
 // Uses only web-standard globals: crypto.subtle, atob/btoa, TextEncoder/TextDecoder.
+
+/**
+ * Illuminate\Contracts\Encryption\DecryptException. Every decryption failure
+ * (bad base64, malformed JSON envelope, missing field, bad MAC) answers this
+ * class, which is what the PHP side throws and what cookie/CSRF callers catch.
+ */
+export class DecryptError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'DecryptException';
+    this.phpClass = 'Illuminate\\Contracts\\Encryption\\DecryptException';
+  }
+}
 
 function b64EncodeBytes(bytes) {
   let bin = '';
@@ -86,14 +99,31 @@ export async function decryptString(payloadBase64, keyBase64) {
   const aesKey = await importAesKey(keyBytes);
   const hmacKey = await importHmacKey(keyBytes);
 
-  const json = atob(payloadBase64);
-  const payload = JSON.parse(json);
+  // DecryptException, like the PHP oracle (tools/php-crypto-oracle.php:48):
+  // a payload that is not base64/JSON, or whose envelope lacks iv/value/mac,
+  // is a decryption FAILURE - not the SyntaxError/TypeError that used to
+  // escape. Callers (cookies.mjs, csrf.mjs) catch this class only.
+  let payload;
+  try {
+    payload = JSON.parse(atob(payloadBase64));
+  } catch {
+    throw new DecryptError('The payload is invalid.');
+  }
+  if (
+    payload === null ||
+    typeof payload !== 'object' ||
+    typeof payload.iv !== 'string' ||
+    typeof payload.value !== 'string' ||
+    typeof payload.mac !== 'string'
+  ) {
+    throw new DecryptError('The payload is invalid.');
+  }
 
-  // MAC check (constant-time) — replaces early-exit string ===
+  // MAC check (constant-time) - replaces early-exit string ===
   const expectedMacBuf = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode(payload.iv + payload.value));
   const expectedMac = bytesToHex(new Uint8Array(expectedMacBuf));
   if (!timingSafeEqual(expectedMac, payload.mac)) {
-    throw new Error('MAC invalid');
+    throw new DecryptError('MAC invalid');
   }
 
   const iv = b64DecodeToBytes(payload.iv);
@@ -103,4 +133,4 @@ export async function decryptString(payloadBase64, keyBase64) {
 }
 
 // Convenience sync-ish wrappers not possible (crypto.subtle is async). Export async only.
-export default { encryptString, decryptString, timingSafeEqual };
+export default { encryptString, decryptString, timingSafeEqual, DecryptError };

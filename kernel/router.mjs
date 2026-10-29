@@ -263,7 +263,20 @@ export async function dispatch(req, table, handlers, env, options = {}) {
     }
   }
   const res = await handler(ctx, env);
-  if (!res || typeof res.status !== 'number' || typeof res.body !== 'string') {
+  // The body is a string (every rendered body) OR the raw bytes - a request
+  // body and the storage adapter's payload are Uint8Array, so a handler that
+  // answers one must be able to pass through. `new Response(bytes)` (the worker)
+  // accepts both; a Buffer/ArrayBuffer is rejected loudly.
+  if (
+    !res ||
+    typeof res.status !== 'number' ||
+    !(
+      typeof res.body === 'string' ||
+      res.body instanceof Uint8Array ||
+      res.body === null ||
+      res.body === undefined
+    )
+  ) {
     throw new Error('handler returned invalid response shape');
   }
   const headers = {};

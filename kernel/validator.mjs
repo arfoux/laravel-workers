@@ -209,16 +209,102 @@ function isIntegerValue(v) {
   if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return true;
   return false;
 }
-function isBooleanLike(v) {
+function isBooleanLike(v, params = []) {
+  // ValidatesAttributes::validateBoolean() (:536-545): the acceptable list is
+  // `[true, false, 0, 1, '0', '1']` compared STRICTLY, and the `strict`
+  // parameter narrows it to the booleans themselves (`boolean:strict` makes
+  // `1` and `'1'` failures). The edge ignored the parameter.
+  if (Array.isArray(params) && params[0] === 'strict') return v === true || v === false;
   return v === true || v === false || v === 1 || v === 0 || v === '1' || v === '0';
 }
+
+// PHP's `trim()` character set (" \t\n\r\0\x0B") - the emptiness Laravel's
+// `validateRequired` and `presentOrRuleIsImplicit` use.
+function phpTrim(value) {
+  return String(value).replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, '');
+}
+
+// `filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)`: four decimal
+// octets, no leading zero (`01.2.3.4` is rejected) and each up to 255.
+function isIpv4(value) {
+  if (typeof value !== 'string') return false;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(value);
+  if (!m) return false;
+  for (let i = 1; i <= 4; i++) {
+    const part = m[i];
+    if (part.length > 1 && part[0] === '0') return false;
+    if (Number(part) > 255) return false;
+  }
+  return true;
+}
+
+// `filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)`: hex groups of up
+// to four digits, at most one `::` (which must compress at least one group),
+// exactly eight groups otherwise, and an optional trailing dotted quad that
+// counts as the last two groups ('::ffff:192.168.0.1' is valid).
+function isIpv6(value) {
+  if (typeof value !== 'string' || value === '') return false;
+  if (value.includes('%')) return false; // a zone id is not part of the address
+  let head = value;
+  if (head.includes('.')) {
+    const at = head.lastIndexOf(':');
+    if (at < 0) return false;
+    if (!isIpv4(head.slice(at + 1))) return false;
+    head = head.slice(0, at + 1) + '0:0';
+  }
+  const hexGroup = /^[0-9a-fA-F]{1,4}$/;
+  const parts = head.split('::');
+  if (parts.length > 2) return false;
+  const groupsOf = (s) => (s === '' ? [] : s.split(':'));
+  if (parts.length === 2) {
+    const left = groupsOf(parts[0]);
+    const right = groupsOf(parts[1]);
+    return (
+      left.every((g) => hexGroup.test(g)) &&
+      right.every((g) => hexGroup.test(g)) &&
+      left.length + right.length < 8
+    );
+  }
+  const only = groupsOf(parts[0]);
+  return only.length === 8 && only.every((g) => hexGroup.test(g));
+}
+
+// PHP's `Arr::dot()`: the nested data flattened to dotted keys with the leaf
+// values (the shape `distinct` reads out of the data).
+function phpDot(data, prefix = '', out = {}) {
+  if (data === null || typeof data !== 'object') {
+    if (prefix) out[prefix] = data;
+    return out;
+  }
+  for (const key of Object.keys(data)) {
+    const path = prefix ? prefix + '.' + key : key;
+    const value = data[key];
+    if (value !== null && typeof value === 'object') phpDot(value, path, out);
+    else out[path] = value;
+  }
+  return out;
+}
+
+// Illuminate\Validation\Validator::$implicitRules (:207-231): the rules that
+// still run when the attribute is absent or holds an empty (whitespace-only)
+// string.
+const IMPLICIT_RULES = new Set([
+  'accepted', 'accepted_if', 'declined', 'declined_if', 'filled',
+  'missing', 'missing_if', 'missing_unless', 'missing_with', 'missing_with_all',
+  'present', 'present_if', 'present_unless', 'present_with', 'present_with_all',
+  'required', 'required_if', 'required_if_accepted', 'required_if_declined',
+  'required_unless', 'required_with', 'required_with_all',
+  'required_without', 'required_without_all',
+]);
 
 // Rules that carry no value check (modifiers / conditional-presence).
 const MODIFIERS = new Set(['sometimes', 'nullable', 'bail', 'required', 'present', 'filled']);
 const PRESENCE_RULES = new Set([
   'required', 'required_if', 'required_unless',
   'required_with', 'required_without', 'required_with_all', 'required_without_all',
+  'required_if_accepted', 'required_if_declined',
   'prohibited', 'prohibited_if', 'prohibited_unless',
+  'prohibited_if_accepted', 'prohibited_if_declined',
 ]);
 const ASYNC_RULES = new Set(['unique', 'exists']);
 const EXCLUDE_RULES = new Set(['exclude', 'exclude_if', 'exclude_unless', 'exclude_with', 'exclude_without']);
@@ -233,7 +319,7 @@ const KNOWN_RULES = new Set([
   ...ASYNC_RULES,
   'string', 'integer', 'numeric', 'boolean', 'array', 'email', 'url', 'date', 'alpha',
   'alpha_num', 'alpha_dash', 'min', 'max', 'between', 'size', 'in', 'not_in', 'same',
-  'different', 'confirmed', 'regex', 'not_regex', 'accepted', 'accepted_if', 'declined',
+  'different', 'confirmed', 'regex', 'not_regex', 'accepted', 'accepted_if', 'declined', 'declined_if',
   'digits', 'digits_between', 'multiple_of', 'uuid', 'ip', 'ipv4', 'ipv6', 'mac_address',
   'json', 'ascii', 'lowercase', 'uppercase', 'hex_color', 'starts_with', 'ends_with',
   'before', 'after', 'before_or_equal', 'after_or_equal', 'date_equals', 'date_format',
@@ -241,6 +327,9 @@ const KNOWN_RULES = new Set([
   'doesnt_start_with', 'doesnt_end_with', 'list', 'required_array_keys', 'array_keys',
   'in_array', 'decimal', 'timezone',
   'file', 'image', 'dimensions',
+  // Implemented with the vendor semantics in _checkRule():
+  'base64', 'ulid', 'contains', 'doesnt_contain', 'in_array_keys',
+  'max_digits', 'min_digits', 'prohibits', 'extensions',
 ]);
 // The validation rules that need the file's *content* type (finfo): the edge
 // cannot sniff the content like PHP does, so they are not compiled (the build
@@ -270,49 +359,17 @@ function wildcardPattern(sourceKey, segment = '([^.]*)') {
   return new RegExp('^' + escaped.replace(/\\\*/g, segment) + '$(?![\\s\\S])', 'u');
 }
 
-function parsePipeString(str) {
-  if (!str) return [];
-  const out = [];
-  let i = 0;
-  while (i < str.length) {
-    let prefix = null;
-    if (str.slice(i, i + 6) === 'regex:') prefix = 'regex:';
-    else if (str.slice(i, i + 10) === 'not_regex:') prefix = 'not_regex:';
-    if (prefix) {
-      const start = i;
-      let j = i + prefix.length;
-      if (j < str.length && str[j] === '/') {
-        j++; // past opening /
-        let inClass = false;
-        while (j < str.length) {
-          const c = str[j];
-          if (c === '\\') { j += 2; continue; }
-          if (!inClass && c === '[') { inClass = true; j++; continue; }
-          if (inClass && c === ']') { inClass = false; j++; continue; }
-          if (!inClass && c === '/') break;
-          j++;
-        }
-        if (j < str.length && str[j] === '/') {
-          j++;
-          while (j < str.length && /[a-zA-Z]/.test(str[j])) j++;
-        }
-        out.push(str.slice(start, j));
-        i = j;
-        if (i < str.length && str[i] === '|') i++;
-        continue;
-      }
-      const next = str.indexOf('|', i);
-      if (next === -1) { out.push(str.slice(i)); break; }
-      out.push(str.slice(i, next));
-      i = next + 1;
-      continue;
-    }
-    const next = str.indexOf('|', i);
-    if (next === -1) { out.push(str.slice(i)); break; }
-    out.push(str.slice(i, next));
-    i = next + 1;
-  }
-  return out.filter((s) => s.length > 0);
+// Laravel explodes a STRING rule set with a naive `explode('|', $rule)`
+// (ValidationRuleParser::explodeExplicitRule :92-96): EVERY pipe ends a rule,
+// escaped or not (probed on 13.37: 'regex:/^a\\|b$/' -> ['regex:/^a\\','b$/']),
+// so `regex:/^(a|b)$/` and `in:"a|b"` split into a rule that has no validateX()
+// method - BadMethodCallException in PHP. The edge mirrors it exactly.
+// The ARRAY form is NOT split: each element goes through prepareRule(), so the
+// FormRequest dump's array rule sets keep their alternations and quoted
+// commas. A string rule set that needs a pipe inside a parameter is written as
+// an array - the same string that works at the edge works in PHP.
+function splitRuleString(str) {
+  return String(str).split('|');
 }
 // PHP's str_getcsv($str, escape: '\\') — the parser Laravel uses for a rule's
 // parameters (Illuminate\Validation\ValidationRuleParser::parseParameters).
@@ -694,7 +751,7 @@ export class Validator {
     for (const [field, raw] of Object.entries(rules)) {
       let arr;
       if (Array.isArray(raw)) arr = raw.map(String);
-      else if (typeof raw === 'string') arr = parsePipeString(raw);
+      else if (typeof raw === 'string') arr = splitRuleString(raw);
       else arr = [];
       const parsed = arr.map(parseRuleToken);
       for (const r of parsed) {
@@ -709,7 +766,14 @@ export class Validator {
           );
         }
         if (!KNOWN_RULES.has(r.name)) {
-          throw new Error('unknown validation rule: ' + r.name);
+          // Laravel answers an unknown rule with
+          // BadMethodCallException("Method ...::validateX() does not exist")
+          // (Validator::__call, Validator.php:1746-1756) - the same class the
+          // string-rule pipe split produces, so the edge names it too.
+          const err = new Error('unknown validation rule: ' + r.name);
+          err.name = 'BadMethodCallException';
+          err.phpClass = 'BadMethodCallException';
+          throw err;
         }
         // Laravel's requireParameterCount: too few parameters is an
         // InvalidArgumentException (a 500) there - the edge fails loud too.
@@ -822,6 +886,17 @@ export class Validator {
         if (!has || !this._dependentMatches(r)) {
           return { required: true, rule: r.name, param: r.param };
         }
+      } else if (r.name === 'required_if_accepted' || r.name === 'required_if_declined') {
+        // ValidatesAttributes.php:2216-2244: the field is required when the
+        // OTHER field holds an accepted (declined) value.
+        const otherValue = this.get(r.params[0]);
+        const accepted = otherValue === true || otherValue === 1 || otherValue === '1' ||
+          otherValue === 'yes' || otherValue === 'on' || otherValue === 'true';
+        const declined = otherValue === false || otherValue === 0 || otherValue === '0' ||
+          otherValue === 'no' || otherValue === 'off' || otherValue === 'false';
+        if (r.name === 'required_if_accepted' ? accepted : declined) {
+          return { required: true, rule: r.name, param: r.param };
+        }
       } else if (r.name === 'required_with') {
         const others = r.params;
         if (others.some((o) => !this._empty(o))) return { required: true, rule: r.name, param: r.param };
@@ -841,16 +916,27 @@ export class Validator {
 
   _prohibited(rules) {
     for (const r of rules) {
-      if (r.name === 'prohibited') return { prohibited: true };
+      if (r.name === 'prohibited') return { prohibited: true, rule: 'prohibited', param: null };
       if (r.name === 'prohibited_if') {
         const other = r.params[0];
         if (this._isPresent(other) && this._dependentMatches(r)) {
-          return { prohibited: true };
+          return { prohibited: true, rule: r.name, param: r.param };
+        }
+      } else if (r.name === 'prohibited_if_accepted' || r.name === 'prohibited_if_declined') {
+        // ValidatesAttributes.php:2287-2315: prohibited when the OTHER field
+        // holds an accepted (declined) value.
+        const otherValue = this.get(r.params[0]);
+        const accepted = otherValue === true || otherValue === 1 || otherValue === '1' ||
+          otherValue === 'yes' || otherValue === 'on' || otherValue === 'true';
+        const declined = otherValue === false || otherValue === 0 || otherValue === '0' ||
+          otherValue === 'no' || otherValue === 'off' || otherValue === 'false';
+        if (r.name === 'prohibited_if_accepted' ? accepted : declined) {
+          return { prohibited: true, rule: r.name, param: r.param };
         }
       } else if (r.name === 'prohibited_unless') {
         const other = r.params[0];
         if (!this._isPresent(other) || !this._dependentMatches(r)) {
-          return { prohibited: true };
+          return { prohibited: true, rule: r.name, param: r.param };
         }
       }
     }
@@ -928,6 +1014,16 @@ export class Validator {
       const bail = fieldRules.some((r) => r.name === 'bail');
       const isAbsent = !this._isPresent(field);
       const value = this.get(field);
+      // presentOrRuleIsImplicit() (Validator.php:877-885): an ABSENT attribute,
+      // or a string that PHP's trim() empties, is validated against the
+      // IMPLICIT rules only. isNotNullIfMarkedAsNullable() (:924-931): a
+      // nullable attribute whose value is null is the same. The JS used to
+      // skip such a field outright, which dropped the implicit value rules
+      // (accepted/declined/filled) and made the non-implicit ones run on a
+      // blank string (a probe: `x='   '` with `alpha` PASSES Laravel).
+      const blankString = typeof value === 'string' && phpTrim(value) === '';
+      const nullableNull = hasNullable && (value === null || value === undefined);
+      const onlyImplicit = isAbsent || blankString || nullableNull;
 
       if (hasSometimes && isAbsent) continue;
 
@@ -938,7 +1034,9 @@ export class Validator {
 
       const miss = this._missingEnforced(fieldRules);
       if (miss.enforced) {
-        if (!isAbsent && !isEmptyValue(value)) this._addError(field, miss.rule, miss.param);
+        // Laravel's missing rules ask whether the attribute EXISTS
+        // (`hasAttribute`), so a present-but-empty value fails too.
+        if (!isAbsent) this._addError(field, miss.rule, miss.param);
         continue;
       }
 
@@ -954,25 +1052,22 @@ export class Validator {
       }
 
       const req = this._conditionalRequired(fieldRules);
-      if (req.required) {
-        if (isEmptyRequired(value)) {
-          this._addError(field, req.rule, req.param);
-          continue;
-        }
-      } else if (isAbsent) {
-        // prohibited still applies when present; absent is fine
+      if (req.required && isEmptyRequired(value)) {
+        this._addError(field, req.rule, req.param);
         continue;
       }
 
-      const proh = this._prohibited(fieldRules);
+      // prohibited is not an implicit rule: an absent attribute or a blank
+      // string skips it (a probe: `x='   '` with `prohibited` PASSES).
+      const proh = onlyImplicit ? { prohibited: false } : this._prohibited(fieldRules);
       if (proh.prohibited) {
-        if (!isEmptyValue(value)) this._addError(field, 'prohibited', null);
+        if (!isEmptyValue(value)) this._addError(field, proh.rule, proh.param);
         continue;
       }
 
-      if (hasNullable && (value === null || value === '')) continue;
-      if (isAbsent) continue;
-      if (hasFilled && isEmptyRequired(value)) {
+      // `filled` is implicit but only when the attribute is PRESENT
+      // (ValidatesAttributes.php:1298-1305: `Arr::has($this->data, ...)`).
+      if (hasFilled && !isAbsent && isEmptyRequired(value)) {
         // The rule name selects the message: Laravel's `filled` says "The
         // :attribute field must have a value." (not the `required` sentence).
         this._addError(field, 'filled', null);
@@ -985,6 +1080,9 @@ export class Validator {
         if (MODIFIERS.has(r.name) || PRESENCE_RULES.has(r.name)) continue;
         if (EXCLUDE_RULES.has(r.name) || MISSING_RULES.has(r.name) || PRESENT_RULES.has(r.name)) continue;
         if (ASYNC_RULES.has(r.name)) continue; // handled async
+        // presentOrRuleIsImplicit: an absent/blank/null-nullable value runs the
+        // implicit rules only (accepted, declined, filled handled above).
+        if (onlyImplicit && !IMPLICIT_RULES.has(r.name)) continue;
         const ok = this._checkRule(field, value, r, hasNumeric);
         if (!ok) {
           this._addError(field, r.name, r.param);
@@ -1058,7 +1156,11 @@ export class Validator {
       const bail = fieldRules.some((r) => r.name === 'bail');
       const value = this.get(field);
       if (!this._isPresent(field)) continue;
-      if (value === null || value === '') continue;
+      // presentOrRuleIsImplicit(): a null value or a string that trims to ''
+      // skips the non-implicit unique/exists (Laravel never queries for a
+      // blank string).
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'string' && phpTrim(value) === '') continue;
       // only run async checks when the field already has no error (or is not bailing)
       for (const r of fieldRules) {
         if (!ASYNC_RULES.has(r.name)) continue;
@@ -1105,17 +1207,42 @@ export class Validator {
       }
       case 'integer': return isIntegerValue(value);
       case 'numeric': return isNumericValue(value);
-      case 'boolean': return isBooleanLike(value);
+      case 'boolean': return isBooleanLike(value, rule.params);
       case 'array': return Array.isArray(value);
-      case 'email': return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+      // RFCValidation (egulias) ACCEPTS a dotless domain ('a@b') and the RFC
+      // local-part characters; the JS regex used to demand a dot, so it
+      // rejected an address Laravel accepts (a probe).
+      case 'email': {
+        if (typeof value !== 'string' || /[\r\n]/.test(value)) return false;
+        return /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/.test(value);
+      }
       case 'url': {
         if (typeof value !== 'string') return false;
         try { const u = new URL(value); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
       }
       case 'date': return typeof value === 'string' && !Number.isNaN(Date.parse(value));
-      case 'alpha': return typeof value === 'string' && /^[A-Za-z]+$/.test(value);
-      case 'alpha_num': return typeof value === 'string' && /^[A-Za-z0-9]+$/.test(value);
-      case 'alpha_dash': return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
+      // ValidatesAttributes.php:384-444: the default classes are UNICODE
+      // (`[\pL\pM]`, `[\pL\pM\pN]`, `[\pL\pM\pN_-]`) and the `ascii` parameter
+      // switches to the ASCII range. The JS regexes were ASCII-only, so
+      // 'café' failed a rule Laravel accepts (a probe). alpha_num/alpha_dash
+      // also accept a numeric value (PHP's `is_numeric` + the preg coercion).
+      case 'alpha': {
+        if (typeof value !== 'string') return false;
+        if (rule.params[0] === 'ascii') return /^[a-zA-Z]+$/.test(value);
+        return /^[\p{L}\p{M}]+$/u.test(value);
+      }
+      case 'alpha_num': {
+        const str = typeof value === 'string' ? value : isNumericValue(value) ? String(value) : null;
+        if (str === null) return false;
+        if (rule.params[0] === 'ascii') return /^[a-zA-Z0-9]+$/.test(str);
+        return /^[\p{L}\p{M}\p{N}]+$/u.test(str);
+      }
+      case 'alpha_dash': {
+        const str = typeof value === 'string' ? value : isNumericValue(value) ? String(value) : null;
+        if (str === null) return false;
+        if (rule.params[0] === 'ascii') return /^[a-zA-Z0-9_-]+$/.test(str);
+        return /^[\p{L}\p{M}\p{N}_-]+$/u.test(str);
+      }
       case 'accepted': return value === true || value === 1 || value === '1' || value === 'yes' || value === 'on' || value === 'true';
       case 'accepted_if': {
         const other = rule.params[0];
@@ -1125,19 +1252,136 @@ export class Validator {
         return true;
       }
       case 'declined': return value === false || value === 0 || value === '0' || value === 'no' || value === 'off' || value === 'false';
+      // ValidatesAttributes.php:99-112: like accepted_if, but the field must
+      // hold a DECLINED value and be present (`validateRequired`).
+      case 'declined_if': {
+        const other = rule.params[0];
+        if (this._isPresent(other) && this._dependentMatches(rule)) {
+          return !isEmptyRequired(value) &&
+            (value === false || value === 0 || value === '0' || value === 'no' || value === 'off' || value === 'false');
+        }
+        return true;
+      }
       case 'digits': return typeof value !== 'undefined' && /^\d+$/.test(String(value)) && String(value).length === Number(p);
       case 'digits_between': {
         const [a, b] = rule.params.map(Number);
         return /^\d+$/.test(String(value)) && String(value).length >= a && String(value).length <= b;
       }
+      // ValidatesAttributes::validateMaxDigits() (:1733-1744) and
+      // validateMinDigits() (:1753-1764): a string (or a numeric value cast to
+      // a string) whose characters are ALL digits, with that length compared
+      // to the single parameter.
+      case 'max_digits':
+      case 'min_digits': {
+        if (typeof value !== 'string' && !isNumericValue(value)) return false;
+        const s = phpStringCast(value);
+        if (/[^0-9]/.test(s)) return false;
+        const bound = Number(rule.params[0]);
+        if (!Number.isFinite(bound)) return false;
+        return rule.name === 'max_digits' ? s.length <= bound : s.length >= bound;
+      }
       case 'multiple_of': {
         const n = Number(p);
         return isNumericValue(value) && n !== 0 && Number(value) % n === 0;
       }
-      case 'uuid': return typeof value === 'string' && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value);
-      case 'ipv4': return typeof value === 'string' && /^(\d{1,3}\.){3}\d{1,3}$/.test(value) && value.split('.').every((o) => Number(o) <= 255);
-      case 'ipv6': return typeof value === 'string' && /^[0-9a-fA-F:]+$/.test(value) && value.includes(':');
-      case 'ip': return this._checkRule(field, value, { name: 'ipv4' }, hasNumeric) || this._checkRule(field, value, { name: 'ipv6' }, hasNumeric);
+      // ValidatesAttributes::validateUuid() -> Str::isUuid($value, $version)
+      // (Str.php:687-717). Without a parameter: the canonical dashed form only.
+      // With one: Symfony parses the value, so the 32-char form counts too, the
+      // variant nibble must be [89ab] and the version nibble [1-8]; `0`/`nil`
+      // answer the all-zero uuid, `max` the all-`f` one (probed on PHP 8.3:
+      // 'a0ee...' with uuid:4 true, with uuid:1 false, the same uuid WITHOUT
+      // dashes with uuid:4 true and without a parameter false, all-zero with
+      // uuid:0 true, nibble 9 with uuid:9 false).
+      case 'uuid': {
+        if (typeof value !== 'string') return false;
+        const raw = rule.params.length ? value : null;
+        if (raw === null) {
+          return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value);
+        }
+        let u = value;
+        if (/^[0-9a-fA-F]{32}$/.test(u)) {
+          u = u.slice(0, 8) + '-' + u.slice(8, 12) + '-' + u.slice(12, 16) + '-' + u.slice(16, 20) + '-' + u.slice(20);
+        } else if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(u)) {
+          return false;
+        }
+        u = u.toLowerCase();
+        const wanted = rule.params[0];
+        // `$version = (int) $parameters[0]` unless it is exactly 'max'
+        // (validateUuid), then `Str::isUuid` compares to the parsed fields.
+        if (wanted !== 'max' && Number.parseInt(String(wanted).trim(), 10) === 0) {
+          return u === '00000000-0000-0000-0000-000000000000';
+        }
+        if (wanted === 'max') return u === 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+        if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){2}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u)) return false;
+        const v = Number.parseInt(String(wanted).trim(), 10);
+        if (!(v >= 1 && v <= 8)) return false;
+        return u[14] === String(v);
+      }
+      case 'ulid': {
+        // ValidatesAttributes::validateUlid() -> Str::isUlid() -> Symfony
+        // Ulid::isValid(): exactly 26 Crockford base32 characters (I, L, O and
+        // U excluded), case-insensitive, and the first character at most '7'
+        // (the ULID is 128 bits; probed: '7ZZZ...' true, '8ZZZ...' false).
+        if (typeof value !== 'string' || value.length !== 26) return false;
+        if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(value.toUpperCase())) return false;
+        return value.toUpperCase()[0] <= '7';
+      }
+      case 'base64': {
+        // ValidatesAttributes::validateBase64() (:183-192): the strict decode
+        // must succeed AND re-encode to the very same string, so the encoding
+        // has to be canonical ('AB==' decodes but re-encodes to 'AA==').
+        if (typeof value !== 'string' || value === '') return false;
+        if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+        try {
+          return btoa(atob(value)) === value;
+        } catch {
+          return false;
+        }
+      }
+      case 'contains': {
+        // validateContains (:331-338): `array_all($parameters, fn ($p) =>
+        // in_array($p, $value))` - LOOSE in_array.
+        if (!isPhpArray(value)) return false;
+        const items = Array.isArray(value) ? value : Object.values(value);
+        return rule.params.every((param) => items.some((item) => phpLooseEquals(item, param)));
+      }
+      case 'doesnt_contain': {
+        // validateDoesntContain (:345-352): the STRICT in_array.
+        if (!isPhpArray(value)) return false;
+        const items = Array.isArray(value) ? value : Object.values(value);
+        return rule.params.every((param) => !items.some((item) => item === param));
+      }
+      case 'in_array_keys': {
+        // validateInArrayKeys (:359-368): `array_any($parameters, fn ($p) =>
+        // Arr::exists($value, $p))` - at least one parameter is a key.
+        if (!isPhpArray(value)) return false;
+        if (!rule.params.length) return false;
+        return rule.params.some((param) => Object.prototype.hasOwnProperty.call(value, param));
+      }
+      case 'prohibits': {
+        // validateProhibits (:2346-2357): when the attribute is present the
+        // named attributes must all be absent (Arr::get reads the same input
+        // the attribute came from).
+        if (isEmptyRequired(value)) return true;
+        return rule.params.every((param) => isEmptyRequired(this.get(param)));
+      }
+      case 'extensions': {
+        // validateExtensions (:1266-1277) + shouldBlockPhpUpload (:1801-1813):
+        // the CLIENT-DECLARED extension, lowercased, is one of the parameters;
+        // a PHP extension is refused unless 'php' is whitelisted itself.
+        if (!isUploadedFileValue(value) || !value.isValid()) return false;
+        const ext = String(value.getClientOriginalExtension() || '').toLowerCase().trim();
+        if (!rule.params.includes('php')) {
+          if (['php', 'php3', 'php4', 'php5', 'php7', 'php8', 'phtml', 'phar'].includes(ext)) return false;
+        }
+        return rule.params.some((param) => String(param) === ext);
+      }
+      // ValidatesAttributes.php:1526-1529: `#(?:[0-9a-f]{3}){1,2}` or
+      // `#(?:[0-9a-f]{4}){1,2}` - the 4- and 8-digit forms (with alpha) count.
+      case 'hex_color': return typeof value === 'string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value);
+      case 'ipv4': return isIpv4(value);
+      case 'ipv6': return isIpv6(value);
+      case 'ip': return isIpv4(value) || isIpv6(value);
       case 'mac_address': return typeof value === 'string' && /^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$/.test(value);
       case 'json': {
         if (typeof value !== 'string') return false;
@@ -1146,7 +1390,6 @@ export class Validator {
       case 'ascii': return typeof value === 'string' && /^[\x00-\x7F]*$/.test(value);
       case 'lowercase': return typeof value === 'string' && value === value.toLowerCase();
       case 'uppercase': return typeof value === 'string' && value === value.toUpperCase();
-      case 'hex_color': return typeof value === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value);
       case 'starts_with': {
         // Laravel: `is_string($value) || is_numeric($value)` then
         // Str::startsWith((string) $value, $parameters) (ANY needle matches).
@@ -1193,15 +1436,32 @@ export class Validator {
         if (rule.name === 'lt') return a < b;
         return a <= b;
       }
+      // ValidatesAttributes.php:919-968: `distinct` compares the value against
+      // the OTHER values that sit at the same wildcard path (the sibling
+      // entries - `items.*.id` against the other ids), gathered from the
+      // dotted data and with the value's own entry removed. The JS version
+      // scanned the VALUE for duplicates instead, so it answered the opposite
+      // way on both shapes (a probe: `x=[1,1]` PASSES Laravel and the
+      // wildcard duplicate FAILS it).
       case 'distinct': {
-        if (!Array.isArray(value)) return true;
-        const seen = new Set();
-        for (const item of value) {
-          const k = typeof item === 'object' ? JSON.stringify(item) : String(item);
-          if (seen.has(k)) return false;
-          seen.add(k);
+        const primary = this._primaryAttribute(field);
+        const source = String(primary).includes('*') ? primary : field;
+        const pattern = new RegExp(
+          '^' + String(source).replace(JS_REGEX_SYNTAX, '\\$&').replace(/\\\*/g, '[^.]+') + '$',
+          'u'
+        );
+        const dotted = phpDot(this.data);
+        const others = [];
+        for (const key of Object.keys(dotted)) {
+          if (key === field) continue;
+          if (pattern.test(key)) others.push(dotted[key]);
         }
-        return true;
+        if (rule.params.includes('ignore_case') && typeof value === 'string') {
+          const lower = value.toLowerCase();
+          return !others.some((other) => typeof other === 'string' && other.toLowerCase() === lower);
+        }
+        const strict = rule.params.includes('strict');
+        return !others.some((other) => (strict ? other === value : phpLooseEquals(value, other)));
       }
       case 'min': {
         const size = this._size(value, hasNumeric);
@@ -1510,6 +1770,15 @@ export class Validator {
     // (ValidatesWhenResolvedTrait::validateResolved() calls fails()).
     return this._errors;
   }
+  /**
+   * `messages()` (Validator.php:1145-1152): the message container, and
+   * `errors()` is its semantic shortcut (`return $this->messages()`,
+   * Validator.php:1159-1161). Laravel runs the pass when the messages are not
+   * computed yet; the kernel's bag is always live (see `errors()`).
+   */
+  messages() {
+    return this.errors();
+  }
   validated() {
     this._ensureSync();
     const out = {};
@@ -1534,5 +1803,11 @@ export async function validate(data, rules, messages, opts) {
   const ok = await v.passes();
   return { ok, errors: v.errors(), validated: v.validated() };
 }
+
+// The rule surface the compiler consults (compiler/src/transpiler.mjs):
+// the names _checkRule() answers, plus the pipe parser the runtime splits
+// string rule sets with. The build checks the app's rules with the SAME
+// parser, so a build verdict can never disagree with the runtime.
+export { KNOWN_RULES, splitRuleString };
 
 export default { Validator, validate };

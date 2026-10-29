@@ -41,7 +41,7 @@
 //   - runningUnitTests() is a constant false in the worker runtime.
 
 import { makeCookie, cookieValuePrefixRemove, rawUrlEncode } from './cookies.mjs';
-import { decryptString, timingSafeEqual } from './encrypter.mjs';
+import { decryptString, timingSafeEqual, DecryptError } from './encrypter.mjs';
 import { phpFalsy, phpIsNumeric } from './ratelimit.mjs';
 
 /** Configuration/programming errors in the CSRF port (never swallowed). */
@@ -605,9 +605,10 @@ export class PreventRequestForgery {
       try {
         token = cookieValuePrefixRemove(await this.#decryptPayload(header));
       } catch (e) {
-        // PHP catches DecryptException only; configuration errors must not be
-        // swallowed into a silent ''.
-        if (e instanceof CsrfError) throw e;
+        // PHP catches DecryptException only (PreventRequestForgery::getTokenFromRequest
+        // -> `$this->encrypter->decrypt(...)`); configuration and programming
+        // errors must not be swallowed into a silent ''.
+        if (!(e instanceof DecryptError)) throw e;
         token = '';
       }
     }

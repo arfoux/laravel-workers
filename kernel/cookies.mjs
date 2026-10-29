@@ -12,7 +12,7 @@
 // Crypto (AES-256-CBC payloads) comes from kernel/encrypter.mjs (async via
 // WebCrypto). Everything else is synchronous and workerd-compatible.
 
-import { encryptString, decryptString } from './encrypter.mjs';
+import { encryptString, decryptString, DecryptError } from './encrypter.mjs';
 
 export class CookieError extends Error {
   constructor(message) {
@@ -54,10 +54,14 @@ export function rawUrlDecode(str) {
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (c === 0x25 /* % */ && i + 2 < s.length) {
-      const h1 = parseInt(s[i + 1], 16);
-      const h2 = parseInt(s[i + 2], 16);
-      if (!Number.isNaN(h1) && !Number.isNaN(h2)) {
-        bytes.push((h1 << 4) | h2);
+      // PHP's rawurldecode() (ext/standard/url.c): BOTH characters must be
+      // hex digits, otherwise the '%' stays literal. parseInt() alone accepts
+      // the prefix of an invalid pair ("%1x" -> 0x01, "%z1" -> 0x01), which
+      // decoded attacker-controlled Cookie headers to different bytes.
+      const hex = /^[0-9a-fA-F]{2}$/;
+      const pair = s.slice(i + 1, i + 3);
+      if (hex.test(pair)) {
+        bytes.push(parseInt(pair, 16));
         i += 2;
         continue;
       }
@@ -228,6 +232,21 @@ export function parseSetCookie(header) {
 // bracket-style names ("a[b]=c") creating nested arrays. Duplicate names:
 // later assignments overwrite earlier ones.
 
+/**
+ * PHP's `$arr[] = $v` index: the highest INTEGER key + 1, or 0 when the array
+ * holds none. A numeric-looking key with a leading zero ("05") is a STRING key
+ * in PHP and does not count.
+ */
+function nextBracketIndex(node) {
+  let max = null;
+  for (const key of Object.keys(node)) {
+    if (!/^(?:0|-?[1-9]\d*)$/.test(key)) continue;
+    const n = Number(key);
+    if (max === null || n > max) max = n;
+  }
+  return max === null ? '0' : String(max + 1);
+}
+
 function assignBracketValue(target, name, value) {
   const m = /^([^\[]+)((?:\[[^\]]*\])*)$/.exec(name);
   if (!m) {
@@ -249,12 +268,12 @@ function assignBracketValue(target, name, value) {
   }
   let node = target[base];
   for (let i = 0; i < indices.length - 1; i++) {
-    const key = indices[i] === '' ? String(Object.keys(node).length) : indices[i];
+    const key = indices[i] === '' ? nextBracketIndex(node) : indices[i];
     if (typeof node[key] !== 'object' || node[key] === null) node[key] = {};
     node = node[key];
   }
   const last = indices[indices.length - 1];
-  const finalKey = last === '' ? String(Object.keys(node).length) : last;
+  const finalKey = last === '' ? nextBracketIndex(node) : last;
   node[finalKey] = value;
 }
 
@@ -285,7 +304,11 @@ export function parseCookieHeader(header) {
 const KEY_CACHE = new Map();
 
 async function getHmacKey(keyBytes) {
-  const cacheKey = keyBytes.length + ':' + Array.from(keyBytes.slice(0, 8)).join(',');
+  // The cache key is the WHOLE key: it used to be `length + first 8 bytes`, so
+  // two app keys that agreed on their length and first eight bytes shared one
+  // imported CryptoKey and a cookie signed under one key verified under the
+  // other (an APP_KEY rotation is exactly the case those bytes differ in last).
+  const cacheKey = bytesToHex(keyBytes);
   let key = KEY_CACHE.get(cacheKey);
   if (!key) {
     key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, [
@@ -376,7 +399,11 @@ export function createCookieEncryptor({ keyBase64, previousKeys = [], except = [
         }
         try {
           out[name] = await decryptValue(name, value, keyBytes);
-        } catch {
+        } catch (e) {
+          // EncryptCookies::decrypt() swallows DecryptException only; a
+          // configuration error (a bad APP_KEY) must not read as "cookie
+          // absent" - it would silently log everyone out.
+          if (!(e instanceof DecryptError)) throw e;
           out[name] = null;
         }
       }
