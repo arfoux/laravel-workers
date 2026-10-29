@@ -113,7 +113,7 @@
       "label": "`Str::slug()`",
       "php": "$s = \\Illuminate\\Support\\Str::slug('A B');",
       "expect": "ok",
-      "note": "The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii) - every value is verified against the real Laravel.",
+      "note": "The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii/is/finish/start/random/isUrl) - every value is verified against the real Laravel.",
       "batch": "M38",
       "status": "done"
     },
@@ -483,6 +483,26 @@
       "check": "compiler",
       "expect": "ok",
       "note": "The scalar casts with PHP's own semantics: (string), (int), (bool), (float).",
+      "batch": "M40",
+      "status": "done"
+    },
+    {
+      "id": "php_cast_object",
+      "label": "The `(object)` cast (`(object) $x`)",
+      "php": "$o = (object) ['a' => 1];",
+      "check": "compiler",
+      "expect": "ok",
+      "note": "PHP's cast to stdClass (`rt.objectCast`, oracle-probed): a list becomes an object keyed by the stringified indices, an object is answered as-is, null is the empty object, a scalar wraps under `scalar`.",
+      "batch": "M40",
+      "status": "done"
+    },
+    {
+      "id": "nullsafe_access",
+      "label": "Null-safe access (`$a?->b`)",
+      "php": "$v = $a?->b;",
+      "check": "compiler",
+      "expect": "ok",
+      "note": "PHP's `?->`: a null/undefined receiver answers null, and that null propagates through any later `->` links in the same chain (`rt.nsprop`, `rt.nsmethod` for the method form).",
       "batch": "M40",
       "status": "done"
     },

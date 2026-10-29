@@ -921,6 +921,18 @@ const EXPECTED = {
     "ok": true,
     "value": true
   },
+  "containsStrict_cb_phpfalse": {
+    "ok": true,
+    "value": false
+  },
+  "containsStrict_cb_phpfalse2": {
+    "ok": true,
+    "value": false
+  },
+  "containsStrict_cb_phptrue": {
+    "ok": true,
+    "value": true
+  },
   "doesntContain": {
     "ok": true,
     "value": false
@@ -995,6 +1007,14 @@ const EXPECTED = {
     }
   },
   "whereInstanceOf": {
+    "ok": true,
+    "value": 2
+  },
+  "whereInstanceOf_fqcn": {
+    "ok": true,
+    "value": 2
+  },
+  "whereInstanceOf_fqcn_list": {
     "ok": true,
     "value": 2
   },
@@ -1245,6 +1265,11 @@ const CASES = new Map(Object.entries({
   containsStrict_kv: () => make([{ a: 1 }]).containsStrict('a', 1),
   containsStrict_kv_loose: () => make([{ a: 1 }]).containsStrict('a', '1'),
   containsStrict_cb: () => make([1, 2]).containsStrict((v) => v > 1),
+  // PHP casts the predicate's return with array_any()'s bool cast: '0' and ''
+  // are FALSE (JS Boolean() would say true).
+  containsStrict_cb_phpfalse: () => make([1, 2]).containsStrict(() => '0'),
+  containsStrict_cb_phpfalse2: () => make([1, 2]).containsStrict(() => ''),
+  containsStrict_cb_phptrue: () => make([1, 2]).containsStrict(() => '1'),
   doesntContain: () => make([1]).doesntContain('1'),
   doesntContainStrict: () => make([1]).doesntContainStrict(1),
   duplicatesStrict: () => make([1, '1', 1]).duplicatesStrict().all(),
@@ -1260,6 +1285,24 @@ const CASES = new Map(Object.entries({
   whereNotBetween: () => make([{ a: 1 }, { a: 2 }, { a: 3 }]).whereNotBetween('a', [2, 3]).values().all(),
   whereBetween_keyed: () => make({ x: { a: 2 }, y: { a: 5 } }).whereBetween('a', [1, 3]).all(),
   whereInstanceOf: () => make([make([]), [1], make([2])]).whereInstanceOf(C).count(),
+  // `Model::class` compiles to the FQCN STRING, so the string rung must read the
+  // compiled class marker (`__lwClass`) - a probe of a real compiled instance.
+  whereInstanceOf_fqcn: () => {
+    const inst = (fqcn) => {
+      const o = {};
+      Object.defineProperty(o, '__lwClass', { value: fqcn, enumerable: false });
+      return o;
+    };
+    return make([inst('Foo'), inst('Bar'), inst('Foo')]).whereInstanceOf('Foo').count();
+  },
+  whereInstanceOf_fqcn_list: () => {
+    const inst = (fqcn) => {
+      const o = {};
+      Object.defineProperty(o, '__lwClass', { value: fqcn, enumerable: false });
+      return o;
+    };
+    return make([inst('Foo'), inst('Bar')]).whereInstanceOf(['Foo', 'Bar']).count();
+  },
   unlessEmpty: () => make([1]).unlessEmpty(() => 'yes'),
   unlessEmpty_empty: () => make([]).unlessEmpty(() => 'yes', () => 'fallback'),
   unlessNotEmpty: () => make([]).unlessNotEmpty(() => 'yes'),

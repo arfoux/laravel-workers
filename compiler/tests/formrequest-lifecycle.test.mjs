@@ -166,3 +166,60 @@ test('formrequest: unique without a connection raises the rule its own error', a
     attributes: {},
   });
 });
+// The `url` rule through the FormRequest lifecycle: `ValidateAttributes::validateUrl`
+// is `is_string($value) && Str::isUrl($value, $parameters)`, so a custom list replaces
+// Laravel's default one and a non-string never passes. The rule was reachable only
+// through a plain `new Validator(...)` probe before; this drives the FormRequest path a
+// compiled app actually takes. Every expectation is the PHP 8.3 oracle's answer.
+test('formrequest: the url rule', async () => {
+  const run = (value, ...params) =>
+    makeRt({}, { input: { site: value } }).formRequest(FQCN, {
+      hooks: [],
+      rules: { site: params.length ? ['url:' + params.join(',')] : ['url'] },
+      messages: {},
+      attributes: {},
+    });
+  const refuse = (value, ...params) =>
+    assert.rejects(run(value, ...params), (e) => {
+      assert.equal(e.name, 'ValidationException', 'expected 422 for ' + JSON.stringify(value));
+      return true;
+    });
+
+  // Laravel accepts these.
+  for (const [value, ...params] of [
+    ['https://laravel.com/docs'],
+    ['ftp://example.com/file'],
+    ['wss://example.com/socket'],
+    ['irc://example.com:6667/ch'],
+    ['http://u:p@x.co:8080/a?b=1#c'],
+    ['http://user:pa%40ss@example.com/x'],
+    ['http://[::1]/x'],
+    ['https://exämple.de/ä'],
+    ['https://bücher.example/'],
+    ['HTTP://X.CO'],            // the pattern is case-insensitive (`~...~ix`)
+    ['http://x.co\n'],          // PCRE's `$` matches before a trailing newline
+    ['another://x.co', 'another'],
+    ['ftp://x.co', 'ftp', 'http'],
+  ]) {
+    await run(value, ...params);
+  }
+
+  // Laravel refuses these.
+  for (const [value, ...params] of [
+    ['x.co'],                   // scheme-less host
+    ['example.com'],
+    ['mailto:a@b.c'],           // `mailto` never carries `://`
+    ['http://x.co '],           // only a NEWLINE may precede the end
+    ['http://'],
+    ['', ],                     // skipped -> see the next block
+  ]) {
+    if (value === '') continue; // an empty string passes (Laravel skips non-implicit rules)
+    await refuse(value, ...params);
+  }
+  await refuse('http://x.co', 'ftp');   // the caller's list replaces the default one
+
+  // Non-strings never pass; an empty string and an absent key do (Laravel skips a
+  // non-implicit rule for an empty value, and `null` is NOT empty for this check).
+  for (const value of [null, 42, ['http://x.co'], true, false]) await refuse(value);
+  await run('');
+});

@@ -1365,14 +1365,9 @@ export function buildRt(context, opts = {}) {
     if (ci) return hay.toLowerCase().endsWith(needle.toLowerCase());
     return hay.endsWith(needle);
   };
-  rt.str_is = (pattern, value) => {
-    const p = String(pattern == null ? '' : pattern);
-    const v = String(value == null ? '' : value);
-    // Laravel Str::is: * wildcard, case-sensitive, full-string match
-    // Escape regex specials except *, then * -> .*
-    const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-    return new RegExp('^' + escaped + '$').test(v);
-  };
+  // Str::is() / the global str_is() helper: delegate to the kernel (the same
+  // rule, and it honors Laravel 11's third `$ignoreCase` argument).
+  rt.str_is = (pattern, value, ignoreCase) => strHelpers.is(pattern, value, !!ignoreCase);
   rt.ucfirst = (s) => {
     const x = String(s == null ? '' : s);
     return x === '' ? '' : x[0].toUpperCase() + x.slice(1);
@@ -1676,16 +1671,20 @@ export function buildRt(context, opts = {}) {
   // The spread (`[...$a]`): the VALUES of the array, in order (PHP drops the
   // keys - the spread builds a list).
   rt.spread = (src) => {
-    if (src === null || src === undefined) return [];
     if (Array.isArray(src)) return src.slice();
-    if (typeof src === 'object') {
+    if (typeof src === 'object' && src !== null) {
       if (Array.isArray(src.__items)) return src.__items.slice();
       // A Collection spreads its ITEMS (PHP: [...collect([1,2])] => [1,2] -
       // Illuminate\Collections\Collection::getIterator()).
       if (isCollection(src)) return src.items.slice();
       return Object.keys(src).map((k) => src[k]);
     }
-    return [src];
+    // PHP: "Only arrays and Traversables can be unpacked" - a scalar or null
+    // is a fatal Error, not a silent one-element list.
+    const err = new Error('Only arrays and Traversables can be unpacked');
+    err.name = 'Error';
+    err.phpClass = 'Error';
+    throw err;
   };
   // A string offset (`$s[-1]`): PHP 7.1+ counts from the end (a negative
   // offset), the positive ones from the start.
@@ -2222,10 +2221,70 @@ export function buildRt(context, opts = {}) {
     if (isObj(arr)) for (const k of Object.keys(arr)) o[phpToStr(arr[k])] = /^\d+$/.test(k) ? Number(k) : k;
     return o;
   };
-  rt.array_filter = (arr, cb) => arrValues(arr).filter((v) => (cb ? !!cb(v) : !!v));
-  rt.array_map = (cb, arr) => arrValues(arr).map((v) => cb(v));
+  // PHP's array_filter(): the surviving items KEEP their keys (a list with a
+  // gap encodes as an object - not reindexed), the default predicate is
+  // PHP truthiness ('' / '0' / 0 / null / [] are dropped - JS `!!` would keep
+  // "0"), and ARRAY_FILTER_USE_KEY (mode 2) / ARRAY_FILTER_USE_BOTH (mode 1)
+  // change the callback's arguments. The result is built as an order-marked
+  // object so rt.phpKeys/the encoder keep PHP's insertion order and emit a
+  // JSON array when the keys turn out to be 0..n-1.
+  rt.array_filter = (arr, cb, mode) => {
+    const isList = Array.isArray(arr);
+    const keys = isList ? arr.map((_, i) => i) : isObj(arr) ? rt.phpKeys(arr) : [];
+    const out = {};
+    const order = [];
+    for (const k of keys) {
+      const v = arr[k];
+      const phpKey = isList || /^\d+$/.test(String(k)) ? Number(k) : k;
+      let keep;
+      if (typeof cb === 'function') {
+        if (mode === 2) keep = rt.truthy(cb(phpKey));
+        else if (mode === 1) keep = rt.truthy(cb(v, phpKey));
+        else keep = rt.truthy(cb(v));
+      } else {
+        keep = rt.truthy(v);
+      }
+      if (keep) {
+        order.push(String(k));
+        out[k] = v;
+      }
+    }
+    Object.defineProperty(out, '__lwOrder', { value: order, enumerable: false });
+    return out;
+  };
+  // PHP's array_map(): with exactly ONE array the keys are preserved (a list
+  // returns a list, an assoc array returns an assoc array of the same keys);
+  // with TWO OR MORE arrays the keys are dropped (a list) and the shorter
+  // arrays are padded with null. A `null` callback (the zip form) returns the
+  // tuples. The old `arrValues(...).map()` dropped every key and reindexed.
+  rt.array_map = (cb, ...arrs) => {
+    if (arrs.length <= 1) {
+      const a = arrs[0];
+      if (Array.isArray(a)) return a.map((v) => (cb ? cb(v) : v));
+      if (isObj(a)) {
+        const out = {};
+        const order = [];
+        for (const k of rt.phpKeys(a)) {
+          order.push(String(k));
+          out[k] = cb ? cb(a[k]) : a[k];
+        }
+        Object.defineProperty(out, '__lwOrder', { value: order, enumerable: false });
+        return out;
+      }
+      return [];
+    }
+    const lists = arrs.map(arrValues);
+    const n = lists.reduce((m, l) => Math.max(m, l.length), 0);
+    const out = [];
+    for (let i = 0; i < n; i += 1) {
+      const vals = lists.map((l) => (i < l.length ? l[i] : null));
+      out.push(cb ? cb(...vals) : vals);
+    }
+    return out;
+  };
 
   rt.str = phpToStr;
+  rt.strval = phpToStr;
   rt.optional = (value, cb = null) => {
     if (typeof cb === 'function') return value == null ? null : cb(value);
     if (value == null) {
@@ -2565,6 +2624,31 @@ export function buildRt(context, opts = {}) {
     }
     if (typeof obj === 'object') return obj[key] === undefined ? null : obj[key];
     return null;
+  };
+  // `$a?->b` — the nullsafe property read. A null/undefined receiver answers
+  // null; the chain's LATER `->` links then propagate it (rt.prop(null, k)
+  // answers null), which is PHP's whole-chain short-circuit.
+  rt.nsprop = (obj, key) => (obj === null || obj === undefined ? null : rt.prop(obj, key));
+  // `$a?->m(args)` — the nullsafe method call. A null/undefined receiver
+  // answers null; a real method is invoked against its own receiver.
+  rt.nsmethod = (obj, name, args) => {
+    if (obj === null || obj === undefined) return null;
+    const fn = obj[name];
+    return typeof fn === 'function' ? fn.apply(obj, args) : null;
+  };
+  // `(object) $x` — PHP's cast to stdClass (probed on PHP 8.3). A list becomes
+  // an object keyed by the stringified indices; an object (a model, a
+  // stdClass, an assoc array) is answered AS-IS (PHP's identity for an
+  // object); null becomes the empty object; a scalar wraps under `scalar`.
+  rt.objectCast = (v) => {
+    if (v === null || v === undefined) return {};
+    if (Array.isArray(v)) {
+      const out = {};
+      for (let i = 0; i < v.length; i += 1) out[String(i)] = v[i];
+      return out;
+    }
+    if (typeof v === 'object') return v;
+    return { scalar: v };
   };
 
   // rt.propSet: PHP `$model->attribute = $value` (Eloquent::setAttribute). The

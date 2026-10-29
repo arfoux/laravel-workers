@@ -81,3 +81,29 @@ test('Str: the family answers like Laravel 13.37 (the probed values)', () => {
   assert.equal(str.camel('\u00e9t\u00e9'), '\u00e9t\u00e9');
   assert.equal(str.camel('\u00df'), 'ss');
 });
+
+test('Str: is/finish/start/random match PHP 8.3 / Laravel 13.37', () => {
+  // Str::is — wildcard, full-string, array patterns, ignoreCase (Laravel 11+).
+  assert.equal(str.is('foo/*', 'foo/bar'), true);
+  assert.equal(str.is('foo/*', 'foo/bar/baz'), true);
+  assert.equal(str.is('foo/*', 'foo'), false);
+  assert.equal(str.is(['a*', 'b*'], 'bar'), true);
+  assert.equal(str.is('FOO/*', 'foo/bar'), false);
+  assert.equal(str.is('FOO/*', 'foo/bar', true), true);
+  assert.equal(str.is('*', 'anything'), true);
+  assert.equal(str.is('foo.bar', 'fooXbar'), false);
+  // Str::finish / Str::start — no repeated cap, strip the run then add one.
+  assert.equal(str.finish('abbc', 'c'), 'abbc');
+  assert.equal(str.finish('ab', 'bc'), 'abbc');
+  assert.equal(str.finish('abbcbc', 'bc'), 'abbc');
+  assert.equal(str.finish('abcbbc', 'bc'), 'abcbbc');
+  assert.equal(str.finish('abc', ''), 'abc');
+  assert.equal(str.start('abbc', 'a'), 'abbc');
+  assert.equal(str.start('bc', 'ab'), 'abbc');
+  assert.equal(str.start('aabbc', 'a'), 'abbc');
+  assert.equal(str.start('abc', ''), 'abc');
+  // Str::random — the alphabet (base64 minus '/' '+' '=') and the length.
+  assert.equal(str.random(40).length, 40);
+  assert.match(str.random(40), /^[A-Za-z0-9]{40}$/);
+  assert.equal(str.random(0), '');
+});

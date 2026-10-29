@@ -223,6 +223,16 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   The build refuses (`LW002`) a rule the edge cannot honour (`active_url`/`mx_record` DNS, `mimes`/`mimetypes`
   finfo, `encoding`, `current_password`, `Validator::extend()` names), naming the rule and the field, at both
   `$request->validate(...)` and the dumped FormRequest rules.
+- ✅ Rule-value semantics (batches #33/#34): the per-rule predicates were re-derived from the vendor
+  and differentially fuzzed against PHP 8.3 + vendor 13.37 — `integer` is `filter_var(FILTER_VALIDATE_INT)`
+  (a boolean casts, a leading zero fails, the 64-bit range holds) with `integer:strict` → `is_int`;
+  `date` is `strtotime()` AND `checkdate(date_parse())` (an impossible calendar day fails even though a JS
+  `Date` rolls it over, `d-m-Y` and hour 24 pass even though a JS `Date` refuses them); `email` is egulias'
+  RFCValidation (UTF-8 and dotless domains, a quoted local part, a bracketed literal); `regex:`/`not_regex:`
+  translate PCRE's `$`/`\Z`/`\z`, the `D`/`A`/`S`/`X`/`J`/`n` modifiers, a leading class `]` and the
+  `notregex` alias, and a pattern PCRE cannot compile answers FAIL for `regex` / PASS for `not_regex`
+  (`preg_match() === false` → `false < 1`). Coverage: 1107 regex cases and 241 rule-value cases, 1 remaining
+  divergence (PCRE's byte semantics without `/u`, §6) and 1 pathological date string (`'02026-02-28'`).
 - ✅ Rule objects compiled via 1.2; nested + wildcards (kernel + `$attributes` display names above).
 - Failure flow parity: redirect back + errors bag + old input ✅ (M19); API path: 422 JSON
   shape parity ✅ (M19)
@@ -298,8 +308,12 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 
 1. `eval` / runtime `include` of new code — unknown at build cannot compile *(escape: container)*
 2. Native ext / syscalls / proc / raw sockets / threads / pcntl — no OS in sandbox *(escape: container)*
-3. PCRE exotic constructs (recursion, `\K`, possessive quantifiers…) — translate-or-fail per
-   pattern *(escape: rewrite regex / port)*
+3. PCRE exotic constructs (recursion, `\K`, possessive quantifiers, `\p{..}` without `/u`...) —
+   translate-or-fail per pattern *(escape: rewrite regex / port)*. The common PCRE modifiers do
+   translate for `regex:`/`not_regex:`: `$`/`\Z` also match before a final newline, `D` disables
+   that, `A` anchors the match, and the behavior-neutral `S`/`X`/`J`/`n` flags are dropped. PCRE
+   without `/u` matches BYTES while JS matches UTF-16 units, so a non-`u` pattern that inspects a
+   non-ASCII subject (e.g. `/^[^a]$/` against `é`) can answer differently *(escape: add `/u`)*.
 4. String-eval'd names outside the compiled universe (`make($runtimeString)` for an unknown
    class) — registry covers the compiled universe; outside → fail loud *(escape: add class / port)*
 5. Precise `__destruct` / `register_shutdown_function` ordering, true streaming `flush()` —
@@ -430,7 +444,7 @@ behind a build rule.
 | `redirect()->withErrors()` | ✅ compiles | Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow writes the same shape). | M36 |
 | `redirect()->away()` | ✅ compiles | An absolute external URL (the compiled redirect keeps it absolute). | M37 |
 | `back()` | ✅ compiles | The Referer, or the session's `url.previous`, or `/`. | M37 |
-| `Str::slug()` | ✅ compiles | The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii) - every value is verified against the real Laravel. | M38 |
+| `Str::slug()` | ✅ compiles | The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii/is/finish/start/random/isUrl) - every value is verified against the real Laravel. | M38 |
 | `env()` | ✅ compiles | The build-time config dump is the padanan (the edge has no .env); only the app.* keys are mapped. | M37 |
 | `data_get()` | ✅ compiles | Dot/array access on an array or an object (the `*` wildcard is not ported). | M37 |
 | `tap()` | ✅ compiles | Passes the value through a closure (the closure support exists). | M37 |
@@ -456,6 +470,8 @@ behind a build rule.
 | `Model::paginate()` | ✅ compiles | The LengthAwarePaginator (the items, the total, the pages, the URLs) + the pagination links (the framework's `pagination::tailwind` view is compiled at build time). | M40 |
 | The translation helper (`__()`) | ✅ compiles | The strings are dumped at build time (the app's lang/ files + the framework's fallback); the place-holders are replaced like Laravel does. | M40 |
 | A PHP cast (`(string) $x`) | ✅ compiles | The scalar casts with PHP's own semantics: (string), (int), (bool), (float). | M40 |
+| The `(object)` cast (`(object) $x`) | ✅ compiles | PHP's cast to stdClass (`rt.objectCast`, oracle-probed): a list becomes an object keyed by the stringified indices, an object is answered as-is, null is the empty object, a scalar wraps under `scalar`. | M40 |
+| Null-safe access (`$a?->b`) | ✅ compiles | PHP's `?->`: a null/undefined receiver answers null, and that null propagates through any later `->` links in the same chain (`rt.nsprop`, `rt.nsmethod` for the method form). | M40 |
 | Route-model binding (a typed param) | ✅ compiles | The model comes from the route segment (Laravel's implicit binding); a missing model is a 404. | M40 |
 | Eloquent relations (`$post->comments()`) | ⛔ fails loud (`LW003`) | A relation is not compiled: the build stops (LW003). The eager loading (`with()`) is not compiled at the edge either - the relations are a planned milestone (M64), so a route that reads one needs a port handler until then. | M41 |
 | File upload (`$request->file()`) | ✅ compiles | The multipart body is parsed at the edge: the file object carries the metadata (the name, the type the browser declared, the size) and the store (the app's default disk). Byte-proven by the shadow harness. | M40 |
@@ -532,7 +548,7 @@ behind a build rule.
 | an API resource (`return new PostResource($post)`) | ✅ compiles | The controller answers a JsonResource; the Router's prepareResponse() wraps it in a ResourceResponse - `{"data": {...}, ...with($request)}` (JsonResource::toArray + the `$wrap` key, ResourceResponse.php:31-52). The app declares only toArray()/with(); the rest is the kernel base. Byte-proven by the shadow (`GET /resource-demo` identical) and by compiler/tests/resource-class.test.mjs; the audit probes it as a controller fragment with the class registry the build passes. A body that needs an await fails loud (the response path is synchronous). | M66 |
 | A FormRequest that overrides `validator()` | — documented (build level) | Laravel asks the app's own factory for the validator (`FormRequest::getValidatorInstance()`), so an override decides the rules, the messages and the factory itself. The edge has ONE validator factory, so the dump refuses the class (LW003, `tools/formrequest-dump.php`) and the build stops instead of validating with different rules than Laravel. | M62f |
 
-**113 constructs: 43 compile, 63 fail loud, 7 documented at the build level.** Every probed construct is either compiled *and* proven by the shadow harness, or it fails the build; the 7 documented rows are build-level decisions the compiler cannot judge, and each one names its own proof (the 'proof' field: a shadow step, a test file or the dump that decides it). The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
+**115 constructs: 45 compile, 63 fail loud, 7 documented at the build level.** Every probed construct is either compiled *and* proven by the shadow harness, or it fails the build; the 7 documented rows are build-level decisions the compiler cannot judge, and each one names its own proof (the 'proof' field: a shadow step, a test file or the dump that decides it). The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
 
 <!-- construct-audit:end -->
 

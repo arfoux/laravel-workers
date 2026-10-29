@@ -355,5 +355,33 @@
     "kind": "SUP",
     "php_exit": 0,
     "php_bytes": 12
+  },
+  {
+    "id": "obj-cast",
+    "file": "cases/obj-cast.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 10
+  },
+  {
+    "id": "nullsafe",
+    "file": "cases/nullsafe.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 7
+  },
+  {
+    "id": "array-closures",
+    "file": "cases/array-closures.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 134
+  },
+  {
+    "id": "spread",
+    "file": "cases/spread.php",
+    "kind": "SUP",
+    "php_exit": 0,
+    "php_bytes": 33
   }
 ]

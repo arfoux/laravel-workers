@@ -3408,7 +3408,7 @@ export class Collection {
       return this.items.some((item) => valueForKey(item, key) === value);
     }
     if (typeof key === 'function') {
-      return this.items.some((item, index) => Boolean(key(item, keyAt(this, index))));
+      return this.items.some((item, index) => phpTruthy(key(item, keyAt(this, index))));
     }
     return this.items.some((item) => item === key);
   }
@@ -3484,7 +3484,15 @@ export class Collection {
       types.some((classType) => {
         if (typeof classType === 'function') return value instanceof classType;
         if (typeof classType === 'string' && value !== null && typeof value === 'object') {
-          return value.constructor?.name === classType || value.phpClass === classType;
+          // A compiled class instance carries its FQCN in the non-enumerable
+          // `__lwClass` (rt-from-context.mjs:743) — `Post::class` compiles to
+          // that FQCN string, so the string rung must read it, not `phpClass`
+          // (which only the built-in exception shims set).
+          return (
+            value.constructor?.name === classType ||
+            value.__lwClass === classType ||
+            value.phpClass === classType
+          );
         }
         return false;
       })

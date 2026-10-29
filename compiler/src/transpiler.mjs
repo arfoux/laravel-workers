@@ -143,6 +143,11 @@ function tx(node) {
     case 'nullkeyword':
       return 'null';
     case 'name':
+      // PHP's global array_filter() flags: their values are fixed, and the
+      // transpiler emits them numerically so the eager argument pass (which
+      // runs before array_filter()'s own handler) does not die on them.
+      if (node.name === 'ARRAY_FILTER_USE_KEY') return '2';
+      if (node.name === 'ARRAY_FILTER_USE_BOTH') return '1';
       throw mkErr('LW002', 'bare identifier not allowed: ' + node.name, node.loc);
     case 'identifier':
       return JSON.stringify(String(node.name));
@@ -259,8 +264,18 @@ function tx(node) {
       }
       return 'rt.prop(' + tx(node.what) + ', ' + JSON.stringify(name) + ')';
     }
+    // `$a?->b` — PHP's nullsafe property access. The receiver is evaluated
+    // once; a null/undefined receiver short-circuits the WHOLE chain to null
+    // (PHP: `$a?->b->c` is null when $a is null), which falls out of the
+    // null-propagating rt.prop() for the later `->` links. php-parser's node
+    // kind is `nullsafepropertylookup` (the older `nullsafeproperty` spelling
+    // is kept for safety).
     case 'nullsafeproperty':
-      throw mkErr('LW002', 'nullsafe property access (?->) is not supported', node.loc);
+    case 'nullsafepropertylookup': {
+      const name = node.offset && node.offset.name;
+      if (typeof name !== 'string') throw mkErr('LW002', 'unsupported property access', node.loc);
+      return 'rt.nsprop(' + tx(node.what) + ', ' + JSON.stringify(name) + ')';
+    }
     case 'bin':
       return txBin(node);
     case 'unary': {
@@ -323,7 +338,14 @@ function tx(node) {
       const spread = items.filter((it) => it.unpack);
       if (spread.length) {
         if (items.some((it) => it.key != null)) {
-          throw mkErr('LW002', 'an array literal with a spread and a key is not compiled (PHP drops the keys of the spread parts)', node.loc);
+          throw mkErr(
+            'LW002',
+            'an array literal that mixes an explicit key with a spread is not compiled - PHP appends the spread parts after ' +
+              'the keyed elements and only INTEGER keys may be spread (a string key is a fatal error); ' +
+              PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
         }
         return '[' + items.map((it) => (it.unpack ? '...rt.spread(' + tx(it.value) + ')' : tx(it.value))).join(', ') + ']';
       }
@@ -488,13 +510,30 @@ function tx(node) {
       if (type === 'float' || type === 'double' || type === 'real') {
         return 'rt.floatval(' + value + ')';
       }
+      // `(object) $x` — PHP's cast to stdClass. A list becomes an object with
+      // the stringified numeric keys; an object (a model, a stdClass, an assoc
+      // array) is answered as-is (PHP's identity for an object); null becomes
+      // the empty object, a scalar wraps under the `scalar` property. See
+      // rt.objectCast() for the oracle-checked semantics.
+      if (type === 'object') return 'rt.objectCast(' + value + ')';
       throw mkErr(
         'LW002',
-        'the (' + type + ') cast is not compiled (string, int, bool and float are) - ' + PORT_HINT,
+        'the (' + type + ') cast is not compiled (string, int, bool, float and object are) - ' + PORT_HINT,
         node.loc,
         PORT_HINT
       );
     }
+    // `foo(name: $v)` — PHP 8 named arguments. The kernel compiles positionally;
+    // name them so the refusal does not read as an unknown construct.
+    case 'namedargument':
+      // Reachable only outside a call's argument list (txCall refuses the
+      // keyword arguments itself); keep the specific wording either way.
+      throw mkErr(
+        'LW002',
+        'named arguments (' + (node.name || '?') + ': ...) are not compiled - pass the arguments positionally; ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
     default:
       throw mkErr('LW002', 'unsupported expression kind ' + node.kind, node.loc);
   }
@@ -659,6 +698,15 @@ const EXCEPTION_VIEW_METHODS = new Set(['getMessage', 'getStatusCode', 'getCode'
 // `auth()` / `Auth::*` need the request context too and the guard resolves the
 // user asynchronously (Timebox), so in controller mode those calls are awaited.
 const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'request', 'cache']);
+// The Laravel helpers that only compile inside a controller/view context (the
+// build sets CTX). `transpile()` without CTX (a standalone snippet or a tool
+// run) used to answer the generic LW001 "unknown function" for these — false,
+// the function IS known, it just has no compile context. Name the real reason.
+export const CTX_GATED_HELPERS = new Set(['view', 'abort', 'compact', 'redirect', ...HTTP_HELPERS]);
+// The global functions that may be named as a STRING callback to array_map() /
+// array_filter() (`array_map('strval', ...)`): a subset of the builtins whose
+// runtime name is the same as PHP's.
+const BUILTIN_CALLBACK_FNS = new Set(['strval', 'intval', 'floatval', 'count', 'trim', 'strlen']);
 // Recaller/guard methods that return a promise at the edge.
 const AUTH_ASYNC = new Set(['check', 'guest', 'user', 'id', 'attempt', 'once', 'login', 'logout']);
 const AUTH_FACADE_RE = /^rt\.auth\((?:[^()]*)\)(?:\.guard\((?:[^()]*)\))?$/;
@@ -1694,6 +1742,25 @@ function txCall(node) {
       throw mkErr('LW002', tailor(meth0), node.loc, PORT_HINT);
     }
   }
+  const argNodes2 = node.arguments || [];
+  const namedArgs = argNodes2.filter((a) => a && a.kind === 'namedargument');
+  if (namedArgs.length) {
+    // PHP 8 named arguments. The compiled rung passes arguments POSITIONALLY
+    // and the build does not know the callable's parameter order, so binding
+    // `f(b: 2, a: 1)` by position would quietly swap the values. The refusal
+    // names the keyword(s) instead of the generic "unsupported expression".
+    throw mkErr(
+      'LW002',
+      'named argument' +
+        (namedArgs.length > 1 ? 's' : '') +
+        ' (' +
+        namedArgs.map((a) => a.name + ': ...').join(', ') +
+        ') are not compiled - pass the arguments in positional order; ' +
+        PORT_HINT,
+      node.loc,
+      PORT_HINT
+    );
+  }
   const args = (node.arguments || []).map(tx).join(', ');
   if (CTX) {
     const redir = txRedirectChain(node);
@@ -1740,16 +1807,78 @@ function txCall(node) {
       return 'rt.__(' + args + ')';
     }
     const argNodes = node.arguments || [];
-    const cbRef = (n) => (n && n.kind === 'string' && FUNCS.has(n.value) ? fname(n.value) : null);
+    // PHP's ARRAY_FILTER_USE_KEY / ARRAY_FILTER_USE_BOTH are flags into
+    // array_filter()'s callback; the runtime needs them as a mode. A bare
+    // constant would die as "bare identifier" (the dump does not cover these).
+    const arrayFilterFlag = (n) => {
+      if (!n) return 0;
+      const nm = n.kind === 'name' || n.kind === 'identifier' ? n.name : null;
+      if (nm === 'ARRAY_FILTER_USE_KEY') return 2;
+      if (nm === 'ARRAY_FILTER_USE_BOTH') return 1;
+      throw mkErr(
+        'LW002',
+        'array_filter() third argument must be ARRAY_FILTER_USE_KEY or ARRAY_FILTER_USE_BOTH — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    };
+    // The callback argument (a named function, a closure/arrow fn) or the
+    // literal `null` (array_map's zip form / array_filter's "drop falsy").
+    // Any other callable (a `[$obj, 'm']` array, a variable holding one) is
+    // refused rather than guessed.
+    // A string naming a global function: an app function (`FUNCS`) compiles to
+    // its edge name; a builtin the runtime carries compiles to its own name.
+    const stringFn = (n) => {
+      if (!n || n.kind !== 'string') return null;
+      if (FUNCS.has(n.value)) return fname(n.value);
+      if (BUILTIN_CALLBACK_FNS.has(n.value)) return 'rt.' + n.value;
+      return null;
+    };
+    const cbRef = (n) => stringFn(n);
+    // The closure/arrow/`null` forms, and any string form above.
+    const cbOrNull = (n) => {
+      if (n && n.kind === 'nullkeyword') return 'null';
+      if (n && (n.kind === 'closure' || n.kind === 'arrowfunc')) return '(' + tx(n) + ')';
+      return stringFn(n);
+    };
     if (name === 'array_map') {
-      const cb = cbRef(argNodes[0]);
-      if (!cb) throw mkErr('LW001', 'array_map requires a named function callback', node.loc);
-      return 'rt.array_map(' + cb + ', ' + tx(argNodes[1]) + ')';
+      if (!argNodes.length) throw mkErr('LW002', 'array_map() requires a callback', node.loc, PORT_HINT);
+      const cb = cbOrNull(argNodes[0]);
+      if (!cb) {
+        throw mkErr(
+          'LW001',
+          'array_map() needs a named function, a closure, an arrow function or null (got ' +
+            (argNodes[0] && argNodes[0].kind) +
+            ') — ' +
+            PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      if (argNodes.length < 2) {
+        throw mkErr('LW002', 'array_map() requires at least one array', node.loc, PORT_HINT);
+      }
+      return 'rt.array_map(' + cb + ', ' + argNodes.slice(1).map(tx).join(', ') + ')';
     }
     if (name === 'array_filter') {
-      const cb = cbRef(argNodes[1]);
-      if (argNodes.length > 1 && !cb) throw mkErr('LW001', 'array_filter callback must be a named function', node.loc);
-      return 'rt.array_filter(' + tx(argNodes[0]) + (cb ? ', ' + cb : '') + ')';
+      if (!argNodes.length) throw mkErr('LW002', 'array_filter() requires an array', node.loc, PORT_HINT);
+      if (argNodes.length > 3) throw mkErr('LW002', 'array_filter() takes at most 3 arguments', node.loc, PORT_HINT);
+      // No callback (or an explicit null) -> drop the falsy values (PHP's
+      // truthiness, hence rt.truthy in the runtime - JS `!!` would keep "0").
+      const cb = argNodes.length > 1 ? cbOrNull(argNodes[1]) : 'null';
+      if (cb === null) {
+        throw mkErr(
+          'LW001',
+          'array_filter() needs a named function, a closure, an arrow function or null (got ' +
+            (argNodes[1] && argNodes[1].kind) +
+            ') — ' +
+            PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      const mode = argNodes.length > 2 ? arrayFilterFlag(argNodes[2]) : 0;
+      return 'rt.array_filter(' + tx(argNodes[0]) + ', ' + cb + ', ' + mode + ')';
     }
     if (CTX && CTX.controller && HTTP_HELPERS.has(name)) {
       const a = node.arguments || [];
@@ -1831,6 +1960,16 @@ function txCall(node) {
         return '{ ' + keys.map((k) => JSON.stringify(k) + ': ' + vname(k)).join(', ') + ' }';
       }
     }
+    // The helper is known to Laravel, but this compile context has no CTX:
+    // say so instead of the misleading "unknown function".
+    if (CTX_GATED_HELPERS.has(name)) {
+      throw mkErr(
+        'LW002',
+        name + '() is only available inside a compiled controller or view (no compile context here) — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
     const whitelisted = new Set(['e', 'str_replace', 'config', 'public_path', 'file_exists', 'url', 'route', 'auth']);
     const builtins = new Set([
       'isset', 'empty', 'unset', 'count', 'in_array', 'implode', 'explode',
@@ -1841,7 +1980,7 @@ function txCall(node) {
       'ltrim', 'rtrim', 'ucwords', 'strrev', 'strpos', 'strrpos', 'substr_count', 'strip_tags', 'htmlspecialchars',
       'is_null', 'is_bool', 'is_boolean', 'is_int', 'is_integer', 'is_long', 'is_float', 'is_double', 'is_real',
       'is_string', 'is_array', 'is_object', 'is_numeric', 'is_callable', 'is_countable',
-      'abs', 'round', 'floor', 'ceil', 'intval', 'floatval', 'max', 'min',
+      'abs', 'round', 'floor', 'ceil', 'intval', 'floatval', 'strval', 'max', 'min',
       'json_encode', 'json_decode', 'optional',
       'array_sum', 'array_slice', 'array_reverse', 'array_unique', 'array_count_values', 'array_flip',
       'now',
@@ -1939,6 +2078,8 @@ function txCall(node) {
           PORT_HINT
         );
       }
+      // `is` is a JS reserved-ish name; the runtime keeps it as rt.str_is().
+      if (meth === 'is') return 'rt.str_is(' + args + ')';
       return 'rt.Str.' + meth + '(' + args + ')';
     }
     // Illuminate\Support\Facades\Cache — the D1-backed `database` cache store.
@@ -2076,6 +2217,17 @@ function txCall(node) {
     // The facades whose work is a class the build cannot compile: the message
     // says why (the listeners / the mailable / the job), not "unknown class".
     throw mkErr('LW003', 'unknown class/static ' + cls + '::' + meth, node.loc);
+  }
+  // `$a?->m(args)` — the nullsafe METHOD call. The receiver is evaluated once;
+  // a null/undefined receiver answers null (and, like the property form, the
+  // null then propagates through any later `->` links). The generic method
+  // dispatch keeps the receiver's own method table, so a model/Collection
+  // method still lands on the kernel instance.
+  if (what.kind === 'nullsafepropertylookup' || what.kind === 'nullsafeproperty') {
+    const nmeth = what.offset && what.offset.name;
+    if (typeof nmeth !== 'string') throw mkErr('LW002', 'property access without method', node.loc);
+    const nargsJs = (node.arguments || []).map((a) => tx(a)).join(', ');
+    return 'rt.nsmethod(' + tx(what.what) + ', ' + JSON.stringify(nmeth) + ', [' + nargsJs + '])';
   }
   if (what.kind === 'propertylookup') {
     const obj = tx(what.what);
