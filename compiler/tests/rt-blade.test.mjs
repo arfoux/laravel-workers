@@ -67,13 +67,22 @@ test('rt-blade: @json returns false past the depth (PHP: Maximum stack depth exc
   assert.equal(rt.json_encode({ a: '<b>' }, 0, 512), '{"a":"<b>"}');
 });
 
-test('rt-blade: a json_encode() flag that is not ported fails loud', () => {
+test('rt-blade: json_encode() flags are ported byte for byte', () => {
   const rt = buildRt({}, { strict: false });
-  // PHP: json_encode($x, JSON_UNESCAPED_UNICODE) writes the raw UTF-8. The edge
-  // would write a different body, so it refuses instead of answering.
-  assert.throws(() => rt.json_encode({ a: 'é' }, 256, 512), /not supported at the edge/);
-  // The HEX flags are the ported ones (15 = TAG|AMP|APOS|QUOT).
+  // PHP 8.3 (probed): JSON_UNESCAPED_UNICODE 256 writes the raw UTF-8,
+  // JSON_UNESCAPED_SLASHES 64 leaves the slash, the HEX flags (15) escape
+  // <, &, ' and ", JSON_PRETTY_PRINT 128 indents with four spaces and
+  // JSON_FORCE_OBJECT 16 turns an array into an object.
+  assert.equal(rt.json_encode({ a: 'é' }, 256, 512), '{"a":"é"}');
+  assert.equal(rt.json_encode({ u: 'a/b' }, 64, 512), '{"u":"a/b"}');
   assert.equal(rt.json_encode({ a: '<' }, 15, 512), '{"a":"\\u003C"}');
+  assert.equal(rt.json_encode({ a: [1, 2] }, 128, 512), '{\n    "a": [\n        1,\n        2\n    ]\n}');
+  assert.equal(rt.json_encode([], 16, 512), '{}');
+  assert.equal(rt.json_encode([1], 16, 512), '{"0":1}');
+  // A flag outside the ported set still fails loud, and so does a doc flag the
+  // edge cannot honour for certain (JSON_PARTIAL_OUTPUT_ON_ERROR).
+  assert.throws(() => rt.json_encode({ a: 1 }, 512, 512), /not supported at the edge/);
+  assert.throws(() => rt.json_encode({ a: 1 }, 2048, 512), /not supported at the edge/);
 });
 
 test('rt-blade: @yield escapes the default (Laravel escapes it too)', () => {

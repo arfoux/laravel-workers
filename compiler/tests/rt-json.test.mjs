@@ -65,3 +65,49 @@ test('rt-json: json_encode() writes the same bytes', () => {
   assert.equal(rt.json_encode({ a: 1, b: 'x/y' }), '{"a":1,"b":"x\\/y"}');
   assert.equal(rt.json_encode(null), 'null');
 });
+
+test('rt-json: json_decode() answers PHP, not a thrown SyntaxError', () => {
+  // PHP 8.3 (probed): invalid JSON answers NULL (a warning, no exception), and
+  // JSON_THROW_ON_ERROR turns it into JsonException("Syntax error"). The old
+  // one-liner let `JSON.parse` throw, so a controller reading a form field
+  // (`json_decode($request->input('payload'))`) answered 500 where Laravel
+  // answered null - `''` (an empty field) included.
+  assert.equal(rt.json_decode('{bad'), null);
+  assert.equal(rt.json_decode('bad'), null);
+  assert.equal(rt.json_decode(''), null);
+  assert.equal(rt.json_decode(null), null);
+  assert.equal(rt.json_decode('null'), null);
+  assert.deepEqual(rt.json_decode('{"a":1}'), { a: 1 });
+  assert.deepEqual(rt.json_decode('[1,2]'), [1, 2]);
+  assert.deepEqual(rt.json_decode('{"a":{"b":[1,2]}}'), { a: { b: [1, 2] } });
+  assert.equal(rt.json_decode('5'), 5);
+  assert.equal(rt.json_decode('1.0'), 1);
+  assert.equal(rt.json_decode('true'), true);
+  assert.throws(
+    () => rt.json_decode('{bad', true, 512, 4194304),
+    (e) => e.name === 'JsonException' && /Syntax error/.test(e.message)
+  );
+});
+test('rt-json: json_decode() honours the depth budget like PHP', () => {
+  // PHP 8.3 (probed): a container costs a level, so `json_decode('[1]', true, 1)`
+  // is NULL and `json_decode('[]', true, 1)` is NULL too, while a scalar needs
+  // none (`'1'` with depth 1 answers 1) and `{"a":{"b":1}}` needs 3.
+  assert.equal(rt.json_decode('[1]', true, 1), null);
+  assert.equal(rt.json_decode('[]', true, 1), null);
+  assert.deepEqual(rt.json_decode('[1]', true, 2), [1]);
+  assert.equal(rt.json_decode('1', true, 1), 1);
+  assert.equal(rt.json_decode('{"a":1}', true, 1), null);
+  assert.deepEqual(rt.json_decode('{"a":1}', true, 2), { a: 1 });
+  assert.equal(rt.json_decode('{"a":{"b":1}}', true, 2), null);
+  assert.deepEqual(rt.json_decode('{"a":{"b":1}}', true, 3), { a: { b: 1 } });
+  // depth <= 0 is a ValueError in PHP, whatever the input.
+  assert.throws(
+    () => rt.json_decode('1', true, 0),
+    (e) => e.name === 'ValueError' && /\$depth\) must be greater than 0/.test(e.message)
+  );
+  // The throw-on-error flag reports the exceeded depth instead of null.
+  assert.throws(
+    () => rt.json_decode('[[1]]', true, 2, 4194304),
+    (e) => e.name === 'JsonException' && /Maximum stack depth exceeded/.test(e.message)
+  );
+});

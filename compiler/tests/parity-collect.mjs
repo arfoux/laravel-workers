@@ -51,6 +51,18 @@ check('last() on empty => null', empty.last(), null);
 // 8 firstWhere
 check("firstWhere('a',1) finds alice", rt.collect(objs).firstWhere('a', 1), { a: 1, name: 'alice' });
 check("firstWhere('a',99) => null", rt.collect(objs).firstWhere('a', 99), null);
+// 8b firstWhere's other argument forms (`first(operatorForWhere(...))`):
+// one argument is `$key = true`, three are `$key $operator $value`.
+check("firstWhere('a','>',1) => bob", rt.collect(objs).firstWhere('a', '>', 1), { a: 2, name: 'bob' });
+check("firstWhere('a','<',2) => alice", rt.collect(objs).firstWhere('a', '<', 2), { a: 1, name: 'alice' });
+check("firstWhere('name') => alice (truthy value)", rt.collect(objs).firstWhere('name'), { a: 1, name: 'alice' });
+check("where('a','>',1) keeps bob", rt.collect(objs).where('a', '>', 1).values().toArray(), [{ a: 2, name: 'bob' }]);
+// 8c PHP's OBJECT rules: `==` compares same-class objects by their properties,
+// and an object is only ever "not equal" to a non-object.
+check('contains(object by properties)', rt.collect([{ a: 1 }]).contains({ a: 1 }), true);
+check('where(object) by properties', rt.collect([{ x: { a: 1 } }]).where('x', '=', { a: 1 }).count(), 1);
+check('where(object) != scalar keeps the row', rt.collect([{ x: { a: 1 } }]).where('x', '!=', 5).count(), 1);
+check('where(object) > scalar is empty', rt.collect([{ x: { a: 1 } }]).where('x', '>', 5).count(), 0);
 
 // 9-10 get
 check("get(1,'def') === 2", c123.get(1, 'def'), 2);
@@ -61,8 +73,10 @@ check("get(99) without default => null", c123.get(99), null);
 check("pluck('name') => ['alice','bob','carol']", rt.collect(objs).pluck('name').toArray(), ['alice', 'bob', 'carol']);
 
 // 12 filter / 13 map / 14 each / 15 take / 16 slice
-check("filter even => [2]", rt.collect([1, 2, 3, 4]).filter((x) => x % 2 === 0).toArray(), [2, 4]);
-check("filter without fn filters falsy => [1,2]", rt.collect([0, 1, false, 2, '', null]).filter().toArray(), [1, 2]);
+// filter() PRESERVES the PHP keys (a PHP probe: json_encode answers
+// {"1":2,"3":4}), so the expectation is the keyed object, not the list.
+check("filter even => {1:2,3:4}", rt.collect([1, 2, 3, 4]).filter((x) => x % 2 === 0).toArray(), { "1": 2, "3": 4 });
+check("filter without fn filters falsy => {1:1,3:2}", rt.collect([0, 1, false, 2, '', null]).filter().toArray(), { "1": 1, "3": 2 });
 check("map x*2 => [2,4,6]", c123.map((x) => x * 2).toArray(), [2, 4, 6]);
 let eachCount = 0;
 const cEach = rt.collect([1, 2, 3]);
@@ -70,9 +84,9 @@ const retEach = cEach.each(() => { eachCount++; });
 check("each visits 3", eachCount, 3);
 check("each returns self", retEach === cEach, true);
 check("take(2) => [1,2]", c123.take(2).toArray(), [1, 2]);
-check("take(-1) => [3]", c123.take(-1).toArray(), [3]);
-check("slice(1,2) => [2,3]", c123.slice(1, 2).toArray(), [2, 3]);
-check("slice(1) => [2,3]", c123.slice(1).toArray(), [2, 3]);
+check("take(-1) => {2:3}", c123.take(-1).toArray(), { "2": 3 });
+check("slice(1,2) => {1:2,2:3}", c123.slice(1, 2).toArray(), { "1": 2, "2": 3 });
+check("slice(1) => {1:2,2:3}", c123.slice(1).toArray(), { "1": 2, "2": 3 });
 
 // 17-18 contains
 check("contains(val) true", c123.contains(2), true);
@@ -99,7 +113,7 @@ check("toArray() deep", c123.toArray(), [1, 2, 3]);
 check("toJson() === JSON.stringify", c123.toJson(), JSON.stringify([1, 2, 3]));
 
 // 23 chain filter->map->toArray
-check("chain filter->map->toArray => [4,6]", rt.collect([1, 2, 3, 4]).filter((x) => x > 1).map((x) => x * 2).toArray(), [4, 6, 8]);
+check("chain filter->map->toArray => {1:4,2:6,3:8}", rt.collect([1, 2, 3, 4]).filter((x) => x > 1).map((x) => x * 2).toArray(), { "1": 4, "2": 6, "3": 8 });
 
 // 24 null/undefined => empty
 check("collect(null) count 0", rt.collect(null).count(), 0);

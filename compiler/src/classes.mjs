@@ -24,6 +24,62 @@ import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapter
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
+/**
+ * The compiled code with its STRING literals and comments blanked out, so a
+ * scan for a KEYWORD (`await`) cannot be answered by a message or a comment
+ * that merely mentions the word: `const msg = 'await';` in a constructor body
+ * used to refuse the whole class with LW002, and a `// await the mailer`
+ * comment in a resource did too. A single left-to-right pass: `'`, `"` and the
+ * backtick open a literal (a backslash escapes the next character), `//` opens
+ * a line comment and `/*` a block one; everything else is code. It only
+ * NARROWS what a scan sees, and the emitted code is the transpiler's own
+ * machine-shaped output (no `${...}`-nested literals).
+ */
+function codeWithoutNoise(code) {
+  let out = '';
+  let i = 0;
+  const n = code.length;
+  while (i < n) {
+    const ch = code[i];
+    const next = code[i + 1];
+    if (ch === '/' && next === '/') {
+      while (i < n && code[i] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) i += 1;
+      i = Math.min(i + 2, n);
+      out += ' ';
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      i += 1;
+      while (i < n) {
+        if (code[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (code[i] === ch) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += '""';
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/** Does this compiled body NEED an await (an `await` that is CODE, not text)? */
+function needsAwait(code) {
+  return /\bawait\b/.test(codeWithoutNoise(String(code || '')));
+}
+
 const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 const shortName = (fqcn) => String(fqcn).split('\\').pop();
 const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
@@ -400,8 +456,9 @@ function compileConstructor(fqcn, classNode, opts) {
   // The constructor is SYNCHRONOUS at the edge (the runtime calls
   // `entry.ctor(args, deps)` without awaiting it), so a body that needs an
   // await would emit `await` inside a non-async function - a SyntaxError that
-  // breaks the whole worker at import time. The build refuses it instead.
-  if (/\bawait\b/.test(bodyCode)) {
+  // breaks the whole worker at import time. The build refuses it instead. The
+  // scan skips strings and comments: a body that only SAYS "await" is fine.
+  if (needsAwait(bodyCode)) {
     return {
       error:
         'the constructor of ' + fqcn + ' needs an await — the constructor is synchronous at the edge, so an awaited ' +
@@ -575,7 +632,7 @@ function compileMethod(fqcn, methodNode, opts) {
       name: nodeName(p && p.name),
       type: type && !BUILTIN_TYPES.has(type.toLowerCase()) ? type : null,
       variadic: !!(p && p.variadic),
-      byRef: !!(p && p.byRef),
+      byRef: !!(p && (p.byref ?? p.byRef)),
     };
   });
   for (const p of params) {
@@ -628,6 +685,15 @@ function compileMethod(fqcn, methodNode, opts) {
       (opts.imports instanceof Map && opts.imports.get(written)) || written;
     paramTypes.set(vname(p.name), resolved);
   }
+  // A RESOURCE's toArray(Request $request)/with(Request $request) takes the live
+  // request: the parameters typed as one are request variables for the compiled
+  // body (the same set the controller compiler builds).
+  const resourceRequestVars = new Set();
+  if (opts.resource) {
+    for (const [v, t] of paramTypes) {
+      if (RESOURCE_REQUEST_TYPES.has(t)) resourceRequestVars.add(v);
+    }
+  }
   const emitted = transpileControllerMethod((methodNode.body && methodNode.body.children) || [], {
     models: opts.modelAliases,
     modelNotCompiled: opts.modelNotCompiled,
@@ -635,7 +701,13 @@ function compileMethod(fqcn, methodNode, opts) {
     views: new Set(),
     indent: '    ',
     paramVars,
-    requestVars: new Set(),
+    // A RESOURCE's toArray(Request $request)/with(Request $request) receives the
+    // request the runtime resolved with: register it as a request variable so the
+    // compiled body may use the allowed request surface. Without it
+    // `$request->input(...)` inside a resource failed loud ("the method call
+    // $request->path() is not compiled") and the whole route fell back to a port,
+    // although the edge serves the call.
+    requestVars: resourceRequestVars,
     constants: opts.constants || {},
     formRequests: new Map(),
     modelVarSeeds: [],
@@ -677,7 +749,7 @@ function compileMethod(fqcn, methodNode, opts) {
   // path, so an `async` body would hand a Promise to the payload. A resource
   // body that needs an await is refused instead of leaking one.
   const syncMethod = !!opts.resource || !!opts.sync;
-  if (syncMethod && /\bawait\b/.test(String(emitted.code || ''))) {
+  if (syncMethod && needsAwait(emitted.code)) {
     return {
       error:
         'the method ' + fqcn + '::' + name + '() needs an await — a resource shapes the response ' +
@@ -731,10 +803,15 @@ function aliasMapFor(options) {
     map.set(alias, fqcn);
   }
   // The file's own namespace: a class of the same namespace, written short.
+  // PHP resolves an unqualified name to a DIRECT child of the file's namespace
+  // (`App\OrderMail` in `namespace App;`) — never to a sub-namespace class
+  // (`App\Mail\OrderMail`). Accepting a sub-namespace class here would make the
+  // compiled module instantiate a class the PHP source cannot even name.
   if (namespace) {
     for (const fqcn of compiled) {
       if (!fqcn.startsWith(namespace + '\\')) continue;
       const alias = shortName(fqcn);
+      if (fqcn !== namespace + '\\' + alias) continue;
       // An explicit `use` wins over the namespace (PHP's own rule).
       if (map.has(alias)) continue;
       map.set(alias, fqcn);

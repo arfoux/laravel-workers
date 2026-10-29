@@ -40,7 +40,7 @@ const HELP = `laravel-workers — compile a Laravel app to a JS bundle for Cloud
 Usage: npx laravel-workers <command> [options]
 
 Commands:
-  build [--strict] [--scaffold] [--no-cache]   compile the app to dist/ (no cloud)
+  build [--scaffold] [--no-cache]               compile the app to dist/ (no cloud; strict)
   deploy [options]                              build, then (optionally) provision D1 and deploy
       --mode <1|2|3>         1=build only · 2=+D1 · 3=+D1+deploy (prompted when a TTY)
       --deploy               shorthand for --mode 3

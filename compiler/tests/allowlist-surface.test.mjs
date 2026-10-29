@@ -20,7 +20,14 @@ import {
   INSTANCE_DB_METHODS,
   PAGINATOR_METHODS,
   COLLECTION_METHODS,
+  VALIDATOR_METHODS,
+  FILE_METHODS,
+  REQUEST_CALL,
+  REQUEST_ASYNC,
+  REQUEST_NO_CHAIN,
 } from '../src/transpiler.mjs';
+import { Validator } from '../../kernel/validator.mjs';
+import { buildRequest } from '../../kernel/http.mjs';
 import { Model } from '../../kernel/model.mjs';
 import { ARR_METHODS, arr as arrHelpers } from '../../kernel/arr.mjs';
 import { Collection } from '../../kernel/collections.mjs';
@@ -69,8 +76,9 @@ test('allowlist: the Collection allowlist IS the kernel Collection surface', () 
   for (const name of ['count', 'pluck', 'first', 'isEmpty', 'sum', 'toArray']) {
     assert.ok(COLLECTION_METHODS.has(name), `Collection.${name}() must be allowed`);
   }
-  // And one it does not have is not.
-  assert.equal(COLLECTION_METHODS.has('sliding'), false);
+  // And one it does not have is not (`lazy()` needs a LazyCollection,
+  // which the edge does not compile).
+  assert.equal(COLLECTION_METHODS.has('lazy'), false);
 });
 
 test('allowlist: the allowed model methods answer what Laravel answers', () => {
@@ -114,4 +122,53 @@ test('allowlist: every Arr method the compiler allows exists on rt.Arr', () => {
   const missing = [...ARR_METHODS].filter((name) => !surface.has(name));
   assert.deepEqual(missing, [], `rt.Arr has no ${missing.join(', ')}() — the call would throw at request time`);
   assert.ok(ARR_METHODS.has('except'), 'Arr::except() must be allowed: Blade emits it');
+});
+test('allowlist: every validator method exists on the kernel Validator', () => {
+  // A `withValidator(Validator $validator)` hook calls the validator directly
+  // (transpile: a typed receiver consults VALIDATOR_METHODS), so a name the
+  // kernel lacks compiles green and throws "is not a function" at request time.
+  const surface = surfaceOf(Validator.prototype);
+  const missing = [...VALIDATOR_METHODS.keys()].filter((name) => !surface.has(name));
+  assert.deepEqual(missing, [], `the kernel Validator has no ${missing.join(', ')}() - the call would 500`);
+  // The BAG methods are reached through the chain, so they must NOT be here:
+  // PHP's Validator has no isEmpty()/getMessages()/toArray()/isNotEmpty().
+  for (const bagOnly of ['isEmpty', 'isNotEmpty', 'getMessages', 'toArray']) {
+    assert.ok(!VALIDATOR_METHODS.has(bagOnly), `${bagOnly}() is a MessageBag method - it belongs on the chain`);
+  }
+});
+test('allowlist: every request method exists on the kernel request object', () => {
+  // `$request->input()` etc. compile to plain calls on the object buildRequest()
+  // answers; a name it lacks is the same silent 500.
+  const req = buildRequest({ method: 'GET', path: '/', query: {}, headers: {}, body: '', cookies: {} });
+  const names = [...REQUEST_CALL, ...REQUEST_ASYNC, ...REQUEST_NO_CHAIN];
+  const missing = names.filter((name) => typeof req[name] !== 'function');
+  assert.deepEqual(missing, [], `the kernel request has no ${missing.join(', ')}() - the call would 500`);
+});
+test('allowlist: every file method exists on the kernel uploaded file', () => {
+  // `$request->file('x')` answers the UploadedFile the kernel builds from the
+  // multipart body; FILE_METHODS must be a subset of its surface.
+  const boundary = 'LWGUARD';
+  const bytes = new Uint8Array(
+    Buffer.from(
+      `--${boundary}\r\n` +
+        'Content-Disposition: form-data; name="avatar"; filename="a.png"\r\n' +
+        'Content-Type: image/png\r\n\r\nabc\r\n' +
+        `--${boundary}--\r\n`,
+      'utf8'
+    )
+  );
+  // buildRequest parses the multipart body itself (the content-type header
+  // is what selects the parser), exactly as the worker passes it in.
+  const req = buildRequest({
+    method: 'POST',
+    path: '/upload',
+    query: {},
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    body: bytes,
+    cookies: {},
+  });
+  const file = req.file('avatar');
+  assert.ok(file, 'the uploaded file must be on the request');
+  const missing = [...FILE_METHODS].filter((name) => typeof file[name] !== 'function');
+  assert.deepEqual(missing, [], `the kernel uploaded file has no ${missing.join(', ')}() - the call would 500`);
 });

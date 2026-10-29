@@ -1015,6 +1015,42 @@ class Querying
   assert.equal(res.errors[0].code, 'LW002');
 });
 
+test('classes: a constructor that MENTIONS await in a string compiles (only real awaits are refused)', () => {
+  // The sync check scans the compiled body for the word `await`. A message or
+  // a comment that merely mentions it used to refuse a VALID class with LW002,
+  // so the scan skips string literals and comments now.
+  const file = classFile('Shouting', `<?php
+namespace App\\Listeners;
+use App\\Events\\PostPublished;
+class Shouting
+{
+    public function __construct()
+    {
+        // do not await the mailer here - the constructor stays synchronous
+        $this->label = 'await pending';
+    }
+    public function handle(PostPublished $event): void
+    {
+        echo $this->label;
+    }
+}
+`);
+  const res = compileClasses(
+    {
+      events: {
+        'App\\Events\\PostPublished': {
+          file: classFile('PostPublished', EVENT_SOURCE),
+          listeners: ['App\\Listeners\\Shouting'],
+        },
+      },
+      classes: { 'App\\Listeners\\Shouting': { file } },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /await pending/);
+});
+
 test('classes: a declared property keeps its default (the instance carries it)', () => {
   // PHP: `public int $sent = 0;` - the instance starts at 0. A dropped
   // property would answer null (and `null + 1` is 1 - a counter that starts

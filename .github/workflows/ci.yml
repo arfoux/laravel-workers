@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm install
       - run: npm --prefix compiler install
       - run: npm test
@@ -19,35 +20,14 @@ jobs:
       - run: node tools/gate.mjs --strict
       - run: node tools/bench.mjs
       - name: Syntax check shipped ESM
-        run: find build.mjs kernel compiler/src compiler/runtime bin tools -name '*.mjs' -print0 | xargs -0 -n1 node --check
+        run: find build.mjs kernel compiler/src compiler/runtime bin tools shadow src -name '*.mjs' -print0 | xargs -0 -n1 node --check
       - name: Pack dry-run — asserted tarball gate
         # The build runs out of the installed tarball (a user installs the
-        # artifact, not the repo). Every module build.mjs loads must ship in
-        # the tarball; a missing file only surfaces in e2e far too late.
-        run: |
-          npm pack --dry-run > /tmp/packed-list.txt 2>&1
-          require() { grep -q "npm notice .* ${1}$" /tmp/packed-list.txt || { echo "tarball gate FAILED: ${1} is not shipped"; exit 1; }; }
-          require compiler/blade.mjs
-          require tools/routes-dump.mjs
-          require tools/config-dump.mjs
-          require tools/schedule-dump.mjs
-          require tools/event-dump.mjs
-          require tools/class-dump.mjs
-          require tools/constants-dump.mjs
-          require tools/model-dump.mjs
-          require tools/policy-dump.mjs
-          require tools/static.mjs
-          require tools/php-runtime.mjs
-          # the guided deploy CLI surface — shipped to users, so it must not
-          # silently vanish from the tarball either
-          require tools/deploy.mjs
-          require tools/lw-state.mjs
-          require tools/status.mjs
-          require tools/doctor.mjs
-          require tools/run.mjs
-          require tools/jsonc.mjs
-          require tools/cloud-account.mjs
-          echo "tarball gate OK: every file build.mjs and the deploy CLI need is shipped"
+        # artifact, not the repo). Every module build.mjs/the deploy CLI load
+        # must ship, and every file the README links must resolve on npm.
+        # `npm pack --dry-run --json` is parsed by tools/pack-gate.mjs — the
+        # required list lives there, in one place, instead of in this YAML.
+        run: node tools/pack-gate.mjs
 
   # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
   # Laravel app — the `test` job has none, so those tests skip there. This job
@@ -61,6 +41,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
@@ -97,6 +78,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'

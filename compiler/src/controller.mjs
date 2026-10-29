@@ -11,17 +11,13 @@
 //   emitController(source, method, meta) -> the final handler module source.
 import parser from 'php-parser';
 import { snake } from '../../kernel/str.mjs';
-import { transpileControllerMethod } from './transpiler.mjs';
+import { transpileControllerMethod, uncompiledRuleOf } from './transpiler.mjs';
 import { viewFileName } from './view-name.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
-// The validation rules that read the file's *content* type (finfo): the edge
-// has only the type the browser declared, so the verdict would differ from
-// PHP's. The build stops instead of answering differently at the edge.
-const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes']);
 
 // A rule *object* (`Rule::file()->max(2048)`, `File::types([...])`) is a
 // class: the compiled validator evaluates the string rules only, so the rule
@@ -39,19 +35,6 @@ function isValidationRuleClass(fqcn) {
   return f === 'Illuminate\\Validation\\Rule' || f.startsWith('Illuminate\\Validation\\Rules\\');
 }
 
-// The name of a content-mime rule in a dumped rule set ('mimes:png' ->
-// 'mimes'), or null when the rule set has none.
-function contentMimeRuleOf(rules) {
-  const list = Array.isArray(rules) ? rules : [rules];
-  for (const raw of list) {
-    if (typeof raw !== 'string') continue;
-    for (const token of raw.split('|')) {
-      const name = String(token).split(':')[0].trim();
-      if (CONTENT_MIME_RULES.has(name)) return name;
-    }
-  }
-  return null;
-}
 
 // The facades of Laravel 13 (the vendored Illuminate/Support/Facades directory). A
 // facade outside the compiled surface is not an Eloquent model: the reason must
@@ -797,22 +780,19 @@ export function emitController(source, methodName, meta = {}) {
       );
       continue;
     }
-    // The dumped rules: a rule that reads the file's *content* type (finfo)
-    // cannot be answered like PHP at the edge (the edge has only the type the
-    // browser declared), so the build stops and names the rule.
+    // The dumped rules: a rule the compiled validator cannot answer (an
+    // unimplemented Laravel rule, a DNS/finfo rule) stops the build and is
+    // named, instead of reaching the request and throwing. A rule set the dump
+    // wrote as an ARRAY is one string per rule (the pipe is not a separator
+    // there), so each element is verified on its own; a string rule set keeps
+    // Laravel's explode semantics.
     for (const [field, rules] of Object.entries(dumped.rules || {})) {
-      const name = contentMimeRuleOf(rules);
-      if (!name) continue;
-      errors.push(
-        lwErr(
-          'LW002',
-          `the ${name} validation rule on "${field}" is not compiled — it reads the file's *content* type (finfo) and ` +
-            `the edge cannot sniff the content like PHP does: use the file rule with max (the size in kilobytes) ` +
-            `instead, or check the extension in the controller; ` + PORT_HINT,
-          null,
-          PORT_HINT
-        )
-      );
+      // The dump writes the rules exactly as `rules()` returned them: a string
+      // (pipe-separated, Laravel explodes it) or a list (each element whole),
+      // so the verdict reads the same shape the runtime will.
+      const bad = uncompiledRuleOf(rules);
+      if (!bad) continue;
+      errors.push(lwErr('LW002', bad.message + ' (on "' + field + '")', null, PORT_HINT));
     }
     formRequests.set(vname(p.name), dumped);
   }

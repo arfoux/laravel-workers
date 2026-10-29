@@ -10,6 +10,7 @@ import { Mailable } from '../../kernel/mailable.mjs';
 import { setModelRuntime, setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
 import { JsonResource, resourceResponse } from '../../kernel/resources.mjs';
+import { setRequestProvider } from '../../kernel/request-scope.mjs';
 import { Collection } from '../../kernel/collections.mjs';
 
 // The Collection marker: the runtime's Collection class is created per rt (a
@@ -139,8 +140,14 @@ export function buildRt(context, opts = {}) {
     else if (v === false) s = '';
     else if (typeof v === 'number') s = phpNumStr(v);
     else if (Array.isArray(v)) s = 'Array';
-    else if (typeof v === 'object') s = 'Object';
-    else s = String(v);
+    else if (typeof v === 'object') {
+      // `e($v)` is `htmlspecialchars((string) $v)`: a Collection stringifies
+      // through its own __toString() first (a probe: `e(collect(['<b>']))` is
+      // `[&quot;&lt;b&gt;&quot;]` - the cast escapes once, e() again).
+      s = typeof v.toString === 'function' && typeof v.toJson === 'function' && typeof v.all === 'function'
+        ? v.toString()
+        : 'Object';
+    } else s = String(v);
     return s
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -205,9 +212,23 @@ export function buildRt(context, opts = {}) {
     // combination follows the arithmetic rules. A PHP array is a plain object
     // (the compiled side) or a list.
     if (isPhpArray(a) && isPhpArray(b)) {
+      // The PHP key ORDER has to survive: `Object.keys` enumerates an
+      // integer-like key first and the result needs the `__lwOrder` marker, or
+      // `json_encode`/`foreach` answer a different order than PHP for a union
+      // that mixes int and string keys.
       const out = {};
-      for (const k of Object.keys(a)) out[k] = a[k];
-      for (const k of Object.keys(b)) if (!Object.prototype.hasOwnProperty.call(out, k)) out[k] = b[k];
+      const order = [];
+      for (const k of rt.phpKeys(a)) {
+        if (Object.prototype.hasOwnProperty.call(out, k)) continue;
+        out[k] = a[k];
+        order.push(k);
+      }
+      for (const k of rt.phpKeys(b)) {
+        if (Object.prototype.hasOwnProperty.call(out, k)) continue;
+        out[k] = b[k];
+        order.push(k);
+      }
+      Object.defineProperty(out, '__lwOrder', { value: order, enumerable: false });
       return out;
     }
     const p = arithOperands('+', a, b);
@@ -221,7 +242,15 @@ export function buildRt(context, opts = {}) {
     if (v === false) return '';
     if (typeof v === 'number') return phpNumStr(v);
     if (Array.isArray(v)) return 'Array';
-    if (typeof v === 'object') return 'Object';
+    if (typeof v === 'object') {
+      // `(string)$collection` goes through Collection::__toString() = its
+      // toJson() (escaped only when escapeWhenCastingToString() asked for it) -
+      // a probe: `'x' . collect([1, 2])` answers `x[1,2]`.
+      if (typeof v.toString === 'function' && typeof v.toJson === 'function' && typeof v.all === 'function') {
+        return v.toString();
+      }
+      return 'Object';
+    }
     return String(v);
   };
   rt.concat = (a, b) => phpToStr(a) + phpToStr(b);
@@ -344,6 +373,12 @@ export function buildRt(context, opts = {}) {
   };
   rt.request = () => (liveRequest || noHttp('request'));
   rt.session = () => (liveSession || noHttp('session'));
+  // Laravel's `app('request')`: the ambient request a JsonResource resolves
+  // through at json_encode() time (JsonResource::jsonSerialize() ->
+  // resolve($request = null)). Each buildRt() republishes it, so a view's own
+  // rt or a static snapshot never leaves a stale request behind - without an
+  // HTTP context the lookup fails loud, exactly like the container would.
+  setRequestProvider(() => (liveRequest || noHttp('request')));
   // The app's validation messages (the app's own lang file wins over the
   // framework's copy, exactly like Laravel's translator - the same helper the
   // request's validate() uses, kernel/http.mjs:validationMessagesOf).
@@ -491,7 +526,10 @@ export function buildRt(context, opts = {}) {
     : {};
   const translateLine = (key, locale) => {
     const locales = [locale];
-    const fallback = configCtx['app.fallback_locale'];
+    // config('app.fallback_locale'): Laravel's stock value is 'en', and a
+    // config dumped before the key existed must still fall back there (the
+    // fallback is what answers a key the locale file does not carry).
+    const fallback = configCtx['app.fallback_locale'] || 'en';
     if (fallback && locales.indexOf(fallback) === -1) locales.push(fallback);
     for (const loc of locales) {
       const groups = translations[loc];
@@ -998,13 +1036,38 @@ export function buildRt(context, opts = {}) {
       : haystack !== null && typeof haystack === 'object'
         ? Object.values(haystack)
         : [];
-    if (strict) return arr.some((x) => x === needle && typeof x === typeof needle);
+    if (strict) return arr.some((x) => phpIdentical(x, needle));
     return arr.some((x) => rt.looseEq(x, needle));
   };
   const isObj = (v) => v !== null && typeof v === 'object';
   const arrValues = (v) => (Array.isArray(v) ? v.slice() : (isObj(v) ? rt.phpKeys(v).map((k) => v[k]) : []));
   rt.implode = (glue, arr) => arrValues(arr).map((x) => (x == null ? '' : String(x))).join(glue == null ? '' : String(glue));
-  rt.explode = (delim, str, limit) => String(str).split(String(delim));
+  // PHP explode(): the third argument caps the split. Positive N keeps N-1
+  // separators (the tail stays whole), 0 is treated as 1, and a negative N
+  // drops the last -N components. PHP 8 throws ValueError on an empty
+  // separator; an unmatched separator always yields the whole string.
+  rt.explode = (delim, str, limit) => {
+    const d = String(delim);
+    const s = String(str);
+    if (d === '') {
+      const err = new Error('explode(): Argument #1 ($separator) cannot be empty');
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
+    }
+    if (limit === undefined || limit === null) return s.split(d);
+    const n = Number(limit) | 0;
+    if (n === 0) return [s];
+    const parts = s.split(d);
+    if (parts.length <= 1) return parts;
+    if (n > 0) {
+      if (parts.length <= n) return parts;
+      const head = parts.slice(0, n - 1);
+      head.push(parts.slice(n - 1).join(d));
+      return head;
+    }
+    return parts.slice(0, Math.max(parts.length + n, 0));
+  };
   rt.array_key_exists = (k, arr) => (isObj(arr) ? Object.prototype.hasOwnProperty.call(arr, k) : false);
   // PHP preserves an array's insertion order; a JS object does not (an
   // integer-like key enumerates first). A literal that mixes both kinds is
@@ -1046,20 +1109,219 @@ export function buildRt(context, opts = {}) {
     arr.push(value);
     return arr;
   };
+  // PHP's sprintf() (ext/standard/formatted_print.c): the full format is
+  // `%[argnum$][flags][width][.precision]specifier` with the flags `-`, `+`,
+  // ` `, `0` and `'<pad>`, a `*` width/precision, and the specifiers
+  // `b c d e E f F g G o s u x X %`. The old code only understood `%s`/`%d`/`%u`
+  // and ignored flags/width/precision/argnum, so `sprintf('%05d', 42)`
+  // answered '42' where PHP answers '00042' - silently wrong output.
+  const sprintfInt = (v) => {
+    if (typeof v === 'number') return Number.isFinite(v) ? Math.trunc(v) : 0;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (v === null || v === undefined) return 0;
+    // PHP casts an array/object to int as 1 (0 when empty), NOT through its
+    // string form - a probe: sprintf('%d', [5]) is 1 in PHP 8.3.
+    if (typeof v === 'object') return Object.keys(v).length ? 1 : 0;
+    const m = /^[+-]?\d+/.exec(String(v).trim());
+    return m ? parseInt(m[0], 10) : 0;
+  };
+  const sprintfFloat = (v) => {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (v === null || v === undefined) return 0;
+    const m = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(String(v).trim());
+    return m ? parseFloat(m[0]) : 0;
+  };
+  const unsigned64 = (n) => BigInt.asUintN(64, BigInt(n));
+  const padTo = (body, width, opts, signPrefix) => {
+    if (width <= body.length) return body;
+    const fill = width - body.length;
+    const padChar = opts.padChar;
+    if (opts.left) return body + padChar.repeat(fill);
+    if (prepadZeroable(opts)) {
+      // `%05d` pads between the sign/prefix and the digits: '-00042' (the
+      // sign is already part of `body`, so it is not written twice).
+      return signPrefix + '0'.repeat(fill) + body.slice(signPrefix.length);
+    }
+    return padChar.repeat(fill) + body;
+  };
+  const prepadZeroable = (opts) => opts.zero && !opts.left && opts.padChar === ' ';
+  // PHP 8.3's ' ' flag is a FILLER selector (pad with spaces, the default),
+  // not a positive-sign flag: a probe shows sprintf('% d', 42) === '42' and
+  // sprintf('% f', 3.5) === '3.500000'. Only '+' forces a sign.
+  const sprintfSign = (neg, opts) => (neg ? '-' : opts.plus ? '+' : '');
   rt.sprintf = (fmt, ...args) => {
-    let i = 0;
-    // collapse %% -> % first (PHP: literal percent)
-    const withPlaceholders = String(fmt).replace(/%%/g, '\u0000');
-    const out = withPlaceholders.replace(/%[sdu]/g, (m) => {
-      const a = args[i++];
-      if (m === '%d' || m === '%u') return String(parseInt(a, 10));
-      return String(a == null ? '' : a);
-    });
-    return out.replace(/\u0000/g, '%');
+    const f = String(fmt);
+    let out = '';
+    let slot = 0;
+    let needed = 0;
+    const takeArg = (index) => {
+      const at = index === null ? slot++ : index;
+      needed = Math.max(needed, at + 1);
+      if (at >= args.length) {
+        const err = new Error(`${needed + 1} arguments are required, ${args.length + 1} given`);
+        err.name = 'ArgumentCountError';
+        err.phpClass = 'ArgumentCountError';
+        throw err;
+      }
+      return args[at];
+    };
+    for (let i = 0; i < f.length; i++) {
+      if (f[i] !== '%') {
+        out += f[i];
+        continue;
+      }
+      i += 1;
+      if (f[i] === '%') {
+        out += '%';
+        continue;
+      }
+      let argIndex = null;
+      const mArg = /^(\d+)\$/.exec(f.slice(i));
+      if (mArg) {
+        argIndex = Number(mArg[1]) - 1;
+        i += mArg[0].length;
+      }
+      const opts = { left: false, plus: false, space: false, zero: false, padChar: ' ' };
+      for (;;) {
+        const c = f[i];
+        if (c === '-') opts.left = true;
+        else if (c === '+') opts.plus = true;
+        else if (c === ' ') opts.space = true;
+        else if (c === '0') opts.zero = true;
+        else if (c === "'") {
+          opts.padChar = f[i + 1] === undefined ? ' ' : f[i + 1];
+          i += 1;
+        } else break;
+        i += 1;
+      }
+      let width = 0;
+      if (f[i] === '*') {
+        width = Math.abs(sprintfInt(takeArg(argIndex)) | 0);
+        if (argIndex !== null) argIndex += 0;
+        i += 1;
+      } else {
+        const mW = /^\d+/.exec(f.slice(i));
+        if (mW) {
+          width = Number(mW[0]);
+          i += mW[0].length;
+        }
+      }
+      let prec = null;
+      if (f[i] === '.') {
+        i += 1;
+        if (f[i] === '*') {
+          prec = Math.abs(sprintfInt(takeArg(argIndex)) | 0);
+          i += 1;
+        } else {
+          const mP = /^\d*/.exec(f.slice(i));
+          prec = mP[0] === '' ? 0 : Number(mP[0]);
+          i += mP[0].length;
+        }
+      }
+      const spec = f[i];
+      const value = spec === undefined ? undefined : takeArg(argIndex);
+      let body;
+      let sign = '';
+      switch (spec) {
+        case 's': {
+          // PHP's string cast: true -> '1', false/null -> '', an array ->
+          // 'Array' (phpToStr matches; String(true) would answer 'true').
+          body = value === null || value === undefined ? '' : phpToStr(value);
+          if (prec !== null) body = body.slice(0, prec);
+          break;
+        }
+        case 'd':
+        case 'u': {
+          const n = sprintfInt(value);
+          sign = sprintfSign(n < 0 && spec === 'd', opts);
+          body = String(Math.abs(n));
+          if (spec === 'u') {
+            body = unsigned64(n).toString();
+            sign = '';
+          }
+          break;
+        }
+        case 'b': {
+          const n = sprintfInt(value);
+          body = unsigned64(n).toString(2);
+          break;
+        }
+        case 'o': {
+          body = unsigned64(sprintfInt(value)).toString(8);
+          break;
+        }
+        case 'x':
+        case 'X': {
+          body = unsigned64(sprintfInt(value)).toString(16);
+          if (spec === 'X') body = body.toUpperCase();
+          break;
+        }
+        case 'c': {
+          body = String.fromCodePoint(sprintfInt(value) & 0x10ffff);
+          break;
+        }
+        case 'f':
+        case 'F': {
+          const n = sprintfFloat(value);
+          sign = sprintfSign(n < 0 || Object.is(n, -0), opts);
+          body = Math.abs(n).toFixed(prec === null ? 6 : prec);
+          break;
+        }
+        case 'e':
+        case 'E': {
+          const n = sprintfFloat(value);
+          sign = sprintfSign(n < 0, opts);
+          body = Math.abs(n).toExponential(prec === null ? 6 : prec);
+          // PHP writes `1.000000e+1`; JS writes `1.000000e+1` too - only the
+          // exponent's width differs (`e+1` vs PHP's `e+1`), so nothing to fix.
+          if (spec === 'E') body = body.toUpperCase();
+          break;
+        }
+        case 'g':
+        case 'G': {
+          const n = sprintfFloat(value);
+          sign = sprintfSign(n < 0, opts);
+          const abs = Math.abs(n);
+          const p = Math.max(prec === null ? 6 : prec, 1);
+          if (abs === 0 || !Number.isFinite(abs)) {
+            body = abs === 0 ? '0' : phpToStr(abs);
+            break;
+          }
+          // PHP's %g (php_conv_fp with 'G'): scientific when the exponent is
+          // below -4 or at/above the precision, otherwise fixed - then the
+          // trailing zeros go, but the scientific form always keeps '.0'
+          // ('%g' of 1000000 is '1.0e+6', not '1e+6').
+          const exp = Math.floor(Math.log10(abs));
+          if (exp < -4 || exp >= p) {
+            let s = abs.toExponential(p - 1);
+            if (!s.includes('.')) s = s.replace('e', '.0e');
+            s = s.replace(/\.(\d*?)0+e/, (m, d) => (d ? '.' + d + 'e' : '.0e'));
+            body = s;
+          } else {
+            let s = abs.toFixed(Math.max(p - 1 - exp, 0));
+            if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\.$/, '');
+            body = s;
+          }
+          if (spec === 'G') body = body.toUpperCase();
+          break;
+        }
+        default: {
+          const err = new Error(`Unknown format specifier "${spec === undefined ? '' : spec}"`);
+          err.name = 'ValueError';
+          err.phpClass = 'ValueError';
+          throw err;
+        }
+      }
+      out += padTo(sign + body, width, opts, sign);
+    }
+    return out;
   };
   rt.strtolower = (s) => String(s).toLowerCase();
   rt.strtoupper = (s) => String(s).toUpperCase();
-  rt.trim = (s) => String(s).trim();
+  // rt.trim/ltrim/rtrim are defined with the string helpers below — PHP's trim
+  // family takes a charlist (with '..' ranges) and its own default character
+  // set, which JavaScript's String.prototype.trim() does not reproduce.
 
   // ---- byte-oriented string helpers (PHP length semantics) ----
   const utf8 = new TextEncoder();
@@ -1233,6 +1495,57 @@ export function buildRt(context, opts = {}) {
   };
   const arrEmpty = (v) => (Array.isArray(v) ? v.length === 0 : (v && typeof v === 'object' ? Object.keys(v).length === 0 : true));
 
+  // PHP's array keys: a canonical decimal integer string IS the int key
+  // ('0' and 0 are one key; '01' and '+1' stay strings).
+  const phpArrayKey = (k) => {
+    const s = String(k);
+    return /^(?:0|-?[1-9]\d*)$/.test(s) ? Number(s) : s;
+  };
+  /** A PHP array's `[key, value]` pairs, in PHP order (a list is one too). */
+  const arrayEntries = (v) => {
+    const out = [];
+    if (Array.isArray(v)) v.forEach((x, i) => out.push([i, x]));
+    else for (const k of rt.phpKeys(v)) out.push([phpArrayKey(k), v[k]]);
+    return out;
+  };
+  /**
+   * PHP's `==` on two arrays: the same KEY/VALUE pairs, the values compared
+   * LOOSELY and the key ORDER irrelevant (order matters only for `===`). The
+   * old code fell through to `a === b`, so `[1,2] == ['0'=>1,'1'=>2]` and
+   * `['a'=>1,'b'=>2] == ['b'=>2,'a'=>1]` answered false where PHP answers true
+   * (a probe: both true, while `[1,2] == [2,1]` is false - the same keys with
+   * different values).
+   */
+  const looseArrayEq = (a, b) => {
+    const ea = arrayEntries(a);
+    const eb = arrayEntries(b);
+    if (ea.length !== eb.length) return false;
+    return ea.every(([ka, va]) => {
+      const hit = eb.find(([kb]) => kb === ka);
+      return hit !== undefined && rt.looseEq(va, hit[1]);
+    });
+  };
+  /**
+   * PHP's `===` on two arrays: the same pairs IN THE SAME ORDER, the values
+   * identical (a probe: `[1,2] === [1,2]` true, the same pairs reordered
+   * false), and `in_array([1,2], [[1,2]], true)` is true - the old `strict`
+   * path only compared scalars (`x === needle`), so an array needle never
+   * matched.
+   */
+  const phpIdentical = (a, b) => {
+    if (a === b) return true;
+    const ta = tagOf(a);
+    if (ta !== tagOf(b) || ta !== 'arr') return false;
+    const ea = arrayEntries(a);
+    const eb = arrayEntries(b);
+    if (ea.length !== eb.length) return false;
+    for (let i = 0; i < ea.length; i++) {
+      if (ea[i][0] !== eb[i][0]) return false;
+      if (!phpIdentical(ea[i][1], eb[i][1])) return false;
+    }
+    return true;
+  };
+
   // Two numeric strings, compared with the int64 precision PHP uses.
   const numericStringEq = (a, b) => {
     const norm = (s) => {
@@ -1289,6 +1602,7 @@ export function buildRt(context, opts = {}) {
     }
     if (ta === 'num' && tb === 'str') return isNumericStr(b) ? a === Number(b) : String(a) === String(b);
     if (ta === 'str' && tb === 'num') return isNumericStr(a) ? Number(a) === b : String(a) === String(b);
+    if (ta === 'arr' && tb === 'arr') return looseArrayEq(a, b);
     return a === b;
   };
   rt.looseNe = (a, b) => !rt.looseEq(a, b);
@@ -1443,44 +1757,139 @@ export function buildRt(context, opts = {}) {
   };
   const maxMin = (dir, a) => {
     const vals = a.length === 1 && Array.isArray(a[0]) ? a[0] : a;
+    // PHP 8's max()/min() (ext/standard/array.c): the comparison is the
+    // standard `<`/`>` - numeric when BOTH operands are numeric, else a string
+    // compare - so `Number()` answered 'a' for `max(['a','b'])` (NaN compares
+    // false, the first element stuck) where PHP answers 'b', and an EMPTY list
+    // answered `undefined` where PHP throws ValueError (a fatal error, i.e. a
+    // Laravel 500).
+    if (vals.length === 0) {
+      const err = new Error((dir > 0 ? 'max' : 'min') + '(): Argument #1 ($value) must contain at least one element');
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
+    }
     let best = vals[0];
-    for (const v of vals) if (dir > 0 ? Number(v) > Number(best) : Number(v) < Number(best)) best = v;
+    for (let i = 1; i < vals.length; i++) {
+      const v = vals[i];
+      if (dir > 0 ? rt.gt(v, best) : rt.lt(v, best)) best = v;
+    }
     return best;
   };
   rt.max = (...a) => maxMin(1, a);
   rt.min = (...a) => maxMin(-1, a);
 
   // ---- strings (continued) ----
+  // PHP's trim()/ltrim()/rtrim() share one charlist parser (php_charmask,
+  // ext/standard/string.c): the default charlist is " \t\n\r\0\x0B" — NOT
+  // JavaScript's WhiteSpace+LineTerminator set — and an explicit charlist may
+  // hold '..' ranges (`trim($s, 'a..z')`). A malformed range stays literal
+  // (PHP also raises a warning the compiled rung cannot print).
   const PHP_WS = ' \t\n\r\u0000\u000B';
-  const trimChars = (s, chars, dir) => {
-    const set = new Set(chars.split(''));
+  const charMask = (chars) => {
+    const set = new Set();
+    const s = String(chars);
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i + 1] === '.' && s[i + 2] === '.' && i + 3 < s.length) {
+        const from = s.charCodeAt(i);
+        const to = s.charCodeAt(i + 3);
+        if (from <= to) {
+          for (let c = from; c <= to; c += 1) set.add(String.fromCharCode(c));
+          i += 3;
+          continue;
+        }
+      }
+      set.add(s[i]);
+    }
+    return set;
+  };
+  const trimWith = (s, chars, dir) => {
+    const mask = charMask(chars);
     const a = String(s == null ? '' : s).split('');
-    let i = 0, j = a.length;
-    if (dir !== 'r') while (i < j && set.has(a[i])) i++;
-    if (dir !== 'l') while (j > i && set.has(a[j - 1])) j--;
+    let i = 0;
+    let j = a.length;
+    if (dir !== 'r') while (i < j && mask.has(a[i])) i += 1;
+    if (dir !== 'l') while (j > i && mask.has(a[j - 1])) j -= 1;
     return a.slice(i, j).join('');
   };
-  rt.ltrim = (s, chars) => trimChars(s, chars == null ? PHP_WS : String(chars), 'l');
-  rt.rtrim = (s, chars) => trimChars(s, chars == null ? PHP_WS : String(chars), 'r');
+  rt.trim = (s, chars) => trimWith(s, chars == null ? PHP_WS : chars, 'lr');
+  rt.ltrim = (s, chars) => trimWith(s, chars == null ? PHP_WS : chars, 'l');
+  rt.rtrim = (s, chars) => trimWith(s, chars == null ? PHP_WS : chars, 'r');
   rt.ucwords = (s) => String(s == null ? '' : s).replace(/(^|[ \t\r\n\f\u000B])(\S)/g, (m, p, c) => p + c.toUpperCase());
   rt.strrev = (s) => String(s == null ? '' : s).split('').reverse().join('');
+  // PHP 8's strpos()/strrpos() offset rules (ext/standard/string.c): a NEGATIVE
+  // offset counts from the end (strpos('abca','a',-2) is 3, strpos('abc','a',
+  // -1) is false), an offset past the haystack is a ValueError - and the old
+  // code clamped a negative offset to 0 (`Number(off)|0` + JS indexOf), so it
+  // answered 0 where PHP answers false, or searched the whole string.
+  const phpOffset = (name, off, len) => {
+    const n = off == null ? 0 : Number(off) | 0;
+    if (n > len || -n > len) {
+      const err = new Error(name + '(): Argument #3 ($offset) must be contained in argument #1 ($haystack)');
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
+    }
+    return n;
+  };
   rt.strpos = (h, n, off) => {
-    const i = String(h == null ? '' : h).indexOf(String(n), off == null ? 0 : Number(off) | 0);
+    const s = String(h == null ? '' : h);
+    const raw = phpOffset('strpos', off, s.length);
+    const start = raw < 0 ? s.length + raw : raw;
+    const i = s.indexOf(String(n), start);
     return i < 0 ? false : i;
   };
   rt.strrpos = (h, n, off) => {
     const s = String(h == null ? '' : h);
-    const from = off == null ? s.length : Number(off) | 0;
-    const i = s.lastIndexOf(String(n), from);
+    const needle = String(n);
+    const raw = phpOffset('strrpos', off, s.length);
+    if (raw >= 0) {
+      // A zero/positive offset skips the first `$offset` bytes: the last
+      // occurrence must not start before it (strrpos('abc','c',3) is false).
+      const i = s.lastIndexOf(needle);
+      return i < raw ? false : i;
+    }
+    // A negative offset skips the last `-$offset` bytes, so the needle's START
+    // must be at or before `len + $offset` (strrpos('abca','a',-1) is 3,
+    // strrpos('abca','a',-2) is 0 - the search region is shorter, not offset).
+    const i = s.slice(0, s.length + raw + 1).lastIndexOf(needle);
     return i < 0 ? false : i;
   };
+  // PHP 8's substr_count($h, $needle, $offset = 0, $length = null): the needle
+  // cannot be empty (ValueError), a NEGATIVE offset counts from the end and a
+  // NEGATIVE length excludes that many characters from the end, both must be
+  // "contained in the haystack" (ValueError when not) - and the old code
+  // ignored `$length` entirely and let a negative offset clamp to 0, so
+  // substr_count('aaa','a',1,1) answered 2 where PHP answers 1.
   rt.substr_count = (h, n, off, len) => {
-    const s = String(h == null ? '' : h).slice(off == null ? 0 : Number(off) | 0);
+    const s = String(h == null ? '' : h);
     const needle = String(n);
-    if (needle === '') return 0;
-    let count = 0, i = 0;
+    if (needle === '') {
+      const err = new Error('substr_count(): Argument #2 ($needle) cannot be empty');
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
+    }
+    const rawOff = phpOffset('substr_count', off, s.length);
+    const start = rawOff < 0 ? s.length + rawOff : rawOff;
+    let region = s.slice(start);
+    if (len !== undefined && len !== null) {
+      const l = Number(len) | 0;
+      // The length must be contained in the REMAINING region (PHP 8 checks
+      // `$offset + $length`, so -3 is fine at offset 1 of a 4-char haystack
+      // only while it stays inside it).
+      if (l > region.length || -l > region.length) {
+        const err = new Error('substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)');
+        err.name = 'ValueError';
+        err.phpClass = 'ValueError';
+        throw err;
+      }
+      region = l < 0 ? region.slice(0, region.length + l) : region.slice(0, l);
+    }
+    let count = 0;
+    let i = 0;
     for (;;) {
-      const at = s.indexOf(needle, i);
+      const at = region.indexOf(needle, i);
       if (at < 0) break;
       count++;
       i = at + needle.length;
@@ -1590,21 +1999,200 @@ export function buildRt(context, opts = {}) {
     }
     return 0;
   };
+  // The json_encode() flags with a byte-exact answer at the edge. PHP's values:
+  // JSON_HEX_TAG 1, JSON_HEX_AMP 2, JSON_HEX_APOS 4, JSON_HEX_QUOT 8,
+  // JSON_FORCE_OBJECT 16, JSON_UNESCAPED_SLASHES 64, JSON_UNESCAPED_UNICODE 256,
+  // JSON_PRETTY_PRINT 128, JSON_THROW_ON_ERROR 4194304 (a 32-bit int in PHP, so
+  // the JS bit mask must not truncate it).
+  const JSON_FORCE_OBJECT = 16;
+  const JSON_UNESCAPED_SLASHES = 64;
+  const JSON_PRETTY_PRINT = 128;
+  const JSON_UNESCAPED_UNICODE = 256;
+  const JSON_THROW_ON_ERROR = 4194304;
+  const JSON_SUPPORTED_FLAGS =
+    JSON_HEX_FLAGS | JSON_FORCE_OBJECT | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
+  // PHP's json_encode() pretty printer (ext/json/json.c: php_json_pretty_print):
+  // four spaces per level, a newline after every brace/comma, `": "` after a
+  // key and `[]`/`{}` for an empty container (no newline inside it).
+  const jsonPrettyPrint = (json) => {
+    let out = '';
+    let depth = 0;
+    const pad = () => '    '.repeat(depth);
+    let inString = false;
+    for (let i = 0; i < json.length; i++) {
+      const c = json[i];
+      if (inString) {
+        out += c;
+        if (c === '\\') {
+          out += json[i + 1] || '';
+          i++;
+        } else if (c === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (c === '"') {
+        inString = true;
+        out += c;
+        continue;
+      }
+      if (c === '{' || c === '[') {
+        const close = c === '{' ? '}' : ']';
+        // An empty container stays on one line.
+        if (json[i + 1] === close) {
+          out += c + close;
+          i++;
+          continue;
+        }
+        depth++;
+        out += c + '\n' + pad();
+        continue;
+      }
+      if (c === '}' || c === ']') {
+        depth--;
+        out += '\n' + pad() + c;
+        continue;
+      }
+      if (c === ',') {
+        out += ',\n' + pad();
+        continue;
+      }
+      if (c === ':') {
+        out += ': ';
+        continue;
+      }
+      out += c;
+    }
+    return out;
+  };
+  // The value JSON_FORCE_OBJECT produced, encoded as an OBJECT (keys quoted,
+  // in the map's own order). JSON_FORCE_OBJECT is documented as forcing a
+  // PHP object, so every level of the map is written the same way.
+  const phpJsonEncodeMapAsObject = (v) => {
+    if (v === null || typeof v !== 'object') return phpJsonEncode(v);
+    const keys = Object.keys(v);
+    return '{' + keys.map((k) => phpJsonEncode(String(k)) + ':' + phpJsonEncodeMapAsObject(v[k])).join(',') + '}';
+  };
+  // JSON_FORCE_OBJECT: every ARRAY becomes an object (the depth walk keeps the
+  // value shape, the keys become 0..n-1).
+  const jsonForceObject = (v) => {
+    if (Array.isArray(v)) {
+      const o = {};
+      for (let i = 0; i < v.length; i++) o[String(i)] = jsonForceObject(v[i]);
+      return o;
+    }
+    if (v !== null && typeof v === 'object') {
+      const o = {};
+      for (const k of Object.keys(v)) o[k] = jsonForceObject(v[k]);
+      return o;
+    }
+    return v;
+  };
   rt.json_encode = (v, flags, depth) => {
-    const f = flags == null ? 0 : Number(flags) | 0;
+    const f = flags == null ? 0 : Number(flags);
     const d = depth == null ? 512 : Number(depth) | 0;
-    if (f & ~JSON_HEX_FLAGS) {
+    if (f & ~JSON_SUPPORTED_FLAGS) {
       throw new Error(
         'json_encode() flags ' + f + ' are not supported at the edge — PHP would write a different ' +
-          'body with them (the ported ones are JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) — ' +
-          'drop the flags or write a port'
+          'body with them (the ported ones are JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT, ' +
+          'JSON_FORCE_OBJECT, JSON_UNESCAPED_SLASHES, JSON_PRETTY_PRINT, JSON_UNESCAPED_UNICODE, ' +
+          'JSON_THROW_ON_ERROR) — drop the flags or write a port'
       );
     }
     const value = v == null ? null : v;
-    if (jsonDepth(value) > d) return false;
-    return jsonHexEncode(phpJsonEncode(value), f);
+    // JSON_FORCE_OBJECT shapes an ARRAY into an OBJECT here, but a PHP object
+    // is a JS object already, so phpJsonEncode() would write it as `{...}` -
+    // and an EMPTY array must print `{}` too. The map is converted to its
+    // ordered PAIRS before encoding so the empty case survives.
+    const shaped = f & JSON_FORCE_OBJECT ? jsonForceObject(value) : value;
+    if (jsonDepth(shaped) > d) {
+      // PHP returns false; with JSON_THROW_ON_ERROR it throws JsonException.
+      if (f & JSON_THROW_ON_ERROR) {
+        const err = new Error('Maximum stack depth exceeded');
+        err.name = 'JsonException';
+        err.phpClass = 'JsonException';
+        throw err;
+      }
+      return false;
+    }
+    let json;
+    try {
+      json = phpJsonEncode(shaped, { unescapedUnicode: !!(f & JSON_UNESCAPED_UNICODE) });
+      if (f & JSON_FORCE_OBJECT) {
+        // The encoder writes a key-less map as `[]` and a 0..n-1 map as a list
+        // (it cannot see that the value was an ARRAY); PHP's JSON_FORCE_OBJECT
+        // writes an OBJECT in both cases, so the forced shape is spelled out.
+        if (shaped !== null && typeof shaped === 'object') json = phpJsonEncodeMapAsObject(shaped);
+      }
+    } catch (e) {
+      // An unencodable value (invalid UTF-8, Inf/NaN) is `false` from PHP's
+      // json_encode - `null` positive with JSON_THROW_ON_ERROR, which raises
+      // JsonException ("Malformed UTF-8 characters, possibly incorrectly encoded").
+      if (f & JSON_THROW_ON_ERROR) {
+        const err = new Error(e && e.message ? e.message : 'json_encode() failed');
+        err.name = 'JsonException';
+        err.phpClass = 'JsonException';
+        throw err;
+      }
+      return false;
+    }
+    if (f & JSON_UNESCAPED_SLASHES) json = json.replace(/\\\//g, '/');
+    let out = jsonHexEncode(json, f & JSON_HEX_FLAGS);
+    if (f & JSON_PRETTY_PRINT) out = jsonPrettyPrint(out);
+    return out;
   };
-  rt.json_decode = (s, assoc) => JSON.parse(String(s));
+  // PHP's json_decode(): invalid JSON answers NULL (only a warning) unless
+  // JSON_THROW_ON_ERROR is passed, which raises JsonException("Syntax error")
+  // (ext/json/parser). `JSON.parse` throws on every invalid input, so the old
+  // one-liner turned a controller's `json_decode($request->input('x'))` into an
+  // uncaught SyntaxError (a 500) where PHP answered null - and `''` was one of
+  // those inputs. The depth budget is PHP's too: `json_decode('[1]', true, 1)`
+  // is NULL / JsonException("Maximum stack depth exceeded") because a container
+  // costs a level (`json_decode('[]', true, 1)` is already NULL, probed on PHP
+  // 8.3), while a scalar needs none, and `$depth <= 0` is a ValueError.
+  // `assoc` does not change the JS shape (a plain object is this runtime's PHP
+  // array - see the documented object/array ambiguity).
+  const jsonDecodeLevels = (v) => {
+    if (v === null || typeof v !== 'object') return 0;
+    let deepest = 0;
+    for (const k of Object.keys(v)) {
+      const d = jsonDecodeLevels(v[k]);
+      if (d > deepest) deepest = d;
+    }
+    return 1 + deepest;
+  };
+  rt.json_decode = (s, _assoc, depth, flags) => {
+    const budget = depth === undefined || depth === null ? 512 : Number(depth);
+    if (!(budget > 0)) {
+      const err = new Error('json_decode(): Argument #3 ($depth) must be greater than 0');
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
+    }
+    const throwOnError = Number(flags || 0) & JSON_THROW_ON_ERROR;
+    let out;
+    try {
+      out = JSON.parse(String(s == null ? '' : s));
+    } catch (e) {
+      if (throwOnError) {
+        const err = new Error('Syntax error');
+        err.name = 'JsonException';
+        err.phpClass = 'JsonException';
+        throw err;
+      }
+      return null;
+    }
+    if (jsonDecodeLevels(out) + 1 > budget) {
+      if (throwOnError) {
+        const err = new Error('Maximum stack depth exceeded');
+        err.name = 'JsonException';
+        err.phpClass = 'JsonException';
+        throw err;
+      }
+      return null;
+    }
+    return out;
+  };
 
   // ---- more array helpers ----
   rt.array_sum = (arr) => arrValues(arr).reduce((s, x) => s + Number(x), 0);
@@ -1675,6 +2263,11 @@ export function buildRt(context, opts = {}) {
   // getArrayableItems() (an Arrayable becomes its attributes).
   rt.collectionWrap = (value) => Collection.wrap(value);
   rt.Collection = Collection;
+  // `mapInto(SomeModel::class)`/`pipeInto(SomeModel::class)`: `SomeModel::class`
+  // compiles to the FQCN STRING (only a registered model can be named at the
+  // edge), and a compiled class is built by the registry - its constructor
+  // takes the dependency bundle, not the plain arguments.
+  Collection.__lwNewClass = (fqcn, args) => rt.newClass(fqcn, args);
 
   // ---- rt.now() minimal Carbon stub ----
   //

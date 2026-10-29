@@ -118,3 +118,45 @@ class ServiceResource extends JsonResource
   assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
   assert.match(res.errors[0].message, /cannot inject a service/);
 });
+test('resource: toArray($request) may use the request surface', async () => {
+  // The request a resource's toArray() receives is the LIVE one (the kernel's
+  // JsonResource::resolve($request) -> toArray($request)), so the allowed
+  // request surface compiles inside the resource. Before the parameter was
+  // registered as a request variable every such call failed loud
+  // ("the method call $request->path() is not compiled") and the whole route
+  // fell back to a port.
+  const res = compile(
+    `<?php
+namespace App\\Http\\Resources;
+use Illuminate\\Http\\Request;
+use Illuminate\\Http\\Resources\\Json\\JsonResource;
+class ProbeResource extends JsonResource
+{
+    public function toArray(Request $request)
+    {
+        return ['id' => $this->id, 'path' => $request->path(), 'probe' => $request->query('probe')];
+    }
+}
+`,
+    'ProbeResource'
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  const dir = mkdtempSync(join(tmpdir(), 'lw-resource-probe-'));
+  const mod = join(dir, 'classes.generated.mjs');
+  writeFileSync(mod, res.code, 'utf8');
+  const classes = (await import(pathToFileURL(mod).href)).classes;
+  const request = {
+    input: () => undefined,
+    all: () => ({}),
+    header: () => null,
+    path: () => 'posts/1/resource',
+    query: (key) => (key === 'probe' ? 'hello' : null),
+  };
+  const rt = buildRt({}, { http: { request }, classes });
+  const resource = rt.newClass('App\\Http\\Resources\\ProbeResource', [{ id: 3 }]);
+  assert.equal(
+    rt.toResponse(resource).body,
+    // PHP escapes `/` as `\/` (the kernel's phpJsonEncode is byte-compatible).
+    '{"data":{"id":3,"path":"posts\\/1\\/resource","probe":"hello"}}'
+  );
+});

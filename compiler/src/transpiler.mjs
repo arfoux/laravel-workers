@@ -4,6 +4,7 @@ import { Collection } from '../../kernel/collections.mjs';
 import { STR_METHODS } from '../../kernel/str.mjs';
 import { ARR_METHODS } from '../../kernel/arr.mjs';
 import { ADAPTER_ASYNC } from '../../kernel/service-adapters.mjs';
+import { KNOWN_RULES } from '../../kernel/validator.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -327,6 +328,45 @@ function tx(node) {
         return '[' + items.map((it) => (it.unpack ? '...rt.spread(' + tx(it.value) + ')' : tx(it.value))).join(', ') + ']';
       }
       const isAssoc = items.some((it) => it.key != null);
+      // A keyless element carries PHP's implicit integer key (the highest
+      // integer key seen so far, plus one). It is knowable at build time only
+      // when every key is a literal; a computed key before a keyless element
+      // cannot be classified, so the build stops instead of guessing. The
+      // implicit keys are materialized as an rt.assoc() pair list: its encoder
+      // emits a JSON array when they form a 0..n-1 list and an object
+      // otherwise, exactly like PHP. (Without this, `['a' => 1, 'b']` emitted
+      // a bogus `"null"` key and `['a' => 1, 0 => 2, 'z']` crashed on
+      // `it.key.value`.)
+      if (isAssoc && items.some((it) => it.key == null)) {
+        const pairs = [];
+        let nextIndex = 0;
+        for (const it of items) {
+          let key;
+          if (it.key == null) {
+            key = String(nextIndex);
+            nextIndex += 1;
+          } else if (
+            it.key.kind === 'number' ||
+            (it.key.kind === 'string' && /^\d+$/.test(String(it.key.value)))
+          ) {
+            const n = Number(it.key.value);
+            key = String(n);
+            if (n >= nextIndex) nextIndex = n + 1;
+          } else if (it.key.kind === 'string') {
+            key = String(it.key.value);
+          } else {
+            throw mkErr(
+              'LW002',
+              'an array literal mixes a keyless element with a computed key - PHP\'s implicit index cannot be known at build time; write the index explicitly — ' +
+                PORT_HINT,
+              node.loc,
+              PORT_HINT
+            );
+          }
+          pairs.push('[' + JSON.stringify(key) + ', ' + tx(it.value) + ']');
+        }
+        return 'rt.assoc([' + pairs.join(', ') + '])';
+      }
       if (isAssoc) {
         // PHP preserves the INSERTION order of the keys, and a JS object does
         // not: an integer-like key ("0", "12") is enumerated BEFORE the string
@@ -687,38 +727,127 @@ const FILE_METHODS = new Set([
 ]);
 // The file methods that write to the object store (async at the edge).
 const FILE_ASYNC = new Set(['store', 'storeAs']);
-// The validation rules that read the file's *content* type (finfo): the edge
-// has only the type the browser declared, so the verdict would differ from
-// PHP's. The build stops instead of answering differently at the edge.
-const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes']);
+// The validation rules the compiled validator cannot answer like PHP: the
+// build stops and names the rule instead of compiling a validation whose
+// verdict differs at the edge. (The kernel's own KNOWN_RULES decides what IS
+// compiled, so the two can never disagree.)
+const UNCOMPILED_RULE_REASONS = new Map([
+  ['mimes', "it reads the file's *content* type (finfo), and the edge only has the type the browser declared"],
+  ['mimetypes', "it reads the file's *content* type (finfo), and the edge only has the type the browser declared"],
+  ['active_url', 'it resolves the host over DNS, which a Worker cannot do'],
+  ['mx_record', 'it resolves the domain over DNS, which a Worker cannot do'],
+  ['encoding', "it needs mb_check_encoding over the file's content"],
+  ['current_password', "it hashes against the authenticated user's password, which the compiled validator does not load"],
+]);
 
-// The content-mime rule in an inline rule set (`$request->validate(['a' =>
-// 'mimes:png'])`), or null when there is none. The rules are literals in the
-// source, so the build sees them.
-function contentMimeRuleInAst(node) {
-  let found = null;
-  const scan = (n) => {
-    if (found || !n || typeof n !== 'object') return;
-    if (Array.isArray(n)) {
-      for (const x of n) scan(x);
-      return;
+// The RULE SETS of a `validate($rules, ...)` argument, in the shape Laravel
+// reads (ValidationRuleParser::explodeRules):
+//   `['email' => 'required|email']`           -> the string is pipe-split
+//   `['items.1.id' => 'required']`            -> a top-level entry, same thing
+//   `['items' => ['id' => 'required']]`       -> a nested FIELD MAP: recurse
+//   `['b' => ['regex:/^(a|b)$/']]`            -> a LIST of rule strings, each
+//                                                one KEPT WHOLE (never split)
+// The KEY of the nested entry decides: a key means a field name, no key means a
+// list element. Keys, messages and attribute names are never read, so a message
+// sentence that happens to name a rule cannot fail the build.
+// (see the note above) `into` receives the rule STRINGS, in source order.
+function collectRuleStrings(node, into) {
+  if (!node || typeof node !== 'object' || node.kind !== 'array') return;
+  const items = node.items || [];
+  for (const item of items) {
+    const value = item && item.value;
+    if (!value) continue;
+    if (value.kind === 'string') {
+      into.push({ raw: value.value, keep: false });
+      continue;
     }
-    if (n.kind === 'string' && typeof n.value === 'string') {
-      for (const token of n.value.split('|')) {
-        const name = String(token).split(':')[0].trim();
-        if (CONTENT_MIME_RULES.has(name)) {
-          found = name;
-          return;
-        }
-      }
+    if (value.kind !== 'array') continue;
+    const subItems = value.items || [];
+    // A LIST of rule strings: every element has no key, and every element is a
+    // string (Laravel's `['required', 'regex:...']`).
+    const list = subItems.length > 0 && subItems.every((sub) => sub && !sub.key && sub.value && sub.value.kind === 'string');
+    if (list) {
+      // A rule string whose pipe is ordinary data, not a separator: the verdict
+      // reads it whole (`keep`), exactly like the runtime (an array element).
+      for (const sub of subItems) into.push({ raw: sub.value.value, keep: true });
+    } else {
+      // A nested field map (`['items' => ['id' => 'required']]`).
+      collectRuleStrings(value, into);
     }
-    for (const key of Object.keys(n)) {
-      if (key === 'loc') continue;
-      scan(n[key]);
+  }
+}
+
+// Is the token's NAME a rule the compiled validator does not know? `explode`
+// splits INSIDE a regex parameter too (ValidationRuleParser :92-96), so the
+// trailing half of `regex:/^(a|b)$/` is just an ordinary unknown name here.
+function isUnknownRuleName(name) {
+  return !KNOWN_RULES.has(name);
+}
+
+function unknownRuleMessage(name) {
+  return (
+    'the ' + name + ' validation rule is unknown to the compiled validator (illuminate/validation has no such ' +
+    'rule, and a rule registered with Validator::extend() is not compiled) - remove it, implement it in the ' +
+    'kernel, or ' + PORT_HINT
+  );
+}
+
+// The first rule in a rule set (`$request->validate([...])` or a dumped
+// FormRequest rule map) the compiled validator cannot answer, or null. The
+// split is the RUNTIME's own splitRuleString, so the build verdict matches
+// what the kernel does with the same string:
+export function uncompiledRuleOf(value) {
+  // An ARRAY is Laravel's list form: validation's parser keeps every element
+  // whole (ValidationRuleParser::explodeExplicitRule), so no element is split.
+  // A STRING is exploded exactly as Laravel does (:92-96).
+  if (Array.isArray(value)) {
+    for (const raw of value) {
+      if (typeof raw !== 'string') continue;
+      const bad = uncompiledRuleTokens([raw]);
+      if (bad) return bad;
     }
-  };
-  scan(node);
-  return found;
+    return null;
+  }
+  if (typeof value !== 'string') return null;
+  return uncompiledRuleTokens(String(value).split('|'));
+}
+
+// The verdict for one rule set already split into tokens (the string form is
+// split by the caller; the ARRAY form's elements are passed whole).
+function uncompiledRuleTokens(tokens) {
+  for (const token of tokens) {
+    const name = String(token).split(':')[0].trim().toLowerCase();
+    if (!name) continue;
+    if (UNCOMPILED_RULE_REASONS.has(name)) {
+      return {
+        name,
+        message: 'the ' + name + ' validation rule is not compiled - ' + UNCOMPILED_RULE_REASONS.get(name) + '; ' + PORT_HINT,
+      };
+    }
+    if (!KNOWN_RULES.has(name)) {
+      // NOTE: the split token may carry a regex TAIL (`b)$/`); the verdict is
+      // still "unknown", exactly what Laravel answers (BadMethodCallException).
+      return { name, message: unknownRuleMessage(name) };
+    }
+  }
+  return null;
+}
+// The same check over an inline rules ARGUMENT (`$request->validate([...])`).
+// `$request->validateWithBag($bag, $rules)` carries the bag first, so the scan
+// takes the argument the caller selected - never a call's other arguments.
+function uncompiledRuleInAst(node) {
+  // The rule strings of the argument, in Laravel's shape: a top-level entry
+  // value (`['a' => 'required|regex:/x|y/']`, pipe-split) and the elements of a
+  // nested LIST (`['b' => ['regex:/x|y/']]`, each kept whole). The collector
+  // already resolved the shape, so each collected string is ONE rule set -
+  // `uncompiledRuleOf()` splits a string and keeps an array element whole.
+  const strings = [];
+  collectRuleStrings(node, strings);
+  for (const { raw, keep } of strings) {
+    const bad = uncompiledRuleOf(keep ? [raw] : raw);
+    if (bad) return bad;
+  }
+  return null;
 }
 
 function requestMethodOfCall(callNode) {
@@ -792,19 +921,14 @@ function txRequestCall(node, args) {
   // over the request input; a failure throws ValidationException, which the HTTP
   // kernel renders as redirect-back + flashed errors/old input (or 422 JSON).
   if (meth === 'validate' || meth === 'validateWithBag') {
-    // A rule that reads the file's *content* type (finfo) cannot be answered
-    // like PHP at the edge (the edge has only the type the browser declared),
-    // so the build stops and names the rule.
-    const mimeRule = contentMimeRuleInAst(node.arguments && node.arguments[0]);
-    if (mimeRule) {
-      throw mkErr(
-        'LW002',
-        'the ' + mimeRule + ' validation rule is not compiled — it reads the file\'s *content* type (finfo) and the edge ' +
-          'cannot sniff the content like PHP does: use the file rule with max (the size in kilobytes) instead, or check ' +
-          'the extension in the controller; ' + PORT_HINT,
-        node.loc,
-        PORT_HINT
-      );
+    // A rule the compiled validator cannot answer (an unimplemented Laravel
+    // rule, a DNS/finfo rule) stops the build and is named, instead of reaching
+    // the request and throwing "unknown validation rule". validateWithBag()
+    // takes the bag name FIRST: `$request->validateWithBag('login', [...])`.
+    const rulesArg = node.arguments && node.arguments[meth === 'validateWithBag' ? 1 : 0];
+    const badRule = uncompiledRuleInAst(rulesArg);
+    if (badRule) {
+      throw mkErr('LW002', badRule.message, node.loc, PORT_HINT);
     }
     const expr = vname(inner.name) + '.' + meth + '(' + args + ')';
     return txAwait(expr, node, '$request->' + meth + '()');
@@ -1099,15 +1223,20 @@ const GATE_CALLS = new Set(['allows', 'denies']);
 const VALIDATOR_METHODS = new Map([
   ['after', false],
   ['errors', false],
+  // Validator::messages() (Validator.php:1145-1152) is the message container
+  // that errors() shortcuts - the kernel Validator answers it.
   ['messages', false],
-  ['getMessages', false],
-  ['toArray', false],
-  ['isEmpty', false],
-  ['isNotEmpty', false],
   ['fails', true],
   ['passes', true],
   ['validated', false],
 ]);
+// NOT here: `getMessages`, `toArray`, `isEmpty`, `isNotEmpty` - those are
+// MessageBag methods (MessageBag.php:303-370), never Validator methods
+// (Validator.php has no such methods, so PHP throws BadMethodCallException
+// too). They used to be allowlisted on a Validator receiver, which compiled
+// green and then answered "is not a function" at request time; the bag's own
+// surface is reached through the CHAIN instead - `$validator->errors()->isEmpty()`
+// - and the kernel bag carries all four (kernel/validator.mjs messageBag()).
 
 // The Validator type as the app writes it (Illuminate\Validation\Validator or
 // Illuminate\Contracts\Validation\Validator - the contract is what the
@@ -1395,7 +1524,14 @@ function txGate(node, meth) {
     // would allow every check.
     const globalCall =
       'rt.gateGlobal(' + JSON.stringify(ability) + ', ' + (subjectExpr || 'null') + ')';
-    return txAwait(deny ? '!' + globalCall : globalCall, node, deny ? 'Gate::denies()' : 'Gate::allows()');
+    // NOTE: `meth === 'denies'` is spelled out here on purpose. `deny` is
+    // declared later in this function (line ~1418); reading it from inside
+    // this block would hit its temporal dead zone and throw a ReferenceError.
+    return txAwait(
+      meth === 'denies' ? '!' + globalCall : globalCall,
+      node,
+      meth === 'denies' ? 'Gate::denies()' : 'Gate::allows()'
+    );
   }
   if (pol.hasMagicCall) {
     throw mkErr(
@@ -2949,8 +3085,22 @@ export function transpile(compiledSource, opts = {}) {
   try {
     walkChildren(ast.children || [], lines, '  ', {});
   } catch (e) {
-    const lw = e.lw || { code: 'LW002', message: e.message, line: 0, column: 0, hint: '' };
-    return { code: null, errors: [lw] };
+    if (e && e.lw) return { code: null, errors: [e.lw] };
+    // An error without a `lw` payload is an internal compiler bug, not an
+    // intended refusal. Dressing it up as LW002 would make a regression look
+    // like a build rule (that is how the txGate TDZ bug hid); name it as a bug.
+    return {
+      code: null,
+      errors: [
+        {
+          code: 'LW999',
+          message: 'internal compiler error: ' + (e && e.message ? e.message : String(e)),
+          line: 0,
+          column: 0,
+          hint: 'this looks like a compiler bug - please report it with the source that triggered it',
+        },
+      ],
+    };
   }
   lines.push('}');
 
@@ -3081,8 +3231,22 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     usedEvents = !!CTX.usedEvents;
     instantiated = [...CTX.instantiated];
   } catch (e) {
-    const lw = e.lw || { code: 'LW002', message: e.message, line: 0, column: 0, hint: '' };
-    return { code: null, errors: [lw] };
+    if (e && e.lw) return { code: null, errors: [e.lw] };
+    // An error without a `lw` payload is an internal compiler bug, not an
+    // intended refusal. Dressing it up as LW002 would make a regression look
+    // like a build rule (that is how the txGate TDZ bug hid); name it as a bug.
+    return {
+      code: null,
+      errors: [
+        {
+          code: 'LW999',
+          message: 'internal compiler error: ' + (e && e.message ? e.message : String(e)),
+          line: 0,
+          column: 0,
+          hint: 'this looks like a compiler bug - please report it with the source that triggered it',
+        },
+      ],
+    };
   } finally {
     CTX = null;
     CLOSURE_DEPTH = 0;
@@ -3107,4 +3271,6 @@ export {
   INSTANCE_DB_METHODS,
   PAGINATOR_METHODS,
   COLLECTION_METHODS,
+  VALIDATOR_METHODS,
+  FILE_METHODS,
 };

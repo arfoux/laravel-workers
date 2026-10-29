@@ -25,12 +25,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
           extensions: pdo_sqlite, sqlite3
       - name: Create a fresh Laravel app (the oracle's app)
         run: composer create-project laravel/laravel shadow-app --no-interaction --prefer-dist
+      - name: Scaffold the fixture app the scenario replays
+        # `shadow/scenarios/fresh-app.mjs` walks the login flow, the guarded
+        # dashboard and the post list/detail, and its fixtures INSERT into a
+        # `posts` table. A vanilla skeleton has one route and no such table, so
+        # without this step the release gate could never pass.
+        run: node shadow/fixture-app.mjs shadow-app
       - name: Prepare the app
         run: |
           cd shadow-app
@@ -61,13 +68,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm install
       - run: npm --prefix compiler install
       - run: npm test
       - run: npm run test:corpus
       - run: node tools/gate.mjs --strict
       - name: Syntax check shipped ESM
-        run: find build.mjs kernel compiler/src compiler/runtime bin tools -name '*.mjs' -print0 | xargs -0 -n1 node --check
+        run: find build.mjs kernel compiler/src compiler/runtime bin tools shadow src -name '*.mjs' -print0 | xargs -0 -n1 node --check
       - run: npm pack --dry-run
       - run: npm config delete '//registry.npmjs.org/:_authToken'
         continue-on-error: true
@@ -86,6 +94,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm install
       - run: npm --prefix compiler install
       - run: npm test
@@ -93,6 +102,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
           registry-url: https://npm.pkg.github.com
           scope: '@arfoux'
       - run: npm install -g npm@latest

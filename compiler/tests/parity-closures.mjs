@@ -111,8 +111,10 @@ function runPhpSafe(src){
 {
   const src="<?php\n$arr=[1,2,3,4];\n$res=collect($arr)->filter(function($v){ return $v % 2 == 0; })->toArray();\necho json_encode($res);\n";
   const {out,err}=runPhpSafe(src);
-  if(err) notOk('closure via collect()->filter', String(err), '[2,4]');
-  else check('closure via collect()->filter', out, '[2,4]');
+  // filter() PRESERVES the PHP keys: json_encode(collect([1,2,3,4])->filter(even)->toArray())
+  // is {"1":2,"3":4} in real PHP (a probe against the vendored framework).
+  if(err) notOk('closure via collect()->filter', String(err), '{"1":2,"3":4}');
+  else check('closure via collect()->filter', out, '{"1":2,"3":4}');
 }
 // 11 closure passed to collect()->map
 {
@@ -125,8 +127,8 @@ function runPhpSafe(src){
 {
   const src="<?php\n$arr=[1,2,3,4];\necho json_encode(collect($arr)->filter(fn($v)=> $v % 2 == 0)->toArray());\n";
   const {out,err}=runPhpSafe(src);
-  if(err) notOk('arrow via collect()->filter', String(err), '[2,4]');
-  else check('arrow via collect()->filter', out, '[2,4]');
+  if(err) notOk('arrow via collect()->filter', String(err), '{"1":2,"3":4}');
+  else check('arrow via collect()->filter', out, '{"1":2,"3":4}');
 }
 // 13 arrow passed to collect()->map
 {
@@ -157,8 +159,8 @@ function runPhpSafe(src){
 {
   const src="<?php\necho json_encode(collect([1,2,3,4])->filter(function($v){ return $v>1; })->map(function($v){ return $v*2; })->toArray());\n";
   const {out,err}=runPhpSafe(src);
-  if(err) notOk('S2 chain filter->map', String(err), '[4,6,8]');
-  else check('S2 chain filter->map', out, '[4,6,8]');
+  if(err) notOk('S2 chain filter->map', String(err), '{"1":4,"2":6,"3":8}');
+  else check('S2 chain filter->map', out, '{"1":4,"2":6,"3":8}');
 }
 // 17 extra: collect()->count() as a direct chain - the $c = collect(); $c->count()
 // form is controller context: a view refuses method calls on vars (LW002 by design)

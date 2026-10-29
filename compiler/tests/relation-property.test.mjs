@@ -99,18 +99,18 @@ test('relation-property: an INLINE chain awaits the load before the call', async
 });
 
 test('relation-property: an inline chain refuses a method the kernel lacks', () => {
-  // `sliding()` is not on the kernel Collection, so the compiled chain would
+  // `lazy()` is not on the kernel Collection, so the compiled chain would
   // throw at request time. The build stops instead (the inline chain used to
   // skip the allowlist entirely).
   const res = emitController(
     source(`$post = \\App\\Models\\Post::find(1);
-        return $post->comments->sliding(2);`),
+        return $post->comments->lazy();`),
     'demo',
     meta([{ alias: 'Post', fqcn: 'App\\Models\\Post', notCompiled: ['comments'], relations: RELATIONS.Post }])
   );
   assert.equal(res.errors.length, 1);
   assert.equal(res.errors[0].code, 'LW003');
-  assert.match(res.errors[0].message, /sliding/);
+  assert.match(res.errors[0].message, /lazy/);
 });
 
 test('relation-property: a method the dump does NOT declare still fails loud', () => {

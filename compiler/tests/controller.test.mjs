@@ -1487,6 +1487,40 @@ test('emit: a FormRequest with a mimes rule fails loud (the content type cannot 
   assert.match(res.errors[0].message, /finfo/);
 });
 
+test('emit: an unknown validation rule fails loud at build time', () => {
+  // The compiled validator answers KNOWN_RULES only; a rule it does not know
+  // (a Laravel rule outside the compiled surface, or one registered with
+  // Validator::extend()) would throw "unknown validation rule" at REQUEST time
+  // after a green build. The build names it instead.
+  const request = (rules) => {
+    const src = '<?php\n' +
+      'namespace App\\Http\\Controllers;\n' +
+      'use Illuminate\\Http\\Request;\n' +
+      'class C {\n' +
+      '    public function store(Request $request)\n' +
+      '    {\n' +
+      '        $v = $request->validate(' + rules + ');\n' +
+      '        return response()->json($v);\n' +
+      '    }\n' +
+      '}\n';
+    return emitController(src, 'store', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  };
+  // A DNS rule and a made-up rule both stop the build.
+  const bad = request("['site' => 'required|active_url']");
+  assert.equal(bad.code, null);
+  assert.match(bad.errors[0].message, /active_url/);
+  assert.match(bad.errors[0].message, /DNS/);
+  const unknown = request("['x' => 'nope_rule']");
+  assert.equal(unknown.code, null);
+  assert.match(unknown.errors[0].message, /nope_rule/);
+  assert.match(unknown.errors[0].message, /unknown to the compiled validator/);
+  // A KNOWN rule set still compiles. The separator pipe splits a STRING rule
+  // (Laravel's explode) in the body too, so a regex alternation is only legal
+  // in the ARRAY form - the shape FormRequest/validate([...]) arrays use.
+  const ok = request("['a' => 'required|string|max:20', 'b' => ['regex:/^(a|b)$/'], 'c' => ['base64']]");
+  assert.ok(ok.code, 'the handler must compile');
+  assert.deepEqual(ok.errors || [], []);
+});
 test('emit: a fully-qualified static call resolves to the global class', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
@@ -1594,6 +1628,9 @@ writeTree(tmpRoot, {
   // The runtime imports the kernel's JsonResource base (a resource returned by
   // a controller becomes a ResourceResponse).
   'kernel/resources.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'resources.mjs'), 'utf8'),
+  // The resource base resolves through the ambient request (`app('request')`)
+  // at json_encode() time.
+  'kernel/request-scope.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'request-scope.mjs'), 'utf8'),
   'kernel/php-serialize.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'php-serialize.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(
     path.join(pkgDir, 'compiler', 'runtime', 'rt-from-context.mjs'),
@@ -2499,16 +2536,16 @@ test('emit: a Collection chain resolves against the kernel Collection surface', 
   const wrappedChain = emitController(src("return \\Illuminate\\Support\\Collection::wrap([1])->sole();"), 'demo', meta);
   assert.deepEqual(wrappedChain.errors, []);
   assert.match(wrappedChain.code, /rt\.collectionWrap\(\[1\]\)\.sole\(\)/);
-  const wrappedBad = emitController(src('return \\Illuminate\\Support\\Collection::wrap([1])->sliding(2);'), 'demo', meta);
+  const wrappedBad = emitController(src('return \\Illuminate\\Support\\Collection::wrap([1])->lazy();'), 'demo', meta);
   assert.equal(wrappedBad.code, null);
   assert.equal(wrappedBad.errors[0].code, 'LW003');
-  assert.match(wrappedBad.errors[0].message, /sliding/);
+  assert.match(wrappedBad.errors[0].message, /lazy/);
   // A method the kernel Collection lacks is still a build error: the inline
   // chain must not compile to a call that throws at request time.
-  const bad = emitController(src('return collect([1, 2])->sliding(2);'), 'demo', meta);
+  const bad = emitController(src('return collect([1, 2])->lazy();'), 'demo', meta);
   assert.equal(bad.code, null);
   assert.equal(bad.errors[0].code, 'LW003');
-  assert.match(bad.errors[0].message, /sliding/);
+  assert.match(bad.errors[0].message, /lazy/);
 });
 
 test('emit: wrap() and collect() answer Laravel values for a scalar', async () => {
@@ -2562,7 +2599,7 @@ test('emit: a call receiver without an allowlist still chains', () => {
   // An inline model chain stays refused (the receiver answers a model, and a
   // model has no collection surface).
   const bad = emitController(
-    src('return \\App\\Models\\Post::all()->sliding(2);'),
+    src('return \\App\\Models\\Post::all()->lazy();'),
     'demo',
     { routeUri: '/x', routeParams: [], models: [{ alias: 'Post', fqcn: 'App\\Models\\Post' }], views: [] }
   );
@@ -2591,8 +2628,8 @@ test('emit: an inline paginator chain compiles the pagination view', () => {
   assert.match(ok.code, /paginate\(2\)\)\.links\(\)/);
   assert.match(ok.code, /pagination::tailwind/);
   // The paginator's own surface is still the allowlist's.
-  const bad = emitController(src('return \\App\\Models\\Post::paginate(2)->sliding(2);'), 'demo', meta);
+  const bad = emitController(src('return \\App\\Models\\Post::paginate(2)->lazy();'), 'demo', meta);
   assert.equal(bad.code, null);
   assert.equal(bad.errors[0].code, 'LW003');
-  assert.match(bad.errors[0].message, /sliding/);
+  assert.match(bad.errors[0].message, /lazy/);
 });
