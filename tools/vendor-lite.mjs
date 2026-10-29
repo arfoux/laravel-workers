@@ -134,13 +134,23 @@ function extractZip(zipPath, destDir) {
   try {
     extractZipJs(zipPath, tmp);
   } catch (e) {
-    const r = run('unzip', ['-o', zipPath, '-d', tmp], {});
-    if (r.status !== 0) {
+    // Fallback chain: `unzip` (POSIX), then `tar` — bsdtar ships on a clean
+    // Windows 10+ box and reads ZIP (incl. ZIP64), so a reader refusal never
+    // strands vendor provisioning on a machine without `unzip`.
+    const fails = [];
+    let ok = false;
+    for (const [cmd, args] of [
+      ['unzip', ['-o', zipPath, '-d', tmp]],
+      ['tar', ['-xf', zipPath, '-C', tmp]],
+    ]) {
+      const r = run(cmd, args, {});
+      if (!r.error && r.status === 0) { ok = true; break; }
+      fails.push(r.error ? `${cmd} (${r.error.code})` : `${cmd}: ${String(r.stderr || '').trim().slice(0, 200)}`);
+    }
+    if (!ok) {
       throw new Error(
         'the package zip could not be extracted: ' + e.message +
-          (r.error
-            ? ` (no \`unzip\` on PATH either: ${r.error.code})`
-            : ` (unzip: ${String(r.stderr || '').trim().slice(0, 200)})`)
+          ' (no system extractor worked: ' + fails.join('; ') + ')'
       );
     }
   }

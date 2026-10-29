@@ -28,11 +28,16 @@ test('messages: the default message of a rule is Laravel\'s (per attribute type)
   assert.equal(await v.fails(), true);
   assert.deepEqual(v.errors().title, ['The title field must not be greater than 3 characters.']);
 
-  // The attribute's type picks the message: a plain `max` is a string rule
-  // (Laravel's getAttributeType(): only the numeric rules make it 'numeric').
+  // A plain `max` is a LENGTH rule: `getAttributeType()` answers 'string'
+  // (only the numeric rules make it 'numeric') and `getSize()` counts
+  // `mb_strlen((string) $value)` - so the integer 42 is `'42'` (length 2) and
+  // `max:3` PASSES it, while 4242 (length 4) fails with the string message
+  // (both verified against Laravel 13).
   const numeric = new Validator({ age: 42 }, { age: 'max:3' }, {}, { attributes: { age: 'Age' } });
-  await numeric.fails();
-  assert.deepEqual(numeric.errors().age, ['The Age field must not be greater than 3 characters.']);
+  assert.equal(await numeric.fails(), false);
+  const numericLong = new Validator({ age: 4242 }, { age: 'max:3' }, {}, { attributes: { age: 'Age' } });
+  await numericLong.fails();
+  assert.deepEqual(numericLong.errors().age, ['The Age field must not be greater than 3 characters.']);
 
   // ... and a numeric rule makes the attribute numeric.
   const numericRule = new Validator({ age: 42 }, { age: 'integer|max:3' }, {}, { attributes: { age: 'Age' } });
@@ -70,8 +75,9 @@ test('messages: the placeholders are replaced like Laravel does', async () => {
   await v.fails();
   assert.deepEqual(v.errors().a, ['The a field must match b.']);
 
-  // between: both bounds.
-  v = new Validator({ n: 5 }, { n: 'between:1,3' });
+  // between: both bounds. A plain `between` is a length rule, so the string
+  // must be OUTSIDE the 1..3 character range to fail.
+  v = new Validator({ n: 'abcd' }, { n: 'between:1,3' });
   await v.fails();
   assert.deepEqual(v.errors().n, ['The n field must be between 1 and 3 characters.']);
 

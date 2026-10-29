@@ -13,6 +13,7 @@ import {
   LARAVEL_VALIDATION_MESSAGES,
 } from './validation-messages.mjs';
 import { imageInfo } from './image.mjs';
+import { str as strHelpers } from './str.mjs';
 
 // An uploaded file (the edge's file object).
 function isUploadedFileValue(value) {
@@ -28,7 +29,62 @@ function fileSizeKb(size) {
   const frac = (bytes % 1024n) * 9765625n; // 5^10: the /10^10 remainder
   return whole.toString() + '.' + frac.toString().padStart(10, '0');
 }
+// `BigNumber::of($a)->isGreaterThan($b)` etc. for two decimal strings: -1/0/1,
+// and `null` when a side is not a number (the caller answers false, like the
+// `catch (MathException|BrickMathException)` arms do). brick/math reads
+// exponent notation (`'1e3'`), so it is expanded before the plain-decimal
+// comparison.
+function expandExponent(str) {
+  const m = /^([+-]?)(\d*)(?:\.(\d*))?[eE]([+-]?\d+)$/.exec(str);
+  if (m === null) return str;
+  const sign = m[1] === '-' ? '-' : '';
+  const int = m[2] || '0';
+  const frac = m[3] || '';
+  const exp = Number(m[4]);
+  const digits = int + frac;
+  const point = int.length + exp;
+  if (point <= 0) return sign + '0.' + '0'.repeat(-point) + digits;
+  if (point >= digits.length) return sign + digits + '0'.repeat(point - digits.length);
+  return sign + digits.slice(0, point) + '.' + digits.slice(point);
+}
+function cmpBig(a, b) {
+  if (!isNumericValue(a) || !isNumericValue(b)) return null;
+  return compareDecimal(expandExponent(phpTrim(String(a))), expandExponent(phpTrim(String(b))));
+}
+// `isSameType($first, $second)` (ValidatesAttributes.php:2912): `gettype()`
+// equality, narrowed to the types the validator can meet - a numeric string is
+// a string, an int differs from a float, and `true` is a boolean.
+function samePhpType(a, b) {
+  const t = (v) => (Array.isArray(v) ? 'array'
+    : v === null || v === undefined ? 'null'
+      : typeof v === 'boolean' ? 'boolean'
+        : typeof v === 'number' ? (Number.isInteger(v) ? 'integer' : 'double')
+          : 'string');
+  return t(a) === t(b);
+}
 
+// `BigDecimal::of($a)->mod($b)->isZero()` for two plain decimal strings: scale
+// both to a common number of fractional digits and test the integer remainder.
+function decimalModIsZero(a, b) {
+  const parse = (s) => {
+    const str = /^[+-]/.test(s) ? s : '+' + s;
+    const sign = str[0] === '-';
+    const body = str.slice(1);
+    const dot = body.indexOf('.');
+    const int = dot === -1 ? body : body.slice(0, dot);
+    const frac = dot === -1 ? '' : body.slice(dot + 1);
+    return { sign, int: int === '' ? '0' : int, frac };
+  };
+  const A = parse(a);
+  const B = parse(b);
+  const scale = Math.max(A.frac.length, B.frac.length);
+  const ai = BigInt(A.int + A.frac.padEnd(scale, '0'));
+  const bi = BigInt(B.int + B.frac.padEnd(scale, '0'));
+  const av = A.sign ? -ai : ai;
+  const bv = B.sign ? -bi : bi;
+  if (bv === 0n) return false;
+  return av % bv === 0n;
+}
 // BigNumber::of($a)->isLessThanOrEqualTo($b) for two decimal strings.
 function compareDecimal(a, b) {
   const parse = (value) => {
@@ -75,17 +131,221 @@ function isEmptyRequired(v) {
   return false;
 }
 
+// PHP's `is_numeric()`: a decimal with an optional leading/trailing whitespace
+// run, an optional sign and an optional exponent. Hex and binary strings are NOT
+// numeric (PHP 7 dropped them), and neither are 'INF'/'NAN'/'1_000'.
+const NUMERIC_LIKE_RE = /^[ \t\n\r\v\f]*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[ \t\n\r\v\f]*$/;
+function isNumericLike(value) {
+  if (typeof value === 'number') return true;
+  if (typeof value !== 'string') return false;
+  return NUMERIC_LIKE_RE.test(value);
+}
+
+// PCRE -> JS for a user-supplied `regex:`/`not_regex:` pattern. Only the parts
+// that change the ANSWER are translated: PCRE's `$` without the `D` modifier (and
+// its `\Z`) also match immediately before a FINAL newline, and `\z` is the
+// absolute end - a bare JS `$` is `\z` (and `\z` is not a JS escape at all).
+// `A` anchors the whole match at the start. The behavior-neutral PCRE-only flags
+// are dropped so a pattern that uses them still compiles.
+// `D` is honored while translating the `$` anchor, `U` while swapping the
+// quantifier laziness, then dropped: they must not reach `new RegExp`.
+const PCRE_DROPPED_FLAGS = /[SXJnDU]/g;
+// PHP accepts only these modifiers; anything else (`g`, `y`, `e`, a typo) makes
+// preg_match() answer FALSE, so a pattern carrying one must not compile here.
+const PHP_MODIFIERS = /^[imsxuADSUXJn]*$/;
+// PCRE-only escapes that JS would read as the literal LETTER (`\X` = 'X'). Each is
+// either translated exactly (`PCRE_CLASSES` outside a class, `PCRE_MEMBERS` inside
+// one) or refused, so a rule can never answer with a silently different meaning.
+// `s`/`S` are ASCII-only without the `u` modifier while JS's `\s` is Unicode-wide;
+// with `u` PCRE turns on UCP, where `\d` is `\p{Nd}` (JS's `\d` stays ASCII).
+const PCRE_CLASSES = {
+  R: '(?:\\r\\n|[\\n\\v\\f\\r\\x85])', // any newline sequence (default PCRE2_NEWLINE)
+  N: '[^\\n]',
+  h: '[\\t\\x20\\xA0\\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]',
+  H: '[^\\t\\x20\\xA0\\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]',
+  v: '[\\n\\v\\f\\r\\x85]',
+  V: '[^\\n\\v\\f\\r\\x85]',
+  s: '[ \\t\\n\\r\\v\\f]', // PHP's preg has no UCP unless `u` is set
+  S: '[^ \\t\\n\\r\\v\\f]',
+  d: '\\p{Nd}', // under `u`
+  D: '\\P{Nd}',
+};
+// The same escapes as class MEMBERS, for use inside `[...]`, where a nested class
+// or a negation cannot be expressed (those refuse the pattern instead).
+const PCRE_MEMBERS = {
+  h: '\\t\\x20\\xA0\\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000',
+  v: '\\n\\v\\f\\r\\x85',
+  s: ' \\t\\n\\r\\v\\f',
+  d: '\\p{Nd}',
+  D: '\\P{Nd}',
+};
+// Escapes with no exact JS equivalent at all: refuse rather than mismatch. `\p`/
+// `\P` are added when the `u` modifier is absent (JS reads them as 'p'/'P').
+const PCRE_REFUSED_ESCAPES = new Set(['X', 'K', 'G', 'g', 'C', 'Q', 'E']);
+// A `/body/flags` parameter compiles through the PCRE translation above; anything
+// else is a bare body (Laravel hands the whole parameter to preg_match, so a
+// parameter without delimiters is a compile error there too - answer false).
+function compileUserPattern(param) {
+  if (typeof param !== 'string' || param[0] !== '/') return null;
+  const last = param.lastIndexOf('/');
+  if (last <= 0) return null;
+  const { pattern, flags } = translatePcrePattern(param.slice(1, last), param.slice(last + 1));
+  if (pattern === null) return null;
+  try { return new RegExp(pattern, flags); } catch { return null; }
+}
+// `preg_match()` returns false (never 1) for a pattern PCRE cannot compile; a
+// stray delimiter such as `/foo/bar` is not a pattern, so the rule answers false
+// for both spellings. `append`/`prepend` translation is in translatePcrePattern.
+function translatePcrePattern(body, flags) {
+  // A modifier PHP does not know (`g`, `y`, a typo) is a preg error, not a flag:
+  // refuse the whole pattern so `regex:` answers false like PHP does.
+  if (!PHP_MODIFIERS.test(flags)) return { pattern: null, flags: '' };
+  const multiline = flags.includes('m');
+  const absolute = flags.includes('D');
+  const dotAll = flags.includes('s');
+  const ungreedy = flags.includes('U');
+  const utf8 = flags.includes('u');
+  let out = '';
+  let inClass = false;
+  let classJustOpened = false;
+  let bareDelimiter = false;
+  // Whether the previous member can take a quantifier - only needed for `U`.
+  let atom = false;
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch === '\\') {
+      const next = body[i + 1];
+      if (next === undefined) return { pattern: null, flags: '' };
+      if (!inClass) {
+        if (next === 'z') { out += '(?![\\s\\S])'; i += 1; atom = true; continue; }
+        if (next === 'Z') { out += '(?=\\n?$)'; i += 1; atom = true; continue; }
+        if (next === 'A') { out += '(?<![\\s\\S])'; i += 1; atom = true; continue; }
+      }
+      // `s`/`S` are mapped only without `u`, `d`/`D` only with it; the native JS
+      // spelling is already exact in the other case (and `.*`-style behaviour for
+      // `\w` under UCP is a documented limit).
+      const gated =
+        next === 's' || next === 'S' ? !utf8 : next === 'd' || next === 'D' ? utf8 : true;
+      if (gated && PCRE_CLASSES[next] !== undefined) {
+        if (inClass) {
+          if (PCRE_MEMBERS[next] === undefined) return { pattern: null, flags: '' };
+          out += PCRE_MEMBERS[next];
+        } else {
+          out += PCRE_CLASSES[next];
+        }
+        classJustOpened = false;
+        atom = true;
+        i += 1;
+        continue;
+      }
+      if (PCRE_REFUSED_ESCAPES.has(next)) return { pattern: null, flags: '' };
+      if ((next === 'p' || next === 'P') && !utf8) return { pattern: null, flags: '' };
+      out += ch + next;
+      // An escape is a complete member, so it also ends the "first member" state.
+      if (inClass) classJustOpened = false;
+      atom = true;
+      i += 1;
+      continue;
+    }
+    if (inClass) {
+      // `]` closes the class unless it is the first member (`[]a]`, `[^]a]`) - PCRE
+      // reads those as a class holding `]` and `a`, while JS reads `[]` as an empty
+      // class, so the leading member is escaped for JS. A leading `^` negates and
+      // keeps the position (see `[^]a]`).
+      const first = classJustOpened;
+      classJustOpened = false;
+      if (first && ch === '^') { out += ch; classJustOpened = true; continue; }
+      if (first && ch === ']') { out += '\\]'; continue; }
+      if (ch === ']') inClass = false;
+      // PHP is not class-aware when it looks for the closing delimiter, so a bare
+      // `/` here ends the pattern early - a compile error there too.
+      if (ch === '/') bareDelimiter = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '[') { inClass = true; classJustOpened = true; out += ch; atom = false; continue; }
+    if (ch === '/') { bareDelimiter = true; out += ch; continue; }
+    if (ch === '$' && !multiline && !absolute) { out += '(?=\\n?$)'; atom = true; continue; }
+    // PCRE's `.` is "any character except newline" regardless of `\r`; JS's `.`
+    // also excludes CR, LS and PS.
+    if (ch === '.') { out += dotAll ? '[\\s\\S]' : '[^\\n]'; atom = true; continue; }
+    // `U` inverts each quantifier's laziness; the marker is the NEXT character, so
+    // `a*?` under `U` becomes `a*`.
+    if (ungreedy && atom && (ch === '*' || ch === '+' || ch === '?' || ch === '{')) {
+      let quant = ch;
+      if (ch === '{') {
+        const brace = /^\{\d+(?:,\d*)?\}/.exec(body.slice(i));
+        if (brace === null) { out += ch; atom = true; continue; }
+        quant = brace[0];
+        i += brace[0].length - 1;
+      }
+      if (body[i + 1] === '?') i += 1;
+      else quant += '?';
+      out += quant;
+      atom = false;
+      continue;
+    }
+    out += ch;
+    atom = !(ch === '(' || ch === '|' || ch === '^');
+  }
+  if (bareDelimiter) return { pattern: null, flags: '' }; // a stray delimiter -> compile error
+  let jsFlags = flags.replace(PCRE_DROPPED_FLAGS, '');
+  let pattern = out;
+  if (jsFlags.includes('A')) {
+    jsFlags = jsFlags.replace(/A/g, '');
+    pattern = '^(?:' + pattern + ')';
+  }
+  return { pattern, flags: jsFlags };
+}
+
 // PHP's (string) cast: true becomes '1', false becomes '', null becomes ''.
 function phpStringCast(value) {
   if (value === null || value === undefined) return '';
   if (value === true) return '1';
   if (value === false) return '';
   if (Array.isArray(value)) return 'Array';
-  if (typeof value === 'number' && !Number.isInteger(value)) {
-    // PHP's float-to-string: the shortest representation that round-trips.
-    return String(value);
-  }
+  if (typeof value === 'number' && !Number.isInteger(value)) return phpFloatToString(value);
   return String(value);
+}
+// PHP's float-to-string with the default `precision=14` (php.ini): the shortest
+// of `%.14G` and `%.17G` that round-trips, using the `E+NN` / `E-NN` exponent
+// form (`-1e-300` prints as `-1.0E-300`, not JS's `-1e-300`). This matters
+// wherever the validator casts a float with `(string)` - e.g. `alpha_dash` sees
+// the `.` and fails, while a raw `String(value)` would wrongly pass.
+function phpFloatToString(value) {
+  if (!Number.isFinite(value)) return value > 0 ? 'INF' : (value < 0 ? '-INF' : 'NAN');
+  if (value === 0) return Object.is(value, -0) ? '-0' : '0';
+  // PHP's float-to-string cast uses `precision=14` unconditionally (it does NOT
+  // pick the shortest round-tripping form - `(string) 0.3333333333333333` is the
+  // 14-digit `0.33333333333333`).
+  return formatPhpG(value, 14);
+}
+// PHP's `%.{p}G` for a non-zero finite float: `toPrecision` already picks the
+// fixed vs exponential form the way `%G` does (exponential only when the
+// decimal exponent is < -4 or >= p). The result is normalised to PHP's spelling:
+// an `E+`/`E-` exponent with no leading zero, a mantissa that keeps at least
+// one fractional digit, and no trailing zeros.
+// PHP's `%.{p}G`: the exponential form is used when the decimal exponent is
+// `< -4` or `>= p`, otherwise the fixed form. The mantissa keeps a `.0` in the
+// exponential form (`1.0E+16`) and drops trailing zeros otherwise. (PHP's
+// `zend_gcvt` rounds half-to-even at the last digit, which JS `toPrecision`
+// rounds half-away; a value landing exactly on the p-th digit can therefore
+// differ in the last place - a documented limit.)
+function formatPhpG(value, precision) {
+  const exp = Math.floor(Math.log10(Math.abs(value)));
+  if (exp < -4 || exp >= precision) {
+    return normalizePhpExponential(value.toExponential(precision - 1));
+  }
+  const digits = Math.max(precision - 1 - exp, 0);
+  const fixed = value.toFixed(digits);
+  return fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
+}
+function normalizePhpExponential(text) {
+  const m = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(text);
+  if (m === null) return text;
+  const frac = (m[3] || '').replace(/0+$/, '');
+  const mant = frac === '' ? m[2] + '.0' : m[2] + '.' + frac;
+  return m[1] + mant + 'E' + m[4];
 }
 
 // PHP's loose comparison (==) for the values a dependent rule compares.
@@ -135,7 +395,7 @@ const PARAMETER_COUNTS = {
   date_format: 1, date_equals: 1, decimal: 1, different: 1, digits: 1,
   exists: 1, unique: 1, gt: 1, lt: 1, gte: 1, lte: 1, in_array: 1, max: 1, min: 1,
   missing_with: 1, missing_with_all: 1, multiple_of: 1, present_with: 1,
-  present_with_all: 1, regex: 1, not_regex: 1, required_if_accepted: 1,
+  present_with_all: 1, regex: 1, not_regex: 1, notregex: 1, required_if_accepted: 1,
   required_if_declined: 1, prohibited_if_accepted: 1, prohibited_if_declined: 1,
   exclude_with: 1, exclude_without: 1, same: 1, size: 1,
 };
@@ -199,15 +459,34 @@ function failsDimensionChecks(params, width, height) {
   return false;
 }
 
+// PHP's `is_numeric()` - the single "is this a number" test the validator uses
+// (ValidatesAttributes::shouldBeNumeric(), validateAlphaNum(), validateSize(),
+// the `(string)` casts, ...). PHP accepts surrounding whitespace, an optional
+// sign, integer/decimal/exponent forms and any digit run (`'0123'`, `'1e400'`),
+// but NOT hex/binary literals, underscores, or the words `Infinity`/`NaN` -
+// all of which a bare JS `Number()` would happily read as numbers.
+const PHP_NUMERIC_RE = /^[ \t\n\r\v\f]*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[ \t\n\r\v\f]*$/;
 function isNumericValue(v) {
-  if (typeof v === 'number' && !Number.isNaN(v)) return true;
-  if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return true;
+  if (typeof v === 'number') return !Number.isNaN(v);
+  if (typeof v === 'string') return PHP_NUMERIC_RE.test(v);
   return false;
 }
-function isIntegerValue(v) {
-  if (typeof v === 'number') return Number.isInteger(v);
-  if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return true;
-  return false;
+// ValidatesAttributes::validateInteger() (:1625-1632): without the `strict`
+// parameter the rule is `filter_var($value, FILTER_VALIDATE_INT) !== false` -
+// a boolean casts like any PHP value (`true` is `1`), a float must be integral,
+// a STRING may carry surrounding whitespace and a sign but never a leading zero
+// (`'02'`/`'1.0'`/`'1e3'` are failures) and must fit in the 64-bit int range.
+function isFilterVarInt(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= -9223372036854775808 && value <= 9223372036854775807;
+  }
+  if (typeof value !== 'string') return false;
+  const m = /^[ \t\n\r\v\f]*([+-]?)(\d+)[ \t\n\r\v\f]*$/.exec(value);
+  if (m === null) return false;
+  if (m[2].length > 1 && m[2][0] === '0') return false;
+  const n = BigInt(m[1] + m[2]);
+  return n >= -9223372036854775808n && n <= 9223372036854775807n;
 }
 function isBooleanLike(v, params = []) {
   // ValidatesAttributes::validateBoolean() (:536-545): the acceptable list is
@@ -218,10 +497,457 @@ function isBooleanLike(v, params = []) {
   return v === true || v === false || v === 1 || v === 0 || v === '1' || v === '0';
 }
 
-// PHP's `trim()` character set (" \t\n\r\0\x0B") - the emptiness Laravel's
+// egulias' EmailLexer classifies every byte: an unreserved byte that is a
+// symbol, other or control byte is INVALID, the punctuation below is a token of
+// its own (the map in EmailLexer::$charValue) and anything else is GENERIC.
+const EMAIL_INVALID_BYTE = /[\p{S}\p{C}\p{Cc}]/u;
+const EMAIL_TOKEN_CHARS = new Set([
+  ...'{}()<>[]\\/:;,."\'`-*!&^%~|_=+?#@$', ' ', '\t', '\r', '\n', '\u00a1', '\u00bf',
+]);
+function emailByteKind(ch) {
+  if (ch === '\0') return 'nul'; // EmailLexer::C_NUL - its own token, never INVALID
+  if (EMAIL_TOKEN_CHARS.has(ch)) return 'token';
+  return EMAIL_INVALID_BYTE.test(ch) ? 'invalid' : 'generic';
+}
+// LocalPart::INVALID_TOKENS (:21-31): the tokens an unquoted local part refuses.
+const EMAIL_LOCAL_INVALID = new Set([',', '[', ']', '<', '>', ':', ';']);
+// `Parser\DoubleQuote`: a quoted string swallows everything up to the closing
+// quote - a `\` escapes the next byte, an unescaped `"` ends it, and a control
+// byte (INVALID class / C_NUL / HTAB) is refused. Returns the index just past
+// the closing quote, or -1 when the string never closes.
+function emailQuotedEnd(str, start) {
+  // checkDQUOTE() refuses a quoted string that is glued to a GENERIC byte on BOTH
+  // sides (`a"b"@c.com`, `q"a¿b"@c.com` fail) - a `"` at the start of the part,
+  // after a separator or at the very end of the part is fine.
+  const before = str[start - 1];
+  const inside = str[start + 1];
+  if (before !== undefined && inside !== undefined
+    && emailByteKind(before) === 'generic' && emailByteKind(inside) === 'generic') return -1;
+  // The matching quote is found by finding a SEPARATOR-aware close (see below);
+  // the parser then requires the byte after the close to be the separator `@`
+  // (the `@` is the end of the local slice).
+  const close = emailQuotedClose(str, start);
+  if (close === -1) return -1;
+  const after = str[close];
+  if (after !== undefined && after !== '@') return -1;
+  return close;
+}
+// Locates the closing `"` the way DoubleQuote does: an escape (a backslash, its
+// next byte skipped, though only an escaped `"` is really consumed) and a
+// quoted-pair (`|` its escaped byte, if a QUOTED-PAIR) are the only ways past a
+// quote. A `"` is therefore a close only when the byte before the current
+// position is not a backslash and not a `|` that escaped something.
+function emailQuotedClose(str, start) {
+  let first = true;
+  for (let i = start + 1; i < str.length; i += 1) {
+    const ch = str[i];
+    if (!first && (ch === '\0' || ch === '\t' || ch === '\r' || ch === '\n')) return -1;
+    if (ch === '\\') { i += 1; first = false; continue; } // an escaped byte is skipped
+    if (ch === '"') return i + 1;
+    first = false;
+  }
+  return -1;
+}
+// `Parser\Comment` + `Parser\CommentStrategy\DomainComment`: the comment
+// swallows bytes until it is balanced AND the next byte is a `.`, which must
+// then be present - `a@b(c)d.com` passes (the swallowed `d` is never validated)
+// while `a@b(c)` fails with ExpectingATEXT('DOT not found ...').
+function emailDomainCommentEnd(str, start) {
+  let depth = 0;
+  for (let i = start; i < str.length; i += 1) {
+    const ch = str[i];
+    if (ch === '\\') { i += 1; continue; }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') { depth -= 1; if (depth < 0) return -1; } // UnOpenedComment
+    if (depth === 0 && str[i + 1] === '.') return i + 1;
+  }
+  return -1;
+}
+// `EmailParser` splits the address at the FIRST `@` the LocalPart loop hands to
+// DomainPart. That loop walks TOKENS, and a quoted string is consumed wholesale
+// by DoubleQuote, so an `@` inside the quotes is never seen as the separator
+// (`"@x"@c.com` passes). Returns -1 when a quoted string never closes, or when
+// it closes somewhere other than the separator (DoubleQuote's own
+// ExpectingATEXT between DQUOTE).
+function emailAtPosition(chars) {
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = chars[i];
+    if (ch === '"') {
+      const end = emailQuotedEnd(chars, i);
+      if (end === -1) return -1;
+      i = end - 1;
+      continue;
+    }
+    // A `(` starts a comment, and the comment's loop consumes tokens itself -
+    // the LocalPart body only tests for a quote/comment at the TOP of an
+    // iteration, so anything the comment swallows (a `"` included) is never
+    // handed to DoubleQuote (`a(b)c"@d.com` passes).
+    if (ch === '(') {
+      const end = emailLocalCommentEnd(chars, i);
+      if (end === -1) return -1;
+      if (chars[end] === '@') return end;
+      i = end - 1;
+      continue;
+    }
+    if (ch === '@') return i;
+  }
+  return -1;
+}
+// `Comment::parse()` with the LocalComment strategy: the loop stops as soon as
+// the NEXT token is the separator `@` (or the input ends), counting `(`/`)` on
+// the way. Returns the index of the stopping byte (the `@`, or the length).
+function emailLocalCommentEnd(chars, start) {
+  let depth = 0;
+  for (let j = start; j < chars.length; j += 1) {
+    const c = chars[j];
+    // Comment::parse() counts parens unconditionally - a `\` does NOT escape
+    // them (`}()\{@9` still closes the comment).
+    if (c === '(') depth += 1;
+    else if (c === ')') { depth -= 1; if (depth < 0) return -1; } // UnOpenedComment
+    if (j + 1 >= chars.length || chars[j + 1] === '@') return j + 1;
+  }
+  return chars.length;
+}
+// `Parser\LocalPart`: DomainPart::parse() only looks for a ConsecutiveAt AFTER
+// the local part, so a `@` that sits inside the local part is consumed by the
+// quoted-string/comment rules above (`"a@b"@c.com` passes the oracle, because
+// DoubleQuote walks to the first `"` after the `@`).
+function emailLocalPart(local) {
+  let empty = true; // LocalPart::hasDotAtStart() looks at the preceding token
+  let escapedNext = false; // FoldingWhiteSpace::isFWS() ignores an escaped byte
+  for (let i = 0; i < local.length; i += 1) {
+    const ch = local[i];
+    const wasEscaped = escapedNext;
+    escapedNext = false;
+    if (ch === '"') {
+      const end = emailQuotedEnd(local, i);
+      // The closing quote must be followed by the `@` that ends the local part
+      // (`"a"x@c.com` and `"a"(b)@c.com` are refused by the oracle).
+      if (end === -1 || end !== local.length) return false;
+      empty = false;
+      i = end - 1;
+      continue;
+    }
+    if (ch === '(') {
+      // Comment::parse() + LocalComment: the comment's loop stops as soon as the
+      // NEXT token is the `@` separator, so it swallows everything from the `(`
+      // up to the byte before that `@` (`a(b)x@c.com`, `}()\{@9`). The LocalPart
+      // body then resumes with the last swallowed byte as `current`, running its
+      // own dot/token checks on it (`a(b).@c.com` is DotAtEnd, `a(b,)@c.com`
+      // passes because the comment stopped on `)`).
+      let depth = 0;
+      let j = i;
+      for (; j < local.length; j += 1) {
+        const c = local[j];
+        if (c === '(') depth += 1;
+        else if (c === ')') { depth -= 1; if (depth < 0) return false; } // UnOpenedComment
+      }
+      if (depth !== 0) return false; // UnclosedComment
+      const tail = local[j - 1];
+      if (tail === '.') return false; // DotAtEnd
+      // `::` is ONE token (S_DOUBLECOLON) that validateTokens() accepts, so an
+      // even run of trailing colons is fine (`a(b)::@c.com`) while an odd run
+      // ends on a lone `:` and fails (`a(b):::@c.com`).
+      let colons = 0;
+      for (let k = j - 1; k >= i && local[k] === ':'; k -= 1) colons += 1;
+      if (colons % 2 === 1) return false; // Invalid token found (S_COLON)
+      if (colons === 0 && EMAIL_LOCAL_INVALID.has(tail)) return false; // Invalid token
+      empty = false;
+      i = j - 1;
+      continue;
+    }
+    if (ch === ')') return false; // UnOpenedComment
+    if (ch === '.') {
+      if (empty || local[i - 1] === '.' || i === local.length - 1) return false;
+      empty = false;
+      continue;
+    }
+    // `::` is matched as ONE token by the lexer (EmailLexer::$charValue), so a
+    // lone `:` is INVALID_TOKENS while a pair is not (`a::b@c.com` passes,
+    // `a:b@c.com` and `a:::@c.com` fail).
+    if (ch === ':') {
+      if (local[i + 1] !== ':') return false; // Invalid token found (S_COLON)
+      empty = false;
+      i += 1;
+      continue;
+    }
+    if (ch === '\\') {
+      // LocalPart::validateEscaping(): a backslash may not escape a GENERIC byte
+      // (`a\x.b@c.com` fails, `a\.b@c.com` passes - the escaped byte is then
+      // validated by the next turn of the loop, like the oracle does).
+      const next = local[i + 1];
+      // next === undefined means the backslash is the LAST local byte, i.e. the
+      // next token is the `@` separator - not GENERIC, so it is accepted
+      // (`\@x` and `a\@b` pass, while `a\x@c.com` fails).
+      if (next !== undefined && emailByteKind(next) === 'generic') return false;
+      empty = false;
+      escapedNext = true;
+      continue;
+    }
+    if ((ch === ' ' || ch === '\t') && !wasEscaped) {
+      // FoldingWhiteSpace::parse(): whitespace is legal only when the next token
+      // is not a GENERIC byte (`a @c.com` passes, `a b@c.com` fails - but an
+      // escaped `\ ` is not FWS and is validated as an ordinary byte). A CR/LF
+      // is already refused outright by Laravel's own validateEmail().
+      const next = local[i + 1];
+      if (next !== undefined && emailByteKind(next) === 'generic') return false;
+      empty = false;
+      continue;
+    }
+    const kind = emailByteKind(ch);
+    if (kind === 'invalid' || (kind === 'token' && EMAIL_LOCAL_INVALID.has(ch))) return false;
+    empty = false;
+  }
+  return true;
+}
+// `Parser\DomainPart` + `Parser\DomainLiteral`: dot-separated labels of GENERIC
+// bytes, or a bracketed literal entered at ANY `[` (the bracket is not required
+// to follow the `@`: `a@b[cd]` passes). The literal swallows the text between the
+// first `[` and the first `]`; the junk after the `]` is never examined
+// (`a@[x]y` passes) unless the very next byte is another `[` (`a@[x][y` fails).
+function emailHost(host) {
+  // The domain is the bytes AFTER the separator, and the parser only ever starts
+  // at the byte following the `@`: an empty domain (or one that is only SP) has
+  // no part of its own (`a@ ` is NoDomainPart, `a@\t` is Invalid token in
+  // domain) - so a trailing SP/HTAB cannot be a valid domain either.
+  if (host.length === 0) return false;
+  if (host.length === 1 && (host[0] === ' ' || host[0] === '\t')) return false;
+  // checkDomainPartExceptions()/validateTokens(): only GENERIC bytes, `-` and
+  // `.` are domain tokens ('_', '¡' ... are refused by the oracle). SP/HTAB are
+  // never valid domain tokens either (`a@ x` fails with ExpectingATEXT), even
+  // though the FWS parser accepts them.
+  let label = ''; // the accumulated label starts with the dot, like DomainPart
+  for (let i = 0; i < host.length; i += 1) {
+    const ch = host[i];
+    if (ch === '(') {
+      // Comment::parse() + DomainComment: the comment swallows bytes until it is
+      // balanced AND the next byte is a `.`, which must then be present.
+      const next = emailDomainCommentEnd(host, i);
+      if (next === -1) return false;
+      i = next - 1; // resume on the `.` the comment required
+      continue;
+    }
+    if (ch === ')') return false; // UnOpenedComment
+    if (ch === '[') {
+      // doParseDomainPart(): an OPENBRACKET anywhere in the domain switches to
+      // parseDomainLiteral() and RETURNS - the loop's own token checks never see
+      // the bracket (`a@b[cd]` and `a@b.[x]` are valid like `a@[x]`).
+      //
+      // parseDomainLiteral() first `find('[CLOSEBRACKET]')` on a clone, so a
+      // missing `]` is an ExpectingDomainLiteralClose; DomainLiteral::parse()
+      // then swallows bytes up to the FIRST `]` (the "next token is `[`" test
+      // runs BEFORE the `]` test, so a second `[` - nested or right after the
+      // closing bracket - is an ExpectingDTEXT failure: `a@[[x]]`, `a@[x][y]`
+      // and `a@[x][` all fail).
+      const close = host.indexOf(']', i + 1);
+      if (close === -1) return false; // ExpectingDomainLiteralClose
+      if (host.slice(i + 1, close).includes('[')) return false; // ExpectingDTEXT
+      if (host[close + 1] === '[') return false; // ExpectingDTEXT (next token)
+      if (!emailDomainLiteral(host, i, close)) return false;
+      // DomainPart::parse() then runs checkEndOfDomain() on the literal's own
+      // tokens: `$prev` is the byte just before the closing bracket, so a
+      // trailing `.` or `-` inside the brackets fails (`a@[x.]`, `a@[x-]`),
+      // while `a@[.x]` and `a@[x-y]` pass. The junk after `]` is never examined
+      // (`a@[x]y`, `a@[]-b`).
+      const last = host[close - 1];
+      if (last === '.' || last === '-') return false; // DotAtEnd / DomainHyphened
+      return true;
+    }
+    if (ch === '.') {
+      if (i === 0 || host[i - 1] === '.') return false; // DotAtStart / ConsecutiveDot
+      if (i === host.length - 1) return false; // DotAtEnd
+      if (label.length > 63) return false; // LabelTooLong ('...' counts the dot)
+      label = '.';
+      continue;
+    }
+    if (ch === '-') {
+      // DomainHyphened: never right after `@`, never right before a `.` (near
+      // DOT) and never at the end of the domain.
+      if (i === 0 || host[i + 1] === '.' || i === host.length - 1) return false;
+    }
+    if (emailByteKind(ch) !== 'generic' && ch !== '-') return false;
+    label += ch;
+  }
+  if (label.length > 63) return false;
+  return true;
+}
+// `Parser\DomainLiteral`: a NUL or a backslash inside the brackets is an
+// ExpectingDTEXT failure; SP/HTAB are FWS; every other byte must not be an
+// EmailLexer INVALID byte. The `[` test runs before the `]` test in the parser's
+// loop, so nested brackets are rejected by the caller.
+function emailDomainLiteral(host, open, close) {
+  for (let i = open + 1; i < close; i += 1) {
+    const ch = host[i];
+    if (ch === '\\' || ch === '\0') return false;
+    if (ch === ' ' || ch === '\t') continue;
+    // `::` is one token the literal's loop never tests (`a@[::]` passes); a lone
+    // `:` there is not rejected either.
+    if (ch === ':') { if (host[i + 1] === ':') i += 1; continue; }
+    if (emailByteKind(ch) === 'invalid') return false;
+  }
+  return true;
+}
+
+// ValidatesAttributes::validateDate() (:623-640) is `strtotime($value) !== false`
+// AND `checkdate(date_parse($value)['month'|'day'|'year'])`. Both halves matter:
+// a value whose calendar components do not exist FAILS ('2026-02-30',
+// 'Feb 30 2026', '30-02-2026') even though JS `Date.parse` rolls the day over,
+// while a real d-m-Y string PHP reads fine ('20-02-2026') PASSES even though JS
+// refuses it. `Date.parse` stays the fallback for every shape this grammar does
+// not recognize (the named-month and relative forms).
+const MONTH_NUM = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+// PHP's timezone abbreviations and regions (`strtotime` validates the name, so a
+// trailing word like 'junk' is a failure, not a zone).
+const TZ_ABBREV = new Set(['ut', 'utc', 'gmt', 'est', 'edt', 'cst', 'cdt', 'mst', 'mdt', 'pst', 'pdt', 'akst', 'akdt', 'hst', 'hdt', 'ast', 'adt', 'nst', 'ndt', 'cet', 'cest', 'eet', 'eest', 'wet', 'west', 'bst', 'ist', 'jst', 'kst', 'aest', 'aedt', 'acst', 'acdt', 'awst', 'acwst', 'msk', 'msd', 'nzst', 'nzdt', 'chst', 'sst', 'hkt', 'sgt', 'wib', 'wita', 'wit', 'z']);
+const TZ_REGION = new Set(['africa', 'america', 'antarctica', 'arctic', 'asia', 'atlantic', 'australia', 'europe', 'indian', 'pacific', 'etc']);
+function zoneIsValid(zone) {
+  if (zone === '') return true;
+  if (/^(?:z|[+-]\d{2}:?\d{2}|[+-]\d{1,2}|gmt[+-]?\d{1,2}(?::?\d{2})?|am|pm)$/i.test(zone)) return true;
+  const slash = zone.indexOf('/');
+  const region = (slash === -1 ? zone : zone.slice(0, slash)).toLowerCase();
+  const city = slash === -1 ? null : zone.slice(slash + 1);
+  if (city !== null) return TZ_REGION.has(region) && /^[A-Za-z_+-]+$/.test(city);
+  return TZ_ABBREV.has(region);
+}
+// The tail after the date: empty, a clock time (with an optional zone) or a bare
+// zone. `null` means "not a tail PHP's `strtotime` would accept".
+function dateTail(rest) {
+  let t = rest.replace(/^\s+|\s+$/g, '');
+  if (t === '') return { h: 0, i: 0, s: 0 };
+  t = t.replace(/^[Tt]\s*/, '');
+  const tm = /^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?/.exec(t);
+  if (tm === null) return zoneIsValid(t) ? { h: 0, i: 0, s: 0 } : null;
+  return zoneIsValid(t.slice(tm[0].length).trim())
+    ? { h: +tm[1], i: +tm[2], s: +(tm[3] ?? 0) }
+    : null;
+}
+// `true`/`false` when the value is a date shape PHP's grammar covers, `null`
+// when the shape is unknown (the caller keeps the `Date.parse` answer).
+function phpDateVerdict(value) {
+  // `strtotime` refuses the dotted YEAR-first form ('2026.02.28') that a JS
+  // `Date` reads; the dotted day-first form ('28.02.2026') is fine.
+  if (/^\d{4}\./.test(value)) return false;
+  let y; let m; let d; let tail;
+  const first = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})([\s\S]*)$/.exec(value);
+  const last = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})([\s\S]*)$/.exec(value);
+  if (first) {
+    y = +first[1]; m = +first[2]; d = +first[3]; tail = first[4];
+  } else if (last) {
+    // `/` is m/d/Y (US); `-` and `.` are d-m-Y (ISO/German) - PHP refuses the
+    // dotted YEAR-first form ('2026.02.28') but reads '28.02.2026'.
+    const slash = value.includes('/');
+    y = +last[3]; m = +(slash ? last[1] : last[2]); d = +(slash ? last[2] : last[1]); tail = last[4];
+  } else {
+    const named = /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})([\s\S]*)$/.exec(value)
+      || /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})([\s\S]*)$/.exec(value);
+    if (named === null) return null;
+    const dayFirst = /^\d/.test(value);
+    const month = MONTH_NUM[(dayFirst ? named[2] : named[1]).slice(0, 3).toLowerCase()];
+    if (month === undefined) return null;
+    y = +named[3];
+    m = month;
+    d = +(dayFirst ? named[1] : named[2]);
+    tail = named[4];
+  }
+  const time = dateTail(tail);
+  if (time === null) return false;   // a tail `strtotime` refuses ('junk', ' 10')
+  if (m < 1 || m > 12 || d < 1 || d > daysInMonth(y, m)) return false;
+  // `strtotime` accepts hour 24 (it rolls into the next day) but not 25.
+  return time.h <= 24 && time.i <= 59 && time.s <= 59;
+}
+
+// `validateDate()`'s tail: `date_parse($value)` then `checkdate()` on the
+// resulting month/day/year. PHP sets those to 0 when the string carries only a
+// time or a relative word, so `checkdate` fails - the value must name a real
+// calendar date (`'2026-10-30'`, `'30-10-2026'`, `'@0'`, `'2026-10-30T…'`).
+function isDateValidValue(value) {
+  const str = phpStringCast(value);
+  if (phpTimestampIsReadable(str) === false) return false;
+  const at = /^\s*@(-?\d+)/.exec(str);
+  if (at !== null) {
+    const ts = Number(at[1]);
+    const d = new Date(ts * 1000);
+    return checkdatePhp(d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCFullYear());
+  }
+  const first = /^\s*(\d{4})[/-](\d{1,2})[/-](\d{1,2})/.exec(str);
+  if (first !== null) return checkdatePhp(Number(first[2]), Number(first[3]), Number(first[1]));
+  const last = /^\s*(\d{1,2})[./-](\d{1,2})[./-](\d{4})/.exec(str);
+  if (last !== null) {
+    const slash = str.includes('/');
+    const m = Number(slash ? last[1] : last[2]);
+    const d = Number(slash ? last[2] : last[1]);
+    return checkdatePhp(m, d, Number(last[3]));
+  }
+  const named = /^\s*([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/.exec(str)
+    || /^\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})/.exec(str);
+  if (named !== null) {
+    const dayFirst = /^\s*\d/.test(str);
+    const mon = MONTH_NUM[(dayFirst ? named[2] : named[1]).slice(0, 3).toLowerCase()];
+    if (mon === undefined) return false;
+    return checkdatePhp(mon, Number(dayFirst ? named[1] : named[2]), Number(named[3]));
+  }
+  return false;
+}
+// `strtotime($value) === false`: this reuses the date grammar and adds the
+// numeric/relative forms PHP reads but the grammar does not model.
+function phpTimestampIsReadable(str) {
+  if (/^\s*(now|today|tomorrow|yesterday)\s*$/i.test(str)) return true;
+  const verdict = phpDateVerdict(str);
+  if (verdict !== null) return verdict !== false;
+  if (isNumericValue(str)) return strtotimeNumericReads(str);
+  return !Number.isNaN(Date.parse(str));
+}
+// The subset of numeric strings PHP's `strtotime` accepts: a sign, a fraction
+// or a 3-4 digit run read as HHMM/HMM; the bare integers `'0'`/`'00'`/`'1'`
+// are NOT times (`strtotime('0') === false`).
+function strtotimeNumericReads(str) {
+  const s = str.trim();
+  if (s === '' || /^[+-]?(0+|0*\.0*)$/.test(s)) return false;
+  if (/^[+-]/.test(s)) return true;
+  if (s.includes('.') || /[eE]/.test(s)) return true;
+  const digits = s.replace(/^0+/, '');
+  return digits.length >= 3;
+}
+// PHP's `checkdate($month, $day, $year)`.
+function checkdatePhp(month, day, year) {
+  if (!Number.isInteger(month) || !Number.isInteger(day) || !Number.isInteger(year)) return false;
+  if (year < 1 || year > 32767) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+  return true;
+}
+// `is_array($value)`: a JS array or a plain object (a PHP assoc array), but not
+// a null/scalar/class instance (a `Date`, a Collection with methods, ...).
+function isPhpArrayValue(value) {
+  if (Array.isArray(value)) return true;
+  if (value === null || typeof value !== 'object') return false;
+  return Object.getPrototypeOf(value) === Object.prototype;
+}
+// `array_is_list($value)`: keys are `0..n-1` in order. A JS array always is; a
+// plain object only when its keys are exactly `0..n-1`.
+function isPhpListValue(value) {
+  if (Array.isArray(value)) return true;
+  if (!isPhpArrayValue(value)) return false;
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i += 1) {
+    if (keys[i] !== String(i)) return false;
+  }
+  return true;
+}
 // `validateRequired` and `presentOrRuleIsImplicit` use.
 function phpTrim(value) {
   return String(value).replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, '');
+}
+// `mb_strlen($value)` - the CODE POINT count, not the UTF-16 unit count that
+// `String.length` gives (`'😀'` is 1, `'é'` written as a combining pair is 2).
+function phpMbStrlen(value) {
+  const str = String(value);
+  let count = 0;
+  for (const _ of str) count += 1;
+  return count;
 }
 
 // `filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)`: four decimal
@@ -319,7 +1045,7 @@ const KNOWN_RULES = new Set([
   ...ASYNC_RULES,
   'string', 'integer', 'numeric', 'boolean', 'array', 'email', 'url', 'date', 'alpha',
   'alpha_num', 'alpha_dash', 'min', 'max', 'between', 'size', 'in', 'not_in', 'same',
-  'different', 'confirmed', 'regex', 'not_regex', 'accepted', 'accepted_if', 'declined', 'declined_if',
+  'different', 'confirmed', 'regex', 'not_regex', 'notregex', 'accepted', 'accepted_if', 'declined', 'declined_if',
   'digits', 'digits_between', 'multiple_of', 'uuid', 'ip', 'ipv4', 'ipv6', 'mac_address',
   'json', 'ascii', 'lowercase', 'uppercase', 'hex_color', 'starts_with', 'ends_with',
   'before', 'after', 'before_or_equal', 'after_or_equal', 'date_equals', 'date_format',
@@ -351,6 +1077,9 @@ const isPhpArray = (value) =>
 
 // Illuminate\Validation\Validator::$sizeRules / $numericRules.
 const SIZE_RULES = new Set(['size', 'between', 'min', 'max', 'gt', 'lt', 'gte', 'lte']);
+// ValidatesAttributes::shouldBeNumeric() is invoked by these four rules only -
+// they are the ones that re-read a numeric value through `getSize()`.
+const COMPARISON_RULES = new Set(['gt', 'gte', 'lt', 'lte']);
 const NUMERIC_RULES = new Set(['numeric', 'integer', 'decimal']);
 const ARRAY_RULES = new Set(['array', 'list']);
 
@@ -387,6 +1116,8 @@ function splitRuleString(str) {
 // char makes the next char literal (and stays in the value), and nothing is
 // trimmed. Ported from php-src's php_fgetcsv (ext/standard/file.c) with no
 // stream to read on.
+const strIsUrl = strHelpers.isUrl;
+
 export function strGetcsv(str) {
   const s = String(str);
   // The line end (a trailing \r\n) is not part of the fields.
@@ -561,13 +1292,129 @@ function matchDateFormat(value, format) {
   return out === value;
 }
 
-function dateValue(v, data) {
-  if (v === 'today') return new Date(new Date().toDateString());
-  if (v === 'now') return new Date();
-  if (v === 'tomorrow') return new Date(Date.now() + 86400000);
-  if (v === 'yesterday') return new Date(Date.now() - 86400000);
-  if (Object.prototype.hasOwnProperty.call(data, v)) return new Date(data[v]);
-  return new Date(v);
+// `getDateTime($value)` (ValidatesAttributes.php:366-373) = `Date::parse()`
+// (Carbon) or null; the caller then reads `?->getTimestamp()`. A `null` here
+// means "Carbon rejected it", which `compareDates()` turns into `compare(0, ..)`
+// - that is why `'abc'` PASSES `before:2026-01-01` (0 < ts) yet FAILS `after`.
+//
+// Carbon's own numeric branch (Creator.php:79) treats a NON-`\d{1,14}` numeric
+// string as a UNIX timestamp with a quirky reader (getIntegerAndDecimalParts):
+// the string is split on every non-digit/non-dot run and each chunk contributes
+// its integer AND fractional parts, so `'1e3'` is 1+3 = 4 seconds and `'1e300'`
+// is 1+300 = 301. Pure `\d{1,14}` digit strings skip that branch and go to the
+// parent DateParser, which reads `HHMM`/`HHMMSS`/`HHMMSS+` like a wall clock
+// (`'1234'` -> today 12:34, `'0123'` -> today 01:23).
+function carbonTimestamp(value) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined; // Carbon raises a TypeError
+    // Carbon's `createFromTimestampUTC` builds a `U u` string; a value past
+    // 1e14 overflows that format and raises an uncaught
+    // `InvalidFormatException` (a 500 on a real request).
+    if (Math.abs(value) >= 1e14) {
+      const err = new Error('Unexpected data found.');
+      err.name = 'InvalidFormatException';
+      throw err;
+    }
+    return Math.trunc(value);
+  }
+  if (typeof value !== 'string') return null;
+  const raw = value;
+  // `'@…'` is an explicit UNIX timestamp.
+  const at = /^\s*@(-?[\d.]+)\s*$/.exec(raw);
+  if (at !== null) return Math.trunc(Number(at[1]));
+  if (isNumericValue(raw)) {
+    // `\d{1,14}` (no sign, no dot, no exponent): the parent DateParser handles
+    // it as a clock time / compact date, NOT as a timestamp.
+    if (!/^\d{1,14}$/.test(raw)) {
+      let integer = 0;
+      let decimal = 0;
+      for (const chunk of raw.split(/[^\d.]+/)) {
+        if (chunk === '') continue;
+        const [ip, dp = ''] = chunk.split('.');
+        integer += Number.parseInt(ip === '' ? '0' : ip, 10) || 0;
+        decimal += Number.parseFloat('0.' + dp) || 0;
+      }
+      const overflow = Math.floor(decimal);
+      integer += overflow;
+      const signed = raw.trimStart().startsWith('-') ? -integer : integer;
+      // `createFromTimestampUTC` builds a `U u` string; past 1e14 that format
+      // overflows and Carbon raises `InvalidFormatException`, which
+      // `getDateTime()` swallows into a null (the caller then compares 0).
+      if (Math.abs(signed) >= 1e14) return null;
+      return signed;
+    }
+  }
+  // Parent DateParser path: relative words, absolute shapes, and the compact
+  // digit runs PHP reads as a clock time or date (`'1234'` -> today 12:34,
+  // `'123456'` -> today 12:34:56, `'20261030'` -> 2026-10-30); any other pure
+  // digit run is a parse failure.
+  const rel = /^\s*(now|today|tomorrow|yesterday)\s*$/i.exec(raw);
+  if (rel !== null) {
+    const word = rel[1].toLowerCase();
+    // `now` keeps the current time; the day words are midnight-based (PHP's
+    // `strtotime('tomorrow')` is tomorrow 00:00:00, not now+24h). The app
+    // timezone is UTC (Cloudflare Workers), so the day boundaries are UTC.
+    if (word === 'now') return Math.floor(Date.now() / 1000);
+    const now = new Date();
+    const d = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    if (word === 'tomorrow') return (d + 86400000) / 1000;
+    if (word === 'yesterday') return (d - 86400000) / 1000;
+    return d / 1000;
+  }
+  // A bare clock time (`'12:00'`, `'12:00:30'`) is TODAY at that time (UTC).
+  const clock = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(raw);
+  if (clock !== null) {
+    const now = new Date();
+    return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+      Number(clock[1]), Number(clock[2]), Number(clock[3] || 0)) / 1000;
+  }
+  const digits = /^\s*(\d+)\s*$/.exec(raw);
+  if (digits !== null) {
+    const run = digits[1];
+    const now = new Date();
+    const base = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const hhmm = (h, i, s) => (base + (h * 3600 + i * 60 + s) * 1000) / 1000;
+    if (run.length === 4) return hhmm(Number(run.slice(0, 2)), Number(run.slice(2)), 0);
+    if (run.length === 6) return hhmm(Number(run.slice(0, 2)), Number(run.slice(2, 4)), Number(run.slice(4)));
+    const ymd = /^\s*(\d{4})(\d{2})(\d{2})\s*$/.exec(raw);
+    if (ymd !== null) return Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) / 1000;
+    return null;
+  }
+  const verdict = phpDateVerdict(raw);
+  if (verdict === false) {
+    // PHP's parser OVERFLOWS an impossible calendar day (`'2026-02-30'` becomes
+    // 2026-03-02) instead of refusing it, so an absolute-shaped value still
+    // yields a timestamp even though the strict grammar says false.
+    return looksAbsolute(raw) ? phpAbsoluteTimestamp(raw) : null;
+  }
+  if (verdict === true) {
+    return phpAbsoluteTimestamp(raw);
+  }
+  return null;
+}
+// A leading `YYYY-MM-DD`, `D-M-YYYY` or `M/D/YYYY` (with an optional time tail).
+function looksAbsolute(raw) {
+  return /^\s*(\d{4})[/-](\d{1,2})[/-](\d{1,2})/.test(raw)
+    || /^\s*(\d{1,2})[./-](\d{1,2})[./-](\d{4})/.test(raw);
+}
+// An absolute date/time the grammar validated. `Date.parse` reads `m/d/Y` but
+// not the ISO/German `d-m-Y` / `d.m.Y` forms, which are normalised first.
+function phpAbsoluteTimestamp(raw) {
+  const ymd = /^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})(.*)$/.exec(raw);
+  const dmy = /^\s*(\d{1,2})[.-](\d{1,2})[.-](\d{4})(.*)$/.exec(raw);
+  const mdy = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})(.*)$/.exec(raw);
+  let y; let mo; let d; let time = '';
+  if (ymd !== null && !mdy) { y = Number(ymd[1]); mo = Number(ymd[2]); d = Number(ymd[3]); time = ymd[4]; }
+  else if (mdy !== null) { mo = Number(mdy[1]); d = Number(mdy[2]); y = Number(mdy[3]); time = mdy[4]; }
+  else if (dmy !== null) { d = Number(dmy[1]); mo = Number(dmy[2]); y = Number(dmy[3]); time = dmy[4]; }
+  else { return null; }
+  const clock = /(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(time || '');
+  const h = clock ? Number(clock[1]) : 0;
+  const mi = clock ? Number(clock[2]) : 0;
+  const s = clock ? Number(clock[3] || 0) : 0;
+  // PHP's parser OVERFLOWS an out-of-range day (2026-02-30 -> 2026-03-02), so
+  // the parts go through `Date.UTC` directly rather than a strict check.
+  return Date.UTC(y, mo - 1, d, h, mi, s) / 1000;
 }
 
 // Dot-path helpers: Laravel validation addresses nested data as `a.b.0.c`, and
@@ -1084,7 +1931,14 @@ export class Validator {
         continue;
       }
 
-      const hasNumeric = fieldRules.some((r) => r.name === 'numeric' || r.name === 'integer');
+      // `blankString` is TRUE for a string PHP's trim() empties - the
+      // NUMERIC-RULE list (Validator.php:301) is *not* consulted; it is
+      // exactly `hasRule($attribute, $numericRules)`, i.e. a literal `decimal`
+      // rule counts as numeric too (Validator.php:2929 `shouldBeNumeric()`).
+      const hasNumeric = fieldRules.some((r) => r.name === 'numeric' || r.name === 'integer' || r.name === 'decimal');
+      // true when the raw value is PHP-numeric (used by `numeric`/`integer`/
+      // `decimal` and by every rule that casts with `(string)`).
+      const numericValue = isNumericValue(value);
 
       for (const r of fieldRules) {
         if (MODIFIERS.has(r.name) || PRESENCE_RULES.has(r.name)) continue;
@@ -1093,7 +1947,14 @@ export class Validator {
         // presentOrRuleIsImplicit: an absent/blank/null-nullable value runs the
         // implicit rules only (accepted, declined, filled handled above).
         if (onlyImplicit && !IMPLICIT_RULES.has(r.name)) continue;
-        const ok = this._checkRule(field, value, r, hasNumeric);
+        // Laravel's `shouldBeNumeric()` is called ONLY by the four comparison
+        // rules (ValidatesAttributes.php:1321/1368/1415/1462), so `gt/gte/lt/lte`
+        // reconstruct the length from `getSize()` when the value is numeric. The
+        // size rules (min/max/size/between) do NOT claim numeric - `min:3` on
+        // `'70'` stays `validation.min.string` (length 2).
+        const claimsNumeric = COMPARISON_RULES.has(r.name) && numericValue;
+        if (claimsNumeric) this.numericRulesClaimed = true;
+        const ok = this._checkRule(field, value, r, hasNumeric || claimsNumeric);
         if (!ok) {
           this._addError(field, r.name, r.param);
           if (bail) break;
@@ -1215,22 +2076,69 @@ export class Validator {
         if (info.width === null || info.height === null) return false;
         return !failsDimensionChecks(rule.params, info.width, info.height);
       }
-      case 'integer': return isIntegerValue(value);
-      case 'numeric': return isNumericValue(value);
-      case 'boolean': return isBooleanLike(value, rule.params);
-      case 'array': return Array.isArray(value);
-      // RFCValidation (egulias) ACCEPTS a dotless domain ('a@b') and the RFC
-      // local-part characters; the JS regex used to demand a dot, so it
-      // rejected an address Laravel accepts (a probe).
-      case 'email': {
-        if (typeof value !== 'string' || /[\r\n]/.test(value)) return false;
-        return /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/.test(value);
+      case 'integer': {
+        // ValidatesAttributes::validateInteger() (:1625-1632): `integer:strict`
+        // is `is_int($value)` - a bare `true`/`'1'` is NOT an integer there.
+        if (rule.params[0] === 'strict') return typeof value === 'number' && Number.isInteger(value);
+        return isFilterVarInt(value);
       }
+      // ValidatesAttributes::validateNumeric() (:2022-2030): `is_numeric($value)`,
+      // and the `strict` parameter only refuses a STRING (`numeric:strict` still
+      // accepts the int 42). PHP's `is_numeric` never reads hex/binary or the
+      // words `Infinity`/`NaN`, unlike the JS `Number()`.
+      case 'numeric': {
+        if (rule.params[0] === 'strict' && typeof value === 'string') return false;
+        return isNumericValue(value);
+      }
+      case 'boolean': return isBooleanLike(value, rule.params);
+      // ValidatesAttributes::validateArray() (:446): `is_array($value)`. A PHP
+      // assoc array reaches the compiled side as a plain object (and a list as
+      // a JS array), so BOTH count as an array - only a scalar, null or a class
+      // instance is refused.
+      case 'array': return isPhpArrayValue(value);
+      // ValidatesAttributes::validateEmail() -> egulias RFCValidation (Laravel's
+      // default EmailValidator), ported in emailLocalPart()/emailHost() below: a
+      // dotless domain ('a@b') is accepted, `_` is not a host byte, a bracketed
+      // literal is closed by the first `]` and the junk after it is ignored.
+      case 'email': {
+        // The local part is a run of atext bytes, quoted strings, obsolete `\.`
+        // escapes, `(...)` comments and FWS; the domain is labels of GENERIC
+        // bytes, `-` and `.`, or a bracketed literal. Both are byte-exact ports
+        // of egulias' lexer/parsers - see the helpers for the oracle probes.
+        if (typeof value !== 'string' || /[\r\n]/.test(value)) return false;
+        // egulias' lexer reads UTF-8 bytes, so an astral character is ONE token -
+        // walk the string by code point, never by UTF-16 unit.
+        const chars = Array.from(value);
+        // EmailLexer flags an INVALID token (any \p{S}\p{C}\p{Cc} byte other than
+        // NUL) and RFCValidation refuses the address at the end - wherever the
+        // byte sat, even in a comment or after the domain literal.
+        for (const ch of chars) if (emailByteKind(ch) === 'invalid') return false;
+        const at = emailAtPosition(chars);
+        if (at <= 0 || at === chars.length - 1) return false;
+        return emailLocalPart(chars.slice(0, at)) && emailHost(chars.slice(at + 1));
+      }
+      // ValidatesAttributes::validateUrl() -> Str::isUrl($value, $parameters)
+      // (:2770) - the Symfony UrlValidator pattern with Laravel's protocol
+      // list, or the rule's own list (`url:ftp,http`). The JS `new URL` used to
+      // accept http/https only, so a `ftp://`/`wss://` URL Laravel accepts was
+      // rejected (a probe).
       case 'url': {
         if (typeof value !== 'string') return false;
-        try { const u = new URL(value); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
+        try {
+          return strIsUrl(value, rule.params);
+        } catch {
+          return false;
+        }
       }
-      case 'date': return typeof value === 'string' && !Number.isNaN(Date.parse(value));
+      case 'date': {
+        // ValidatesAttributes::validateDate() (:623-640): the value must be a
+        // string or numeric AND `strtotime()` must read it AND `date_parse()`
+        // must yield a real calendar date (`checkdate`). A bare time or a
+        // relative word parses to month/day/year 0, which `checkdate` rejects -
+        // so `'0'`, `'0123'`, `'now'` and `'tomorrow'` all FAIL `date`.
+        if (typeof value !== 'string' && !isNumericValue(value)) return false;
+        return isDateValidValue(value);
+      }
       // ValidatesAttributes.php:384-444: the default classes are UNICODE
       // (`[\pL\pM]`, `[\pL\pM\pN]`, `[\pL\pM\pN_-]`) and the `ascii` parameter
       // switches to the ASCII range. The JS regexes were ASCII-only, so
@@ -1242,13 +2150,13 @@ export class Validator {
         return /^[\p{L}\p{M}]+$/u.test(value);
       }
       case 'alpha_num': {
-        const str = typeof value === 'string' ? value : isNumericValue(value) ? String(value) : null;
+        const str = typeof value === 'string' ? value : isNumericValue(value) ? phpStringCast(value) : null;
         if (str === null) return false;
         if (rule.params[0] === 'ascii') return /^[a-zA-Z0-9]+$/.test(str);
         return /^[\p{L}\p{M}\p{N}]+$/u.test(str);
       }
       case 'alpha_dash': {
-        const str = typeof value === 'string' ? value : isNumericValue(value) ? String(value) : null;
+        const str = typeof value === 'string' ? value : isNumericValue(value) ? phpStringCast(value) : null;
         if (str === null) return false;
         if (rule.params[0] === 'ascii') return /^[a-zA-Z0-9_-]+$/.test(str);
         return /^[\p{L}\p{M}\p{N}_-]+$/u.test(str);
@@ -1291,8 +2199,18 @@ export class Validator {
         return rule.name === 'max_digits' ? s.length <= bound : s.length >= bound;
       }
       case 'multiple_of': {
-        const n = Number(p);
-        return isNumericValue(value) && n !== 0 && Number(value) % n === 0;
+        // ValidatesAttributes::validateMultipleOf() (:1959+): both sides must be
+        // numeric, then compared with brick/math's EXACT `BigDecimal` (not the
+        // JS `%`, which loses precision past 2^53). A zero denominator is only
+        // a multiple when the numerator is zero, and `0 % 0` is refused.
+        if (!isNumericValue(value) || !isNumericValue(p)) return false;
+        const num = expandExponent(phpTrim(phpStringCast(value)));
+        const den = expandExponent(phpTrim(phpStringCast(p)));
+        const zi = (s) => /^[+-]?0*(\.0*)?$/.test(s);
+        if (zi(num) && zi(den)) return false;
+        if (zi(num)) return true;
+        if (zi(den)) return false;
+        return decimalModIsZero(num, den);
       }
       // ValidatesAttributes::validateUuid() -> Str::isUuid($value, $version)
       // (Str.php:687-717). Without a parameter: the canonical dashed form only.
@@ -1393,11 +2311,27 @@ export class Validator {
       case 'ipv6': return isIpv6(value);
       case 'ip': return isIpv4(value) || isIpv6(value);
       case 'mac_address': return typeof value === 'string' && /^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$/.test(value);
+      // ValidatesAttributes::validateJson() (:1689-1700): an array or null is
+      // refused, a non-scalar is refused, the rest goes through
+      // `json_validate()` - i.e. `true`, `0`, `42` and `1.5` all PASS (a
+      // `json_decode` probe: the JSON text `0` is valid JSON).
       case 'json': {
-        if (typeof value !== 'string') return false;
+        // ValidatesAttributes::validateJson() (:1805+): an array, a null or a
+        // class instance is refused (`is_array`/`is_null`); every other scalar
+        // is stringified and run through `json_validate()`. That accepts the
+        // JSON texts `true`/`false`/`0`/`42`/`1.5` (a bool is NOT special), so
+        // only a non-finite number (which has no JSON form) is refused.
+        if (isPhpArrayValue(value) || value === null) return false;
+        if (typeof value === 'object') return false;
+        if (typeof value === 'boolean') return value === true; // false -> '' is not JSON
+        if (typeof value === 'number') return Number.isFinite(value);
         try { JSON.parse(value); return true; } catch { return false; }
       }
-      case 'ascii': return typeof value === 'string' && /^[\x00-\x7F]*$/.test(value);
+      // ValidatesAttributes::validateAscii() (:171): `is_string($value) &&
+      // Str::isAscii($value)`, and voku's `is_ascii` uses the class
+      // `[^\x09\x10\x13\x0A\x0D\x20-\x7E]` - a NUL (\x00), \x01-\x08 and
+      // \x0E-\x1F are NOT ASCII, while \x09/\x0A/\x0D and \x7F are.
+      case 'ascii': return typeof value === 'string' && !/[^\x09\x10\x13\x0A\x0D\x20-\x7E]/.test(value);
       case 'lowercase': return typeof value === 'string' && value === value.toLowerCase();
       case 'uppercase': return typeof value === 'string' && value === value.toUpperCase();
       case 'starts_with': {
@@ -1414,37 +2348,54 @@ export class Validator {
         const str = phpStringCast(value);
         return list.some((s) => str.endsWith(phpStringCast(s)));
       }
-      case 'before': {
-        const v = new Date(value); const d = dateValue(p, this.data);
-        return !Number.isNaN(v.getTime()) && !Number.isNaN(d.getTime()) && v < d;
-      }
-      case 'before_or_equal': {
-        const v = new Date(value); const d = dateValue(p, this.data);
-        return !Number.isNaN(v.getTime()) && !Number.isNaN(d.getTime()) && v <= d;
-      }
-      case 'after': {
-        const v = new Date(value); const d = dateValue(p, this.data);
-        return !Number.isNaN(v.getTime()) && !Number.isNaN(d.getTime()) && v > d;
-      }
-      case 'after_or_equal': {
-        const v = new Date(value); const d = dateValue(p, this.data);
-        return !Number.isNaN(v.getTime()) && !Number.isNaN(d.getTime()) && v >= d;
+      // ValidatesAttributes::compareDates() (:275-307, reached by the
+      // Before/After/BeforeOrEqual/AfterOrEqual/DateEquals rules): a non-string,
+      // non-numeric, non-DateTime value answers false; `$parameters[0]` is first
+      // read as a literal timestamp and only then as a FIELD NAME; a `null`
+      // timestamp on either side is `0` for the comparison, so an unparseable
+      // value PASSES `before` and FAILS `after`.
+      case 'before': case 'before_or_equal': case 'after': case 'after_or_equal': {
+        const rel = rule.name === 'before' || rule.name === 'before_or_equal' ? '<' : '>';
+        const strict = rule.name === 'before' || rule.name === 'after';
+        return this._compareDates(field, value, p, rel, strict);
       }
       case 'date_equals': {
-        const v = new Date(value); const d = dateValue(p, this.data);
-        return !Number.isNaN(v.getTime()) && !Number.isNaN(d.getTime()) && v.getTime() === d.getTime();
+        return this._compareDates(field, value, p, '=', true);
       }
       case 'date_format': return matchDateFormat(value, p);
+      // ValidatesAttributes::validateGt() (:1315-1345) and its Lt/Gte/Lte
+      // siblings, verbatim: the rule takes EITHER a literal number OR a field
+      // name. A numeric parameter with a null compared value is a size
+      // comparison against the trimmed parameter; a numeric parameter with a
+      // non-null compared value always FAILS (`is_numeric($parameters[0])`);
+      // when both sides are numeric and the attribute claims a numeric rule the
+      // compare is `trim($value)` vs `trim($comparedToValue)`; otherwise the
+      // sides must share a PHP type and are compared through `getSize()`.
       case 'gt': case 'gte': case 'lt': case 'lte': {
         const other = this.get(p);
-        const num = hasNumeric && isNumericValue(value) && isNumericValue(other);
-        const a = num ? Number(value) : (typeof value === 'string' ? value.length : Array.isArray(value) ? value.length : NaN);
-        const b = num ? Number(other) : (typeof other === 'string' ? other.length : Array.isArray(other) ? other.length : NaN);
-        if (Number.isNaN(a) || Number.isNaN(b)) return false;
-        if (rule.name === 'gt') return a > b;
-        if (rule.name === 'gte') return a >= b;
-        if (rule.name === 'lt') return a < b;
-        return a <= b;
+        // `getSize()` may answer a number (count/length) or a decimal string
+        // (numeric mode); `cmpBig` normalises both, and a non-number side makes
+        // the comparison fail like the `catch (MathException)` arms do.
+        const op = (a, b) => {
+          const n = cmpBig(a, b);
+          if (n === null) return false;
+          return rule.name === 'gt' ? n > 0
+            : rule.name === 'gte' ? n >= 0
+              : rule.name === 'lt' ? n < 0
+                : n <= 0;
+        };
+        // `is_numeric($parameters[0])`: the parameter is a literal number, not a
+        // field reference, and the field lookup came back null.
+        const paramNumeric = isNumericValue(p);
+        if ((other === null || other === undefined) && isNumericValue(value) && paramNumeric) {
+          return op(this._size(value, hasNumeric), phpTrim(String(p)));
+        }
+        if (paramNumeric) return false;
+        if (hasNumeric && isNumericValue(value) && isNumericValue(other)) {
+          return op(phpTrim(String(value)), phpTrim(String(other)));
+        }
+        if (!samePhpType(value, other)) return false;
+        return op(this._size(value, hasNumeric), this._size(other, hasNumeric));
       }
       // ValidatesAttributes.php:919-968: `distinct` compares the value against
       // the OTHER values that sit at the same wildcard path (the sibling
@@ -1522,44 +2473,56 @@ export class Validator {
       case 'different': return value !== this.get(p);
       case 'confirmed': return value === this.get(field + '_confirmation');
       case 'regex': {
-        if (typeof value !== 'string') return false;
-        let pattern = p, flags = '';
-        if (p && p[0] === '/') {
-          const last = p.lastIndexOf('/');
-          pattern = p.slice(1, last);
-          flags = p.slice(last + 1);
-        }
-        try { return new RegExp(pattern, flags).test(value); } catch { return false; }
+        // ValidatesAttributes::validateRegex() (:2131): `is_string($value) ||
+        // is_numeric($value)` - a numeric value is cast by preg_match, so a
+        // number passes `/^[0-9]+$/` where the old `typeof !== 'string'` refused it.
+        if (typeof value !== 'string' && !isNumericLike(value)) return false;
+        const compiled = compileUserPattern(p);
+        if (compiled === null) return false;
+        return compiled.test(phpStringCast(value));
       }
-      case 'not_regex': {
-        if (typeof value !== 'string') return false;
-        let pattern = p, flags = '';
-        if (p && p[0] === '/') {
-          const last = p.lastIndexOf('/');
-          pattern = p.slice(1, last);
-          flags = p.slice(last + 1);
-        }
-        try { return !new RegExp(pattern, flags).test(value); } catch { return false; }
+      // Laravel registers `notregex` as an alias of `not_regex`
+      // (Validator::$rules -> validateNotRegex), so both spellings must answer.
+      case 'not_regex':
+      case 'notregex': {
+        if (typeof value !== 'string' && !isNumericLike(value)) return false;
+        const compiled = compileUserPattern(p);
+        // `preg_match()` returns false for a pattern it cannot compile and
+        // `validateNotRegex` answers `false < 1` - so an invalid pattern PASSES.
+        if (compiled === null) return true;
+        return !compiled.test(phpStringCast(value));
       }
+      // ValidatesAttributes::validateDoesntStartWith() (:2691) / validateDoesntEndWith()
+      // (:2725): `is_string($value) || is_numeric($value)` then the negated
+      // `Str::startsWith/endsWith` (ANY needle), and a null/non-scalar FAILS
+      // (the JS returned true for anything that was not a string).
       case 'doesnt_start_with': {
-        const list = rule.params.filter((s) => s !== '');
-        return !(typeof value === 'string') || !list.some((pre) => value.startsWith(pre));
+        if (typeof value !== 'string' && !isNumericValue(value)) return false;
+        const str = phpStringCast(value);
+        return !rule.params.some((pre) => str.startsWith(phpStringCast(pre)));
       }
       case 'doesnt_end_with': {
-        const list = rule.params.filter((s) => s !== '');
-        return !(typeof value === 'string') || !list.some((suf) => value.endsWith(suf));
+        if (typeof value !== 'string' && !isNumericValue(value)) return false;
+        const str = phpStringCast(value);
+        return !rule.params.some((suf) => str.endsWith(phpStringCast(suf)));
       }
+      // ValidatesAttributes::validateList() (:485): `is_array($value) &&
+      // array_is_list($value)` - i.e. a PHP list (keys `0..n-1` in order). An
+      // associative map is refused; a numerically-keyed object is accepted.
       case 'list':
-        return Array.isArray(value);
+        return isPhpListValue(value);
       case 'required_array_keys': {
         if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
         const keys = rule.params;
         return keys.every((k) => Object.prototype.hasOwnProperty.call(value, k));
       }
       case 'array_keys': {
-        if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+        // ValidatesAttributes::validateArrayKeys() (:467): every key of the
+        // value must appear in the parameters (`empty(array_diff_key(...))`).
+        if (!isPhpArrayValue(value)) return false;
         const keys = rule.params;
-        return Object.keys(value).every((k) => keys.includes(k));
+        const valueKeys = Array.isArray(value) ? value.map((_, i) => String(i)) : Object.keys(value);
+        return valueKeys.every((k) => keys.includes(k));
       }
       case 'in_array': {
         // `in_array:other` / `in_array:other.*` — value must be one of that array's values.
@@ -1597,16 +2560,80 @@ export class Validator {
     }
   }
 
+  // ValidatesAttributes::compareDates() (:275-307). `$parameters[0]` is read as
+  // a timestamp first and only falls back to `getValue()` (the field name) when
+  // that answers null. `getDateTimestamp()` is null for an unreadable value, and
+  // `compare(0, ..)`/`compare(.., 0)` is an ordinary integer comparison, so a
+  // garbage attribute PASSES `before` (0 < ts) but FAILS `after`.
+  _compareDates(field, value, p, rel, strict) {
+    const isDate = typeof value === 'string' || isNumericValue(value) || value instanceof Date;
+    if (!isDate) return false;
+    const format = this._getDateFormat(field);
+    if (format) {
+      return this._checkDateTimeOrder(format, value, p, rel, strict);
+    }
+    let other = carbonTimestamp(p);
+    if (other === null || other === undefined) other = carbonTimestamp(this.get(p));
+    const self = carbonTimestamp(value);
+    if (self === undefined || other === undefined) return false; // Carbon TypeError
+    const a = self === null ? 0 : self;
+    const b = other === null || other === undefined ? 0 : other;
+    if (rel === '<') return strict ? a < b : a <= b;
+    if (rel === '>') return strict ? a > b : a >= b;
+    return a === b;
+  }
+
+  // ValidatesAttributes::checkDateTimeOrder() (:327-345): both sides go through
+  // the attribute's `date_format` first, then a plain DateTime parse; a null
+  // FIELD value short-circuits to true.
+  _checkDateTimeOrder(format, first, second, rel, strict) {
+    const firstDate = this._dateTimeWithOptionalFormat(format, first);
+    const fmt = this._getDateFormat(second) || format;
+    let secondDate = this._dateTimeWithOptionalFormat(fmt, second);
+    if (secondDate === null) {
+      const other = this.get(second);
+      if (other === null || other === undefined) return true;
+      secondDate = this._dateTimeWithOptionalFormat(fmt, other);
+    }
+    if (firstDate === null || secondDate === null) return false;
+    if (rel === '<') return strict ? firstDate < secondDate : firstDate <= secondDate;
+    if (rel === '>') return strict ? firstDate > secondDate : firstDate >= secondDate;
+    return firstDate === secondDate;
+  }
+
+  // ValidatesAttributes::getDateFormat($attribute) (:291-296): the parameter of
+  // the attribute's own `date_format` rule, if any.
+  _getDateFormat(field) {
+    const rules = this.parsed ? this.parsed[field] : null;
+    if (!rules) return null;
+    const r = rules.find((x) => x.name === 'date_format');
+    return r ? (r.params[0] == null ? null : r.params[0]) : null;
+  }
+
+  _dateTimeWithOptionalFormat(format, value) {
+    if (matchDateFormat(value, format)) {
+      const ts = Date.parse(String(value).replace(' ', 'T'));
+      return Number.isNaN(ts) ? carbonTimestamp(value) : Math.floor(ts / 1000);
+    }
+    return carbonTimestamp(value);
+  }
+
+  // ValidatesAttributes::getSize() (:2817-2832), verbatim:
+  //   is_numeric($value) && $hasNumeric  -> the number itself (as a string)
+  //   is_array($value)                   -> count($value)
+  //   $value instanceof File             -> kilobytes
+  //   else                               -> mb_strlen((string) ($value ?? ''))
+  // `mb_strlen` counts CODE POINTS, so `'😀'` is size 1 - `String.length`
+  // counts UTF-16 units and would answer 2. The non-numeric fallthrough does
+  // NOT special-case a float: `size:4` on `3.14` is `mb_strlen('3.14')` = 4.
   _size(value, hasNumeric) {
-    // An uploaded file: the size is in kilobytes (Laravel's
-    // `(string) ($file->getSize() / 1024)`) and the comparison is exact
-    // (BigNumber), so the size is a decimal string here.
-    if (isUploadedFileValue(value)) return fileSizeKb(value.getSize());
-    if (hasNumeric && isNumericValue(value)) return Number(value);
-    if (typeof value === 'string') return value.length;
+    if (hasNumeric && isNumericValue(value)) return phpTrim(String(value));
     if (Array.isArray(value)) return value.length;
-    if (typeof value === 'number' && !Number.isNaN(value)) return value;
-    return null;
+    // A PHP assoc array reaches the edge as a plain object (`rt.assoc` adds a
+    // non-enumerable `__lwOrder`), so count its own keys like `count()`.
+    if (value !== null && typeof value === 'object' && !isUploadedFileValue(value)) return Object.keys(value).length;
+    if (isUploadedFileValue(value)) return fileSizeKb(value.getSize());
+    return phpMbStrlen(value === null || value === undefined ? '' : phpStringCast(value));
   }
 
   // Illuminate\Validation\Validator::getPrimaryAttribute(): the unparsed

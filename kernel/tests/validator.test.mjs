@@ -46,8 +46,33 @@ test('min/max/between/size numeric vs string vs array', async () => {
 test('email/url/date', async () => {
   assert.equal(await new Validator({ e: 'a@b.co' }, { e: 'email' }).passes(), true);
   assert.equal(await new Validator({ e: 'bad' }, { e: 'email' }).passes(), false);
+  // Egulias RFCValidation probed against Laravel 13: a dotless domain and a
+  // bracketed literal both pass, `_` is not a host byte, and the local part
+  // takes quoted strings, `(...)` comments (which end at the byte before the
+  // `@`), obsolete `\.` escapes, FWS and a `::` token - while a lone `:` is
+  // INVALID_TOKENS.
+  for (const good of [
+    'a@b', 'a@[127.0.0.1]', 'a@[b c]', '"quoted local"@c.com', 'a(b)x@c.com',
+    '}()\\{@9', 'a::b@c.com', 'a::::@c.com', 'a(b)::@c.com', 'a\\.b@c.com',
+    'a @c.com', 'ü@ü.de', 'a(b)x\\@c.com',
+    // `_` is atext in the LOCAL part (only the domain refuses it) and Egulias
+    // reads a bare NUL as its own token, so a NUL local byte passes.
+    'a_b@c.com', 'a\u0000b@c.com',
+  ]) assert.equal(await new Validator({ e: good }, { e: 'email' }).passes(), true, good);
+  for (const bad of [
+    'a@b_c.com', 'a:b@c.com', 'a:::@c.com', 'a(b):@c.com',
+    'a(b):::@c.com', 'a\u0001b@c.com', 'a@b\u0001c.com',
+    'a(b@c.com', 'a\\(b@c.com', 'a @b@c.com', '"a"b@c.com',
+  ]) assert.equal(await new Validator({ e: bad }, { e: 'email' }).passes(), false, JSON.stringify(bad));
   assert.equal(await new Validator({ u: 'https://x.co' }, { u: 'url' }).passes(), true);
-  assert.equal(await new Validator({ u: 'ftp://x' }, { u: 'url' }).passes(), false);
+  // `Str::isUrl()` accepts any protocol of Laravel's list (probed: `ftp://x`
+  // IS a url), a scheme-less host is not, and a custom list (`url:ftp`) wins.
+  assert.equal(await new Validator({ u: 'ftp://x' }, { u: 'url' }).passes(), true);
+  assert.equal(await new Validator({ u: 'wss://x.co/s' }, { u: 'url' }).passes(), true);
+  assert.equal(await new Validator({ u: 'x.co' }, { u: 'url' }).passes(), false);
+  assert.equal(await new Validator({ u: 'mailto:a@b.c' }, { u: 'url' }).passes(), false);
+  assert.equal(await new Validator({ u: 'ftp://x.co' }, { u: 'url:ftp' }).passes(), true);
+  assert.equal(await new Validator({ u: 'http://x.co' }, { u: 'url:ftp' }).passes(), false);
   assert.equal(await new Validator({ d: '2026-10-18' }, { d: 'date' }).passes(), true);
   assert.equal(await new Validator({ d: 'not-date' }, { d: 'date' }).passes(), false);
 });
@@ -1089,4 +1114,60 @@ test('contains/in_array_keys treat a class instance like PHP is_array() (false)'
   assert.equal(await pass({ a: 1 }, 'contains:1'), true);
   assert.equal(await pass({ a: 1 }, 'in_array_keys:a'), true);
   assert.equal(await pass(new ModelLike(), 'in_array_keys:name'), false);
+});
+test('getSize()/mb_strlen: code points, numeric claim and the PHP string cast', async () => {
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  // `mb_strlen()` counts CODE POINTS: 'café' is 4, '😀' is 1 (not the 2 UTF-16
+  // units `String.length` would report).
+  assert.equal(await pass('café', 'size:4'), true);
+  assert.equal(await pass('😀', 'size:1'), true);
+  assert.equal(await pass('😀', 'size:4'), false);
+  // Only `gt/gte/lt/lte` claim a numeric value (`shouldBeNumeric()`); the size
+  // rules stay LENGTH-based, so `min:3` on '70' fails (length 2).
+  assert.equal(await pass('70', 'min:3'), false);
+  assert.equal(await pass('700', 'min:3'), true);
+  assert.equal(await pass('70', 'numeric|min:3'), true);
+  // The comparisons read a numeric parameter OR a field (`gt:y`).
+  assert.equal(await pass(10, 'gt:3'), true);
+  assert.equal(await pass(2, 'gt:3'), false);
+  assert.equal(await new Validator({ x: 10, y: 5 }, { x: 'gt:y' }).passes(), true);
+  assert.equal(await new Validator({ x: 10, y: 5 }, { x: 'gt:99' }).passes(), false);
+  // PHP's float-to-string is `precision=14` with an `E+NN` exponent, so a
+  // float casts to a form the alpha rules reject.
+  assert.equal(await pass(1.5, 'alpha_num'), false);
+  assert.equal(await pass(-1e-300, 'alpha_dash'), false);
+});
+test('before/after follow compareDates(): an unreadable value is timestamp 0', async () => {
+  // `getDateTimestamp()` is null for a value Carbon refuses, and the caller
+  // compares against 0 - so 'abc' PASSES `before:2026-01-01` yet FAILS `after`.
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  assert.equal(await pass('abc', 'before:2026-01-01'), true);
+  assert.equal(await pass('abc', 'after:2026-01-01'), false);
+  // A readable absolute value is a real timestamp.
+  assert.equal(await pass('2026-06-01', 'after:2026-01-01'), true);
+  assert.equal(await pass('2026-06-01', 'before:2026-01-01'), false);
+  // A non-string, non-numeric value never reaches the comparison.
+  assert.equal(await pass(null, 'before:2026-01-01'), false);
+  assert.equal(await pass(true, 'before:2026-01-01'), false);
+});
+test('array/list/json match is_array()/array_is_list()/json_validate()', async () => {
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  // A PHP assoc array is both `is_array()` and NOT `array_is_list()`.
+  assert.equal(await pass({ a: 1 }, 'array'), true);
+  assert.equal(await pass({ a: 1 }, 'list'), false);
+  assert.equal(await pass({ 0: 'a' }, 'list'), true);
+  assert.equal(await pass(['a'], 'list'), true);
+  // `json_validate()` runs on the stringified scalar: the JSON texts `true`
+  // and `0` are valid, but `false` stringifies to '' and is not.
+  assert.equal(await pass(true, 'json'), true);
+  assert.equal(await pass(false, 'json'), false);
+  assert.equal(await pass(0, 'json'), true);
+});
+test('multiple_of uses brick/math BigDecimal, not the JS remainder', async () => {
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  assert.equal(await pass(9, 'multiple_of:3'), true);
+  assert.equal(await pass(10, 'multiple_of:3'), false);
+  assert.equal(await pass(0.3, 'multiple_of:0.1'), true);
+  // 1e300 is out of the 64-bit BigDecimal range, so the exact compare fails.
+  assert.equal(await pass(1e300, 'multiple_of:3'), false);
 });

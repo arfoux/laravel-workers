@@ -153,16 +153,29 @@ export async function provisionPhp(requirement) {
     }
 
     // The built-in reader extracts (no `unzip` on a clean Windows box); the
-    // system binary is the fallback for what the reader refuses.
+    // system binaries are the fallback for what the reader refuses: `unzip`
+    // then `tar` (bsdtar reads ZIP/ZIP64 and ships on Windows 10+).
     try {
       extractZip(zip, dest);
     } catch (e) {
-      try {
-        execFileSync('unzip', ['-oq', zip, '-d', dest], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-      } catch (unzipErr) {
+      const fails = [];
+      let ok = false;
+      for (const [cmd, args] of [
+        ['unzip', ['-oq', zip, '-d', dest]],
+        ['tar', ['-xf', zip, '-C', dest]],
+      ]) {
+        try {
+          execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+          ok = true;
+          break;
+        } catch (err) {
+          fails.push(`${cmd} (${err.code || err.message})`);
+        }
+      }
+      if (!ok) {
         throw new Error(
           `the interpreter zip could not be extracted: ${e.message}\n` +
-            `  -> and \`unzip\` failed too (${unzipErr.code || unzipErr.message})`
+            `  -> and no system extractor worked (${fails.join('; ')})`
         );
       }
     }
