@@ -1077,3 +1077,16 @@ test('a pipe inside a regex rule splits the string exactly like Laravel', async 
   // The array form is not split, so the regex stays intact.
   assert.equal(await new Validator({ x: 'a' }, { x: ['required', 'regex:/^(a|b)$/'] }).passes(), true);
 });
+
+test('contains/in_array_keys treat a class instance like PHP is_array() (false)', async () => {
+  // PHP `is_array()` is false for an object with a class, so validateContains()
+  // answers false outright (oracle: a stdClass FAILS `contains:a`); a plain
+  // object-map still counts as an associative array.
+  class ModelLike { constructor() { this.id = 1; this.name = 'a'; } }
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  assert.equal(await pass(new ModelLike(), 'contains:a'), false);
+  assert.equal(await pass({ __uploadedFile: true, name: 'a', size: 3, isValid: () => true }, 'contains:a'), false);
+  assert.equal(await pass({ a: 1 }, 'contains:1'), true);
+  assert.equal(await pass({ a: 1 }, 'in_array_keys:a'), true);
+  assert.equal(await pass(new ModelLike(), 'in_array_keys:name'), false);
+});

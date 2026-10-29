@@ -2972,6 +2972,27 @@ for (const v of verbControllers) {
 }
 
 // ---------- 5a. middleware audit ----------
+// The app's own GLOBAL stack: anything the compiled kernel does not run is
+// written to `middleware.prevented` by config-dump and would 500 on every
+// request, so the build stops here and names each class.
+{
+  const prevented = Array.isArray(runtimeConfig['middleware.prevented']) ? runtimeConfig['middleware.prevented'] : [];
+  if (prevented.length) {
+    for (const cls of prevented) {
+      note({
+        route: null,
+        area: 'middleware',
+        severity: BLOCK,
+        cause: `bootstrap/app.php puts ${cls} on the global middleware stack, and the compiled rung does not run it`,
+        fix: 'drop the class from ->use()/prepend()/append() (or replace() it with a class the kernel honours), or add a port for it — every request would otherwise answer 500' ,
+      });
+    }
+    fail(
+      'global middleware the compiled rung does not run:\n  - ' + prevented.join('\n  - ') +
+        '\n  remove it from the global stack in bootstrap/app.php, or add a port.'
+    );
+  }
+}
 // kernel/http.mjs honours exactly this set. Anything else on a view / controller /
 // snapshot route would be bypassed at the edge — fail the build instead.
 {

@@ -337,7 +337,17 @@ const KNOWN_RULES = new Set([
 const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes']);
 // PHP `is_array()`: associative arrays arrive as plain JS objects, so an
 // `Array.isArray()` check would miss `['string' => '...']` message maps.
-const isPhpArray = (value) => typeof value === 'object' && value !== null;
+// `is_array()` is FALSE for any object with a class: a model, an uploaded
+// file, a Collection. `contains`/`in_array_keys` answer false for those
+// (oracle: `contains:a` on a stdClass FAILS), so a class instance must not
+// be read through Object.values().
+const isPhpArray = (value) =>
+  Array.isArray(value) ||
+  (typeof value === 'object' &&
+    value !== null &&
+    value.__uploadedFile !== true &&
+    value.__lwResource !== true &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null));
 
 // Illuminate\Validation\Validator::$sizeRules / $numericRules.
 const SIZE_RULES = new Set(['size', 'between', 'min', 'max', 'gt', 'lt', 'gte', 'lte']);

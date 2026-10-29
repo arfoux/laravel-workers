@@ -91,7 +91,9 @@ function makeZip(entries, opts = {}) {
   eocd.writeUInt16LE(opts.zip64 ? 0xffff : entries.length, 10);
   eocd.writeUInt32LE(cd.length, 12);
   eocd.writeUInt32LE(offset, 16);
-  return Buffer.concat([...locals, cd, eocd]);
+  // An archive comment, which may itself hold the EOCD signature.
+  eocd.writeUInt16LE(opts.comment ? opts.comment.length : 0, 20);
+  return Buffer.concat([...locals, cd, eocd, opts.comment ? Buffer.from(opts.comment) : Buffer.alloc(0)]);
 }
 
 function sandbox() {
@@ -178,6 +180,28 @@ test('refuses ZIP64 and non-zip input instead of extracting something wrong', ()
     const junk = join(dir, 'junk.zip');
     writeFileSync(junk, Buffer.from('this is not a zip file at all'));
     assert.throws(() => extractZip(junk, join(dir, 'o2')), /not a zip file/);
+  } finally {
+    done();
+  }
+});
+
+test('a stray EOCD signature inside the archive comment does not win the scan', () => {
+  // The comment embeds the EOCD magic; a scan that trusts the signature alone
+  // returns an offset whose 22 + commentLen does not end the file, and every
+  // central-directory read after it is garbage.
+  const { dir, done } = sandbox();
+  try {
+    const zipPath = join(dir, 'comment.zip');
+    writeFileSync(
+      zipPath,
+      makeZip([{ name: 'a.txt', data: 'hi', store: true }], {
+        comment: Buffer.from([0x50, 0x4b, 0x05, 0x06, 1, 2, 3, 4]),
+      })
+    );
+    const out = join(dir, 'out');
+    const res = extractZip(zipPath, out);
+    assert.equal(res.files, 1, 'exactly one entry is read, not a garbage directory');
+    assert.equal(readFileSync(join(out, 'a.txt'), 'utf8'), 'hi');
   } finally {
     done();
   }

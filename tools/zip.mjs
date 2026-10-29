@@ -26,7 +26,20 @@ const LOCAL_SIG = 0x04034b50;
 function findEocd(buf) {
   const min = Math.max(0, buf.length - 0xffff - 22);
   for (let i = buf.length - 22; i >= min; i--) {
-    if (buf.readUInt32LE(i) === EOCD_SIG) return i;
+    if (buf.readUInt32LE(i) !== EOCD_SIG) continue;
+    // A stray 0x06054b50 inside a file name or a comment would otherwise
+    // pass for the record: the candidate must describe an archive that ENDS
+    // here (22 fixed bytes + its comment) and lives on a single disk with
+    // every entry in the central directory (offsets 4/6/8/10).
+    if (i + 22 > buf.length) continue;
+    const commentLen = buf.readUInt16LE(i + 20);
+    if (i + 22 + commentLen !== buf.length) continue;
+    const disk = buf.readUInt16LE(i + 4);
+    const cdDisk = buf.readUInt16LE(i + 6);
+    const entriesDisk = buf.readUInt16LE(i + 8);
+    const entriesTotal = buf.readUInt16LE(i + 10);
+    if (disk !== 0 || cdDisk !== 0 || entriesDisk !== entriesTotal) continue;
+    return i;
   }
   return -1;
 }
