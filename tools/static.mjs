@@ -1145,9 +1145,14 @@ function dotenvValue(s) {
   if (lower === 'false' || lower === '(false)') return false;
   if (lower === 'null' || lower === '(null)') return null;
   if (lower === 'empty' || lower === '(empty)') return '';
-  // Quoted (optionally with backslash escapes like PHP/JSON double quotes).
-  if (s.length >= 2 && ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'"))) {
+  // Quoted. Only a DOUBLE-quoted value processes backslash escapes like PHP/JSON
+  // (vlucas/phpdotenv's EntryParser keeps a single-quoted value verbatim). A
+  // single-quoted value is returned with the quotes stripped and nothing else.
+  if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
     return s.slice(1, -1).replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t').replace(/"/g, '"');
+  }
+  if (s.length >= 2 && s[0] === "'" && s[s.length - 1] === "'") {
+    return s.slice(1, -1);
   }
   return s;
 }
@@ -1188,6 +1193,16 @@ const StrMethod = {
   lateLimit: () => undefined,
 };
 StrMethod.lower = StrMethod.lower;
+/** PHP's boolean cast for a condition (used by `?:` / `ternary`).
+ * PHP is falsy for: false, 0, -0, 0.0, "0", "", null, [] (empty array).
+ * JS additionally keeps `'0'` and `[]` truthy, so a bare `if (c)` would pick
+ * the wrong branch for those two — e.g. `env('X') ? a : b` with X='0'.
+ */
+function phpTruthy(c) {
+  if (Array.isArray(c)) return c.length > 0;
+  if (c === '0') return false;
+  return !!c;
+}
 
 /** Evaluate one config expression node (PHP) to a JS value. ctx: { env, appDir }. */
 export function evalConfigExpr(node, ctx, depth = 0) {
@@ -1299,7 +1314,7 @@ export function evalConfigExpr(node, ctx, depth = 0) {
     }
     case 'ternary': {
       const c = evalConfigExpr(node.test, ctx, depth + 1);
-      if (c) return evalConfigExpr(node.trueExpr, ctx, depth + 1);
+      if (phpTruthy(c)) return evalConfigExpr(node.trueExpr, ctx, depth + 1);
       return evalConfigExpr(node.falseExpr, ctx, depth + 1);
     }
     case 'cast': {

@@ -574,7 +574,7 @@ let listed;
 try {
   // stderr = the static walk's scope disclosures and parse issues (streamed,
   // not captured: they belong in the build log even on success).
-  const rawRoutes = execFileSync('node', [join(pkgDir, 'tools', 'routes-dump.mjs')], {
+  const rawRoutes = execFileSync(process.execPath, [join(pkgDir, 'tools', 'routes-dump.mjs')], {
     cwd: appDir,
     env: childEnv(),
     stdio: ['ignore', 'pipe', 'inherit'],
@@ -582,14 +582,13 @@ try {
   try {
     listed = JSON.parse(rawRoutes);
   } catch {
-    // A Laravel boot failure (missing APP_KEY, a PHP-version parse error, an
-    // invalid config file) is rendered by the console kernel into STDOUT
-    // while the process still exits 0 — the real cause is in that text, not
-    // on stderr.
+    // A dump failure (a broken config/env file, a syntax error in a route or
+    // config PHP source) is printed to STDOUT while the process still exits 0
+    // — the real cause is in that text, not on stderr.
     const tail = rawRoutes.trim() ? rawRoutes.trim().split('\n').slice(-15).map((l) => '    ' + l).join('\n') : '    (empty)';
     fail(
-      'route export failed — the app did not return the JSON route table, so it failed to boot\n' +
-      '  PHP output:\n' + tail +
+      'route export failed — the route dump did not return the JSON route table\n' +
+      '  dump output:\n' + tail +
       '\n  the build cannot continue without the route table — fix the error above, then re-run the build'
     );
   }
@@ -961,7 +960,7 @@ try {
 console.log('• dumping runtime config via `tools/config-dump.mjs`');
 let runtimeConfig;
 try {
-  const raw = execFileSync('node', [join(pkgDir, 'tools', 'config-dump.mjs')], {
+  const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'config-dump.mjs')], {
     cwd: appDir,
     env: childEnv(),
     maxBuffer: 1 << 24,
@@ -973,12 +972,12 @@ try {
     note({
       severity: BLOCK,
       area: 'config',
-      cause: 'runtime config dump failed — the app did not return the JSON config (it failed to boot)',
-      fix: 'the PHP error below is the cause; check APP_KEY, session.driver, and config file validity',
+      cause: 'runtime config dump failed — config-dump.mjs did not return the JSON config',
+      fix: 'the dump error below is the cause; check APP_KEY, session.driver, and config file validity',
     });
     fail(
-      'config dump failed — the app did not return the JSON runtime config, so it failed to boot\n' +
-      '  PHP output:\n' + tail
+      'config dump failed — config-dump.mjs did not return the JSON runtime config\n' +
+      '  dump output:\n' + tail
     );
   }
 } catch (e) {
@@ -1069,7 +1068,7 @@ let cronTriggers = [];
   console.log('• dumping the app schedule via `tools/schedule-dump.mjs`');
   let schedule = { events: [] };
   try {
-    const raw = execFileSync('node', [join(pkgDir, 'tools', 'schedule-dump.mjs')], {
+    const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'schedule-dump.mjs')], {
       cwd: appDir,
       env: childEnv(),
       encoding: 'utf8',
@@ -1862,7 +1861,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // runtime, so the build compiles the listeners (and the event classes).
       let classesDump = { events: {}, classes: {} };
       try {
-        const raw = execFileSync('node', [join(pkgDir, 'tools', 'event-dump.mjs'), appDir], {
+        const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'event-dump.mjs'), appDir], {
           cwd: appDir,
           env: childEnv(),
         }).toString('utf8');
@@ -1888,7 +1887,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         for (const fqcn of gateCallbackClasses) {
           if (!seen.has(fqcn)) {
             try {
-              const raw = execFileSync('node', [join(pkgDir, 'tools', 'class-dump.mjs'), fqcn], {
+              const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'class-dump.mjs'), fqcn], {
                 cwd: appDir,
                 env: childEnv(),
               }).toString('utf8');
@@ -1944,7 +1943,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         const list = [...constantFqcns];
         console.log(`• dumping class constants (${list.length}): ${list.join(', ')}`);
         try {
-          const raw = execFileSync('node', [join(pkgDir, 'tools', 'constants-dump.mjs'), ...list], {
+          const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'constants-dump.mjs'), ...list], {
             cwd: appDir,
             env: childEnv(),
           }).toString('utf8');

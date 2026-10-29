@@ -81,3 +81,35 @@ test('Env::getOption() types the raw repository string at lookup', () => {
   assert.equal(coerceEnvValue('1'), '1', 'plain values stay strings, as in PHP');
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('a single-quoted .env value keeps backslash escapes literal; double-quoted resolves them', () => {
+  const dir = appWith('DQ="a\\nb"\nSQ=\'a\\nb\'\n');
+  try {
+    const env = readEnvFile(dir);
+    assert.equal(env.DQ, 'a\nb', 'double-quoted processes \\n');
+    assert.equal(env.SQ, 'a\\nb', 'single-quoted keeps \\n literal');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('`?:` / ternary follow PHP truthiness: "0" and [] are falsy', () => {
+  const envCall = (key) => ({
+    kind: 'call',
+    what: { kind: 'name', name: 'env' },
+    arguments: [{ kind: 'argument', value: { kind: 'string', value: key } }],
+  });
+  const ternary = (env) => evalConfigExpr(
+    {
+      kind: 'ternary',
+      test: envCall('X'),
+      trueExpr: { kind: 'string', value: 'a' },
+      falseExpr: { kind: 'string', value: 'b' },
+    },
+    { env, appDir: '.' }
+  );
+  assert.equal(ternary({ X: '0' }), 'b', 'PHP casts "0" to false');
+  assert.equal(ternary({ X: '1' }), 'a');
+  assert.equal(ternary({ X: '' }), 'b');
+  assert.equal(ternary({}), 'b');
+});
