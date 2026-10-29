@@ -2525,10 +2525,17 @@ export class Validator {
         return valueKeys.every((k) => keys.includes(k));
       }
       case 'in_array': {
-        // `in_array:other` / `in_array:other.*` — value must be one of that array's values.
-        const other = String(p == null ? '' : p).replace(/\.\*$/, '');
-        const arr = this.get(other);
-        return Array.isArray(arr) && arr.some((x) => String(x) === String(value));
+        // ValidatesAttributes::validateInArray() (:1581-1594): the parameter is
+        // a wildcard PATH matched against the dot-flattened data (Str::is) and
+        // the value is compared with in_array(..., true) - STRICT, so `'2'`
+        // does NOT match the integer 2, and `in_array:ids` with no `*` never
+        // reaches the elements (the key `ids` itself holds the whole array).
+        const pattern = String(p == null ? '' : p);
+        const dotted = phpDot(this.data);
+        const others = Object.keys(dotted)
+          .filter((key) => strHelpers.is(pattern, key))
+          .map((key) => dotted[key]);
+        return others.some((x) => x === value);
       }
       case 'decimal': {
         // Illuminate\Validation\Concerns\ValidatesAttributes::validateDecimal():

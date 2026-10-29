@@ -1325,8 +1325,20 @@ export function evalConfigExpr(node, ctx, depth = 0) {
       }
       switch (node.type) {
         case 'bool': return !!v;
-        case 'int': return parseInt(v, 10) || 0;
-        case 'float': return parseFloat(v) || 0;
+        case 'int': {
+          // PHP's (int) cast: a bool is 1/0 (parseInt(true) was NaN -> 0), a
+          // number truncates toward zero, and a string reads its leading
+          // integer ('12.9' -> 12, '0x1A' -> 0, 'abc' -> 0).
+          if (typeof v === 'boolean') return v ? 1 : 0;
+          if (typeof v === 'number') return Math.trunc(v) || 0;
+          const n = parseInt(String(v), 10);
+          return Number.isNaN(n) ? 0 : n;
+        }
+        case 'float': {
+          if (typeof v === 'boolean') return v ? 1 : 0;
+          const f = parseFloat(v);
+          return Number.isNaN(f) ? 0 : f;
+        }
         case 'string': return String(v);
         case 'array': return Array.isArray(v) ? v : [];
         default: return undefined;

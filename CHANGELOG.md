@@ -57,6 +57,9 @@ A full read of the compiler, kernel and tools against the PHP oracle (PHP 8.3 + 
 - Fix: **`numeric` resolved a function that did not exist.** `is_numeric` is a PHP regex (hex, `Infinity`, a 1e400 literal are NOT numeric); the edge called a missing `isPhpNumeric` (a `ReferenceError`) and accepted `Number()` forms.
 - Fix: **two validation-message tests pinned the old behaviour.** `max:3` on `42` and `between:1,3` on `5` were asserted to FAIL; the oracle PASSES both (length 2 and 1), so the tests now use `4242`/`'abcd'` with the vendor's own wording.
 - Fix: **zip extraction falls back to `tar` too.** `vendor-lite` and `php-provision` used the pure-JS reader with `unzip` as the only system fallback; a reader refusal (ZIP64, another method) on a clean Windows box now tries bsdtar (`tar -xf`), which ships with Windows 10+ and reads ZIP/ZIP64.
+- Fix: **the `in_array` rule is a strict dot-path test.** `validateInArray()` (:1581-1594) matches the parameter as a wildcard against `Arr::dot($data)` with `Str::is` and compares with `in_array(..., true)`, so `in_array:ids.*` reaches the elements and the string `'2'` does NOT match the integer 2, while a bare `in_array:ids` (no `*`) never does (the key holds the whole array). The edge stripped a trailing `.*` and compared with `String()`.
+- Fix: **`route:list` reports a resource in the vendor's action order.** `ResourceRegistrar::$resourceDefaults` (:21) is index, create, store, show, edit, update, destroy; the edge emitted store/create and update/destroy/edit swapped.
+- Fix: **`(int)`/`(float)` of a boolean in the config evaluator.** `(int) true` is 1 in PHP; `parseInt(true)` was `NaN` → 0 (same for the float cast).
 
 ## v0.4.6 — 2026-10-28
 

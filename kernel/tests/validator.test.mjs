@@ -401,8 +401,8 @@ test('decimal / timezone / in_array rules', async () => {
   assert.equal(await new Validator({ a: 1.234 }, { a: 'decimal:1,2' }).fails(), true);
   assert.equal(await new Validator({ a: 'Asia/Jakarta' }, { a: 'timezone' }).passes(), true);
   assert.equal(await new Validator({ a: 'Not/AZone' }, { a: 'timezone' }).fails(), true);
-  assert.equal(await new Validator({ list: ['a', 'b'], a: 'a' }, { a: 'in_array:list' }).passes(), true);
-  assert.equal(await new Validator({ list: ['a', 'b'], a: 'c' }, { a: 'in_array:list' }).fails(), true);
+  assert.equal(await new Validator({ list: ['a', 'b'], a: 'a' }, { a: 'in_array:list.*' }).passes(), true);
+  assert.equal(await new Validator({ list: ['a', 'b'], a: 'c' }, { a: 'in_array:list.*' }).fails(), true);
 });
 
 test('required_if single value fails and passes', async () => {
@@ -1170,4 +1170,18 @@ test('multiple_of uses brick/math BigDecimal, not the JS remainder', async () =>
   assert.equal(await pass(0.3, 'multiple_of:0.1'), true);
   // 1e300 is out of the 64-bit BigDecimal range, so the exact compare fails.
   assert.equal(await pass(1e300, 'multiple_of:3'), false);
+});
+test('in_array uses the dot-flattened wildcard path and a STRICT compare', async () => {
+  // ValidatesAttributes::validateInArray() (:1581-1594) filters Arr::dot($data)
+  // with Str::is($param, $key) and runs in_array(..., true). Oracle probes:
+  const v = (data, rule) => new Validator(data, { x: rule }).passes();
+  assert.equal(await v({ ids: [1, 2, 3], x: 2 }, 'in_array:ids.*'), true);
+  // strict: the integer 2 is not the string '2'.
+  assert.equal(await v({ ids: [1, 2, 3], x: '2' }, 'in_array:ids.*'), false);
+  // no `*`: the key `ids` itself holds the whole array, never its elements.
+  assert.equal(await v({ ids: [1, 2, 3], x: 2 }, 'in_array:ids'), false);
+  // an assoc array flattens to `n.a`/`n.b`.
+  assert.equal(await v({ n: { a: 1, b: 2 }, x: 2 }, 'in_array:n.*'), true);
+  assert.equal(await v({ n: { a: 1, b: 2 }, x: 1 }, 'in_array:n'), false);
+  assert.equal(await v({ tags: ['a', 'b'], x: 'a' }, 'in_array:tags.*'), true);
 });

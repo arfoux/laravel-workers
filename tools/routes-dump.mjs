@@ -698,13 +698,15 @@ function parse() {
     const member = [...parents, last, `{${paramOf(last)}}`].join('/');
 
     const plan = [
+      // ResourceRegistrar::$resourceDefaults (:21): index, create, store,
+      // show, edit, update, destroy - the order `route:list` reports.
       ['index', 'GET', collection],
-      ['store', 'POST', collection],
       ['create', 'GET', collection + '/create'],
+      ['store', 'POST', collection],
       ['show', 'GET', member],
+      ['edit', 'GET', member + '/edit'],
       ['update', 'PUT|PATCH', member],
       ['destroy', 'DELETE', member],
-      ['edit', 'GET', member + '/edit'],
     ]
       .filter(([a]) => (isApi ? a !== 'create' && a !== 'edit' : true))
       .filter(([a]) => !only || only.includes(a))
