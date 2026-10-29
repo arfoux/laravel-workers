@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveDependencies } from './composer-resolve.mjs';
+import { extractZip as extractZipJs } from './zip.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -126,8 +127,23 @@ function copyDir(src, dest) {
 function extractZip(zipPath, destDir) {
   mkdirSync(destDir, { recursive: true });
   const tmp = mkdtempSync(join(tmpdir(), 'lw-vendor-zip-'));
-  const r = run('unzip', ['-o', zipPath, '-d', tmp], {});
-  if (r.status !== 0) throw new Error('unzip failed: ' + (r.stderr ? r.stderr.toString() : r.error));
+  // The built-in reader runs first: a clean Windows box has no `unzip`, and
+  // provisioning a vendor tree must not depend on one. The system binary is the
+  // fallback for archives the reader refuses (ZIP64, another method); when both
+  // fail the error names the reader's own reason (and whether `unzip` exists).
+  try {
+    extractZipJs(zipPath, tmp);
+  } catch (e) {
+    const r = run('unzip', ['-o', zipPath, '-d', tmp], {});
+    if (r.status !== 0) {
+      throw new Error(
+        'the package zip could not be extracted: ' + e.message +
+          (r.error
+            ? ` (no \`unzip\` on PATH either: ${r.error.code})`
+            : ` (unzip: ${String(r.stderr || '').trim().slice(0, 200)})`)
+      );
+    }
+  }
   const top = readdirSync(tmp);
   const srcDir = join(tmp, top[0]);
   for (const e of readdirSync(srcDir, { withFileTypes: true })) {

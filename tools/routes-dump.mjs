@@ -2,8 +2,17 @@
 // tools/routes-dump.mjs — pure-JS replacement for tools/routes-dump.php
 //
 // Usage: node tools/routes-dump.mjs
-// Output (stdout): the SAME JSON `php artisan route:list --json` prints.
+// Output (stdout): the same ENTRIES `php artisan route:list --json` prints.
 // No PHP interpreter, no composer install, no vendor download needed.
+//
+// ORDER differs from route:list on purpose: route:list sorts by uri
+// (RouteListCommand::sortRoutes('uri')), while this tool keeps DECLARATION
+// order — the compiled router picks the FIRST route whose method + uri match
+// (kernel/router.mjs `match()`), exactly like Laravel's registration-order
+// precedence, so a uri-sorted table would resolve overlapping routes
+// (`/posts/{post}` vs `/posts/archive`) differently from PHP. Verified against
+// the oracle: PHP sorts `dashboard, login, photos, posts`, this tool answers
+// `posts, login, dashboard, photos`.
 //
 // Each entry: { domain, method, uri, name, action, middleware, path }
 //   - method is `GET|HEAD` for GET routes (route:list adds HEAD)
@@ -31,6 +40,7 @@ import {
   loadConfig,
   configGet,
 } from './static.mjs';
+import { singular as strSingular } from './inflect.mjs';
 
 const appDir =
   process.env.LW_APP_ROOT ||
@@ -498,12 +508,12 @@ function parse() {
     const wrap = (v) => (v === null ? null : negated ? !v : v);
     let m = expr.match(/^config\(\s*(['"])(.+?)\1\s*\)$/);
     if (m) {
-      if (_cfg === null) _cfg = loadConfig(appDir, _env || (_env = readEnvFile(appDir))).config;
+      if (_cfg === null) _cfg = loadConfig(appDir, _env || (_env = readEnvFile(appDir, process.env))).config;
       return wrap(phpTruthy(configGet(_cfg, m[2])));
     }
     m = expr.match(/^env\(\s*(['"])(.+?)\1(?:\s*,\s*[^)]*)?\)$/);
     if (m) {
-      if (_env === null) _env = readEnvFile(appDir);
+      if (_env === null) _env = readEnvFile(appDir, process.env);
       const v = Object.prototype.hasOwnProperty.call(process.env, m[2]) ? process.env[m[2]] : _env[m[2]];
       return wrap(phpTruthy(v));
     }
@@ -642,13 +652,13 @@ function parse() {
   };
 
   // ---- Route::resource / apiResource ---------------------------------------
-  const singularOf = (word) => {
-    const w = String(word);
-    if (/ies$/i.test(w) && w.length > 4) return w.slice(0, -3) + 'y';
-    if (/(ches|shes|sses|xes|zes)$/i.test(w)) return w.slice(0, -2);
-    if (/s$/i.test(w)) return w.slice(0, -1);
-    return w;
-  };
+  // ResourceRegistrar::getResourceWildcard(): a segment that is not in the
+  // `parameters` map goes through `Str::singular()` (`$singularParameters` is
+  // true by default) and every '-' becomes '_'. The old hand-rolled `s$`
+  // stripper answered `{people}` for `Route::resource('people', ...)` where
+  // Laravel answers `{person}`, so the compiled route broke the controller's
+  // model binding; tools/inflect.mjs is the faithful Pluralizer port.
+  const singularOf = (word) => strSingular(String(word)).replace(/-/g, '_');
 
   const registerResource = (verbStep, modifiers, file) => {
     const isApi = verbStep.method === 'apiResource';

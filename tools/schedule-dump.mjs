@@ -6,12 +6,15 @@
 // oracle prints: {"events":[{name,expression,command,description,timezone,
 //   without_overlapping,on_one_server,cron_triggerable,reason},...]}
 //
-// Laravel expression synthetic methods map to cron (5-field, UTC) in the same
-// way the framework's `Expression` class does; `->cron('...')` passes through.
+// Laravel expression synthetic methods are replayed onto the framework's
+// `* * * * *` base exactly like Illuminate\Console\Scheduling\ManagesFrequencies
+// splices it (call order = source order); `->cron('...')` passes through.
+// `_root.php`/Cli note: the PHP oracle prints COMPACT json (json_encode), so
+// this writes compact json too - the two tools must stay byte-comparable.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import parser from 'php-parser';
-import { parsePhpFile, appRouteFiles, callMethodName, callArgs, argValue } from './static.mjs';
+import { parsePhpFile, appRouteFiles, callMethodName, callArgs, argValue, loadConfig, readEnvFile, configGet } from './static.mjs';
 
 const appDir = process.env.LW_APP_ROOT || (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
 if (!appDir) { process.stderr.write('schedule-dump.mjs: cannot find app root\n'); process.exit(1); }
@@ -29,6 +32,23 @@ const strLit = (n) => {
   return null;
 };
 
+/**
+ * A chain argument as a VALUE: scalars through strLit, an `[...]` literal as a
+ * real array (Laravel's `days([1, 3])`), a boolean as its JS value. The
+ * frequency methods receive these directly - feeding them AST nodes produced
+ * '[object Object]' inside the cron expression.
+ */
+const valOf = (n) => {
+  if (n === null || n === undefined) return n;
+  if (Array.isArray(n)) return n.map(valOf);
+  if (typeof n !== 'object') return n;
+  if (n.kind === 'array') return (n.items || []).map((it) => valOf(it && it.kind === 'entry' ? it.value : it));
+  const s = strLit(n);
+  if (s !== null) return s;
+  if (n.kind === 'boolean') return !!n.value;
+  return n;
+};
+
 /** Mirror the PHP oracle's command-name extraction ('php artisan X' -> 'X'). */
 const commandNameOf = (cmd) => {
   if (typeof cmd !== 'string') return cmd;
@@ -37,67 +57,125 @@ const commandNameOf = (cmd) => {
   return cmd.split(/[\\/]/).pop();
 };
 
-/** Laravel's synthetic schedule frequencies -> 5-field cron (UTC). */
-const EXPR_METHODS = {
-  everyMinute: () => '* * * * *',
-  everyTwoMinutes: () => '*/2 * * * *',
-  everyThreeMinutes: () => '*/3 * * * *',
-  everyFourMinutes: () => '*/4 * * * *',
-  everyFiveMinutes: () => '*/5 * * * *',
-  everyTenMinutes: () => '*/10 * * * *',
-  everyFifteenMinutes: () => '*/15 * * * *',
-  everyThirtyMinutes: () => '0,30 * * * *',
-  hourly: () => '0 * * * *',
-  everyTwoHours: () => '0 */2 * * *',
-  everyThreeHours: () => '0 */3 * * *',
-  everyFourHours: () => '0 */4 * * *',
-  everySixHours: () => '0 */6 * * *',
-  daily: () => '0 0 * * *',
-  at: (when) => atCron('0 0 * * *', when),
-  dailyAt: (when) => atCron('0 0 * * *', when),
-  twiceDaily: () => '0 1,13 * * *',
-  twiceDailyAt: (h1, h2) => `0 ${h1 || 1},${h2 || 13} * * *`,
-  weekdays: () => '0 0 * * 1-5',
-  weekends: () => '0 0 * * 0,6',
-  monday: () => '0 0 * * 1',
-  tuesday: () => '0 0 * * 2',
-  wednesday: () => '0 0 * * 3',
-  thursday: () => '0 0 * * 4',
-  friday: () => '0 0 * * 5',
-  saturday: () => '0 0 * * 6',
-  sunday: () => '0 0 * * 0',
-  weekly: () => '0 0 * * 0',
-  weeklyOn: (d, time) => weeklyOnCron(d, time),
-  monthly: () => '0 0 1 * *',
-  monthlyOn: (day, time) => atCron('0 0 1 * *', time || '00:00', day),
-  twiceMonthly: (d1, d2) => `0 0 ${d1 || 1},${d2 || 16} * *`,
-  quarterly: () => '0 0 1 1,4,7,10 *',
-  yearly: () => '0 0 1 1 *',
-  annually: () => '0 0 1 1 *',
-  timezone: () => null, // modifier, not an expression
+// ---------- the schedule timezone + Laravel's expression splicing ----------
+// Laravel resolves the default event timezone as
+// `config('app.schedule_timezone', config('app.timezone'))`
+// (Foundation\Console\Kernel::scheduleTimezone(), :306-311) — the old code
+// hardcoded 'UTC', which is only right for an app that left both keys at UTC.
+const cfgEnv = readEnvFile(appDir, process.env);
+let appConfig = {};
+try {
+  appConfig = loadConfig(appDir, cfgEnv).config || {};
+} catch {
+  appConfig = {};
+}
+const scheduleTimezone = () => {
+  const v = configGet(appConfig, 'app.schedule_timezone') ?? configGet(appConfig, 'app.timezone');
+  return v === null || v === undefined || v === '' ? 'UTC' : String(v);
 };
 
-const atCron = (base, when, day) => {
-  const t = parseTime(when);
-  if (!t) return base;
-  const [min, hour] = t;
-  const baseParts = base.split(' ');
-  if (day) baseParts[2] = String(day);
-  return `${min} ${hour} ${baseParts[2]} ${baseParts[3]} ${baseParts[4]}`;
+/** PHP's (int) cast for a segment: '08' -> 8, 'x' -> 0. */
+const phpInt = (v) => {
+  const n = parseInt(String(v === null || v === undefined ? '' : v), 10);
+  return Number.isFinite(n) ? n : 0;
 };
-const weeklyOnCron = (day, time) => {
-  const t = parseTime(time);
-  const days = ['0', '1', '2', '3', '4', '5', '6'];
-  const d = days[day % 7];
-  return t ? `${t[0]} ${t[1]} * * ${d}` : `0 0 * * ${d}`;
+
+/**
+ * `Event::$expression` starts at '* * * * *' and every frequency method splices
+ * ONE position of the CURRENT string (`spliceIntoPosition()` +
+ * `hourBasedSchedule()`, ManagesFrequencies.php:404-412,674-682). The calls run
+ * in SOURCE order, so the expression is built by replaying the chain from the
+ * innermost call outward - the old code instead took the first cron-looking
+ * step and ignored the arguments of `twiceDaily(2, 14)`-style methods.
+ */
+const makeState = () => ({ expr: '* * * * *' });
+const splice = (state, pos, value) => {
+  const segs = state.expr.split(/\s+/);
+  segs[pos - 1] = String(value);
+  state.expr = segs.join(' ');
 };
-const parseTime = (when) => {
-  const s = String(when || '');
-  const m = s.match(/(\d{1,2}):(\d{2})/);
-  if (!m) return null;
-  const hour = Number(m[1]) % 24, min = Number(m[2]) % 60;
-  // Laravel emits bare numbers (no zero-padding): '0 13 * * *', '30 8 * * 1'.
-  return [String(min), String(hour)];
+const spliceCron = (state, value) => {
+  state.expr = String(value);
+};
+/** `dailyAt()`/`at()`: `implode(':', ...)` -> hourBasedSchedule() (:349-368). */
+const applyDailyAt = (state, time) => {
+  const segs = String(time === null || time === undefined ? '0:0' : time).split(':');
+  splice(state, 1, segs.length >= 2 ? phpInt(segs[1]) : 0);
+  splice(state, 2, phpInt(segs[0]));
+};
+/** Laravel's `days($days)`: an array wins, otherwise every argument joins. */
+const dayList = (args) => {
+  if (args.length === 1 && Array.isArray(args[0])) return args[0].map(String).join(',');
+  return args.map(String).join(',');
+};
+/** The last day of the CURRENT month (Laravel splices `Carbon::now()->endOfMonth()->day`). */
+const lastDayOfCurrentMonth = () => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: scheduleTimezone(), year: 'numeric', month: 'numeric', day: 'numeric',
+    }).formatToParts(new Date());
+    const y = Number(parts.find((p) => p.type === 'year').value);
+    const m = Number(parts.find((p) => p.type === 'month').value);
+    return new Date(Date.UTC(y, m, 0)).getUTCDate();
+  } catch {
+    const now = new Date();
+    return new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0)).getUTCDate();
+  }
+};
+
+/**
+ * Replay one ManagesFrequencies method onto the expression state.
+ * Returns false for a method that is not a frequency method at all (the
+ * caller records it: a chain step the dump does not understand must not
+ * silently become "no cron expression").
+ */
+const applyStep = (state, method, args) => {
+  const a = args || [];
+  switch (method) {
+    case 'everyMinute': splice(state, 1, '*'); return true;
+    case 'everyTwoMinutes': splice(state, 1, '*/2'); return true;
+    case 'everyThreeMinutes': splice(state, 1, '*/3'); return true;
+    case 'everyFourMinutes': splice(state, 1, '*/4'); return true;
+    case 'everyFiveMinutes': splice(state, 1, '*/5'); return true;
+    case 'everyTenMinutes': splice(state, 1, '*/10'); return true;
+    case 'everyFifteenMinutes': splice(state, 1, '*/15'); return true;
+    case 'everyThirtyMinutes': splice(state, 1, '*/30'); return true;
+    case 'hourly': splice(state, 1, 0); return true;
+    case 'hourlyAt': splice(state, 1, a[0] === null || a[0] === undefined ? 0 : a[0]); splice(state, 2, '*'); return true;
+    case 'everyOddHour': splice(state, 1, a[0] === null || a[0] === undefined ? 0 : a[0]); splice(state, 2, '1-23/2'); return true;
+    case 'everyTwoHours': splice(state, 1, a[0] === null || a[0] === undefined ? 0 : a[0]); splice(state, 2, '*/2'); return true;
+    case 'everyThreeHours': splice(state, 1, a[0] === null || a[0] === undefined ? 0 : a[0]); splice(state, 2, '*/3'); return true;
+    case 'everyFourHours': splice(state, 1, a[0] === null || a[0] === undefined ? 0 : a[0]); splice(state, 2, '*/4'); return true;
+    case 'everySixHours': splice(state, 1, a[0] === null || a[0] === undefined ? 0 : a[0]); splice(state, 2, '*/6'); return true;
+    case 'daily': splice(state, 1, 0); splice(state, 2, 0); return true;
+    case 'at':
+    case 'dailyAt': applyDailyAt(state, a[0]); return true;
+    case 'twiceDaily': splice(state, 1, 0); splice(state, 2, `${a[0] ?? 1},${a[1] ?? 13}`); return true;
+    case 'twiceDailyAt': splice(state, 1, a[2] ?? 0); splice(state, 2, `${a[0] ?? 1},${a[1] ?? 13}`); return true;
+    case 'weekdays': splice(state, 5, '1-5'); return true; // MONDAY..FRIDAY
+    case 'weekends': splice(state, 5, '6,0'); return true; // SATURDAY,SUNDAY
+    case 'mondays': splice(state, 5, 1); return true;
+    case 'tuesdays': splice(state, 5, 2); return true;
+    case 'wednesdays': splice(state, 5, 3); return true;
+    case 'thursdays': splice(state, 5, 4); return true;
+    case 'fridays': splice(state, 5, 5); return true;
+    case 'saturdays': splice(state, 5, 6); return true;
+    case 'sundays': splice(state, 5, 0); return true;
+    case 'days': splice(state, 5, dayList(a)); return true;
+    case 'weekly': splice(state, 1, 0); splice(state, 2, 0); splice(state, 5, 0); return true;
+    case 'weeklyOn': applyDailyAt(state, a[1] === null || a[1] === undefined ? '0:0' : a[1]); splice(state, 5, a[0] ?? 0); return true;
+    case 'monthly': splice(state, 1, 0); splice(state, 2, 0); splice(state, 3, 1); return true;
+    case 'monthlyOn': applyDailyAt(state, a[1] === null || a[1] === undefined ? '0:0' : a[1]); splice(state, 3, a[0] ?? 1); return true;
+    case 'twiceMonthly': applyDailyAt(state, a[2] === null || a[2] === undefined ? '0:0' : a[2]); splice(state, 3, `${a[0] ?? 1},${a[1] ?? 16}`); return true;
+    case 'lastDayOfMonth': applyDailyAt(state, a[0] === null || a[0] === undefined ? '0:0' : a[0]); splice(state, 3, lastDayOfCurrentMonth()); return true;
+    case 'daysOfMonth': applyDailyAt(state, '0:0'); splice(state, 3, dayList(a)); return true;
+    case 'quarterly': splice(state, 1, 0); splice(state, 2, 0); splice(state, 3, 1); splice(state, 4, '1-12/3'); return true;
+    case 'quarterlyOn': applyDailyAt(state, a[1] === null || a[1] === undefined ? '0:0' : a[1]); splice(state, 3, a[0] ?? 1); splice(state, 4, '1-12/3'); return true;
+    case 'yearly': splice(state, 1, 0); splice(state, 2, 0); splice(state, 3, 1); splice(state, 4, 1); return true;
+    case 'yearlyOn': applyDailyAt(state, a[2] === null || a[2] === undefined ? '0:0' : a[2]); splice(state, 3, a[1] ?? 1); splice(state, 4, a[0] ?? 1); return true;
+    case 'cron': if (a[0] !== null && a[0] !== undefined) spliceCron(state, a[0]); return true;
+    default: return false;
+  }
 };
 
 /** Chain steps for a call, outer -> inner. */
@@ -130,17 +208,26 @@ const inspect = (node, seen = new Set()) => {
       const facade = rootWhat && rootWhat.kind === 'staticlookup' ? (rootWhat.what && rootWhat.what.name) : null;
       if (facade === 'Schedule') {
         seen.add(node);
-        // expression: first outer call that yields a cron string
-        let expression = null;
+        // Replay the chain in SOURCE order (innermost call first; `steps` is
+        // outer -> inner) onto Laravel's `* * * * *` base. Anything the dump
+        // does not understand is reported instead of silently answering
+        // "no cron expression" (which would drop a real cron trigger).
+        const state = makeState();
         let timezone = null;
-        for (const st of steps.slice(0, -1)) {
-          if (st.method === 'cron') { const v = strLit(st.args[0]); if (v != null) expression = v; }
-          else if (st.method === 'timezone') { const v = strLit(st.args[0]); if (v != null) timezone = v; }
-          else if (EXPR_METHODS[st.method]) {
-            const e = EXPR_METHODS[st.method](...(st.args || []).map(strLit));
-            if (e) expression = expression || e;
-          }
+        const unknown = [];
+        for (const st of steps.slice(0, -1).reverse()) {
+          if (st.method === 'timezone') { const v = strLit(st.args[0]); if (v != null) timezone = v; continue; }
+          if (st.method === 'description' || st.method === 'name') continue;
+          if (st.method === 'withoutOverlapping' || st.method === 'onOneServer' || st.method === 'runInBackground'
+            || st.method === 'evenInMaintenanceMode' || st.method === 'when' || st.method === 'skip'
+            || st.method === 'environments' || st.method === 'between' || st.method === 'unlessBetween'
+            || st.method === 'sendOutputTo' || st.method === 'appendOutputTo' || st.method === 'emailOutputTo'
+            || st.method === 'storeOutput' || st.method === 'pingBefore' || st.method === 'thenPing'
+            || st.method === 'onSuccess' || st.method === 'onFailure' || st.method === 'then' || st.method === 'tap'
+            || st.method === 'graceTimeInMinutes' || st.method === 'repeat' || st.method === 'runInBackground') continue;
+          if (!applyStep(state, st.method, (st.args || []).map(valOf))) unknown.push(st.method);
         }
+        const expression = state.expr;
         const kind = root.method; // command | call | exec
         let rawCommand = null;
         if (kind === 'command' || kind === 'exec') rawCommand = strLit(root.args[0]);
@@ -156,11 +243,21 @@ const inspect = (node, seen = new Set()) => {
           if (st.method === 'description') { const v = strLit(st.args[0]); if (v != null) description = v; }
         }
 
+        if (unknown.length) {
+          // Fail loud: a chain step the dump cannot model would otherwise be
+          // reported as "no cron expression", and the build would silently
+          // ship no cron trigger for an event that really is schedulable.
+          throw new Error(
+            'schedule-dump.mjs: unsupported schedule chain method(s) '
+            + unknown.map((m) => '->' + m + '()').join(', ')
+            + ' on the event "' + (description || commandNameOf(rawCommand) || 'closure') + '"'
+          );
+        }
         const command = commandNameOf(rawCommand);
         const name = description !== null && description !== undefined
           ? description
           : (command || 'closure');
-        const timezoneOut = timezone !== null && timezone !== undefined ? timezone : 'UTC';
+        const timezoneOut = timezone !== null && timezone !== undefined ? timezone : scheduleTimezone();
 
         const without = steps.slice(0, -1).some((s) => s.method === 'withoutOverlapping');
         const oneServer = steps.slice(0, -1).some((s) => s.method === 'onOneServer');
@@ -212,4 +309,4 @@ if (file) {
   inspect(ast);
 }
 
-process.stdout.write(JSON.stringify({ events }, null, 2) + '\n');
+process.stdout.write(JSON.stringify({ events }) + '\n');

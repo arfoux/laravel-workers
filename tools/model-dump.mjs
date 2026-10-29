@@ -118,8 +118,14 @@ const PLURAL_REGULAR = [
 
 /** Pluralize an English word exactly like Laravel's Str::plural. */
 export function plural(value, count = 2) {
-  // Pluralizer::plural(): count === 1 short-circuits.
-  if (Math.abs(Number(count)) === 1) return String(value);
+  // Pluralizer::plural(): `is_countable($count)` -> count($count), then
+  // `(int) abs($count) === 1` short-circuits (verified against PHP 8.3:
+  // Str::plural('post', -1) = 'post', Str::plural('post', 1.5) = 'post',
+  // 0 -> 'posts'). `Math.abs(x) === 1` answered 'posts' for 1.5.
+  let n = count;
+  if (Array.isArray(n)) n = n.length;
+  else if (n && typeof n === 'object' && typeof n.length === 'number') n = n.length;
+  if (Math.trunc(Math.abs(Number(n))) === 1) return String(value);
   const s = String(value == null ? '' : value);
   // Laravel's own uncountable list (Pluralizer::$uncountable).
   if (['recommended', 'related'].includes(s.toLowerCase())) return s;

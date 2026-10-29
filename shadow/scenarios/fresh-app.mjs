@@ -40,6 +40,10 @@ export default {
     { label: 'GET /dashboard (authenticated)', method: 'GET', uri: '/dashboard', jar: true },
     { label: 'GET /posts (list)', method: 'GET', uri: '/posts', jar: true },
     { label: 'GET /posts/1 (show)', method: 'GET', uri: '/posts/1', jar: true },
+    // The API surface: a resource that nests resources (the encoder resolves
+    // them with the live request) and json_encode() of a resource.
+    { label: 'GET /posts/1/resource (nested resource)', method: 'GET', uri: '/posts/1/resource', query: { probe: 'hello' } },
+    { label: 'GET /posts/1/json (json_encode of a resource)', method: 'GET', uri: '/posts/1/json', query: { probe: 'hello' } },
     {
       // A snapshot is a *static asset*: the platform serves it without a session,
       // so the fair comparison is a guest request (no cookie jar).

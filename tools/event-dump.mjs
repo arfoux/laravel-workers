@@ -5,9 +5,8 @@
 //   mailViewsByClass, mailableClasses }.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import parser from 'php-parser';
 import {
-  classFile, parsePhpFile, nodeName, callMethodName, callArgs, argValue, readEnvFile,
+  classFile, parsePhpFile, parsePhpSource, nodeName, callMethodName, callArgs, argValue, readEnvFile,
 } from './static.mjs';
 
 let appDir = process.env.LW_APP_ROOT || '';
@@ -47,8 +46,14 @@ const resolveName = (t, parsed) => {
       return typeof t === 'string' ? t : null;
     }
   }
-  t = String(t || '').replace(/^\\+/, '');
+  let s = String(t || '');
+  // A leading '\' (or php-parser's resolution='fqn') means the GLOBAL
+  // namespace: PHP resolves it there, so the file's namespace/imports must
+  // not touch it (`\DateTimeInterface` is NOT App\Mail\DateTimeInterface).
+  const qualified = s.startsWith('\\') || (t && typeof t === 'object' && t.resolution === 'fqn');
+  t = s.replace(/^\\+/, '');
   if (!t) return null;
+  if (qualified) return t;
   if (parsed && parsed.imports && t in parsed.imports) return parsed.imports[t].replace(/^\\+/, '');
   if (parsed && parsed.namespace && !t.includes('\\')) return parsed.namespace + '\\' + t;
   return t;
@@ -91,19 +96,19 @@ const appBindings = () => {
     const parsed = parsedOf(file);
     if (parsed.error || !parsed.source) continue;
     let ast;
-    try { ast = new (require.presolve.parserClass)({ parser: { extractDoc: false }, ast: { withPositions: false } }).parseCode(parsed.source); } catch { continue; }
+    try { ast = parsePhpSource(parsed.source); } catch { continue; }
     const walk = (n) => {
       if (Array.isArray(n)) { n.forEach(walk); return; }
       if (!n || typeof n !== 'object') return;
       const m = callMethodName(n);
       if (n.kind === 'call' && (m === 'bind' || m === 'singleton')) {
-        const args = callArgs(n).map(argValue);
+        // `bind(Foo::class, Bar::class)` (or a string literal): the arguments
+        // are AST NODES, so `Foo::class` must be resolved to its FQCN through
+        // the file's imports (resolveName) - comparing the node to a string
+        // never matched and the binding was silently dropped.
+        const args = callArgs(n).map((a) => resolveName(argValue(a), parsed));
         const abs = args[0], impl = args[1];
-        if (abs && typeof abs === 'string') {
-          const absC = abs.replace(/^\\+/, '');
-          if (impl && typeof impl === 'string') bindingsGlobal[absC] = impl.replace(/^\\+/, '');
-          else bindingsGlobal[absC] = absC;
-        }
+        if (abs) bindingsGlobal[abs] = impl || abs;
       }
       for (const k of Object.keys(n)) {
         if (k === 'loc' || k === 'locend' || k === 'locstart' || k === 'leadingComments' || k === 'trailingComments' || k === 'comments' || k === 'raw' || k === 'parent') continue;
@@ -113,6 +118,31 @@ const appBindings = () => {
     walk(ast);
   }
   return bindingsGlobal;
+};
+
+const isNullType = (t) => {
+  if (!t) return false;
+  if (t.kind === 'typereference') return (t.name || t.raw) === 'null';
+  if (t.kind === 'name') return (t.name || '') === 'null';
+  return false;
+};
+
+/**
+ * PHP's Reflection only keeps a ReflectionUnionType for a REAL union: `X|null`
+ * (and `?X`) collapse to a nullable ReflectionNamedType, while `string|int`,
+ * `int|string|null` and `A|B` stay unions - and the oracle answers 'untyped'
+ * for those. Returns the single named type node, or null when the declaration
+ * is a real union/intersection (or absent). Verified against PHP 8.3.
+ */
+const collapseType = (type) => {
+  if (!type) return null;
+  if (type.kind === 'uniontype') {
+    const members = (type.types || []).filter(Boolean).filter((m) => !isNullType(m));
+    return members.length === 1 ? collapseType(members[0]) : null;
+  }
+  if (type.kind === 'nullabletype') return collapseType(type.type || null);
+  if (type.kind === 'intersectiontype') return null;
+  return type;
 };
 
 const ctorDump = (fqcn) => {
@@ -152,16 +182,17 @@ const ctorDump = (fqcn) => {
     const name = param.name && nodeName(param.name);
     if (!name) continue;
     const entry = { name };
-    const isBuiltin = param.type && (param.type.kind === 'typereference' && BUILTINS.has(param.type.name || param.type.raw));
+    const named = collapseType(param.type); // null = real union / absent
+    const isBuiltin = named && named.kind === 'typereference' && BUILTINS.has(named.name || named.raw);
     if (isBuiltin) {
       entry.kind = 'builtin';
-      entry.type = param.type.name || param.type.raw;
+      entry.type = named.name || named.raw;
       const v = scalarDefault(param.value, ctorParsed);
       if (v !== undefined) entry.default = v;
       out.push(entry);
       continue;
     }
-    const tname = param.type ? resolveName(param.type, ctorParsed) : null;
+    const tname = named ? resolveName(named, ctorParsed) : null;
     if (!tname) {
       // untyped: the container resolves by name -> a class when one exists.
       entry.kind = 'untyped';

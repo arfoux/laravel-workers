@@ -47,10 +47,14 @@ $classes = [];
 
 // The classes the edge can build: the app's own classes (not the vendor's).
 // A class outside the app root (a framework class) has no file the build can
-// compile — the edge adapter of that service is used instead.
+// compile — the edge adapter of that service is used instead. An INTERFACE (or
+// a trait) is an app class too: `class_exists()` alone answers false for it and
+// would mislabel the parameter as a framework class, while the container may
+// bind it to a concrete class the edge DOES build.
 $appRootReal = realpath($appRoot);
 $isAppClass = function (string $fqcn) use ($appRootReal): bool {
-    if ($fqcn === '' || !class_exists($fqcn)) return false;
+    if ($fqcn === '') return false;
+    if (!class_exists($fqcn) && !interface_exists($fqcn) && !trait_exists($fqcn)) return false;
     try {
         $rc = new ReflectionClass($fqcn);
     } catch (Throwable $e) {
@@ -133,10 +137,31 @@ $ctorDump = function (string $fqcn) use ($app, $isAppClass): array {
         }
         $rc2 = new ReflectionClass($name);
         if ($rc2->isInterface() || $rc2->isAbstract()) {
-            // An interface: the container binds it to a concrete class.
+            // An interface (or an abstract class): the container binds it to a
+            // concrete class. `Container::bind()` stores the binding as
+            // `['concrete' => Closure, 'shared' => bool]`, and the Closure is
+            // `getClosure()`'s wrapper whose STATIC VARIABLE holds the concrete
+            // written by the call — so the class string is recoverable without
+            // instantiating anything (`$binding[0]` never existed: the array is
+            // associative, which is why this branch used to answer nothing).
             $bindings = method_exists($app, 'getBindings') ? $app->getBindings() : [];
             $binding = $bindings[$name] ?? null;
-            $concrete = is_array($binding) && is_string($binding[0] ?? null) ? ltrim($binding[0], '\\') : null;
+            $concrete = null;
+            if (is_array($binding) && array_key_exists('concrete', $binding)) {
+                $raw = $binding['concrete'];
+                if (is_string($raw)) {
+                    $concrete = ltrim($raw, '\\');
+                } elseif ($raw instanceof Closure) {
+                    try {
+                        $vars = (new ReflectionFunction($raw))->getStaticVariables();
+                        if (isset($vars['concrete']) && is_string($vars['concrete'])) {
+                            $concrete = ltrim($vars['concrete'], '\\');
+                        }
+                    } catch (Throwable $e) {
+                        $concrete = null;
+                    }
+                }
+            }
             if ($concrete && class_exists($concrete) && $isAppClass($concrete)) {
                 $entry['kind'] = 'class';
                 $entry['impl'] = $concrete;

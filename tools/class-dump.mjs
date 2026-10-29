@@ -16,18 +16,42 @@ const BUILTINS = new Set(['int', 'float', 'string', 'bool', 'array', 'callable',
 const normalize = (p) => p.replace(/\\/g, '/');
 const appPrefix = normalize(appDir) + '/app/';
 
+/** Is this type node PHP's `null` (a union member)? */
+const isNullType = (t) => {
+  if (!t) return false;
+  if (t.kind === 'typereference') return (t.name || t.raw) === 'null';
+  if (t.kind === 'name') return (t.name || '') === 'null';
+  return false;
+};
+
 /** Resolve a parameter type node to {fqcn, builtin} or null. */
 const typeInfo = (type, parsed) => {
   if (!type) return null;
+  if (type.kind === 'uniontype') {
+    // Reflection only keeps a ReflectionUnionType for a REAL union: `int|null`
+    // and `Dep|null` collapse to a nullable ReflectionNamedType, while
+    // `string|int` or `int|string|null` stay unions and the oracle answers
+    // 'untyped'. Verified against PHP 8.3 (tools/class-dump.php).
+    const members = (type.types || []).filter(Boolean).filter((m) => !isNullType(m));
+    if (members.length !== 1) return null;
+    return typeInfo(members[0], parsed);
+  }
+  if (type.kind === 'nullabletype') return typeInfo(type.type || type, parsed);
   if (type.kind === 'typereference') {
     const t = type.name || type.raw;
     return BUILTINS.has(t) ? { builtin: true, name: t } : null;
   }
   if (type.kind === 'name') {
     let t = type.name || '';
+    // php-parser keeps the leading '\' AND sets resolution='fqn' for a
+    // fully-qualified name: PHP resolves it in the GLOBAL namespace, so it
+    // must never be prefixed with the file's namespace
+    // (`\DateTimeInterface|null` -> 'DateTimeInterface', not 'App\Mail\...').
+    const qualified = t.startsWith('\\') || type.resolution === 'fqn';
     t = String(t).replace(/^\\+/, '');
     if (!t) return null;
     if (BUILTINS.has(t)) return { builtin: true, name: t };
+    if (qualified) return { builtin: false, name: t };
     // Resolve via file imports, then namespace, then as-is.
     if (parsed && parsed.imports && t in parsed.imports) t = parsed.imports[t].replace(/^\\+/, '');
     else if (parsed && parsed.namespace && !t.includes('\\')) t = parsed.namespace + '\\' + t;
@@ -63,9 +87,14 @@ const parsedOf = (file) => {
 /** Resolve a `use`-aware name node (param type, extends target) to an FQCN. */
 const resolveFqcn = (node, parsed) => {
   if (!node || !parsed) return null;
-  let t = typeof node === 'string' ? node : (node.name || '');
-  t = String(t).replace(/^\\+/, '');
+  const raw = typeof node === 'string' ? node : (node.name || '');
+  const s = String(raw || '');
+  // A leading '\' (or php-parser's resolution='fqn') means the GLOBAL
+  // namespace - never prefix the file's namespace onto it.
+  const qualified = s.startsWith('\\') || (node && typeof node === 'object' && node.resolution === 'fqn');
+  const t = s.replace(/^\\+/, '');
   if (!t) return null;
+  if (qualified) return t;
   if (parsed.imports && t in parsed.imports) return parsed.imports[t].replace(/^\\+/, '');
   if (parsed.namespace && !t.includes('\\')) return parsed.namespace + '\\' + t;
   return t;

@@ -311,8 +311,8 @@ export async function resolveDependencies(appDir, opts = {}) {
   }
   assertPackagistOnly(root.repositories);
 
-  const platform = opts.platform || detectPlatform(opts.phpBin, (root.require && root.require.php) || null);
-  if (!(platform.exts instanceof Set)) platform = { ...platform, exts: new Set(platform.exts || []) };
+  const basePlatform = opts.platform || detectPlatform(opts.phpBin, (root.require && root.require.php) || null);
+  const platform = basePlatform.exts instanceof Set ? basePlatform : { ...basePlatform, exts: new Set(basePlatform.exts || []) };
   const rootFloor = STAB_RANK[root['minimum-stability'] || 'stable'] ?? STAB_RANK.stable;
   const meta = makeMeta(opts.fetch || ((u, o) => fetch(u, o)), new Map());
 

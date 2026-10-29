@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cacheBase } from './vendor-lite.mjs';
+import { extractZip } from './zip.mjs';
 import { probePhp, satisfies } from './php-runtime.mjs';
 
 const RELEASES_URL = 'https://windows.php.net/downloads/releases/releases.json';
@@ -151,8 +152,20 @@ export async function provisionPhp(requirement) {
       );
     }
 
-    const r = execFileSync('unzip', ['-oq', zip, '-d', dest], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    void r;
+    // The built-in reader extracts (no `unzip` on a clean Windows box); the
+    // system binary is the fallback for what the reader refuses.
+    try {
+      extractZip(zip, dest);
+    } catch (e) {
+      try {
+        execFileSync('unzip', ['-oq', zip, '-d', dest], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (unzipErr) {
+        throw new Error(
+          `the interpreter zip could not be extracted: ${e.message}\n` +
+            `  -> and \`unzip\` failed too (${unzipErr.code || unzipErr.message})`
+        );
+      }
+    }
     writeIni(dest);
 
     const version = probePhp(bin);
