@@ -184,6 +184,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 | CSRF | token in session, `X-CSRF-TOKEN`/`X-XSRF-TOKEN`, except list, SameSite | full VerifyCsrfToken semantics |
 | Signed URLs | `signedRoute`, `temporarySignedRoute`, `hasValidSignature` | HMAC kernel done |
 | Cookies | EncryptCookies parity, queued cookies, cookie jar | M5 parity done |
+| Global middleware | `TrimStrings` + `ConvertEmptyStringsToNull` replayed on the same bags Request reads (query always; JSON body when the body is JSON, else the body), PHP's `Str::trim` character set and `Str::is` key matching; the final stack is read from `bootstrap/app.php` (`use()` replaces; `prepend`/`append`/`remove`/`replace` applied in vendor order), `->trimStrings()`/`->convertEmptyStringsToNull()` arrive as they do in `Middleware` 13.37 | a `skipWhen()` Closure or a non-literal entry refuses the build ("add a port"); anything else the app puts on its own stack (`TrustHosts`, `HandleCors`, its own class) is written to `middleware.prevented` and answers 500 naming the class |
 | **Sessions** | cookie driver (stateless encrypted payload) + D1 driver; flash rotation (`_flash.new/old`), `old()` input, error bag (`$errors`), `regenerate`/`invalidate`/`migrate`, lifetime/expiry | **byte-parity goal for the cookie payload** (encrypter + serialize subset in place); `regenerate`/`invalidate`/`regenerateToken` callable from compiled controllers (M20); **documented gap**: view-only GET routes are auto-snapshotted to a static asset the Worker serves *before* the kernel, so they run no session middleware (e.g. a plain `GET /login`) |
 | Rate limiting | `throttle` middleware full; `RateLimiter::for()` compiled | D1 `database` store (M18); `increment` is read-then-write (D1 has no interactive transactions) — a race under concurrency, flagged not atomic |
 | **Auth** | session guard full API (attempt/login/logout/once/validate/user/id/check/guest), remember-me recaller cookie + rotation, Eloquent + database providers, auth events, `auth`/`guest`/`can`/`password.confirm` middleware, `Auth::viaRemember` | compiles on top of Sessions above; the provider's generated model gets the `Authenticatable` trait applied at kernel boot (`resolveAuthConfig`) |
@@ -214,8 +215,15 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   display-name/`attributes` path is now wired (see above).
 - `FormRequest` lifecycle (authorize, rules, messages, attributes, `prepareForValidation`,
   `passedValidation`, `after`/`withValidator` closures) — not compiled yet; write a port.
-- Rule-string matrix + implicit rules; Rule objects compiled via 1.2; nested + wildcards
-  (kernel partial already)
+- ✅ Rule-string matrix (batch #12/#179-#185): the string form is split with a plain `explode('|')`
+  exactly like `ValidationRuleParser::explodeExplicitRule()` (a pipe inside a regex really splits and the rule
+  then fails loud as `BadMethodCallException`), an ARRAY element is kept whole, and every rule name the vendor
+  has is implemented (`base64`, `ulid`, `contains`, `doesnt_contain`, `in_array_keys`, `max_digits`,
+  `min_digits`, `prohibits`, `extensions`, `uuid:v` with versions/nil/max, ...) — 89 differential cases, 0 diff.
+  The build refuses (`LW002`) a rule the edge cannot honour (`active_url`/`mx_record` DNS, `mimes`/`mimetypes`
+  finfo, `encoding`, `current_password`, `Validator::extend()` names), naming the rule and the field, at both
+  `$request->validate(...)` and the dumped FormRequest rules.
+- ✅ Rule objects compiled via 1.2; nested + wildcards (kernel + `$attributes` display names above).
 - Failure flow parity: redirect back + errors bag + old input ✅ (M19); API path: 422 JSON
   shape parity ✅ (M19)
 
@@ -399,6 +407,12 @@ the **real compiler** by `tools/construct-audit.mjs` (`npm run audit:constructs`
 table below is generated: `check:docs` fails when it drifts from the code, so it cannot
 rot. The invariant: a construct is either **compiled and proven** by the shadow harness,
 or it **fails the build** - there is no third state (no silent degradation).
+
+The codes: LW001–LW004 are the **intended** refusals (the operator acts on them). LW999
+is not a refusal but an **internal compiler error**: a construct that should have compiled
+or refused cleanly threw without a `lw` payload. It is reported as a bug (its own code and
+message), never dressed up as a user-facing LW002 - so an internal regression cannot hide
+behind a build rule.
 
 <!-- construct-audit:start -->
 

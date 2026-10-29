@@ -3,7 +3,7 @@
 > Compile your Laravel app to a tiny JS bundle that runs on Cloudflare Workers.
 > No PHP at the edge. No WASM. No cold-start drama.
 
-[![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm](https://img.shields.io/badge/npm-laravel--workers-9cf.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/laravel-workers.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ---
 
@@ -101,7 +101,7 @@ kernel/                   Workers-native runtime (request time, 0 PHP)
   session.mjs csrf.mjs auth.mjs ratelimit.mjs hash.mjs encrypter.mjs
   validator.mjs validation.mjs php-serialize.mjs php-json.mjs
   cache.mjs storage.mjs mail.mjs queue.mjs scheduler.mjs paginator.mjs
-  tests/                   890/890 across kernel + compiler + tools (see npm test)
+  tests/                   the suite across kernel + compiler + tools (see npm test)
 
 tools/                    build-time PHP + JS helpers (boot the real app)
   schema-compile.php       migrations → in-memory SQLite → D1 DDL (driver-agnostic)
@@ -136,7 +136,7 @@ build.mjs                 phase-scoped workers — ONE Laravel boot per phase th
 | PHP — build time only | `8.3.30` (ZTS x64, Windows) | **≥ 8.3**; parity oracle is 8.3.30 |
 | Composer | none | not needed — vendor-lite provisions deps; app's own `vendor/` works too |
 | Node | `22.18.0` | **≥ 22** (`engines`) |
-| Bun | `1.4.0` | **≥ 1.0** (full test suite passes — `bun run test` → 890/890) |
+| Bun | `1.4.0` | **≥ 1.0** (the full test suite passes — `bun run test`) |
 | npm | `10.9.3` | ≥ 10 |
 | Cloudflare Workers | `wrangler` 4.151.1 (fixture app; live mode 2/3 smoke on a stock Laravel 13 app, HTTP 200) / 3.114.13 (repo) | **wrangler 4.x** (operator-installed; not bundled); `compatibility_date` `2026-10-01` |
 | PHP extensions (build only) | `pdo_sqlite`, `sqlite3` | for `tools/schema-compile.php` |
@@ -182,7 +182,7 @@ From checkout (developing the toolchain, tests):
 git clone https://github.com/arfoux/laravel-workers
 cd laravel-workers
 npm run setup               # root + compiler deps
-npm test                    # 890/890 — kernel + compiler + parity harnesses
+npm test                    # the suite — kernel + compiler + parity harnesses
 npm run test:corpus         # 51/51 — M1 transpiler corpus
 npm run test:sqlite         # real in-memory SQLite integration
 npx laravel-workers verify  # VERIFY-S0 15/15 (else SKIP — needs parent vendor/)
@@ -205,7 +205,7 @@ laravel-workers vendor:ensure    # provision a composer-free vendor tree (CI pre
 laravel-workers php:ensure       # resolve or provision the PHP interpreter (CI prewarm)
 
 # developer tasks run through the package.json scripts (not the CLI):
-npm test                # 890/890 tests
+npm test                # the suite
 npm run test:corpus     # 51/51 transpiler corpus
 npm run test:hash       # hash + encrypter only
 npm run test:sqlite     # in-memory SQLite integration

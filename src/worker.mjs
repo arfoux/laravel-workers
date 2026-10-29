@@ -187,7 +187,13 @@ export default {
       return Response.json({ ok: true, worker: 'laravel-workers', builtAt });
     }
 
-    return env.ASSETS.fetch(request);
+    // The static bundle (`assets.directory = ./dist/public`). A deployment
+    // whose wrangler config omits the binding would throw on `undefined.fetch`
+    // and turn every unmatched path into a 500; a 404 is the honest answer.
+    if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
+      return env.ASSETS.fetch(request);
+    }
+    return new Response('Not Found', { status: 404, headers: { 'content-type': 'text/plain; charset=UTF-8' } });
   },
 
   // The Cloudflare Cron Trigger entry point (`scheduled`): the schedule fires
