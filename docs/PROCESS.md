@@ -163,10 +163,12 @@ than a missing feature.
   and **the gate fails when they drift** (`tools/gate.mjs` runs it with `--check`). The same idea
   writes the `COMPILED.md` table (`tools/construct-audit.mjs`). A hand-typed count rots silently —
   the README said "113 constructs / corpus 51" for two waves after the code moved on.
-- **Images use an absolute `raw.githubusercontent.com` URL.** npm renders the README but does not
+- **Images use an absolute GitHub URL, in the `?raw=1` form.** npm renders the README but does not
   resolve repository-relative image paths, so `![...](docs/banner.png)` shows on GitHub and breaks
-  on npmjs.com; `![...](https://raw.githubusercontent.com/<owner>/<repo>/main/docs/banner.png)`
-  works on both.
+  on npmjs.com. Use
+  `https://github.com/<owner>/<repo>/raw/main/docs/banner.png?raw=1` — **not** the
+  `raw.githubusercontent.com` form: this repository serves 404 for that host (measured: 404 vs 200
+  for the same file), so the hero would be a broken image on both surfaces.
 - **Inline `<svg>` is stripped** by GitHub's markdown sanitiser; a *linked* `.svg` renders, but the
   safe hero is a PNG. Ship the `.svg` source and the rasterised `.png` together
   (`docs/banner.svg` → `docs/banner.png`), and keep both in the tarball.
