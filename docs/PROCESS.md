@@ -152,5 +152,28 @@ than a missing feature.
 | Does construct X compile, fail loud, or is it a declared gap? | `COMPILED.md` (§ the audit table) |
 | What changed, and in which release? | `CHANGELOG.md` |
 | Module ↔ coverage map, fail-loud codes | `MAP.md` (checked by `tools/docs-check.mjs`) |
-| Status, quickstart, construct counts | `README.md` |
+| Status, quickstart, construct counts | `README.md` (counts checked by `tools/docs-counts.mjs`) |
 | This operating contract | `docs/PROCESS.md` |
+
+## 7. The public face — numbers are generated, images are absolute
+
+- **Never hand-type a number the repo can compute.** The construct counts, the facade coverage,
+  the corpus size and the docs verdict count are written into `README.md` between
+  `<!-- readme-counts:start -->` / `<!-- readme-counts:end -->` by `node tools/docs-counts.mjs --write`
+  and **the gate fails when they drift** (`tools/gate.mjs` runs it with `--check`). The same idea
+  writes the `COMPILED.md` table (`tools/construct-audit.mjs`). A hand-typed count rots silently —
+  the README said "113 constructs / corpus 51" for two waves after the code moved on.
+- **Images use an absolute `raw.githubusercontent.com` URL.** npm renders the README but does not
+  resolve repository-relative image paths, so `![...](docs/banner.png)` shows on GitHub and breaks
+  on npmjs.com; `![...](https://raw.githubusercontent.com/<owner>/<repo>/main/docs/banner.png)`
+  works on both.
+- **Inline `<svg>` is stripped** by GitHub's markdown sanitiser; a *linked* `.svg` renders, but the
+  safe hero is a PNG. Ship the `.svg` source and the rasterised `.png` together
+  (`docs/banner.svg` → `docs/banner.png`), and keep both in the tarball.
+- **Rasterise once, on demand** — there is no image toolchain in the repo and there must not be:
+  `npx --yes sharp-cli -i docs/banner.svg -o docs/banner.png`, then commit both files. The
+  published README image is a shipped artifact, so `tools/pack-gate.mjs` lists `docs/banner.png`
+  among the README-linked files.
+- `docs/social-preview.png` (1280×640) is the GitHub social card; it is uploaded in
+  **Settings → Social preview** (no API for it) and regenerated the same way.
+

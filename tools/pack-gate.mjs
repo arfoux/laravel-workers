@@ -55,6 +55,7 @@ export const REQUIRED_DOCS = [
   'MAP.md',
   'COMPILED.md',
   'docs/PROCESS.md',
+  'docs/banner.png',
   'docs/PLAN-VENDOR.md',
   'docs/READINESS.md',
   'docs/AUDIT-2026-10-27.md',

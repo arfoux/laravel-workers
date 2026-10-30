@@ -8,6 +8,9 @@
 //                                can meet is probed against the real compiler,
 //                                and the generated table in COMPILED.md must
 //                                match the code.
+//   3. tools/docs-counts.mjs    - the README counts (constructs, corpus, docs)
+//                                are generated from the code, so the README
+//                                cannot drift from what it describes.
 //
 // The flags are forwarded to both (e.g. `--strict` turns the warnings into
 // failures). The gate stops at the first failure.
@@ -33,4 +36,5 @@ function run(script, args) {
 
 run('tools/docs-check.mjs', flags);
 run('tools/construct-audit.mjs', ['--check', ...flags]);
+run('tools/docs-counts.mjs', ['--check']);
 console.log('gate PASS: the docs and the construct audit match the code');
