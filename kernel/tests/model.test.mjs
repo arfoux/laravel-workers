@@ -347,3 +347,154 @@ test('a date cast with a custom format serialises in that format', () => {
   // An escaped letter is literal.
   assert.equal(formatCustomDate('2025-10-23 07:30:00', '\\Y=Y'), 'Y=2025');
 });
+
+test('a bare `date` cast answers midnight; a custom format is NOT truncated', () => {
+  // Oracle (PHP 8.3 + framework 13.37), `$m->d = $m->dh = $m->dt = $m->dtf =
+  // '2024-01-02 03:04:05'`:
+  //   (string) $m->d  => '2024-01-02 00:00:00'        (asDate -> startOfDay)
+  //   getAttributes() => '2024-01-02 03:04:05' (the RAW attribute keeps the
+  //                      time `fromDateTime()` wrote)
+  //   $m->toArray()   => {"d":"2024-01-02T00:00:00.000000Z","dh":"03:04:05",
+  //                       "dt":"2024-01-02T03:04:05.000000Z","dtf":"02\/01\/2024 03:04"}
+  // `date:H:i:s` is a CUSTOM cast: `getCastType()` answers `custom_datetime`,
+  // so `castAttribute` takes the `asDateTime()->format()` branch and the time
+  // is NOT dropped.
+  class Dated extends Model {
+    static casts = { d: 'date', dh: 'date:H:i:s', dt: 'datetime', dtf: 'datetime:d/m/Y H:i' };
+    static timestamps = false;
+  }
+  const m = new Dated();
+  for (const k of ['d', 'dh', 'dt', 'dtf']) m.set(k, '2024-01-02 03:04:05');
+  // The READ answers a Carbon value, so `(string)` is the model's date format
+  // (probed: `(string) $m->dh` = '2024-01-02 03:04:05', not the cast format).
+  assert.equal(String(m.get('d')), '2024-01-02 00:00:00');
+  assert.equal(String(m.get('dh')), '2024-01-02 03:04:05');
+  assert.equal(String(m.get('dt')), '2024-01-02 03:04:05');
+  assert.equal(String(m.get('dtf')), '2024-01-02 03:04:05');
+  assert.equal(m.attributes.d, '2024-01-02 03:04:05');
+  assert.deepEqual(m.toJSON(), {
+    d: '2024-01-02T00:00:00.000000Z',
+    dh: '03:04:05',
+    dt: '2024-01-02T03:04:05.000000Z',
+    dtf: '02/01/2024 03:04',
+  });
+  // A date-only value stays a midnight date.
+  const m2 = new Dated();
+  m2.set('d', '2024-01-02');
+  assert.equal(String(m2.get('d')), '2024-01-02 00:00:00');
+  assert.equal(m2.get('d').format('d/m/Y'), '02/01/2024');
+});
+
+test('a date attribute READS as a Carbon: format/toDateString/(string)/json_encode', () => {
+  // Oracle (PHP 8.3 + framework 13.37), `casts=['d'=>'datetime']`,
+  // `$m->d = '2024-01-02 03:04:05'`:
+  //   get_debug_type($m->d)     => Illuminate\Support\Carbon
+  //   $m->d->format('d/m/Y')    => '02/01/2024'      (the app timezone)
+  //   (string) $m->d            => '2024-01-02 03:04:05' (the model date format)
+  //   json_encode($m->d)        => '"2024-01-02T03:04:05.000000Z"'
+  //   $m->d == '2024-01-02 03:04:05' => true  (Carbon __toString); `===` false
+  // The kernel used to answer the raw STRING, so `$post->created_at->format()`
+  // (the framework's most common date idiom in a controller and a view) was a
+  // JS TypeError - a 500 at the edge where Laravel answers 200.
+  class Carbon extends Model {
+    static casts = { d: 'datetime', day: 'date', custom: 'datetime:d/m/Y', n: 'int' };
+    static timestamps = false;
+    // Laravel's transformModelValue(): the accessor receives the RAW value.
+    getNAttribute(rt, value) {
+      return typeof value + ':' + value;
+    }
+  }
+  const m = new Carbon();
+  m.set('d', '2024-01-02 03:04:05');
+  m.set('day', '2024-01-02 03:04:05');
+  m.set('custom', '2024-01-02 03:04:05');
+  m.set('n', '5');
+  const d = m.get('d');
+  assert.equal(d.format('d/m/Y'), '02/01/2024');
+  assert.equal(d.format('g:i A'), '3:04 AM');
+  assert.equal(String(d), '2024-01-02 03:04:05');
+  assert.equal(d.toDateString(), '2024-01-02');
+  assert.equal(d.toDateTimeString(), '2024-01-02 03:04:05');
+  assert.equal(d.getTimestamp(), 1704164645);
+  assert.equal(d.addDays(2).format('Y-m-d H:i'), '2024-01-04 03:04');
+  assert.equal(d.subHours(3).format('H:i'), '00:04');
+  // The `date` cast truncates on READ (asDate -> startOfDay).
+  assert.equal(m.get('day').format('d/m/Y'), '02/01/2024');
+  assert.equal(String(m.get('day')), '2024-01-02 00:00:00');
+  // A custom-format cast still READS as the model's own date format; the format
+  // is applied by serializeDate() on the JSON body.
+  assert.equal(String(m.get('custom')), '2024-01-02 03:04:05');
+  // An accessor wins and gets the RAW (uncast) value.
+  assert.equal(m.get('n'), 'string:5');
+  // Writing a read value back stores its TEXT.
+  const m2 = new Carbon();
+  m2.set('d', d);
+  assert.equal(m2.attributes.d, '2024-01-02 03:04:05');
+  // The JSON body keeps the Laravel shape (Carbon::toJSON, the cast's format).
+  assert.deepEqual(m.toJSON(), {
+    d: '2024-01-02T03:04:05.000000Z',
+    day: '2024-01-02T00:00:00.000000Z',
+    custom: '02/01/2024',
+    n: 'string:5',
+  });
+  // A null date stays null.
+  const m3 = new Carbon();
+  m3.set('d', null);
+  assert.equal(m3.get('d'), null);
+  assert.equal(JSON.stringify(m3.get('d')), 'null');
+});
+
+test('a Carbon value is compared, concatenated and json_encoded like PHP', async () => {
+  const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
+  const { phpJsonEncode } = await import('../php-json.mjs');
+  const rt = buildRt(null, { strict: false });
+  class Post extends Model {
+    static casts = { d: 'datetime' };
+    static timestamps = false;
+  }
+  const m = new Post();
+  m.set('d', '2024-01-02 03:04:05');
+  const d = m.get('d');
+  // `==` with the date string is TRUE (__toString), `===` is FALSE.
+  assert.equal(rt.looseEq(d, '2024-01-02 03:04:05'), true);
+  assert.equal(rt.looseEq(d, '2024-01-02 03:04:06'), false);
+  assert.equal(rt.strictEq(d, '2024-01-02 03:04:05'), false);
+  // A comparison against a plain date string goes through the TEXT (PHP probed:
+  // `$m->d > '2024-01-01 00:00:00'` and `$m->d < '2024-01-03 00:00:00'` are both
+  // TRUE), so a longer/shorter string is compared as the app's wall clock.
+  assert.equal(rt.gt(d, '2024-01-01 00:00:00'), true);
+  assert.equal(rt.lt(d, '2024-01-03 00:00:00'), true);
+  const other = new Post();
+  other.set('d', '2024-01-02 04:04:05');
+  assert.equal(rt.gt(other.get('d'), d), true);
+  assert.equal(rt.gt(d, other.get('d')), false);
+  // Concatenation and strval use the model's date format.
+  assert.equal('x' + d.toString(), 'x2024-01-02 03:04:05');
+  // json_encode() of the value itself, and nested in an array.
+  assert.equal(phpJsonEncode(d), '"2024-01-02T03:04:05.000000Z"');
+  assert.equal(phpJsonEncode({ x: d }), '{"x":"2024-01-02T03:04:05.000000Z"}');
+  // A query binding unwraps to the stored text (not "[object Object]").
+  const { table } = await import('../db.mjs');
+  const seen = [];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...params) {
+          seen.push(params);
+          return this;
+        },
+        async all() {
+          return { results: [] };
+        },
+        async run() {
+          return { success: true, meta: {} };
+        },
+        async first() {
+          return null;
+        },
+      };
+    },
+  };
+  await table(db, 'posts').where('d', d).get();
+  assert.equal(seen[0][0], '2024-01-02 03:04:05');
+});

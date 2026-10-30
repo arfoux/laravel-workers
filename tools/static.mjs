@@ -12,7 +12,7 @@
 
 import parser from 'php-parser';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -294,7 +294,11 @@ export function evalConstantExpr(node, ctx, depth = 0, stack = []) {
       const ln = typeof l === 'number';
       const rn = typeof r === 'number';
       switch (node.type) {
-        case '.': return String(l) + String(r);
+        // PHP's `.` casts both operands to string: null -> '', false -> '',
+        // true -> '1'. `String(l) + String(r)` answered 'null'/'false'/'true'
+        // for `const X = null . 'x'` (a literal null passes the guard above,
+        // which only rejects the *unevaluable* null).
+        case '.': return phpStr(l) + phpStr(r);
         case '+': return ln && rn ? l + r : null;
         case '-': return ln && rn ? l - r : null;
         case '*': return ln && rn ? l * r : null;
@@ -1002,12 +1006,20 @@ export function appRouteFiles(appDir) {
         if (!a || a.kind !== 'namedargument' || !a.name || !a.value) continue;
         const raw = concatExpr(a.value);
         if (raw) {
-          const p = raw.replace(/^['"]|['"]$/g, '');
-          if (a.name === 'web') out.web = abs(appDir, p);
-          else if (a.name === 'api') out.api = abs(appDir, p);
-          else if (a.name === 'commands') out.commands = abs(appDir, p);
+          const p0 = raw.replace(/^['"]|['"]$/g, '');
+          // `__DIR__` is the directory of the FILE being parsed (bootstrap/),
+          // NOT an opaque path segment: `__DIR__.'/../routes/web.php'` only
+          // happened to resolve because `__DIR__/..` cancels itself in resolve().
+          // A form such as `__DIR__.'/routes/api.php'` resolved to
+          // <app>/__DIR__/routes/api.php and was then declared missing.
+          const p = p0.includes('__DIR__')
+            ? resolve(dirname(bootFile), p0.replace(/__DIR__[\\/]?/g, ''))
+            : p0;
+          if (a.name === 'web') out.web = pathOrNull(p, appDir);
+          else if (a.name === 'api') out.api = pathOrNull(p, appDir);
+          else if (a.name === 'commands') out.commands = pathOrNull(p, appDir);
           else if (a.name === 'health') out.health = p;
-          else if (a.name === 'pages') out.pages = abs(appDir, p);
+          else if (a.name === 'pages') out.pages = pathOrNull(p, appDir);
         }
       }
     }
@@ -1044,6 +1056,11 @@ function concatExpr(node) {
 function abs(appDir, p) {
   const joined = join(appDir, p);
   return existsSync(joined) ? resolve(joined) : joined;
+}
+
+/** Already-absolute paths (a resolved `__DIR__`) pass through; relatives resolve against the app. */
+function pathOrNull(p, appDir) {
+  return /^([a-zA-Z]:[\\/]|[\\/])/.test(String(p)) ? p : abs(appDir, p);
 }
 
 // ---------------------------------------------------------------------------

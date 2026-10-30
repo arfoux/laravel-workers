@@ -7,9 +7,10 @@
 // replicating Laravel's Gate resolution statically would be a duplicate of
 // framework logic with a real chance of silent divergence. So the PHP oracle
 // remains the source of truth here: this module is the node-side entry point
-// the build calls (the same shape model-dump.mjs takes), so the build's PHP
-// dependency for this one tool is contained to an oracle call the edge never
-// runs.
+// for the tests and for tooling (the same shape model-dump.mjs takes). The
+// BUILD does not call it — the Track F metadata phase (`tools/metadata-phase.php`)
+// answers models, policies and FormRequests in one Laravel boot — so the build's
+// PHP dependency is contained to that oracle call the edge never runs.
 //
 // Usage: node tools/policy-dump.mjs "App\Models\Post" ["App\Models\User" ...]
 // Output (stdout): the same JSON the PHP tool emitted, verbatim:

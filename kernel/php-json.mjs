@@ -194,6 +194,21 @@ function writeValue(value, out, opts) {
     writeValue(value.jsonSerialize(), out, opts);
     return;
   }
+  // A date attribute READ is a Carbon value (JsonSerializable), and the
+  // runtime's `now()`/`today()` stub is the same PHP kind (DateTimeInterface):
+  // `json_encode($post->created_at)` / `json_encode(now())` answer the ISO8601
+  // string with microseconds and a `Z` (Carbon/Converter.php:442-455), not an
+  // object - this branch must come BEFORE the plain-object branch (the value's
+  // methods live on the prototype, so `isPlainObject` would otherwise write
+  // them).
+  if (
+    value && typeof value === 'object' &&
+    (value.__lwDateValue === true || value._d instanceof Date) &&
+    typeof value.toJSON === 'function'
+  ) {
+    writeValue(value.toJSON(), out, opts);
+    return;
+  }
   if (isPlainObject(value)) {
     // PHP's json_encode preserves the array's INSERTION order. A JS object
     // enumerates an integer-like key first, so a literal that mixes both
@@ -264,6 +279,272 @@ export function phpJsonEncode(value, options = undefined) {
   const out = [];
   writeValue(value, out, opts);
   return out.join('');
+}
+
+// ---------------------------------------------------------------------------
+// json_encode($value, $flags, $depth): the option constants PHP defines
+// (php.net/json.constants, read off the PHP 8.3 oracle). They are fixed
+// integers, so the transpiler can fold a bare `JSON_UNESCAPED_SLASHES` to 64.
+// ---------------------------------------------------------------------------
+export const JSON_HEX_TAG = 1;
+export const JSON_HEX_AMP = 2;
+export const JSON_HEX_APOS = 4;
+export const JSON_HEX_QUOT = 8;
+export const JSON_FORCE_OBJECT = 16;
+export const JSON_UNESCAPED_SLASHES = 64;
+export const JSON_PRETTY_PRINT = 128;
+export const JSON_UNESCAPED_UNICODE = 256;
+export const JSON_THROW_ON_ERROR = 4194304;
+const JSON_HEX_FLAGS = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+// The flags with a byte-exact answer at the edge. The rest (NUMERIC_CHECK,
+// PARTIAL_OUTPUT_ON_ERROR, PRESERVE_ZERO_FRACTION, INVALID_UTF8_*, ...) would
+// answer a different body, so they fail loud instead of diverging silently.
+const JSON_SUPPORTED_FLAGS =
+  JSON_HEX_FLAGS |
+  JSON_FORCE_OBJECT |
+  JSON_UNESCAPED_SLASHES |
+  JSON_PRETTY_PRINT |
+  JSON_UNESCAPED_UNICODE |
+  JSON_THROW_ON_ERROR;
+// A PHP array: a JS array, or a plain object that is not a tagged stdClass
+// (`__lwObject`). Mirrors the runtime's isPhpArray for the depth walk.
+function isPhpArrayForDepth(v) {
+  if (Array.isArray(v)) return true;
+  if (v === null || typeof v !== 'object') return false;
+  if (v.__lwObject === true) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+// The HEX flags rewrite the characters INSIDE the encoded JSON: `<`, `>`, `&`
+// and `'` are not JSON syntax, so a literal one in the output can only come
+// from a string. The `"` is the ESCAPED one (`\"` inside a string) - the string
+// delimiters are bare quotes.
+function jsonHexEncode(json, flags) {
+  if (!flags) return json;
+  let out = '';
+  let i = 0;
+  while (i < json.length) {
+    const c = json[i];
+    if (c !== '"') {
+      out += c;
+      i++;
+      continue;
+    }
+    out += '"';
+    i++;
+    while (i < json.length) {
+      const ch = json[i];
+      if (ch === '\\') {
+        const next = json[i + 1];
+        if (next === '"' && flags & JSON_HEX_QUOT) {
+          out += '\\u0022';
+          i += 2;
+          continue;
+        }
+        // \\ \/ \b \t \n \f \r \u - the hex digits of a \u escape are copied as
+        // they are (they are never one of the flagged characters).
+        out += ch + next;
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        out += '"';
+        i++;
+        break;
+      }
+      if (flags & JSON_HEX_TAG) {
+        if (ch === '<') {
+          out += '\\u003C';
+          i++;
+          continue;
+        }
+        if (ch === '>') {
+          out += '\\u003E';
+          i++;
+          continue;
+        }
+      }
+      if (flags & JSON_HEX_AMP && ch === '&') {
+        out += '\\u0026';
+        i++;
+        continue;
+      }
+      if (flags & JSON_HEX_APOS && ch === "'") {
+        out += '\\u0027';
+        i++;
+        continue;
+      }
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+// PHP's json_encode() pretty printer (ext/json/json.c: php_json_pretty_print):
+// four spaces per level, a newline after every brace/comma, `": "` after a
+// key and `[]`/`{}` for an empty container (no newline inside it).
+function jsonPrettyPrint(json) {
+  let out = '';
+  let depth = 0;
+  const pad = () => '    '.repeat(depth);
+  let inString = false;
+  for (let i = 0; i < json.length; i++) {
+    const c = json[i];
+    if (inString) {
+      out += c;
+      if (c === '\\') {
+        out += json[i + 1] || '';
+        i++;
+      } else if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      continue;
+    }
+    if (c === '{' || c === '[') {
+      const close = c === '{' ? '}' : ']';
+      if (json[i + 1] === close) {
+        out += c + close;
+        i++;
+        continue;
+      }
+      depth++;
+      out += c + '\n' + pad();
+      continue;
+    }
+    if (c === '}' || c === ']') {
+      depth--;
+      out += '\n' + pad() + c;
+      continue;
+    }
+    if (c === ',') {
+      out += ',\n' + pad();
+      continue;
+    }
+    if (c === ':') {
+      out += ': ';
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+// The value JSON_FORCE_OBJECT produced, encoded as an OBJECT (keys quoted, in
+// the map's own order). JSON_FORCE_OBJECT is documented as forcing a PHP
+// object, so every level of the map is written the same way.
+function phpJsonEncodeMapAsObject(v, opts) {
+  if (v === null || typeof v !== 'object') return phpJsonEncode(v, opts);
+  const keys = Object.keys(v);
+  return (
+    '{' +
+    keys.map((k) => phpJsonEncode(String(k)) + ':' + phpJsonEncodeMapAsObject(v[k], opts)).join(',') +
+    '}'
+  );
+}
+// JSON_FORCE_OBJECT: every ARRAY becomes an object (the depth walk keeps the
+// value shape, the keys become 0..n-1).
+function jsonForceObject(v) {
+  if (Array.isArray(v)) {
+    const o = {};
+    for (let i = 0; i < v.length; i++) o[String(i)] = jsonForceObject(v[i]);
+    return o;
+  }
+  if (v !== null && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v)) o[k] = jsonForceObject(v[k]);
+    return o;
+  }
+  return v;
+}
+// PHP's json_encode() depth: the nesting of the arrays/objects (a scalar is no
+// level). PHP returns false past it ("Maximum stack depth exceeded").
+function jsonDepth(v) {
+  if (Array.isArray(v)) {
+    let deepest = 0;
+    for (const item of v) {
+      const d = jsonDepth(item);
+      if (d > deepest) deepest = d;
+    }
+    return 1 + deepest;
+  }
+  if (isPhpArrayForDepth(v)) {
+    let deepest = 0;
+    for (const k of Object.keys(v)) {
+      const d = jsonDepth(v[k]);
+      if (d > deepest) deepest = d;
+    }
+    return 1 + deepest;
+  }
+  return 0;
+}
+/**
+ * PHP `json_encode($value, $flags = 0, $depth = 512)` for the flag subset the
+ * edge honours. One implementation is shared by the runtime's `rt.json_encode`,
+ * `Collection::toJson($options)` and `JsonResource::toJson($options)` - all
+ * three are literally `json_encode($v, $options)` in Laravel, so they must write
+ * the same bytes. A flag outside the subset (NUMERIC_CHECK, PRESERVE_ZERO_
+ * FRACTION, PARTIAL_OUTPUT_ON_ERROR, INVALID_UTF8_*, ...) throws instead of
+ * diverging silently; the depth overflow answers `false` (or a JsonException
+ * under JSON_THROW_ON_ERROR), exactly like PHP.
+ */
+export function phpJsonEncodeWithFlags(value, flags = 0, depth = 512) {
+  const f = flags == null ? 0 : Number(flags);
+  const d = depth == null ? 512 : Number(depth) | 0;
+  if (f & ~JSON_SUPPORTED_FLAGS) {
+    throw new PhpJsonError(
+      'json_encode() flags ' +
+        f +
+        ' are not supported at the edge — PHP would write a different body with them (the ported ones are ' +
+        'JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT, JSON_FORCE_OBJECT, JSON_UNESCAPED_SLASHES, ' +
+        'JSON_PRETTY_PRINT, JSON_UNESCAPED_UNICODE, JSON_THROW_ON_ERROR) — drop the flags or write a port'
+    );
+  }
+  const v = value == null ? null : value;
+  // JSON_FORCE_OBJECT shapes an ARRAY into an OBJECT here, but a PHP object is
+  // a JS object already, so phpJsonEncode() would write it as `{...}` - and an
+  // EMPTY array must print `{}` too. The map is converted to its ordered PAIRS
+  // before encoding so the empty case survives.
+  const shaped = f & JSON_FORCE_OBJECT ? jsonForceObject(v) : v;
+  if (jsonDepth(shaped) > d) {
+    if (f & JSON_THROW_ON_ERROR) {
+      const err = new Error('Maximum stack depth exceeded');
+      err.name = 'JsonException';
+      err.phpClass = 'JsonException';
+      throw err;
+    }
+    return false;
+  }
+  let json;
+  try {
+    json = phpJsonEncode(shaped, { unescapedUnicode: !!(f & JSON_UNESCAPED_UNICODE) });
+    if (f & JSON_FORCE_OBJECT) {
+      // The encoder writes a key-less map as `[]` and a 0..n-1 map as a list
+      // (it cannot see that the value was an ARRAY); PHP's JSON_FORCE_OBJECT
+      // writes an OBJECT in both cases, so the forced shape is spelled out.
+      if (shaped !== null && typeof shaped === 'object') {
+        json = phpJsonEncodeMapAsObject(shaped, { unescapedUnicode: !!(f & JSON_UNESCAPED_UNICODE) });
+      }
+    }
+  } catch (e) {
+    // An unencodable value (invalid UTF-8, Inf/NaN) is `false` from PHP's
+    // json_encode - `null` positive with JSON_THROW_ON_ERROR, which raises
+    // JsonException ("Malformed UTF-8 characters, possibly incorrectly encoded").
+    if (f & JSON_THROW_ON_ERROR) {
+      const err = new Error(e && e.message ? e.message : 'json_encode() failed');
+      err.name = 'JsonException';
+      err.phpClass = 'JsonException';
+      throw err;
+    }
+    return false;
+  }
+  if (f & JSON_UNESCAPED_SLASHES) json = json.replace(/\\\//g, '/');
+  let out = jsonHexEncode(json, f & JSON_HEX_FLAGS);
+  if (f & JSON_PRETTY_PRINT) out = jsonPrettyPrint(out);
+  return out;
 }
 
 /**

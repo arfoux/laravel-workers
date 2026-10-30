@@ -170,6 +170,10 @@ export function castDateSpec(cast) {
 }
 function isDateAttribute(ctor, key) {
   if (key === 'created_at' || key === 'updated_at') return true;
+  // Laravel's SoftDeletes trait declares the cast
+  // (`SoftDeletes::initializeSoftDeletes()` -> casts[deleted_at] = 'datetime'),
+  // so a soft-deleting model's `deleted_at` reads as a Carbon too.
+  if (ctor.softDeletes && key === ctor.deletedAtColumn) return true;
   const cast = ctor.casts && ctor.casts[key];
   return castDateSpec(cast) !== null;
 }
@@ -179,11 +183,13 @@ function isDateAttribute(ctor, key) {
 // is `Y-m-d H:i:s` (the model's own date format), so the PHP `date()` letters
 // the app wrote are applied to it. The common letters are supported; anything
 // else is a build-visible port (the format is not guessed).
-export function formatCustomDate(value, format) {
+export function formatCustomDate(value, format, tz = modelTimezone.value) {
   if (value === null || value === undefined) return value;
   const s = String(value);
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/.exec(s);
   if (!m) return value;
+  const H = m[4] || '00';
+  const hour12 = Number(H) % 12 || 12;
   const parts = {
     Y: m[1],
     y: m[1].slice(2),
@@ -191,15 +197,35 @@ export function formatCustomDate(value, format) {
     n: String(Number(m[2])),
     d: m[3],
     j: String(Number(m[3])),
-    H: m[4] || '00',
-    G: String(Number(m[4] || '0')),
+    H,
+    h: String(hour12).padStart(2, '0'),
+    G: String(Number(H)),
+    g: String(hour12),
+    a: Number(H) < 12 ? 'am' : 'pm',
+    A: Number(H) < 12 ? 'AM' : 'PM',
     i: m[5] || '00',
     s: m[6] || '00',
   };
+  // The zone letters (PHP's date()): `e` is the identifier, `P`/`O` the offset
+  // to UTC. The offset comes from the zone parts at that instant (the same
+  // Intl walk the rest of the kernel uses). `T` (the abbreviation) is NOT
+  // guessed - PHP answers e.g. 'WIB' where Intl answers 'GMT+7'.
+  const ms = wallClockToUtcMs(+m[1], +m[2], +m[3], Number(H), Number(m[5] || 0), Number(m[6] || 0), tz);
+  const zp = zonePartsIn(new Date(ms), tz);
+  const offsetMin = Math.round((Date.UTC(zp.Y, zp.m - 1, zp.d, zp.H, zp.i, zp.s) - ms) / 60000);
+  const sign = offsetMin < 0 ? '-' : '+';
+  const abs = Math.abs(offsetMin);
+  const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`;
+  Object.assign(parts, {
+    U: String(Math.floor(ms / 1000)),
+    e: tz,
+    P: `${off.slice(0, 3)}:${off.slice(3)}`,
+    O: off,
+  });
   const names = { January: 1, February: 2, March: 3, April: 4, May: 5, June: 6, July: 7, August: 8, September: 9, October: 10, November: 11, December: 12 };
   const monthName = Object.keys(names)[Number(m[2]) - 1] || m[2];
   Object.assign(parts, { F: monthName, M: monthName.slice(0, 3) });
-  return String(format).replace(/[\\](.)|([YymndjHGisFMWDtlNS])/g, (all, escaped, letter) => {
+  return String(format).replace(/[\\](.)|([YymndjHGisFMWDtlNSghaAUePO])/g, (all, escaped, letter) => {
     if (escaped !== undefined) return escaped;
     if (letter === 'M') return parts.M;
     if (letter === 'F') return parts.F;
@@ -232,6 +258,98 @@ export function formatCustomDate(value, format) {
     return parts[letter] !== undefined ? parts[letter] : all;
   });
 }
+// Laravel's date attributes are Carbon instances: `$post->created_at` answers an
+// `Illuminate\Support\Carbon`, NOT the raw TEXT the row stores - which is why
+// `$post->created_at->format('d M Y')` is the most common date idiom in a
+// controller or a Blade view. The kernel keeps the stored text in `attributes`
+// (the DB write, the serialization and the dirty check read it there) and wraps
+// a READ in this Carbon subset, so the compiled call reaches a real `format()`
+// instead of a JS TypeError ("...format is not a function") - a 500 where
+// Laravel answers the string.
+// Probed on the oracle (PHP 8.3 + 13.37), `$m->d = '2024-01-02 03:04:05'` with
+// `'d' => 'datetime'`: `get_debug_type($m->d)` = Carbon, `->format('d/m/Y')` =
+// '02/01/2024' (the APP timezone), `(string) $m->d` = '2024-01-02 03:04:05',
+// `json_encode($m->d)` = "2024-01-02T03:04:05.000000Z",
+// `$m->d == '2024-01-02 03:04:05'` = TRUE, `$m->d === '...'` = FALSE.
+const DATE_VALUE = '__lwDateValue';
+export function isDateValue(v) {
+  return !!v && typeof v === 'object' && v[DATE_VALUE] === true;
+}
+export function makeDateValue(raw, tz = modelTimezone.value) {
+  if (raw == null) return null;
+  const text = String(raw);
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/.exec(text);
+  // A value that does not read as a date stays the raw TEXT: a silent Carbon
+  // would hide a bad row, while Laravel raises InvalidFormatException - the
+  // app's own bad data is not turned into a wrong string here.
+  if (!m) return text;
+  const ms = wallClockToUtcMs(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0), tz);
+  const base = () => phpDateString(new Date(ms), tz);
+  const shifted = (deltaMs) => makeDateValue(phpDateString(new Date(ms + deltaMs), tz), tz);
+  const api = {
+    [DATE_VALUE]: true,
+    // The stored text: the DB binding and any raw read use it.
+    _raw: base(),
+    // Carbon::format() in the APP timezone (the stored text IS that wall clock).
+    format(fmt) {
+      return formatCustomDate(base(), fmt, tz);
+    },
+    toDateString() {
+      const p = zonePartsIn(new Date(ms), tz);
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${p.Y}-${pad(p.m)}-${pad(p.d)}`;
+    },
+    toDateTimeString() {
+      return base();
+    },
+    // Carbon's __toString() is `format($dateFormat)` -> 'Y-m-d H:i:s'.
+    toString() {
+      return base();
+    },
+    // JS coercion (concat, `==` with a string, `>` against a date string) reads
+    // the same text PHP's __toString() answers.
+    valueOf() {
+      return base();
+    },
+    // JsonSerializable: Carbon::jsonSerialize() -> toJSON() -> UTC ISO8601 with
+    // microseconds (Carbon/Converter.php:442-455).
+    toJSON() {
+      return isoDateString(base(), tz);
+    },
+    get timezoneName() {
+      return tz;
+    },
+    getTimezone() {
+      return tz;
+    },
+    get timestamp() {
+      return Math.floor(ms / 1000);
+    },
+    getTimestamp() {
+      return Math.floor(ms / 1000);
+    },
+    addDays(n) {
+      return shifted(Number(n) * 86400000);
+    },
+    subDays(n) {
+      return shifted(-Number(n) * 86400000);
+    },
+    addHours(n) {
+      return shifted(Number(n) * 3600000);
+    },
+    subHours(n) {
+      return shifted(-Number(n) * 3600000);
+    },
+    copy() {
+      return makeDateValue(base(), tz);
+    },
+    clone() {
+      return makeDateValue(base(), tz);
+    },
+  };
+  return api;
+}
+
 function applyCast(value, cast) {
   if (value == null) return value;
   const spec = String(cast).toLowerCase();
@@ -250,7 +368,33 @@ function applyCast(value, cast) {
   // column to Carbon and the model's serializeDate() writes the custom
   // format); a bare date/datetime keeps the stored text as-is.
   const dspec = castDateSpec(cast);
-  if (dspec && dspec.format) return formatCustomDate(value, dspec.format);
+  // Laravel's `asDate()` (HasAttributes::castAttribute `date`/`immutable_date`
+  // -> asDate -> `$date->startOfDay()`) drops the TIME part on READ, while the
+  // RAW attribute keeps what `fromDateTime()` wrote. Probed on the oracle
+  // (PHP 8.3 + 13.37): `$m->d = '2024-01-02 03:04:05'` with `'d' => 'date'`
+  // answers `(string) $m->d` = '2024-01-02 00:00:00' and
+  // `json_encode($m->toArray())` = "2024-01-02T00:00:00.000000Z" (the kernel
+  // answered '2024-01-02 03:04:05' / "2024-01-02T03:04:05.000000Z" - a
+  // different body).
+  //
+  // A custom format is NOT truncated: `getCastType()` maps `date:H:i:s` to
+  // `custom_datetime`, so `castAttribute` reaches the `asDateTime()->format()`
+  // branch and never `asDate()`. Oracle: `'date:H:i:s'` with the same value
+  // answers "03:04:05", not "00:00:00".
+  // A CUSTOM format cast (`date:Y-m-d`, `datetime:d/m/Y H:i`) reads as a
+  // Carbon too - the format is applied by `serializeDate()` on the JSON body,
+  // NOT on the read. Probed on the oracle: `casts=['cf'=>'datetime:d/m/Y']`,
+  // `$m->cf = '2024-01-02 03:04:05'` answers `get_debug_type($m->cf)` = Carbon,
+  // `(string) $m->cf` = '2024-01-02 03:04:05' (the model's date format) and
+  // `toArray()['cf']` = '02/01/2024'. The stored text is therefore handed back
+  // unchanged here and formatted in `toJSON()` (`getCastType()` maps the
+  // `date:`/`datetime:` prefix to `custom_datetime`, whose `castAttribute()`
+  // branch is a plain `asDateTime()` - HasAttributes.php:897-898).
+  if (dspec && dspec.format) return value;
+  if (dspec && (dspec.base === 'date' || dspec.base === 'immutable_date')) {
+    const m = /^(\d{4}-\d{2}-\d{2})(?:[ T]|$)/.exec(String(value));
+    return m ? `${m[1]} 00:00:00` : value;
+  }
   // date/datetime/immutable_* and unknown casts pass through (strings in D1).
   return value;
 }
@@ -511,10 +655,20 @@ export class Model {
     const hasAttribute = Object.prototype.hasOwnProperty.call(this.attributes, key);
     const hasCast = ctor.casts && Object.prototype.hasOwnProperty.call(ctor.casts, key);
     if (hasAttribute || hasCast || hasAccessor) {
-      let value = this.attributes[key];
+      const raw = this.attributes[key];
+      // Laravel's `transformModelValue()` (HasAttributes.php:585-600): an
+      // ACCESSOR wins and receives the RAW attribute value - the cast does NOT
+      // run for it, and the accessor's result is not cast afterwards. Probed:
+      // `casts=['n'=>'int']` + `getNAttribute($v)` answers
+      // `get_debug_type($v)` = 'string' (the stored text '5', not the int).
+      if (hasAccessor) return this[accessor](modelRuntime, raw);
       const cast = ctor.casts ? ctor.casts[key] : null;
+      let value = raw;
       if (cast != null) value = applyCast(value, cast);
-      if (hasAccessor) value = this[accessor](modelRuntime, value);
+      // A date attribute READS as a Carbon (`$post->created_at->format('d M Y')`
+      // is the app's most common date idiom; Laravel answers the formatted
+      // string, the kernel used to answer a JS TypeError - a 500 at the edge).
+      if (isDateAttribute(ctor, key)) return makeDateValue(value);
       return value;
     }
     // A declared relation: Eloquent's getRelationValue() answers the CACHED
@@ -556,8 +710,14 @@ export class Model {
     const mutator = 'set' + studly(key) + 'Attribute';
     let next = value;
     if (typeof this[mutator] === 'function') {
+      // Laravel's `setAttribute()` hands the mutator the value it was given
+      // (a Carbon stays a Carbon - `setDAttribute(Carbon $value)`).
       next = this[mutator](value);
     } else {
+      // A READ answers a Carbon value; writing it back stores its TEXT, which
+      // is what `fromDateTime()` writes (the model's own date format).
+      if (isDateValue(value)) value = value._raw;
+      next = value;
       const cast = this.constructor.casts[key];
       if (cast != null) {
         const spec = String(cast).toLowerCase();
@@ -685,14 +845,22 @@ export class Model {
       // Laravel serialises the date attributes through Carbon::toJSON(), or
       // through the cast's OWN format when it has one (`date:Y-m-d` ->
       // serializeDate(Carbon::format(...)) - the app reads '2025-10-23').
+      // The READ answers a Carbon value now, so the stored TEXT is taken back
+      // out of it first (probed: `(string) $m->d` is the model's date format,
+      // while `toArray()` carries the cast's own format).
+      const raw = isDateValue(value) ? value._raw : value;
       const dspec = castDateSpec(ctor.casts && ctor.casts[key]);
-      out[key] = dspec && dspec.format ? value : isDateAttribute(ctor, key) ? isoDateString(value) : value;
+      out[key] = dspec && dspec.format
+        ? formatCustomDate(raw, dspec.format)
+        : isDateAttribute(ctor, key)
+          ? isoDateString(raw)
+          : value;
     }
     for (const key of ctor.appends || []) {
       // Laravel's attributesToArray() runs the appended attributes through
       // mutateAttributeForArray() too - the date serialisation included.
       const value = this.get(key);
-      out[key] = isDateAttribute(ctor, key) ? isoDateString(value) : value;
+      out[key] = isDateAttribute(ctor, key) ? isoDateString(isDateValue(value) ? value._raw : value) : value;
     }
     for (const key of Object.keys(this._relations || {})) {
       const rel = this._relations[key];

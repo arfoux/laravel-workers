@@ -94,6 +94,24 @@ test('the resource resolves its own data (the app\'s toArray wins)', () => {
   // the `data` wrapper is the RESPONSE's job, not the resource's. A probe:
   // `{"id":1,"name":"Ada"}`.
   assert.equal(resource.toJson(), '{"id":1,"name":"Ada"}');
+  // JsonResource.php:186-189 (`toJson($options = 0)`):
+  // `json_encode($this->jsonSerialize(), $options | JSON_THROW_ON_ERROR)` - the
+  // caller's flags reach the encoder (probed against 13 on PHP 8.3:
+  // `toJson(JSON_UNESCAPED_UNICODE)` writes the raw UTF-8, `JSON_UNESCAPED_SLASHES`
+  // leaves the slash; before, the argument was silently ignored).
+  class FlaggedResource extends JsonResource {
+    toArray() {
+      return { u: 'a/b', e: 'é' };
+    }
+  }
+  const flagged = new FlaggedResource(null);
+  assert.equal(flagged.toJson(), '{"u":"a\\/b","e":"\\u00e9"}');
+  assert.equal(flagged.toJson(256), '{"u":"a\\/b","e":"é"}');
+  assert.equal(flagged.toJson(64), '{"u":"a/b","e":"\\u00e9"}');
+  // JsonResource.php:205-208 (`toPrettyJson($options = 0)`): the same call with
+  // JSON_PRETTY_PRINT forced - a probe: four spaces of indent, the default
+  // escaping.
+  assert.equal(flagged.toPrettyJson(), '{\n    "u": "a\\/b",\n    "e": "\\u00e9"\n}');
 
   // The resource's own data: the wrapped model (JsonResource.php:34) and the
   // property proxy (DelegatesToResource.php:120-123) - a probe:
@@ -341,4 +359,28 @@ test('a resource resolves the resources it NESTS (JsonSerializable at encode tim
   }
   // No provider (a CLI/static path): the request is null, never a stale one.
   assert.equal(phpJsonEncode(new ChildRes({ id: 9 })), '{"cid":9,"req":false}');
+});
+
+test('a NESTED resource that wraps NULL answers null (filter() :45-47)', () => {
+  // Oracle (PHP 8.3 + framework 13.37, `->resolve(new Request())`):
+  //   ['id'=>1, 'user'=>new CR(null),
+  //    'list'=>[new CR(null), new CR((object)['id'=>2])]]
+  //   => {"id":1,"user":null,"list":[null,{"cid":2}]}
+  // while the TOP-LEVEL resource is NOT nulled: `json_encode(new CR(null))`
+  // => {"cid":"NONE"} (its own toArray still runs).
+  class ChildRes extends JsonResource {
+    toArray() {
+      return { cid: this.resource === null ? 'NONE' : this.resource.id };
+    }
+  }
+  class ParentRes extends JsonResource {
+    toArray() {
+      return { id: 1, user: new ChildRes(null), list: [new ChildRes(null), new ChildRes({ id: 2 })] };
+    }
+  }
+  assert.equal(
+    phpJsonEncode(new ParentRes({ id: 1 }).resolve()),
+    '{"id":1,"user":null,"list":[null,{"cid":2}]}'
+  );
+  assert.equal(phpJsonEncode(new ChildRes(null).resolve()), '{"cid":"NONE"}');
 });

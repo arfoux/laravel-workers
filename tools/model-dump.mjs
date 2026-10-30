@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// tools/model-dump.mjs — build-time replacement for tools/model-dump.php.
+// tools/model-dump.mjs — PHP-backed model dump (the node-side entry point for
+// the tests and for tooling; the BUILD answers models through the Track F
+// metadata phase, `tools/metadata-phase.php`, in one Laravel boot).
 //
 // Path B ("zero wait"): read the app's OWN PHP source with php-parser instead
 // of booting Laravel inside a PHP process. The complex fields (casts() method,

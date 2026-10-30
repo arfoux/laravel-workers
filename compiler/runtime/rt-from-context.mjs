@@ -5,7 +5,13 @@ import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
 import { arr as arrHelpers } from '../../kernel/arr.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
-import { phpJsonEncode, tagPhpObject, tagPhpObjectDeep } from '../../kernel/php-json.mjs';
+import {
+  phpJsonEncode,
+  phpJsonEncodeWithFlags,
+  tagPhpObject,
+  tagPhpObjectDeep,
+  JSON_THROW_ON_ERROR,
+} from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
 import { setModelRuntime, setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
@@ -245,6 +251,13 @@ export function buildRt(context, opts = {}) {
   };
 
   // ---- rt.concat (PHP string cast + concat) ----
+  // The edge has TWO Carbon representations and PHP treats them as one kind
+  // (DateTimeInterface): the kernel's date value (a model's `created_at`,
+  // marked `__lwDateValue`, whose text is the app-timezone wall clock) and the
+  // runtime's stub (`now()`/`today()`, carrying the `Date` in `_d`). Both
+  // answer `format()`, `(string)` (the wall clock) and `getTimestamp()`.
+  const isCarbonLike = (v) => !!v && typeof v === 'object' && (v.__lwDateValue === true || v._d instanceof Date);
+  const carbonTs = (v) => (v.__lwDateValue === true ? v.getTimestamp() : Math.floor(v._d.getTime() / 1000));
   const phpToStr = (v) => {
     if (v === null || v === undefined) return '';
     if (v === true) return '1';
@@ -252,6 +265,10 @@ export function buildRt(context, opts = {}) {
     if (typeof v === 'number') return phpNumStr(v);
     if (Array.isArray(v)) return 'Array';
     if (typeof v === 'object') {
+      // A date attribute READ is a Carbon value (and `now()`/`today()` answer
+      // the runtime's stub): PHP's `(string) $carbon` is
+      // `format($dateFormat)` - 'Y-m-d H:i:s' in the app timezone.
+      if (isCarbonLike(v)) return v.toString();
       // `(string)$collection` goes through Collection::__toString() = its
       // toJson() (escaped only when escapeWhenCastingToString() asked for it) -
       // a probe: `'x' . collect([1, 2])` answers `x[1,2]`.
@@ -1649,6 +1666,14 @@ export function buildRt(context, opts = {}) {
       return false;
     }
     if (tb === 'null') return rt.looseEq(b, a);
+    // A date attribute READ is a Carbon value: PHP compares it with a string
+    // through Carbon's __toString() (probed: `$m->d == '2024-01-02 03:04:05'`
+    // is TRUE while `=== ` is FALSE), and two Carbons compare by their instant.
+    const da = isCarbonLike(a);
+    const db = isCarbonLike(b);
+    if (da && db) return carbonTs(a) === carbonTs(b);
+    if (da && tb === 'str') return a.toString() === String(b);
+    if (db && ta === 'str') return b.toString() === String(a);
     if (ta === 'num' && tb === 'num') return a === b;
     if (ta === 'str' && tb === 'str') {
       // Two numeric strings are compared as numbers - with the full int64
@@ -1681,6 +1706,18 @@ export function buildRt(context, opts = {}) {
 
   const numVal = (v) => (typeof v === 'number' ? v : (typeof v === 'string' && isNumericStr(v) ? Number(v) : null));
   const relPair = (a, b) => {
+    // A Carbon value against a plain scalar compares through its __toString()
+    // (`$m->d < '2024-01-03 00:00:00'` is TRUE in PHP - probed), so the pair
+    // becomes the two texts rather than falling into the OBJECT rank rule.
+    // Two Carbons keep numeric operands: their `valueOf()` is the wall clock,
+    // so the instant comparison stays exact.
+    const isDate = isCarbonLike;
+    // Two Carbons (either representation) compare BY INSTANT, like PHP's
+    // DateTimeInterface: `$m->d > now()->subSecond()` is decided by the
+    // timestamps, not by the rendered text.
+    if (isDate(a) && isDate(b)) return [carbonTs(a), carbonTs(b)];
+    if (isDate(a) && !isDate(b) && !(b && typeof b === 'object')) return [phpToStr(a), phpToStr(b)];
+    if (isDate(b) && !isDate(a) && !(a && typeof a === 'object')) return [phpToStr(a), phpToStr(b)];
     const na = numVal(a), nb = numVal(b);
     if (na !== null && nb !== null) return [na, nb];
     return [phpToStr(a), phpToStr(b)];
@@ -1691,6 +1728,16 @@ export function buildRt(context, opts = {}) {
   // equal-rank pair answers "equal" (documented).
   const relRank = (v) => (isPhpArray(v) ? 1 : isPhpObject(v) ? 2 : 0);
   const rankRel = (a, b) => {
+    // A Carbon value against a plain scalar is compared through its
+    // __toString() (PHP probes: `$m->d > '2024-01-01 00:00:00'` AND
+    // `$m->d < '2024-01-03 00:00:00'` are both TRUE - the texts decide), and
+    // two Carbon values compare by their instant, so the "object outranks a
+    // scalar" rank rule is skipped for both pairs (relPair decides).
+    const isDate = isCarbonLike;
+    const isComposite = (v) => Array.isArray(v) || (!!v && typeof v === 'object');
+    if (isDate(a) && isDate(b)) return null;
+    if (isDate(a) && !isComposite(b)) return null;
+    if (isDate(b) && !isComposite(a)) return null;
     const ra = relRank(a), rb = relRank(b);
     if (ra !== rb) return ra < rb ? -1 : 1;
     return ra === 0 ? null : 0;
@@ -1979,247 +2026,12 @@ export function buildRt(context, opts = {}) {
   rt.htmlspecialchars = (s) => (s == null ? '' : rt.e(s));
 
   // ---- json ----
-  // Illuminate\View\Compilers\Concerns\CompilesJson:12 - Blade's `@json($x)`
-  // compiles to `json_encode($x, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT, 512)`
-  // (CompilesJson:28): the four HEX flags escape `<`, `>`, `&`, `'` and `"` as
-  // \uXXXX (PHP writes the hex in upper case) and the depth bounds the nesting
-  // (PHP's json_encode() returns false past it).
-  // The kernel's encoder (kernel/php-json.mjs) writes the DEFAULT flags, so the
-  // runtime applies the HEX ones here. The other flags are not ported: they
-  // would answer a different body, so they fail loud.
-  const JSON_HEX_TAG = 1;
-  const JSON_HEX_AMP = 2;
-  const JSON_HEX_APOS = 4;
-  const JSON_HEX_QUOT = 8;
-  const JSON_HEX_FLAGS = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
-  // The HEX flags rewrite the characters INSIDE the encoded JSON: `<`, `>`,
-  // `&` and `'` are not JSON syntax, so a literal one in the output can only
-  // come from a string. The `"` is the ESCAPED one (`\"` inside a string) -
-  // the string delimiters are bare quotes.
-  const jsonHexEncode = (json, flags) => {
-    if (!flags) return json;
-    let out = '';
-    let i = 0;
-    while (i < json.length) {
-      const c = json[i];
-      if (c !== '"') {
-        out += c;
-        i++;
-        continue;
-      }
-      out += '"';
-      i++;
-      while (i < json.length) {
-        const ch = json[i];
-        if (ch === '\\') {
-          const next = json[i + 1];
-          if (next === '"' && flags & JSON_HEX_QUOT) {
-            out += '\\u0022';
-            i += 2;
-            continue;
-          }
-          // \\ \/ \b \t \n \f \r \u - the hex digits of a \u escape are copied
-          // as they are (they are never one of the flagged characters).
-          out += ch + next;
-          i += 2;
-          continue;
-        }
-        if (ch === '"') {
-          out += '"';
-          i++;
-          break;
-        }
-        if (flags & JSON_HEX_TAG) {
-          if (ch === '<') {
-            out += '\\u003C';
-            i++;
-            continue;
-          }
-          if (ch === '>') {
-            out += '\\u003E';
-            i++;
-            continue;
-          }
-        }
-        if (flags & JSON_HEX_AMP && ch === '&') {
-          out += '\\u0026';
-          i++;
-          continue;
-        }
-        if (flags & JSON_HEX_APOS && ch === "'") {
-          out += '\\u0027';
-          i++;
-          continue;
-        }
-        out += ch;
-        i++;
-      }
-    }
-    return out;
-  };
-  // PHP's json_encode() depth: the nesting of the arrays/objects (a scalar is
-  // no level). PHP returns false past it ("Maximum stack depth exceeded").
-  const jsonDepth = (v) => {
-    if (Array.isArray(v)) {
-      let deepest = 0;
-      for (const item of v) {
-        const d = jsonDepth(item);
-        if (d > deepest) deepest = d;
-      }
-      return 1 + deepest;
-    }
-    if (isPhpArray(v)) {
-      let deepest = 0;
-      for (const k of Object.keys(v)) {
-        const d = jsonDepth(v[k]);
-        if (d > deepest) deepest = d;
-      }
-      return 1 + deepest;
-    }
-    return 0;
-  };
-  // The json_encode() flags with a byte-exact answer at the edge. PHP's values:
-  // JSON_HEX_TAG 1, JSON_HEX_AMP 2, JSON_HEX_APOS 4, JSON_HEX_QUOT 8,
-  // JSON_FORCE_OBJECT 16, JSON_UNESCAPED_SLASHES 64, JSON_UNESCAPED_UNICODE 256,
-  // JSON_PRETTY_PRINT 128, JSON_THROW_ON_ERROR 4194304 (a 32-bit int in PHP, so
-  // the JS bit mask must not truncate it).
-  const JSON_FORCE_OBJECT = 16;
-  const JSON_UNESCAPED_SLASHES = 64;
-  const JSON_PRETTY_PRINT = 128;
-  const JSON_UNESCAPED_UNICODE = 256;
-  const JSON_THROW_ON_ERROR = 4194304;
-  const JSON_SUPPORTED_FLAGS =
-    JSON_HEX_FLAGS | JSON_FORCE_OBJECT | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
-  // PHP's json_encode() pretty printer (ext/json/json.c: php_json_pretty_print):
-  // four spaces per level, a newline after every brace/comma, `": "` after a
-  // key and `[]`/`{}` for an empty container (no newline inside it).
-  const jsonPrettyPrint = (json) => {
-    let out = '';
-    let depth = 0;
-    const pad = () => '    '.repeat(depth);
-    let inString = false;
-    for (let i = 0; i < json.length; i++) {
-      const c = json[i];
-      if (inString) {
-        out += c;
-        if (c === '\\') {
-          out += json[i + 1] || '';
-          i++;
-        } else if (c === '"') {
-          inString = false;
-        }
-        continue;
-      }
-      if (c === '"') {
-        inString = true;
-        out += c;
-        continue;
-      }
-      if (c === '{' || c === '[') {
-        const close = c === '{' ? '}' : ']';
-        // An empty container stays on one line.
-        if (json[i + 1] === close) {
-          out += c + close;
-          i++;
-          continue;
-        }
-        depth++;
-        out += c + '\n' + pad();
-        continue;
-      }
-      if (c === '}' || c === ']') {
-        depth--;
-        out += '\n' + pad() + c;
-        continue;
-      }
-      if (c === ',') {
-        out += ',\n' + pad();
-        continue;
-      }
-      if (c === ':') {
-        out += ': ';
-        continue;
-      }
-      out += c;
-    }
-    return out;
-  };
-  // The value JSON_FORCE_OBJECT produced, encoded as an OBJECT (keys quoted,
-  // in the map's own order). JSON_FORCE_OBJECT is documented as forcing a
-  // PHP object, so every level of the map is written the same way.
-  const phpJsonEncodeMapAsObject = (v) => {
-    if (v === null || typeof v !== 'object') return phpJsonEncode(v);
-    const keys = Object.keys(v);
-    return '{' + keys.map((k) => phpJsonEncode(String(k)) + ':' + phpJsonEncodeMapAsObject(v[k])).join(',') + '}';
-  };
-  // JSON_FORCE_OBJECT: every ARRAY becomes an object (the depth walk keeps the
-  // value shape, the keys become 0..n-1).
-  const jsonForceObject = (v) => {
-    if (Array.isArray(v)) {
-      const o = {};
-      for (let i = 0; i < v.length; i++) o[String(i)] = jsonForceObject(v[i]);
-      return o;
-    }
-    if (v !== null && typeof v === 'object') {
-      const o = {};
-      for (const k of Object.keys(v)) o[k] = jsonForceObject(v[k]);
-      return o;
-    }
-    return v;
-  };
-  rt.json_encode = (v, flags, depth) => {
-    const f = flags == null ? 0 : Number(flags);
-    const d = depth == null ? 512 : Number(depth) | 0;
-    if (f & ~JSON_SUPPORTED_FLAGS) {
-      throw new Error(
-        'json_encode() flags ' + f + ' are not supported at the edge — PHP would write a different ' +
-          'body with them (the ported ones are JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT, ' +
-          'JSON_FORCE_OBJECT, JSON_UNESCAPED_SLASHES, JSON_PRETTY_PRINT, JSON_UNESCAPED_UNICODE, ' +
-          'JSON_THROW_ON_ERROR) — drop the flags or write a port'
-      );
-    }
-    const value = v == null ? null : v;
-    // JSON_FORCE_OBJECT shapes an ARRAY into an OBJECT here, but a PHP object
-    // is a JS object already, so phpJsonEncode() would write it as `{...}` -
-    // and an EMPTY array must print `{}` too. The map is converted to its
-    // ordered PAIRS before encoding so the empty case survives.
-    const shaped = f & JSON_FORCE_OBJECT ? jsonForceObject(value) : value;
-    if (jsonDepth(shaped) > d) {
-      // PHP returns false; with JSON_THROW_ON_ERROR it throws JsonException.
-      if (f & JSON_THROW_ON_ERROR) {
-        const err = new Error('Maximum stack depth exceeded');
-        err.name = 'JsonException';
-        err.phpClass = 'JsonException';
-        throw err;
-      }
-      return false;
-    }
-    let json;
-    try {
-      json = phpJsonEncode(shaped, { unescapedUnicode: !!(f & JSON_UNESCAPED_UNICODE) });
-      if (f & JSON_FORCE_OBJECT) {
-        // The encoder writes a key-less map as `[]` and a 0..n-1 map as a list
-        // (it cannot see that the value was an ARRAY); PHP's JSON_FORCE_OBJECT
-        // writes an OBJECT in both cases, so the forced shape is spelled out.
-        if (shaped !== null && typeof shaped === 'object') json = phpJsonEncodeMapAsObject(shaped);
-      }
-    } catch (e) {
-      // An unencodable value (invalid UTF-8, Inf/NaN) is `false` from PHP's
-      // json_encode - `null` positive with JSON_THROW_ON_ERROR, which raises
-      // JsonException ("Malformed UTF-8 characters, possibly incorrectly encoded").
-      if (f & JSON_THROW_ON_ERROR) {
-        const err = new Error(e && e.message ? e.message : 'json_encode() failed');
-        err.name = 'JsonException';
-        err.phpClass = 'JsonException';
-        throw err;
-      }
-      return false;
-    }
-    if (f & JSON_UNESCAPED_SLASHES) json = json.replace(/\\\//g, '/');
-    let out = jsonHexEncode(json, f & JSON_HEX_FLAGS);
-    if (f & JSON_PRETTY_PRINT) out = jsonPrettyPrint(out);
-    return out;
-  };
+  // The json_encode()/json_decode() flag engine is shared with the kernel
+  // (kernel/php-json.mjs): Laravel's Collection::toJson($options),
+  // JsonResource::toJson($options) and the plain json_encode() are all
+  // `json_encode($v, $options)` - ONE implementation writes those bytes.
+  // rt.json_encode() delegates; the depth/flag semantics live there.
+  rt.json_encode = (v, flags, depth) => phpJsonEncodeWithFlags(v, flags, depth);
   // PHP's json_decode(): invalid JSON answers NULL (only a warning) unless
   // JSON_THROW_ON_ERROR is passed, which raises JsonException("Syntax error")
   // (ext/json/parser). `JSON.parse` throws on every invalid input, so the old
@@ -2544,6 +2356,10 @@ export function buildRt(context, opts = {}) {
       copy() { return makeCarbon(new Date(d.getTime()), tz); },
       clone() { return makeCarbon(new Date(d.getTime()), tz); },
       toString() { return api.toDateTimeString(); },
+      // Carbon is JsonSerializable: `jsonSerialize()` -> `toJSON()` answers the
+      // UTC ISO8601 form with MICROSECONDS (Carbon/Converter.php:442-455), so
+      // `json_encode(now())` is a JSON string, not an object.
+      toJSON() { return d.toISOString().replace(/\.(\d{3})Z$/, '.$1000Z'); },
       valueOf() { return d.getTime(); },
     };
     return api;

@@ -19,6 +19,10 @@ const ALLOWED_JOIN_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
 // become ISO strings, undefined becomes null.
 function bindValue(value) {
   if (typeof value === 'boolean') return value ? 1 : 0;
+  // A date attribute READ is a Carbon value: Laravel's
+  // `Connection::prepareBindings()` binds a DateTimeInterface with the
+  // grammar's date format ('Y-m-d H:i:s'), which is exactly the stored text.
+  if (value && typeof value === 'object' && value.__lwDateValue === true) return value._raw;
   if (value instanceof Date) {
     // Laravel's Connection::prepareBindings(): a DateTimeInterface is bound
     // with the grammar's date format ('Y-m-d H:i:s') - an ISO string

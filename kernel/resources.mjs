@@ -15,7 +15,7 @@
 // carries the collects class directly), the macros and the `Responsable`
 // plumbing of the response factory (the runtime builds the response).
 
-import { phpJsonEncode } from './php-json.mjs';
+import { phpJsonEncode, phpJsonEncodeWithFlags, JSON_PRETTY_PRINT } from './php-json.mjs';
 // `JsonResource::resolve($request = null)` falls back to the request the
 // application is handling (`app('request')`).
 import { currentRequest } from './request-scope.mjs';
@@ -404,7 +404,7 @@ export class JsonResource {
    * the response's job - ResourceResponse.php:60-73).
    */
   toJson(options = 0) {
-    return encodeJson(this.jsonSerialize(), options);
+    return phpJsonEncodeWithFlags(this.jsonSerialize(), options);
   }
 
   /** `JsonResource::toPrettyJson()` (JsonResource.php:205-208). */
@@ -562,6 +562,20 @@ export class JsonResource {
         // is taken from the original array and filtered inside mergeData.
         return this.mergeData(out, index, merged, isListOf(value.data), sliceFrom(data, index + 1));
       }
+      // `filter()`:45-47 (ConditionallyLoadsAttributes.php): a NESTED resource
+      // that wraps NULL answers a literal null - `'user' => new
+      // UserResource(null)` renders `null`, not the child's own array (the
+      // child's toArray never runs, so a dereference of the null resource
+      // cannot leak a TypeError either). Oracle (PHP 8.3 + framework 13.37):
+      //   json_encode((new P(['id'=>1]))->resolve(new Request()))
+      //   => {"id":1,"user":null,"list":[null,{"cid":2}]}
+      // for `['id'=>1, 'user'=>new CR(null), 'list'=>[new CR(null), new CR((object)['id'=>2])]]`
+      // - and the TOP-LEVEL resource is NOT nulled (`json_encode(new CR(null))`
+      // => {"cid":"NONE"}, the child's own array).
+      if (value instanceof JsonResource && value.resource === null) {
+        out[key] = null;
+        continue;
+      }
       out[key] = value;
     }
     return this.removeMissingValues(out);
@@ -678,48 +692,11 @@ export class ResourceCollection extends JsonResource {
  */
 export class AnonymousResourceCollection extends ResourceCollection {}
 
-// PHP's `json_encode()` flags the edge honours.
-const JSON_PRETTY_PRINT = 128;
-
-/**
- * The JSON of a value, with PHP's `json_encode()` bytes (the slashes
- * escaped, the non-ASCII as `\uXXXX` - the same bytes the edge's session
- * cookie carries).
- */
-function encodeJson(value, options = 0) {
-  if (!options) return phpJsonEncode(value);
-  if (options & JSON_PRETTY_PRINT) return prettyJson(value);
-  throw new Error(
-    'the json_encode option ' + options + ' is not supported at the edge - ' +
-      'only the default flags and JSON_PRETTY_PRINT are'
-  );
-}
-
-// PHP's `json_encode($value, JSON_PRETTY_PRINT)`: four spaces of indent, the
-// same escaping as the default flags.
-function prettyJson(value) {
-  return prettyValue(value, 0);
-}
-
-function prettyValue(value, depth) {
-  const pad = '    '.repeat(depth + 1);
-  const closePad = '    '.repeat(depth);
-  if (Array.isArray(value)) {
-    if (value.length === 0) return '[]';
-    const parts = value.map((item) => pad + prettyValue(item, depth + 1));
-    return '[\n' + parts.join(',\n') + '\n' + closePad + ']';
-  }
-  if (value !== null && typeof value === 'object') {
-    const keys = Object.keys(value);
-    if (keys.length === 0) return phpJsonEncode(value);
-    const parts = keys.map(
-      (key) => pad + phpJsonEncode(String(key)) + ': ' + prettyValue(value[key], depth + 1)
-    );
-    return '{\n' + parts.join(',\n') + '\n' + closePad + '}';
-  }
-  return phpJsonEncode(value);
-}
-
+// The json_encode() flag engine is shared with the kernel (kernel/php-json.mjs):
+// `JsonResource::toJson($options)` is `json_encode($this->resolve(), $options)`
+// (JsonResource.php:186-196), the same call Collection::toJson() makes and the
+// same one the runtime's json_encode() makes - one implementation, identical
+// bytes. An unsupported flag throws there instead of diverging silently.
 // The data of a resolved resource as an array (PHP's `(array) $data`).
 function toArrayOf(data) {
   if (data === null || data === undefined) return [];
