@@ -13,7 +13,7 @@
 //
 // Usage: node build.mjs [--strict] [--scaffold]
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { buildRoutesJson } from './tools/routes-json.mjs';
@@ -571,14 +571,30 @@ if (dbSandboxPath) {
 // ---------- 1. export routes from the Laravel app ----------
 console.log('• exporting routes from the route files with the static parser (no PHP boot)');
 let listed;
+let scannerStderr = '';
 try {
-  // stderr = the static walk's scope disclosures and parse issues (streamed,
-  // not captured: they belong in the build log even on success).
-  const rawRoutes = execFileSync(process.execPath, [join(pkgDir, 'tools', 'routes-dump.mjs')], {
+  // stderr is captured (then echoed) so a REFUSED dump can be read: the scanner
+  // exits 0 and still prints the JSON, so its diagnostics are the only carrier
+  // of the reason (see the refusal branch below).
+  const dumpProc = spawnSync(process.execPath, [join(pkgDir, 'tools', 'routes-dump.mjs')], {
     cwd: appDir,
     env: childEnv(),
-    stdio: ['ignore', 'pipe', 'inherit'],
-  }).toString('utf8');
+    encoding: 'utf8',
+    maxBuffer: 1 << 28,
+  });
+  scannerStderr = String(dumpProc.stderr || '').trim();
+  if (scannerStderr) process.stderr.write(scannerStderr + '\n');
+  const rawRoutes = String(dumpProc.stdout || '');
+  // spawnSync reports a failure instead of throwing the way execFileSync did,
+  // so re-raise it in the same shape the handler below expects (stderr/stdout
+  // carried through): a scanner that CRASHES must not be mistaken for one that
+  // merely returned no routes.
+  if (dumpProc.error || dumpProc.status !== 0) {
+    const err = dumpProc.error || new Error('routes-dump.mjs exited with status ' + dumpProc.status);
+    err.stderr = scannerStderr;
+    err.stdout = rawRoutes;
+    throw err;
+  }
   try {
     listed = JSON.parse(rawRoutes);
   } catch {
@@ -613,6 +629,23 @@ try {
       '  of the static scanner itself (a route file it cannot parse, most likely)\n' +
       '  -> run `node tools/routes-dump.mjs` in the app directory, fix what it prints'
   );
+}
+// The scanner REFUSES a route set it cannot serve (two URIs that compile to the
+// same controller module): it still prints the JSON, so the refusal has to be
+// read off stderr — otherwise the build would write one handler over the other
+// and serve both URLs from it.
+{
+  const refusal = scannerStderr.split(/\r?\n/).find((l) => l.includes('both compile to the controller module'));
+  if (refusal) {
+    const cause = refusal.replace(/^\s*routes: parse issue\s*/, '');
+    note({
+      severity: BLOCK,
+      area: 'route',
+      cause,
+      fix: 'rename one of the two routes (their URIs slugify to the same controller module)',
+    });
+    fail(cause);
+  }
 }
 // Laravel only reports `path` for closure routes — controller-action routes
 // (Route::get('/x', [XController::class, 'm']), Route::resource, invokable
@@ -1401,7 +1434,11 @@ for (const [route, view] of viewMap) {
 
   bladeCompile(dump, route);
 
-  const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
+  // The module NAME goes through viewFileName(): the error views below are
+  // written as `errors.<code>.mjs`, and two different view names that sanitize
+  // to the same file (`errors.404` and `errors/404`) must stop the build
+  // instead of one silently overwriting the other.
+  const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
   try {
     transpileToModule(dumpPath, viewModulePath);
   } catch (e) {
@@ -1415,15 +1452,15 @@ for (const [route, view] of viewMap) {
     );
   }
 
-  const contextPath = join(dist, 'src', 'contexts', view + '.mjs');
+  const contextPath = join(dist, 'src', 'contexts', viewFileName(view) + '.mjs');
   writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
 
   const controllerPath = join(dist, 'src', 'controllers', slug + '.mjs');
   writeFileSync(
     controllerPath,
     [
-      "import main from '../views/" + view + ".mjs';",
-      "import context from '../contexts/" + view + ".mjs';",
+      "import main from '../views/" + viewFileName(view) + ".mjs';",
+      "import context from '../contexts/" + viewFileName(view) + ".mjs';",
       "import { buildRt } from '../runtime/rt-from-context.mjs';",
       "import { html } from '../../kernel/response.mjs';",
       '',
@@ -1474,7 +1511,10 @@ if (errorViewCodes.length) {
 
     bladeCompile(dump, viewName);
 
-    const viewModulePath = join(dist, 'src', 'views', 'errors.' + code + '.mjs');
+    // Same guard as the route views: This name must not collide with a route
+    // view's file (viewFileName throws on a collision, stopping the build).
+    const errorViewFileName = viewFileName('errors.' + code);
+    const viewModulePath = join(dist, 'src', 'views', errorViewFileName + '.mjs');
     try {
       transpileToModule(dumpPath, viewModulePath);
     } catch (e) {
@@ -1488,14 +1528,14 @@ if (errorViewCodes.length) {
       );
     }
 
-    const contextPath = join(dist, 'src', 'contexts', 'errors.' + code + '.mjs');
+    const contextPath = join(dist, 'src', 'contexts', errorViewFileName + '.mjs');
     writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
 
     const importName = 'errorView_' + String(code).replace(/[^A-Za-z0-9_]/g, '_');
-    errorViewImports.push(`import ${importName}Main from './views/errors.${code}.mjs';`);
-    errorViewImports.push(`import ${importName}Context from './contexts/errors.${code}.mjs';`);
+    errorViewImports.push(`import ${importName}Main from './views/${errorViewFileName}.mjs';`);
+    errorViewImports.push(`import ${importName}Context from './contexts/${errorViewFileName}.mjs';`);
     errorViewCases.push({ code, importName, registryName });
-    console.log(`  -> dist/src/views/errors.${code}.mjs`);
+    console.log(`  -> dist/src/views/${errorViewFileName}.mjs`);
   }
 }
 

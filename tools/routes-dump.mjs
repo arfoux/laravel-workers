@@ -827,6 +827,28 @@ function phpParse(source) {
 }
 
 const { routes, errors } = parse();
+// Two DIFFERENT URIs can slugify to the same controller module file
+// (build.mjs slugifyRoute: `/a/b` and `/a-b` and `/{a}-{b}` all answer `a-b`),
+// and the build writes `dist/src/controllers/<slug>.mjs` per route - so one
+// route's handler would overwrite the other's and the handler table would point
+// BOTH uris at whichever was written last. A collision is a build-level defect
+// the operator must resolve, not a silent wrong answer: refuse the dump.
+{
+  const slugify = (uri) => String(uri).replace(/^\//, '').replace(/[{}]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'home';
+  const owner = new Map();
+  for (const r of routes) {
+    const slug = slugify(r.uri);
+    const prior = owner.get(slug);
+    if (prior !== undefined && prior !== r.uri) {
+      errors.push(
+        'the route URIs ' + JSON.stringify(prior) + ' and ' + JSON.stringify(r.uri) +
+          ' both compile to the controller module "' + slug + '.mjs" — rename one route (the build would serve both URLs with one handler)'
+      );
+    } else {
+      owner.set(slug, r.uri);
+    }
+  }
+}
 // stdout stays the exact `route:list --json` shape; diagnostics go to stderr,
 // which the build streams into its own log (errors used to be swallowed here).
 if (errors.length) process.stderr.write(errors.map((e) => '  routes: parse issue ' + e + '\n').join(''));
