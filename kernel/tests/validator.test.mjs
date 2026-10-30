@@ -1171,6 +1171,31 @@ test('multiple_of uses brick/math BigDecimal, not the JS remainder', async () =>
   // 1e300 is out of the 64-bit BigDecimal range, so the exact compare fails.
   assert.equal(await pass(1e300, 'multiple_of:3'), false);
 });
+test('a date attribute VALUE validates like a PHP DateTimeInterface', async () => {
+  // The kernel answers a model's `created_at` as a Carbon-like value, and PHP's
+  // date rules take a DateTimeInterface directly (ValidatesAttributes.php
+  // :276-279, :625-627, :654-656). Oracle probes (PHP 8.3 + 13.37) with a
+  // DateTime('2024-01-02 03:04:05'):
+  //   date => PASS, before:2024-06-01 => PASS, after:2024-06-01 => FAIL,
+  //   date_equals:'2024-01-02 03:04:05' => PASS, date_format:Y-m-d H:i:s => FAIL
+  //   (the format rule has NO DateTimeInterface branch), and a NUMERIC value
+  //   passes date_format:Y (`2024`).
+  const { makeDateValue } = await import('../model.mjs');
+  const d = makeDateValue('2024-01-02 03:04:05', 'UTC');
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  assert.equal(await pass(d, 'date'), true);
+  assert.equal(await pass(d, 'before:2024-06-01'), true);
+  assert.equal(await pass(d, 'after:2024-06-01'), false);
+  assert.equal(await pass(d, 'date_equals:2024-01-02 03:04:05'), true);
+  assert.equal(await pass(d, 'date_format:Y-m-d H:i:s'), false);
+  // The plain strings still decide by their own text.
+  assert.equal(await pass('2024-01-02 03:04:05', 'date'), true);
+  assert.equal(await pass('2024-01-02 03:04:05', 'after:2024-06-01'), false);
+  // A numeric value IS a string for date_format (`DateTime::createFromFormat`
+  // coerces it) and the round trip is loose.
+  assert.equal(await pass(2024, 'date_format:Y'), true);
+  assert.equal(await pass(2024, 'date_format:Y-m-d'), false);
+});
 test('in_array uses the dot-flattened wildcard path and a STRICT compare', async () => {
   // ValidatesAttributes::validateInArray() (:1581-1594) filters Arr::dot($data)
   // with Str::is($param, $key) and runs in_array(..., true). Oracle probes:

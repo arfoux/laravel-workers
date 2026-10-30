@@ -17,6 +17,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveDependencies } from './composer-resolve.mjs';
 import { extractZip as extractZipJs } from './zip.mjs';
+import parser from 'php-parser';
+import { nodeName } from './static.mjs';
+
+/** Same options as tools/static.mjs — positions are irrelevant here, docblocks are dropped. */
+const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -207,12 +212,54 @@ function phpStr(s) {
   return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
 }
 
-function fqcnOf(filePath) {
-  if (!existsSync(filePath) || statSync(filePath).isDirectory()) return null;
-  const src = readFileSync(filePath, 'utf8');
-  // Match class, interface, trait, or enum (PHP 8.1+ enums like SortDirection)
-  const m = src.match(/(?:class|interface|trait|enum)\s+([A-Za-z0-9_]+)/);
-  return m ? m[1] : null;
+/**
+ * Every class-like FQCN declared in a PHP file, in declaration order.
+ *
+ * The classmap keys must be what Composer's ClassMapGenerator generates, and
+ * that is the ONLY thing this function exists for. A bare
+ * `/(?:class|interface|trait|enum)\s+(\w+)/` over the raw source is not that:
+ * it matches inside comments and strings, it never qualifies the name with the
+ * namespace, and it answers only the FIRST declaration. Verified against real
+ * vendor code — vendor/nette/utils/src/SmartObject.php answered `for` (from the
+ * docblock "Strict class for better experience.") and
+ * src/Utils/ReflectionMethod.php answered `name` ("...the original class
+ * name."), so neither real class was in the generated classmap; both escaped
+ * only because their package's psr-4 prefix also covers them. The tokenizer is
+ * php-parser, already a dependency, and the walk mirrors tools/static.mjs
+ * parsePhpFile() (namespace in force + no descent into class bodies).
+ */
+const CLASS_NODE_KINDS = new Set(['class', 'interface', 'trait', 'enum']);
+export function classNames(filePath) {
+  if (!existsSync(filePath) || statSync(filePath).isDirectory()) return [];
+  let ast;
+  try {
+    ast = phpParser.parseCode(readFileSync(filePath, 'utf8'));
+  } catch {
+    return [];
+  }
+  if (ast && ast.errors && ast.errors.length) return [];
+  const out = [];
+  const walk = (n, ns) => {
+    if (Array.isArray(n)) { for (const c of n) walk(c, ns); return; }
+    if (!n || typeof n !== 'object') return;
+    if (n.kind === 'namespace') {
+      const name = n.name && typeof n.name === 'object' ? nodeName(n.name) : String(n.name || '');
+      for (const c of (n.children || [])) walk(c, name);
+      return;
+    }
+    if (CLASS_NODE_KINDS.has(n.kind)) {
+      const name = n.name && typeof n.name === 'object' ? nodeName(n.name) : n.name;
+      if (name) out.push((ns ? ns + '\\' : '') + name); // `new class` is anonymous: no name, skipped
+      return;
+    }
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'locend' || k === 'locstart' || k === 'leadingComments' || k === 'trailingComments' || k === 'comments' || k === 'raw') continue;
+      if (k === 'use' || k === 'uses') continue;
+      walk(n[k], ns);
+    }
+  };
+  walk(ast, '');
+  return out;
 }
 
 function buildAutoloadPhp(entries, appDir, rootDir) {
@@ -245,15 +292,13 @@ function buildAutoloadPhp(entries, appDir, rootDir) {
               const p = join(cur, ent.name);
               if (ent.isDirectory()) stack.push(p);
               else if (ent.isFile() && p.endsWith('.php')) {
-                const fq = fqcnOf(p);
-                if (fq) classmap.push({ fq, file: p });
+                for (const fq of classNames(p)) classmap.push({ fq, file: p });
               }
             }
           }
           continue;
         }
-        const fq = fqcnOf(full);
-        if (fq) classmap.push({ fq, file: full });
+        for (const fq of classNames(full)) classmap.push({ fq, file: full });
       }
     }
     if (al['files']) {
@@ -271,8 +316,7 @@ function buildAutoloadPhp(entries, appDir, rootDir) {
   if (appAl['classmap']) {
     for (const f of appAl['classmap']) {
       const full = join(appDir, String(f));
-      const fq = fqcnOf(full);
-      if (fq) classmap.push({ fq, file: full });
+      for (const fq of classNames(full)) classmap.push({ fq, file: full });
     }
   }
   if (appAl['files']) {

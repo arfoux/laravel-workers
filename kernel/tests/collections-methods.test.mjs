@@ -300,6 +300,26 @@ const EXPECTED = {
     "ok": true,
     "value": "{\n    \"a\": 1,\n    \"b\": [\n        1,\n        2\n    ],\n    \"c\": {\n        \"d\": \"e\"\n    }\n}"
   },
+  "toJson_flags": {
+    "ok": true,
+    "value": "{\"u\":\"a\\/b\",\"e\":\"é\"}"
+  },
+  "toJson_slashes": {
+    "ok": true,
+    "value": "{\"u\":\"a/b\",\"e\":\"\\u00e9\"}"
+  },
+  "toJson_pretty": {
+    "ok": true,
+    "value": "{\n    \"a\": 1\n}"
+  },
+  "toJson_force_object": {
+    "ok": true,
+    "value": "{\"0\":1,\"1\":2}"
+  },
+  "toJson_hex": {
+    "ok": true,
+    "value": "{\"a\":\"\\u003Cb\\u003E\\u0026\\u0022\"}"
+  },
   "shift": {
     "ok": true,
     "value": 1
@@ -1334,6 +1354,14 @@ const MORE_CASES = {
   escape_false_to_string: () => make(['<b>']).escapeWhenCastingToString(false).toString(),
   escape_true_to_string: () => make(['<b>']).escapeWhenCastingToString(true).toString(),
   escape_chain_flags: () => make([1]).escapeWhenCastingToString(false).escapeWhenCastingToString().toJson(),
+  // `Collection::toJson($options)` is `json_encode($this->all(), $options)`
+  // (Collection.php:1180-1183): the flag must reach the encoder. Probed against
+  // the vendored 13 on PHP 8.3 (see EXPECTED).
+  toJson_flags: () => make({ u: 'a/b', e: 'é' }).toJson(256),
+  toJson_slashes: () => make({ u: 'a/b', e: 'é' }).toJson(64),
+  toJson_pretty: () => make({ a: 1 }).toJson(128),
+  toJson_force_object: () => make([1, 2]).toJson(16),
+  toJson_hex: () => make({ a: '<b>&"' }).toJson(1 | 2 | 4 | 8),
 };
 
 test("collection methods: PHP's own answer, case by case", () => {

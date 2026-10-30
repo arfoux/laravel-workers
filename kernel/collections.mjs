@@ -419,7 +419,7 @@ const soleFilterFor = (key, operator, value, argCount) => {
 };
 
 /** Values of an arrayable-ish argument: Collection, array, object or scalar. */
-import { phpJsonEncode } from './php-json.mjs';
+import { phpJsonEncode, phpJsonEncodeWithFlags } from './php-json.mjs';
 
 export const toList = (input) => {
   if (input instanceof Collection) return input.items.slice();
@@ -1008,9 +1008,14 @@ export class Collection {
     return this.items.slice();
   }
 
-  /** `Collection::toJson()`: json_encode($this->all()) - PHP's bytes. */
-  toJson() {
-    return phpJsonEncode(this.all());
+  /**
+   * `Collection::toJson($options = 0)` (Collection.php:1180-1183):
+   * `json_encode($this->all(), $options)` - PHP's bytes. The flags are honoured
+   * through the shared engine, so `->toJson(JSON_UNESCAPED_UNICODE)` writes the
+   * same bytes PHP does (before, the argument was ignored - a silent divergence).
+   */
+  toJson(options = 0) {
+    return phpJsonEncodeWithFlags(this.all(), options);
   }
 
   toArray() {

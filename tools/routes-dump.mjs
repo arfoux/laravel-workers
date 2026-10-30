@@ -25,6 +25,15 @@
 // `Route::group([...], fn)` form push a context (prefix/name/middleware) that
 // nested routes inherit. Route::resource expands to the standard resource
 // verbs.
+//
+// The non-verb helpers register routes too and are mapped to what route:list
+// prints: view() -> GET|HEAD + Illuminate\Routing\ViewController,
+// redirect()/permanentRedirect() -> Router::$verbs + the RedirectController,
+// fallback() -> GET|HEAD on the {fallbackPlaceholder} uri, any() ->
+// Router::$verbs (which includes QUERY in Laravel 13), match([...]) -> the
+// uppercased list with HEAD appended when GET is present
+// (Route::__construct), query() -> QUERY. A helper the scan cannot read is
+// reported through `notes` instead of being dropped.
 
 import { existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -213,7 +222,36 @@ const resolveRouteFile = (args, fromFile, parsed) => {
 // the route table
 // ---------------------------------------------------------------------------
 
-const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'head'];
+const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'head', 'query'];
+
+// The four `Router` helpers that register a route WITHOUT a plain verb:
+// Route::view/permanentRedirect are spelled in camelCase in Laravel, so the
+// lookup lowercases the step name (PHP method names are case-insensitive).
+// Missing them would drop the route from the table SILENTLY — the failure the
+// whole tool exists to avoid (Router.php: view() -> match(['GET','HEAD'],
+// ViewController); redirect() -> any(); permanentRedirect() -> redirect(301);
+// fallback() -> addRoute('GET', '{fallbackPlaceholder}')->where('.*')).
+const ROUTE_HELPERS = ['view', 'redirect', 'permanentredirect', 'fallback'];
+/** Is this chain step a route registration (verb, resource, or helper)? */
+const isVerbStep = (m) => m === 'resource' || m === 'apiResource'
+  || (m != null && (HTTP_METHODS.includes(String(m).toLowerCase()) || ROUTE_HELPERS.includes(String(m).toLowerCase())));
+
+/** `Router::$verbs` (Router.php:136, Laravel 13) — what `any()`/`redirect()` register. */
+const ANY_METHODS = 'GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|QUERY';
+
+/**
+ * `Router::match($methods, $uri, $action)`: `array_map(strtoupper, (array) $methods)`,
+ * and `Route::__construct` (Route.php:184-186) appends HEAD when GET is present
+ * and HEAD is not — so `match(['get','post'])` answers `GET|POST|HEAD`, exactly
+ * what route:list prints.
+ */
+const matchVerbList = (arg) => {
+  const raw = argStrList(arg) || (strArg(arg) != null ? [strArg(arg)] : null);
+  if (!raw || !raw.length) return null;
+  const methods = raw.map((m) => String(m).toUpperCase());
+  if (methods.includes('GET') && !methods.includes('HEAD')) methods.push('HEAD');
+  return methods;
+};
 
 /** Top-level statements (peel a namespace wrapper if present). */
 function topStatements(ast) {
@@ -250,6 +288,19 @@ function parse() {
   };
   if (rf && rf.web) addFile(rf.web, 'web');
   if (rf && rf.api) addFile(rf.api, 'api');
+  // `withRouting(health: '/up')` (the Laravel 11+ skeleton default) registers a
+  // GET route from ApplicationBuilder::withRouting() - a FRAMEWORK closure, not
+  // an app route file, so no file scan can reach it. route:list prints it
+  // (`up`, GET|HEAD); the edge does not serve it. Say so instead of dropping it
+  // silently: a health check that answers 404 on the edge while PHP answers 200
+  // is exactly the silent divergence this scan exists to prevent.
+  if (rf && typeof rf.health === 'string' && rf.health.trim() !== '') {
+    note(
+      'the app declares a health route (`health: ' + JSON.stringify(rf.health) + '` in bootstrap/app.php) — ' +
+        'the framework registers it (ApplicationBuilder::withRouting), so no route file declares it and the edge does not serve it: ' +
+        'GET ' + rf.health + ' answers 404 where PHP answers 200. Declare the route in routes/ (or a port) if the edge needs it.'
+    );
+  }
 
   const providersDir = join(appDir, 'app', 'Providers');
   if (existsSync(providersDir)) {
@@ -346,7 +397,7 @@ function parse() {
         let verbIdx = -1;
         for (let i = steps.length - 1; i >= 0; i--) {
           const m = steps[i].method;
-          if (HTTP_METHODS.includes(m) || m === 'resource' || m === 'apiResource') { verbIdx = i; break; }
+          if (isVerbStep(m)) { verbIdx = i; break; }
         }
         if (verbIdx !== -1) { registerVerb(steps, verbIdx, file); return; }
       }
@@ -383,8 +434,13 @@ function parse() {
       registerResource(verbStep, collectModifiers(steps, verbIdx), file);
       return;
     }
-    const uri0 = strArg(verbStep.args[0]);
-    const actionArg = verbStep.args[1] || null;
+    const vm = String(verbMethod).toLowerCase();
+    // Argument order differs per helper: fallback(action) carries no uri, and
+    // match($methods, $uri, $action) puts the verb list first.
+    const isFallback = vm === 'fallback';
+    const isMatch = vm === 'match';
+    const uri0 = isFallback ? '{fallbackPlaceholder}' : strArg(verbStep.args[isMatch ? 1 : 0]);
+    const actionArg = (isFallback ? verbStep.args[0] : verbStep.args[isMatch ? 2 : 1]) || null;
     const method = verbMethod;
 
     const modifiers = collectModifiers(steps, verbIdx);
@@ -397,7 +453,12 @@ function parse() {
 
     let action = 'Closure';
     let path = null;
-    if (actionArg) {
+    // Route::view($uri, $view, ...) / Route::redirect($uri, $dest, ...) register
+    // a framework controller — NOT the app action the generic branch below would
+    // read out of argument #1 (that one is the view NAME / the destination).
+    if (vm === 'view') action = 'Illuminate\\Routing\\ViewController';
+    else if (vm === 'redirect' || vm === 'permanentredirect') action = 'Illuminate\\Routing\\RedirectController';
+    else if (actionArg) {
       if (actionArg.kind === 'closure') {
         const line = verbStep.node.loc && verbStep.node.loc.start ? verbStep.node.loc.start.line : null;
         const rel = file.replace(/\\/g, '/').replace(appDir.replace(/\\/g, '/') + '/', '');
@@ -418,7 +479,7 @@ function parse() {
       }
     }
 
-    // Controller-level `$this->middleware('auth', ['except'=>…])` never appears
+    // Controller-level `$this->middleware('auth', ['except'=>...])` never appears
     // in the route file — without it the edge would run publish WITHOUT auth.
     if (action.includes('@')) {
       const at = action.indexOf('@');
@@ -426,10 +487,18 @@ function parse() {
       if (extra && extra.length) middleware.push(...extra);
     }
 
+    // The method string is what `route:list --json` prints for the route
+    // (`implode('|', $route->methods())`), so it must be the REAL verb list:
+    // `any()`/`redirect()` answer Router::$verbs, `match([...])` answers the
+    // array it was given, `view()`/`fallback()`/`get()` add HEAD.
+    const matchVerbs = vm === 'match' ? matchVerbList(verbStep.args[0]) : null;
+    if (vm === 'match' && !matchVerbs) note('Route::match() with a verb list this scan cannot read (' + relOf(file) + ') — its methods are reported as MATCH; add it to registry.json if the edge must serve it');
     const methodOut =
-      method === 'get' ? 'GET|HEAD' :
-      method === 'head' ? 'HEAD' :
-      method.toUpperCase();
+      vm === 'get' || vm === 'view' || vm === 'fallback' ? 'GET|HEAD' :
+      vm === 'head' ? 'HEAD' :
+      vm === 'any' || vm === 'redirect' || vm === 'permanentredirect' ? ANY_METHODS :
+      vm === 'match' ? (matchVerbs ? matchVerbs.join('|') : 'MATCH') :
+      String(method).toUpperCase();
 
     routes.push({
       domain: null,

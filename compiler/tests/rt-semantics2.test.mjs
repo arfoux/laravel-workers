@@ -12,8 +12,28 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRt } from '../runtime/rt-from-context.mjs';
 import { emitController } from '../src/controller.mjs';
+import { phpJsonEncode } from '../../kernel/php-json.mjs';
 
 const rt = buildRt({}, { strict: false });
+test('rt-semantics2: the Carbon stub is JsonSerializable and compares by instant', () => {
+  // PHP: json_encode(now()) => "2026-10-30T07:06:17.205115Z" — a JSON STRING
+  // (Carbon implements JsonSerializable), never an object; the nested form is
+  // the same string. `today()` is the app-timezone midnight, so its wall clock
+  // ends in 00:00:00.
+  const n = rt.now();
+  const json = phpJsonEncode(n);
+  assert.match(json, /^"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z"$/);
+  assert.equal(phpJsonEncode({ at: n }), '{"at":' + json + '}');
+  assert.match(phpJsonEncode(rt.today()), /^"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z"$/);
+  assert.match(rt.today().toDateTimeString(), / 00:00:00$/);
+  // PHP: $n == $n->toDateTimeString() => true (Carbon's __toString), and two
+  // DateTimeInterface values compare BY INSTANT: $n > $n->subHour() => true.
+  assert.equal(rt.looseEq(n, n.toString()), true);
+  assert.equal(rt.gt(n, n.subHours(1)), true);
+  assert.equal(rt.gte(n, n), true);
+  assert.equal(rt.lt(n.subDays(1), n), true);
+  assert.equal(rt.gt(n, n.addDays(1)), false);
+});
 
 test('rt-semantics2: in_array walks the values of a PHP assoc array', () => {
   // PHP: in_array('1', ['a' => 1]) => true

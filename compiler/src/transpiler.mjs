@@ -126,6 +126,26 @@ function txMix(node) {
 }
 
 // ---- expression translation ----
+// PHP's global `json_encode()`/`json_decode()` option constants
+// (php.net/json.constants, read off the PHP 8.3 oracle). Their values are
+// fixed integers, so the transpiler emits the number: the app writes
+// `json_encode($v, JSON_UNESCAPED_SLASHES)` and the compiled side must see 64.
+const JSON_FLAG_CONSTANTS = new Map([
+  ['JSON_HEX_TAG', 1],
+  ['JSON_HEX_AMP', 2],
+  ['JSON_HEX_APOS', 4],
+  ['JSON_HEX_QUOT', 8],
+  ['JSON_FORCE_OBJECT', 16],
+  ['JSON_NUMERIC_CHECK', 32],
+  ['JSON_UNESCAPED_SLASHES', 64],
+  ['JSON_PRETTY_PRINT', 128],
+  ['JSON_UNESCAPED_UNICODE', 256],
+  ['JSON_PARTIAL_OUTPUT_ON_ERROR', 512],
+  ['JSON_PRESERVE_ZERO_FRACTION', 1024],
+  ['JSON_INVALID_UTF8_IGNORE', 1048576],
+  ['JSON_INVALID_UTF8_SUBSTITUTE', 2097152],
+  ['JSON_THROW_ON_ERROR', 4194304],
+]);
 function tx(node) {
   if (!node) throw mkErr('LW002', 'missing expression', null);
   switch (node.kind) {
@@ -148,6 +168,12 @@ function tx(node) {
       // runs before array_filter()'s own handler) does not die on them.
       if (node.name === 'ARRAY_FILTER_USE_KEY') return '2';
       if (node.name === 'ARRAY_FILTER_USE_BOTH') return '1';
+      // PHP's global json_encode() flags (php.net/json.constants): fixed
+      // integers, emitted numerically. Without them the app's most ordinary
+      // option - `collect($x)->toJson(JSON_UNESCAPED_UNICODE)` or
+      // `json_encode($v, JSON_UNESCAPED_SLASHES)` - failed the BUILD with
+      // "bare identifier not allowed" (PHP answers a JSON string).
+      if (JSON_FLAG_CONSTANTS.has(node.name)) return String(JSON_FLAG_CONSTANTS.get(node.name));
       throw mkErr('LW002', 'bare identifier not allowed: ' + node.name, node.loc);
     case 'identifier':
       return JSON.stringify(String(node.name));

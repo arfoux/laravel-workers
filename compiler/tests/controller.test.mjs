@@ -2633,3 +2633,26 @@ test('emit: an inline paginator chain compiles the pagination view', () => {
   assert.equal(bad.errors[0].code, 'LW003');
   assert.match(bad.errors[0].message, /lazy/);
 });
+test('emit: PHP json flags fold to their numeric value', () => {
+  // PHP defines JSON_UNESCAPED_SLASHES/JSON_UNESCAPED_UNICODE/... as fixed
+  // integers (php.net/json.constants). The transpiler folds the bare constant
+  // to the number so `collect($x)->toJson(JSON_UNESCAPED_UNICODE)` and
+  // `json_encode($v, JSON_UNESCAPED_SLASHES)` compile; before, the build died
+  // with "bare identifier not allowed: JSON_UNESCAPED_UNICODE" (PHP answers the
+  // JSON string). It must fold to the SAME number PHP uses.
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n    }\n}\n';
+  const meta = { routeUri: '/x', routeParams: [], models: [], views: [] };
+  const toJson = emitController(src('return collect([1])->toJson(JSON_UNESCAPED_UNICODE);'), 'demo', meta);
+  assert.deepEqual(toJson.errors, []);
+  assert.match(toJson.code, /\.toJson\(256\)/);
+  const enc = emitController(src('return json_encode(["a" => "b"], JSON_UNESCAPED_SLASHES);'), 'demo', meta);
+  assert.deepEqual(enc.errors, []);
+  assert.match(enc.code, /rt\.json_encode\(\{[^}]*\}, 64/);
+  // A constant the port does not know still fails the build (not a silent 500).
+  const bad = emitController(src('return strlen(PHP_EOL);'), 'demo', meta);
+  assert.equal(bad.code, null);
+  assert.match(bad.errors[0].message, /bare identifier not allowed: PHP_EOL/);
+});

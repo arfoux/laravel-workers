@@ -298,6 +298,16 @@ function translatePcrePattern(body, flags) {
   return { pattern, flags: jsFlags };
 }
 
+// A DATE VALUE the edge already holds: the kernel answers a model's date
+// attribute as a Carbon-like value (marked `__lwDateValue`, with the full
+// method set) and the runtime's `now()`/`today()` stub is the same PHP kind.
+// PHP's date rules test `$value instanceof DateTimeInterface` (validateDate
+// :625-627), accept it in the compareDates() guard (:277-279) and read the
+// timestamp through `getDateTimestamp()` -> `Date::parse($value)` (:311-316).
+function isCarbonLike(value) {
+  return !!value && typeof value === 'object'
+    && typeof value.getTimestamp === 'function' && typeof value.format === 'function';
+}
 // PHP's (string) cast: true becomes '1', false becomes '', null becomes ''.
 function phpStringCast(value) {
   if (value === null || value === undefined) return '';
@@ -1233,7 +1243,12 @@ function daysInMonth(year, month) {
 
 // Minimal date-format translator (Y y m n d j H G i s only — the common set).
 function matchDateFormat(value, format) {
-  if (typeof value !== 'string') return false;
+  // ValidatesAttributes::validateDateFormat() (:654-656) accepts a string OR a
+  // numeric value (a Carbon does NOT pass: the guard has no DateTimeInterface
+  // branch - probed). The round trip compares `$date->format($format) == $value`
+  // loosely, so a numeric value matches its own text.
+  if (typeof value !== 'string' && !isNumericValue(value)) return false;
+  const input = String(value);
   const fmt = String(format);
   const map = {
     Y: { rx: '\\d{4}', field: 'year' },
@@ -1259,7 +1274,7 @@ function matchDateFormat(value, format) {
     }
   }
   let m;
-  try { m = new RegExp('^' + rx + '$').exec(value); } catch { return false; }
+  try { m = new RegExp('^' + rx + '$').exec(input); } catch { return false; }
   if (!m) return false;
   const f = { year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0 };
   let twoDigitYear = null;
@@ -1289,7 +1304,7 @@ function matchDateFormat(value, format) {
     else if (ch === 'i') out += String(f.minute).padStart(2, '0');
     else if (ch === 's') out += String(f.second).padStart(2, '0');
   }
-  return out === value;
+  return out === input;
 }
 
 // `getDateTime($value)` (ValidatesAttributes.php:366-373) = `Date::parse()`
@@ -1305,6 +1320,9 @@ function matchDateFormat(value, format) {
 // parent DateParser, which reads `HHMM`/`HHMMSS`/`HHMMSS+` like a wall clock
 // (`'1234'` -> today 12:34, `'0123'` -> today 01:23).
 function carbonTimestamp(value) {
+  // `getDateTime($value)` is `Date::parse($value)`: a DateTimeInterface answers
+  // its own instant, so `$parameter`/`$value` compare by timestamp.
+  if (isCarbonLike(value)) return value.getTimestamp();
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return undefined; // Carbon raises a TypeError
     // Carbon's `createFromTimestampUTC` builds a `U u` string; a value past
@@ -2131,11 +2149,13 @@ export class Validator {
         }
       }
       case 'date': {
-        // ValidatesAttributes::validateDate() (:623-640): the value must be a
-        // string or numeric AND `strtotime()` must read it AND `date_parse()`
-        // must yield a real calendar date (`checkdate`). A bare time or a
-        // relative word parses to month/day/year 0, which `checkdate` rejects -
-        // so `'0'`, `'0123'`, `'now'` and `'tomorrow'` all FAIL `date`.
+        // ValidatesAttributes::validateDate() (:623-640): a DateTimeInterface
+        // value is TRUE outright (a model's date attribute read); otherwise the
+        // value must be a string or numeric AND `strtotime()` must read it AND
+        // `date_parse()` must yield a real calendar date (`checkdate`). A bare
+        // time or a relative word parses to month/day/year 0, which `checkdate`
+        // rejects - so `'0'`, `'0123'`, `'now'` and `'tomorrow'` all FAIL.
+        if (isCarbonLike(value)) return true;
         if (typeof value !== 'string' && !isNumericValue(value)) return false;
         return isDateValidValue(value);
       }
@@ -2573,7 +2593,9 @@ export class Validator {
   // `compare(0, ..)`/`compare(.., 0)` is an ordinary integer comparison, so a
   // garbage attribute PASSES `before` (0 < ts) but FAILS `after`.
   _compareDates(field, value, p, rel, strict) {
-    const isDate = typeof value === 'string' || isNumericValue(value) || value instanceof Date;
+    // compareDates() (:277) accepts a string, a numeric value OR any
+    // DateTimeInterface - which is exactly what a model's date attribute is.
+    const isDate = typeof value === 'string' || isNumericValue(value) || value instanceof Date || isCarbonLike(value);
     if (!isDate) return false;
     const format = this._getDateFormat(field);
     if (format) {
