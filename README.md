@@ -44,7 +44,7 @@ port        → escape-hatch hand-written JS for unsupported constructs
 
 Anything uncovered **fails the build** (`--strict`). No silently-wrong output ships.
 
-**Construct coverage:** 113 constructs audited — 43 compile, 63 fail loud, 7 documented at the build level. Façade coverage 47/47 (every `Illuminate\Support\Facades\*` has a verdict). The change-by-change record is in **[CHANGELOG.md](CHANGELOG.md)**; the full map in **[MAP.md](MAP.md)**.
+**Construct coverage:** 113 constructs audited — 43 compile, 63 fail loud, 7 documented at the build level. Façade coverage 47/47 (every `Illuminate\Support\Facades\*` has a verdict). The change-by-change record is in **[CHANGELOG.md](CHANGELOG.md)**; the full map in **[MAP.md](MAP.md)**; the operating contract (branch → PR → green → tag, and the parity rules) in **[docs/PROCESS.md](docs/PROCESS.md)**.
 
 ---
 
