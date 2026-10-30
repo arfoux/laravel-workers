@@ -83,6 +83,19 @@ if (process.argv.includes('--check')) {
     console.error('docs-counts FAIL: the README counts are stale - run: node tools/docs-counts.mjs --write');
     process.exit(1);
   }
+  // The block is the ONLY place a count may appear: a number typed into the
+  // prose is a count no gate reaches, which is exactly how "113 constructs" and
+  // "corpus 51/51" survived two waves. Refuse the claim shapes the block owns.
+  const outside = md.slice(0, s) + md.slice(e);
+  const HAND_TYPED = /\b(?:[0-9]{2,}\+? (?:rules|constructs|docs|views|routes|tests|cases|facades|pages|checks|scenarios|modules))\b|\b[0-9]+\/[0-9]+ (?:rules|byte-identical|docs|verdicts|guard)\b|\bcorpus [0-9]+/gi;
+  const hits = [...outside.matchAll(HAND_TYPED)].map((m) => m[0]);
+  if (hits.length) {
+    console.error(
+      `docs-counts FAIL: hand-typed count(s) outside the generated block: ${[...new Set(hits)].join(', ')}\n` +
+        '  A count the repo can compute belongs in the block (or the claim needs rephrasing).'
+    );
+    process.exit(1);
+  }
   console.log(`docs-counts PASS: README counts match the code (${counts.total} constructs, ${counts.facades}/${counts.facadeTotal} facades, corpus ${counts.corpus}, ${counts.docs} docs)`);
   process.exit(0);
 }

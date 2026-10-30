@@ -42,7 +42,7 @@ docs         105/105 pages with a verdict
 
 **Contents:** [Why](#why) · [Quick start](#quick-start) · [Requirements](#requirements) · [CLI](#cli) · [deploy](#deploy--the-guided-path-simple--advanced) · [Zero-touch / CI](#zero-touch--ci-workers-builds) · [Compiles today](#compiles-today) · [What's inside](#whats-inside) · [Architecture](#architecture-30-s) · [Docs & checks](#docs--checks) · [Philosophy](#philosophy) · [License](#license)
 
-**Who reads what:** *evaluating it?* → [Why](#why) + [Compiles today](#compiles-today). *adopting it?* → [Quick start](#quick-start) → [CLI](#cli) → [deploy](#deploy--the-guided-path-simple--advanced). *working on it?* → [Architecture (#architecture-30-s)] + [What's inside](#whats-inside) + [docs/PROCESS.md](docs/PROCESS.md). *an AI agent?* → [docs/PROCESS.md §0](docs/PROCESS.md), [MAP.md](MAP.md), [COMPILED.md](COMPILED.md) — and never hand-type a number this repo can compute.
+**Who reads what:** *evaluating it?* → [Why](#why) + [Compiles today](#compiles-today). *adopting it?* → [Quick start](#quick-start) → [CLI](#cli) → [deploy](#deploy--the-guided-path-simple--advanced). *working on it?* → [Architecture](#architecture-30-s) + [What's inside](#whats-inside) + [docs/PROCESS.md](docs/PROCESS.md). *an AI agent?* → [docs/PROCESS.md §0](docs/PROCESS.md), [MAP.md](MAP.md), [COMPILED.md](COMPILED.md) — and never hand-type a number this repo can compute.
 
 
 ## Why
@@ -465,7 +465,7 @@ The honest consequence: a page that reads rows the build has never seen prerende
 | **Auth** | `SessionGuard` (attempt/login/logout/remember/recaller), `EloquentUserProvider`, `BcryptHasher` (`$2y$` parity), remember-me rotation, `auth`/`guest` middleware, `auth.basic` | 13 guard runs byte-parity vs PHP 8.3 oracle (M14) |
 | **Session + CSRF** | Flash data + rotation, `migrate`/`regenerate`/`invalidate`, token plumbing, `PreventRequestForgery` | PHP 8.3 oracle (M11/M13) |
 | **Rate limiting** | `ThrottleRequests` over the D1-backed `database` cache store | PHP 8.3 oracle (M12/M18) |
-| **Validation** | 60+ rules incl. `unique`/`exists` via D1, pipe-safe regex, `nullable`/`sometimes`/`bail`, wildcard display names, Laravel 13 messages | `kernel/tests/validator.test.mjs` |
+| **Validation** | the full rule surface (`KNOWN_RULES` + the conditional/presence sets — measured, not typed) incl. `unique`/`exists` via D1, pipe-safe regex, `nullable`/`sometimes`/`bail`, wildcard display names, Laravel 13 messages | `kernel/tests/validator.test.mjs` + `validation-messages.test.mjs` |
 | **D1 query builder** | `where*`/`where(fn)`, `join`/`group`/`having`/`distinct`, `whereDate`/`whereYear`/`whereMonth`/`whereDay`/`whereTime`, `sum`/`avg`/`min`/`max`, `upsert`/`insertGetId`/`truncate`/`increment`/`updateOrInsert`/`chunk`, D1-safe param binding (bool→1/0, Date→ISO, undefined→NULL) | `kernel/tests/sqlite-integration.test.mjs` |
 | **Cache** | `DatabaseCacheStore` (D1-backed `database` cache), KV cache-aside, `Cache` façade (`get`/`put`/`add`/`remember`/`increment`/`decrement`/…), `forget`/`flush` | PHP 8.3 oracle (M18) |
 | **Storage** | `Storage::put()`/`get()`/`exists()`/`delete()` and `Storage::disk('<default>')` → D1 blob store (no card) or R2 (when bound); uploads `$file->store()` | M30/M39b/M40-part5 |
