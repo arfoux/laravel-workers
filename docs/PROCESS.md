@@ -8,6 +8,32 @@ Companion truth: [`COMPILED.md`](../COMPILED.md) (construct coverage + declared 
 [`CHANGELOG.md`](../CHANGELOG.md) (release notes), [`MAP.md`](../MAP.md) (the map),
 [`README.md`](../README.md) (status).
 
+## 0. How to read this document
+
+Nothing here is a law for its own sake; each rule is either a **hard constraint** of this
+repository's pipeline or a **default** you may override with a reason.
+
+- **Hard** — violating it breaks a real thing (a broken release, a red CI, a dead npm link).
+  Every "must"/"never" that is marked *hard* is backed by a concrete failure we hit; if you
+  think it does not apply, re-read the *why* before overriding.
+- **Default** — a convention (branch names, how many commits, `--rebase`, `gh` vs the web UI).
+  Take it when you have no reason not to; deviate freely when you do, and say why in the PR.
+
+If a rule here ever turns out to be wrong, **fix the rule** (and its *why*) in the same change.
+A process doc that lies is worse than none.
+
+| guidance | kind | why |
+|---|---|---|
+| publish is a tag, `tag == version` | hard | `publish.yml` asserts it; a mismatch aborts the release |
+| don't tag until the commit is verified | hard | a tag is near-irreversible (remote delete needed to retag) |
+| mirror the CI set before pushing | hard | CI is the gate; a red push to `main` blocks everything downstream |
+| commit every referenced-but-untracked file | hard | `npm test` names the file → CI fails on the checkout |
+| an "identical to PHP" claim needs an oracle probe | hard | the whole product is byte parity; a guess ships a divergence |
+| work on a branch, land via a PR | default | a trivial one-line docs fix may go straight to `main` |
+| few thematic commits | default | fewer chances to forget a file; two is the usual shape |
+| `gh pr merge --rebase` | default | keeps this repo's history linear; squash is fine if you prefer |
+| explicit `git add <path>` | default | `-A` is fine in a clean tree; it is a hazard only in a dirty one |
+
 ## 1. The release contract
 
 - **A release is a tag, not a version edit.** `.github/workflows/publish.yml` listens on
@@ -19,8 +45,9 @@ Companion truth: [`COMPILED.md`](../COMPILED.md) (construct coverage + declared 
   `needs: shadow` — a real Laravel app (PHP 8.3 + the PHP oracle) is replayed against the
   compiled worker and diffed byte-wise. A parity regression blocks the release outright.
 - **A tag is close to irreversible.** If a bad tag is pushed, `publish` aborts but the tag
-  exists and must be deleted on the remote before retagging. Therefore: **never tag a commit
-  whose CI has not gone green.**
+  exists and must be deleted on the remote before retagging. Therefore: **do not tag a commit
+  you have not verified** — CI green on the pushed SHA, or (for a docs-only change with no CI
+  signal) the local set in §2. *[hard]*
 
 ### Release recipe
 
@@ -64,7 +91,7 @@ while the commit (with a missing file, or without a co-dependent edit) is red.
 ## 3. Change flow — branch → PR → green → merge → tag
 
 ```sh
-git checkout -b <topic>          # never work straight on main
+git checkout -b <topic>          # default: work on a branch
 # ... edit, stage EXPLICIT paths, commit ...
 git push -u origin <topic>
 gh pr create --base main --head <topic>
@@ -72,6 +99,11 @@ gh pr create --base main --head <topic>
 gh pr merge <n> --rebase --delete-branch
 git checkout main && git pull --ff-only
 ```
+
+A branch + PR is the **default**, not a rule: a one-line docs typo may go straight to `main`
+(CI runs on `push` too, so the check still happens — just after `main` moves). Use a branch
+whenever the change could be wrong in a way worth seeing before `main` moves; that is the whole
+point of the PR.
 
 Why a PR and not "push to main, then tag":
 - `ci.yml` also triggers on `pull_request`, so the PR gives you a green signal **before** `main`
