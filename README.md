@@ -5,7 +5,7 @@
 
 [![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/laravel-workers.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![laravel-workers — compile Laravel to Cloudflare Workers](https://raw.githubusercontent.com/arfoux/laravel-workers/main/docs/banner.png)
+![laravel-workers — compile Laravel to Cloudflare Workers](https://github.com/arfoux/laravel-workers/raw/main/docs/banner.png?raw=1)
 
 ---
 
