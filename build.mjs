@@ -1401,7 +1401,11 @@ for (const [route, view] of viewMap) {
 
   bladeCompile(dump, route);
 
-  const viewModulePath = join(dist, 'src', 'views', view + '.mjs');
+  // The module NAME goes through viewFileName(): the error views below are
+  // written as `errors.<code>.mjs`, and two different view names that sanitize
+  // to the same file (`errors.404` and `errors/404`) must stop the build
+  // instead of one silently overwriting the other.
+  const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
   try {
     transpileToModule(dumpPath, viewModulePath);
   } catch (e) {
@@ -1415,15 +1419,15 @@ for (const [route, view] of viewMap) {
     );
   }
 
-  const contextPath = join(dist, 'src', 'contexts', view + '.mjs');
+  const contextPath = join(dist, 'src', 'contexts', viewFileName(view) + '.mjs');
   writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
 
   const controllerPath = join(dist, 'src', 'controllers', slug + '.mjs');
   writeFileSync(
     controllerPath,
     [
-      "import main from '../views/" + view + ".mjs';",
-      "import context from '../contexts/" + view + ".mjs';",
+      "import main from '../views/" + viewFileName(view) + ".mjs';",
+      "import context from '../contexts/" + viewFileName(view) + ".mjs';",
       "import { buildRt } from '../runtime/rt-from-context.mjs';",
       "import { html } from '../../kernel/response.mjs';",
       '',
@@ -1474,7 +1478,10 @@ if (errorViewCodes.length) {
 
     bladeCompile(dump, viewName);
 
-    const viewModulePath = join(dist, 'src', 'views', 'errors.' + code + '.mjs');
+    // Same guard as the route views: This name must not collide with a route
+    // view's file (viewFileName throws on a collision, stopping the build).
+    const errorViewFileName = viewFileName('errors.' + code);
+    const viewModulePath = join(dist, 'src', 'views', errorViewFileName + '.mjs');
     try {
       transpileToModule(dumpPath, viewModulePath);
     } catch (e) {
@@ -1488,14 +1495,14 @@ if (errorViewCodes.length) {
       );
     }
 
-    const contextPath = join(dist, 'src', 'contexts', 'errors.' + code + '.mjs');
+    const contextPath = join(dist, 'src', 'contexts', errorViewFileName + '.mjs');
     writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
 
     const importName = 'errorView_' + String(code).replace(/[^A-Za-z0-9_]/g, '_');
-    errorViewImports.push(`import ${importName}Main from './views/errors.${code}.mjs';`);
-    errorViewImports.push(`import ${importName}Context from './contexts/errors.${code}.mjs';`);
+    errorViewImports.push(`import ${importName}Main from './views/${errorViewFileName}.mjs';`);
+    errorViewImports.push(`import ${importName}Context from './contexts/${errorViewFileName}.mjs';`);
     errorViewCases.push({ code, importName, registryName });
-    console.log(`  -> dist/src/views/errors.${code}.mjs`);
+    console.log(`  -> dist/src/views/${errorViewFileName}.mjs`);
   }
 }
 
