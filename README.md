@@ -68,7 +68,7 @@ The change-by-change record is in **[CHANGELOG.md](CHANGELOG.md)**; the full map
 ```bash
 # in a real Laravel app (vendor + public/build there):
 cd my-laravel-app
-# install it once, pinned in the app's package.json — or skip this line and keep using npx:
+# install it once, recorded in the app's package.json (+ the lockfile) — or skip this line and keep using npx:
 npm i -D laravel-workers        # or: bun add -d laravel-workers
 
 # the guided path — prompts for mode/name, then does build (+ D1 + deploy) for you:
