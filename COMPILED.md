@@ -181,6 +181,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 | Response | json/make/view/download(stream)/file; redirect→route/away/back/intended; `with/withErrors/withInput`; cookie queue; headers | `back()` needs session; `intended()` compiled (M20) |
 | Middleware | groups (`web`/`api`), route params (`throttle:60,1`, `can:`), sorting, terminable | compiled pipeline |
 | Route-model binding | implicit/explicit/scoped/nullable | |
+| Routes (the scan) | `Route::get/post/put/patch/delete/options/any/match/query`, `view`/`redirect`/`permanentRedirect`/`fallback`, `resource`, groups (`prefix`/`name`/`middleware`), `require` chains, `bootstrap/app.php` `withRouting()` (`web`/`api`), a provider's `Route::group(base_path(...))` | the scan keeps DECLARATION order (Laravel's first-match precedence) and maps the non-verb helpers to what `route:list --json` prints (`view` → GET|HEAD + `Illuminate\Routing\ViewController`, `redirect`/`permanentRedirect` → `Router::$verbs` + `Illuminate\Routing\RedirectController`, `fallback` → GET|HEAD on `{fallbackPlaceholder}`, `any` → `Router::$verbs`, `match([...])` → uppercased + HEAD when GET is present, `query` → QUERY); a helper the scan cannot read is reported through its `notes`, never dropped. **Not served by the edge** (PHP answers 200, the edge 404): the FRAMEWORK routes a route file cannot declare — the health route (`health: '/up'`; `ApplicationBuilder::withRouting()`, reported with a note naming the URI) and `storage/{path}` (`FilesystemServiceProvider::serveFiles()`); vendor/package routes (sanctum, livewire, …) are outside every source scan and the note says to declare the ones the edge must serve in `registry.json` (static/ports/ignore) |
 | CSRF | token in session, `X-CSRF-TOKEN`/`X-XSRF-TOKEN`, except list, SameSite | full VerifyCsrfToken semantics |
 | Signed URLs | `signedRoute`, `temporarySignedRoute`, `hasValidSignature` | HMAC kernel done |
 | Cookies | EncryptCookies parity, queued cookies, cookie jar | M5 parity done |
@@ -314,18 +315,27 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
    that, `A` anchors the match, and the behavior-neutral `S`/`X`/`J`/`n` flags are dropped. PCRE
    without `/u` matches BYTES while JS matches UTF-16 units, so a non-`u` pattern that inspects a
    non-ASCII subject (e.g. `/^[^a]$/` against `é`) can answer differently *(escape: add `/u`)*.
+   The same byte-vs-UTF-16 boundary applies to `urldecode()`: PHP's `urldecode` is byte-wise (a
+   `%FF` is the raw byte 0xFF, the result need not be valid UTF-8), while the edge's
+   `urldecodePlus` decodes a `%XX` run as UTF-8, so a non-UTF-8 byte in a query key/value becomes
+   U+FFFD (`a%FFb` is `61 ff 62` in PHP, `a\uFFFDb` here). ASCII/UTF-8 input is byte-identical; a
+   request that carries a raw non-UTF-8 byte percent-encoded is a declared gap *(escape: port)*.
 4. String-eval'd names outside the compiled universe (`make($runtimeString)` for an unknown
    class) — registry covers the compiled universe; outside → fail loud *(escape: add class / port)*
 5. Precise `__destruct` / `register_shutdown_function` ordering, true streaming `flush()` —
    approximated by design, declared *(escape: container)*
 6. Fibers full suspend/resume — mapped to async/await partially, declared
 7. PHP 8.4/8.5-specific behavior — pinned to 8.3 oracle
-8. float→string / int64 residue beyond declared tolerance — corpus grows, residue declared
+8. float→string / int64 residue beyond declared tolerance — corpus grows, residue declared;
+   the **int/float distinction itself** is one too: JS has a SINGLE number type, so a PHP float
+   that happens to be integral (`1.0`, a REAL-column read) answers `is_int()`/`is_float()` like
+   an integer (`rt.is_int(1.0)` is true where PHP answers false), and no marker is carried
+   across the compiled rung
 9. `extract()` / variable-variables at arbitrary depth — compiled where analyzable, else fail loud
 10. Runtime `WebAssembly.compile()` — codegen disallowed by the embedder (static `.wasm` imports
     only); WASM-native crypto libs (hash-wasm etc.) are out — pure-JS equivalents stand in
     (bcryptjs measured above)
-10. **The app's timezone** — `config('app.timezone')` reaches the edge: `tools/config-dump.php` dumps it, the runtime's Carbon stub renders every date in it through `Intl` (`format`/`toDateTimeString`/`toDateString`/`today()`/`timezoneName`), and the model writes/serialises its timestamps in it (`phpDateString` writes the local wall clock, `isoDateString` converts back to UTC before the `Z` - Carbon/Converter.php:442-455). Closed in M70.
+10. **The app's timezone** — `config('app.timezone')` reaches the edge: `tools/config-dump.php` dumps it, the runtime's Carbon stub renders every date in it through `Intl` (`format`/`toDateTimeString`/`toDateString`/`today()`/`timezoneName`), and the model writes/serialises its timestamps in it (`phpDateString` writes the local wall clock, `isoDateString` converts back to UTC before the `Z` - Carbon/Converter.php:442-455). Closed in M70. A date **attribute** read too: `date`/`datetime`/`immutable_*`/`custom_datetime` casts and `created_at`/`updated_at`/`deleted_at` answer a Carbon subset (`format` with the app-timezone `date()` letters, `toDateString`, `toDateTimeString`, `timestamp`, `addDays`/`subHours`/`copy`, `(string)` = the model's date format, `json_encode()` = the ISO8601 `Z` form), so `$post->created_at->format('d M Y')` compiles; `diffForHumans`, `isoFormat` and the `CarbonImmutable` API are NOT implemented (a loud JS error at the edge - write a port), and the stored attribute/JSON body/binding keep the TEXT. A stored date value the reader cannot parse (a row whose column does not hold `Y-m-d[ H:i:s]`, e.g. `'02/01/2024'` under a `datetime:d/m/Y` cast) stays the raw TEXT, where PHP's `asDateTime()` raises `InvalidFormatException` (a 500): the app's own bad row is served, not invented as a Carbon - a declared silent-not-loud gap (audit #273), left to the maintainer because Carbon's parse grammar is broader than this reader (a value Carbon *can* parse but this reader cannot would be mis-thrown as a 500).
 
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
