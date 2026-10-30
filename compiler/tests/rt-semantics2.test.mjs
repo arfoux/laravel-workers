@@ -82,3 +82,30 @@ test('rt-semantics2: rt.Arr.except matches Arr.php (Laravel 11.34 reference)', (
   const vars = { __data: 'd', __path: 'p', posts: [] };
   assert.deepEqual(rt.Arr.except(vars, ['__data', '__path']), { posts: [] });
 });
+
+test('rt-semantics2: === on arrays is by VALUE, on objects by IDENTITY', () => {
+  // PHP 8.3 (probed): `[1,2] === [1,2]` is TRUE - two arrays are identical
+  // when they hold the same pairs in the same order with identical values.
+  // JS compares array/object references, so the compiled `===` answered false.
+  assert.equal(rt.strictEq([1, 2], [1, 2]), true);
+  assert.equal(rt.strictEq({ a: 1 }, { a: 1 }), true);
+  assert.equal(rt.strictEq([[1], [2]], [[1], [2]]), true);
+  assert.equal(rt.strictEq([1, 2], [2, 1]), false);
+  assert.equal(rt.strictEq([], [1]), false);
+  // A list and the same pairs as an int-keyed assoc array are the same array.
+  assert.equal(rt.strictEq([1, 2], { 0: 1, 1: 2 }), true);
+  assert.equal(rt.strictEq(1, '1'), false);
+  // A `(object)` value is a stdClass: `==` compares the properties, `===` is
+  // identity, and an array never equals an object.
+  const o1 = rt.objectCast({ a: 1 });
+  const o2 = rt.objectCast({ a: 1 });
+  assert.equal(rt.strictEq({ a: 1 }, o1), false);
+  assert.equal(rt.looseEq({ a: 1 }, o1), false);
+  assert.equal(rt.looseEq(o1, o2), true);
+  assert.equal(rt.strictEq(o1, o2), false);
+  assert.equal(rt.strictEq(o1, o1), true);
+  assert.equal(rt.looseEq(null, o1), false);
+  // in_array(..., true) uses the same identity rule for objects.
+  assert.equal(rt.in_array(o1, [o2], true), false);
+  assert.equal(rt.in_array(o1, [o1], true), true);
+});

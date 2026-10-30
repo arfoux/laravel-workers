@@ -18,8 +18,10 @@
 //     lowercase "e" with an explicit sign ("1.0e+17", "1.0e-5", "5.0e-324").
 //   - Arrays with keys exactly 0..n-1 in order encode as JSON lists; canonical
 //     decimal string keys are cast to ints (PHP semantics; "-0", "+0", "00"
-//     stay strings — verified against PHP); an empty object encodes as []
-//     (PHP's empty array).
+//     stay strings — verified against PHP); an empty UNMARKED object encodes as
+//     [] (PHP's empty array), while a value tagged as a stdClass (`(object)`
+//     cast, json_decode assoc=false, the `object` model cast) always encodes as
+//     an object — `{}` when empty, `{"0":..}` when its names are list indices.
 //   - NAN/INF and lone UTF-16 surrogates fail loud (PHP json_encode() returns
 //     false with "Inf and NaN cannot be JSON encoded" / "Malformed UTF-8
 //     characters").
@@ -41,6 +43,39 @@ export class PhpJsonError extends Error {
 // PHP casts a string key to int only for canonical decimal ints (no "-0",
 // "+0" or leading zeros) that fit in a platform int.
 const INT_KEY_RE = /^(?:0|-?[1-9][0-9]*)$/;
+// A PHP `stdClass` is not a PHP array: `json_encode(new stdClass)` is `{}` while
+// `json_encode([])` is `[]`, and a stdClass whose property names are the list
+// indices still encodes as an OBJECT (`(object) [10, 20]` -> `{"0":10,"1":20}`).
+// JS cannot tell a plain object that came from a stdClass from one that came
+// from an assoc array, so the creating site marks the value (a non-enumerable
+// property, invisible to Object.keys/JSON.stringify/the output). rt.objectCast(),
+// rt.json_decode() with $assoc = false and the `object` model cast set it.
+function defineObjectMarker(value) {
+  if (value.__lwObject !== true) {
+    Object.defineProperty(value, '__lwObject', {
+      value: true,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+}
+/** Mark a value as a PHP `stdClass` (a JSON OBJECT, never a JSON list). */
+export function tagPhpObject(value) {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) defineObjectMarker(value);
+  return value;
+}
+/** `tagPhpObject` for every object nested inside `value` (json_decode assoc=false). */
+export function tagPhpObjectDeep(value) {
+  if (Array.isArray(value)) {
+    for (const x of value) tagPhpObjectDeep(x);
+    return value;
+  }
+  if (value === null || typeof value !== 'object') return value;
+  defineObjectMarker(value);
+  for (const k of Object.keys(value)) tagPhpObjectDeep(value[k]);
+  return value;
+}
 
 function isPlainObject(v) {
   if (typeof v !== 'object' || v === null) return false;
@@ -179,9 +214,11 @@ function writeValue(value, out, opts) {
       norm.push(key);
       isList = false;
     }
-    if (isList) {
+    if (isList && value.__lwObject !== true) {
       // Empty object encodes as [] (PHP empty array); keys exactly 0..n-1
-      // in order encode as a JSON list.
+      // in order encode as a JSON list. A value tagged as a stdClass
+      // (`(object)` cast / json_decode assoc=false) is NOT a PHP array, so it
+      // always takes the object branch below (`{}` for the empty one).
       out.push('[');
       for (let i = 0; i < norm.length; i++) {
         if (i > 0) out.push(',');

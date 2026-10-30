@@ -5,7 +5,7 @@ import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
 import { arr as arrHelpers } from '../../kernel/arr.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
-import { phpJsonEncode } from '../../kernel/php-json.mjs';
+import { phpJsonEncode, tagPhpObject, tagPhpObjectDeep } from '../../kernel/php-json.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
 import { setModelRuntime, setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
@@ -1486,7 +1486,9 @@ export function buildRt(context, opts = {}) {
     if (typeof v === 'boolean') return 'bool';
     if (typeof v === 'number') return 'num';
     if (typeof v === 'string') return 'str';
-    return 'arr';
+    // A tagged stdClass is a PHP OBJECT, not a PHP array: PHP never compares an
+    // array with an object as equal, and `===` on two objects is IDENTITY.
+    return v.__lwObject === true ? 'obj' : 'arr';
   };
   const arrEmpty = (v) => (Array.isArray(v) ? v.length === 0 : (v && typeof v === 'object' ? Object.keys(v).length === 0 : true));
 
@@ -1597,7 +1599,7 @@ export function buildRt(context, opts = {}) {
     }
     if (ta === 'num' && tb === 'str') return isNumericStr(b) ? a === Number(b) : String(a) === String(b);
     if (ta === 'str' && tb === 'num') return isNumericStr(a) ? Number(a) === b : String(a) === String(b);
-    if (ta === 'arr' && tb === 'arr') return looseArrayEq(a, b);
+    if ((ta === 'arr' || ta === 'obj') && ta === tb) return looseArrayEq(a, b);
     return a === b;
   };
   rt.looseNe = (a, b) => !rt.looseEq(a, b);
@@ -1608,6 +1610,11 @@ export function buildRt(context, opts = {}) {
     const ta = tagOf(na), tb = tagOf(nb);
     if (ta !== tb) return false;
     if (ta === 'num' && (!!la !== !!lb)) return false;
+    // PHP's `===`: two ARRAYS are identical when they hold the same pairs in the
+    // same order with identical values (`[1,2] === [1,2]` is TRUE), while two
+    // OBJECTS are identical only when they are the SAME instance. The JS `===`
+    // compares array/object references, so `[1,2] === [1,2]` answered false.
+    if (ta === 'arr') return phpIdentical(na, nb);
     return na === nb;
   };
   rt.strictNe = (a, b, la, lb) => !rt.strictEq(a, b, la, lb);
@@ -2150,7 +2157,10 @@ export function buildRt(context, opts = {}) {
   // costs a level (`json_decode('[]', true, 1)` is already NULL, probed on PHP
   // 8.3), while a scalar needs none, and `$depth <= 0` is a ValueError.
   // `assoc` does not change the JS shape (a plain object is this runtime's PHP
-  // array - see the documented object/array ambiguity).
+  // array - see the documented object/array ambiguity) EXCEPT for the marker:
+  // `$assoc = false` (the default) answers stdClass values, which json_encode()
+  // must print as objects (`{}` where the array shape would print `[]`), so
+  // every nested object is tagged; `$assoc = true` keeps them untagged arrays.
   const jsonDecodeLevels = (v) => {
     if (v === null || typeof v !== 'object') return 0;
     let deepest = 0;
@@ -2160,7 +2170,7 @@ export function buildRt(context, opts = {}) {
     }
     return 1 + deepest;
   };
-  rt.json_decode = (s, _assoc, depth, flags) => {
+  rt.json_decode = (s, assoc, depth, flags) => {
     const budget = depth === undefined || depth === null ? 512 : Number(depth);
     if (!(budget > 0)) {
       const err = new Error('json_decode(): Argument #3 ($depth) must be greater than 0');
@@ -2190,7 +2200,9 @@ export function buildRt(context, opts = {}) {
       }
       return null;
     }
-    return out;
+    // `$assoc = false` (the default) answers stdClass values; tag them so a
+    // later json_encode() prints `{}`/`{"0":..}` rather than the array shape.
+    return assoc ? out : tagPhpObjectDeep(out);
   };
 
   // ---- more array helpers ----
@@ -2641,14 +2653,17 @@ export function buildRt(context, opts = {}) {
   // stdClass, an assoc array) is answered AS-IS (PHP's identity for an
   // object); null becomes the empty object; a scalar wraps under `scalar`.
   rt.objectCast = (v) => {
-    if (v === null || v === undefined) return {};
+    // The result is a PHP stdClass, not a PHP array: json_encode() must answer
+    // `{}` (never `[]`) and `{"0":..,"1":..}` for a list. The marker travels
+    // with the value (kernel/php-json.mjs).
+    if (v === null || v === undefined) return tagPhpObject({});
     if (Array.isArray(v)) {
       const out = {};
       for (let i = 0; i < v.length; i += 1) out[String(i)] = v[i];
-      return out;
+      return tagPhpObject(out);
     }
-    if (typeof v === 'object') return v;
-    return { scalar: v };
+    if (typeof v === 'object') return tagPhpObject(v);
+    return tagPhpObject({ scalar: v });
   };
 
   // rt.propSet: PHP `$model->attribute = $value` (Eloquent::setAttribute). The

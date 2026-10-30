@@ -49,6 +49,15 @@ function fromTagged($t)
                 $a[$k] = fromTagged($v);
             }
             return $a;
+        case 'o':
+            // PHP stdClass: json_encode() answers `{}` for the empty one and
+            // `{"0":..}` for one whose property names are the list indices.
+            if (!is_array($t['v'])) throw new Exception('bad object tag');
+            $o = new stdClass();
+            foreach ($t['v'] as $k => $v) {
+                $o->{$k} = fromTagged($v);
+            }
+            return $o;
     }
     throw new Exception('unknown tag: ' . $t['t']);
 }

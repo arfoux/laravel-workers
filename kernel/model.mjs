@@ -2,7 +2,7 @@
 import { table as tableBuilder } from './db.mjs';
 import { isHashedDigest, makeSync, verifyConfiguration } from './hash.mjs';
 import { Collection } from './collections.mjs';
-import { phpJsonEncode } from './php-json.mjs';
+import { phpJsonEncode, tagPhpObjectDeep } from './php-json.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
 /**
@@ -16,9 +16,12 @@ const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
 const jsonCastSpec = (cast) => {
   if (cast === null || cast === undefined) return null;
   const spec = String(cast).toLowerCase();
-  if (spec === 'json:unicode') return { unicode: true, collection: false };
+  if (spec === 'json:unicode') return { unicode: true, collection: false, stdObject: false };
   if (!JSON_CASTS.has(spec)) return null;
-  return { unicode: false, collection: spec === 'collection' };
+  // The `object` cast answers stdClass (fromJson($value, true) ->
+  // json_decode($value, false)), so the decoded value is tagged as a PHP
+  // object: json_encode() prints `{}`/`{"0":..}`, never the array shape.
+  return { unicode: false, collection: spec === 'collection', stdObject: spec === 'object' };
 };
 /** `castAttributeAsJson($key, $value)`: Json::encode() - PHP's bytes. */
 function encodeJsonCast(value, spec) {
@@ -40,7 +43,9 @@ function decodeJsonCast(value, spec) {
   } catch {
     return null;
   }
-  return spec.collection ? new Collection(decoded) : decoded;
+  if (spec.collection) return new Collection(decoded);
+  // The `object` cast is stdClass (json_decode($value, false)).
+  return spec.stdObject ? tagPhpObjectDeep(decoded) : decoded;
 }
 
 // Eloquent `castAttributeAsHashedString()`: plaintext is hashed with Hash::make()
@@ -265,7 +270,7 @@ function phpIsNumeric(value) {
 // decode goes through the same `fromJson()` as the read path, so '' and 'null'
 // both read as null (they are equivalent, exactly as in PHP).
 function jsonEquivalent(cast, a, b) {
-  const spec = jsonCastSpec(cast) || { unicode: false, collection: false };
+  const spec = jsonCastSpec(cast) || { unicode: false, collection: false, stdObject: false };
   const da = decodeJsonCast(a, spec);
   const db = decodeJsonCast(b, spec);
   if (da === db) return true;

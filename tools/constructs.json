@@ -492,7 +492,7 @@
       "php": "$o = (object) ['a' => 1];",
       "check": "compiler",
       "expect": "ok",
-      "note": "PHP's cast to stdClass (`rt.objectCast`, oracle-probed): a list becomes an object keyed by the stringified indices, an object is answered as-is, null is the empty object, a scalar wraps under `scalar`.",
+      "note": "PHP's cast to stdClass (`rt.objectCast`, oracle-probed): a list becomes an object keyed by the stringified indices, an object is answered as-is, null is the empty object, a scalar wraps under `scalar`. The result carries the stdClass marker, so `json_encode()` answers `{}`/`{\"0\":..}` and never the array shape (`[]`) - `json_decode()` with `$assoc = false` and the `object` model cast mark the same way",
       "batch": "M40",
       "status": "done"
     },

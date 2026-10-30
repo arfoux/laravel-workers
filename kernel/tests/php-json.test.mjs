@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { phpJsonEncode, phpJsonDecode, PhpJsonError } from '../php-json.mjs';
+import { phpJsonEncode, phpJsonDecode, PhpJsonError, tagPhpObject } from '../php-json.mjs';
 import { Model } from '../model.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -244,6 +244,37 @@ test('documented divergence: PHP json_decode loses -0 on decode', () => {
   assert.ok(Object.is(phpJsonDecode('[-0]')[0], -0));
 });
 
+test('a stdClass value encodes as an OBJECT, matching PHP', () => {
+  // `json_encode(new stdClass)` is `{}` while `json_encode([])` is `[]`, and a
+  // stdClass whose property names are the list indices still encodes as an
+  // object (`(object) [10, 20]` -> `{"0":10,"1":20}`). The runtime tags these
+  // values ((object) cast, json_decode assoc=false, the `object` model cast);
+  // the encoder must honour the marker.
+  const tagged = [
+    { t: 'o', v: {} },
+    { t: 'o', v: { '0': { t: 'i', v: '10' }, '1': { t: 'i', v: '20' } } },
+    { t: 'o', v: { a: { t: 'o', v: {} } } },
+    { t: 'a', v: { x: { t: 'o', v: {} } } },
+    { t: 'o', v: { '0': { t: 'o', v: {} } } },
+  ];
+  const js = [
+    tagPhpObject({}),
+    tagPhpObject({ 0: 10, 1: 20 }),
+    tagPhpObject({ a: tagPhpObject({}) }),
+    { x: tagPhpObject({}) },
+    tagPhpObject({ 0: tagPhpObject({}) }),
+  ];
+  const php = runOracle('encode', { values: tagged });
+  const want = ['{}', '{"0":10,"1":20}', '{"a":{}}', '{"x":{}}', '{"0":{}}'];
+  js.forEach((v, i) => {
+    assert.ok(!php[i].err, `case ${i}: oracle error ${php[i].err}`);
+    assert.equal(php[i].out, want[i], `oracle case ${i}`);
+    assert.equal(phpJsonEncode(v), php[i].out, `case ${i} diverged from PHP`);
+  });
+  // The marker is invisible to the enumerable shape and to plain JSON.
+  assert.deepEqual(phpJsonDecode('{}'), {});
+  assert.deepEqual(Object.keys(tagPhpObject({})), []);
+});
 test('phpJsonDecode reads PHP-produced payloads', () => {
   assert.deepEqual(phpJsonDecode('{"a":[1,2],"b":{"c":null}}'), { a: [1, 2], b: { c: null } });
   assert.deepEqual(phpJsonDecode('[]'), []);

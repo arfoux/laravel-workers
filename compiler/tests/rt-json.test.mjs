@@ -111,3 +111,21 @@ test('rt-json: json_decode() honours the depth budget like PHP', () => {
     (e) => e.name === 'JsonException' && /Maximum stack depth exceeded/.test(e.message)
   );
 });
+
+test('rt-json: (object) cast and json_decode(assoc=false) carry the stdClass marker', () => {
+  // PHP: json_encode((object) []) is '{}' and json_encode((object) [10, 20]) is
+  // '{"0":10,"1":20}'; json_decode('{}') re-encodes as '{}' while
+  // json_decode('{}', true) is an empty ARRAY and re-encodes as '[]'.
+  assert.equal(phpJsonEncode(rt.objectCast([])), '{}');
+  assert.equal(phpJsonEncode(rt.objectCast([10, 20])), '{"0":10,"1":20}');
+  assert.equal(phpJsonEncode(rt.objectCast(null)), '{}');
+  assert.equal(phpJsonEncode({ x: rt.objectCast([]) }), '{"x":{}}');
+  assert.equal(phpJsonEncode(rt.json_decode('{}')), '{}');
+  assert.equal(phpJsonEncode(rt.json_decode('{"a":{}}')), '{"a":{}}');
+  assert.equal(phpJsonEncode(rt.json_decode('[]')), '[]');
+  assert.equal(phpJsonEncode(rt.json_decode('{}', true)), '[]');
+  assert.equal(phpJsonEncode(rt.json_decode('{"a":{}}', true)), '{"a":[]}');
+  // The marker never leaks into the enumerable shape.
+  assert.deepEqual(Object.keys(rt.objectCast([])), []);
+  assert.deepEqual(rt.json_decode('{"a":1}'), { a: 1 });
+});
