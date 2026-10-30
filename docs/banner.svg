@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 280" width="1280" height="280" role="img" aria-label="laravel-workers — compile Laravel to Cloudflare Workers">
+  <title>laravel-workers</title>
+  <defs>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff2d20"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <clipPath id="card">
+      <rect x="0" y="0" width="1280" height="280" rx="20"/>
+    </clipPath>
+  </defs>
+  <rect x="0" y="0" width="1280" height="280" rx="20" fill="#0b1220" stroke="#1e293b" stroke-width="1"/>
+  <g clip-path="url(#card)">
+    <rect x="0" y="0" width="1280" height="6" fill="url(#edge)"/>
+  </g>
+  <text x="72" y="116" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="60" font-weight="700" fill="#f8fafc">laravel-workers</text>
+  <text x="72" y="159" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="25" fill="#a3b1c6">Compile Laravel to a tiny JS bundle that runs on Cloudflare Workers.</text>
+  <text x="72" y="196" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="21" fill="#8296ad">No PHP at the edge · No WASM · No cold-start drama · pure V8 isolates, p95 ≤ 5 ms CPU</text>
+  <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="20">
+    <text x="72" y="241" fill="#e6edf6">Blade · PHP · Eloquent</text>
+    <text x="374" y="241" fill="#ff2d20">→</text>
+    <text x="420" y="241" fill="#e6edf6">compile at build</text>
+    <text x="649" y="241" fill="#38bdf8">→</text>
+    <text x="695" y="241" fill="#e6edf6">V8 isolates + D1</text>
+  </g>
+</svg>

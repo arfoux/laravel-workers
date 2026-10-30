@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="laravel-workers — compile Laravel to Cloudflare Workers">
+  <title>laravel-workers</title>
+  <defs>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff2d20"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1280" height="640" fill="#0b1220"/>
+  <rect x="0" y="0" width="1280" height="10" fill="url(#edge)"/>
+  <text x="96" y="268" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="88" font-weight="700" fill="#f8fafc">laravel-workers</text>
+  <text x="96" y="336" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="34" fill="#a3b1c6">Compile Laravel to a tiny JS bundle</text>
+  <text x="96" y="382" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="34" fill="#a3b1c6">that runs on Cloudflare Workers.</text>
+  <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="26">
+    <text x="96" y="470" fill="#e6edf6">No PHP at the edge  ·  No WASM  ·  No cold-start drama</text>
+  </g>
+  <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="24">
+    <text x="96" y="536" fill="#8fa3bb">Blade · PHP · Eloquent</text>
+    <text x="462" y="536" fill="#ff2d20">→</text>
+    <text x="520" y="536" fill="#8fa3bb">compile at build</text>
+    <text x="802" y="536" fill="#38bdf8">→</text>
+    <text x="860" y="536" fill="#8fa3bb">V8 isolates + D1</text>
+  </g>
+</svg>

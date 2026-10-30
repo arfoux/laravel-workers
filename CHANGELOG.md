@@ -1,6 +1,14 @@
 # Changelog
 
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
+### docs/README — the public face (2026-10-30)
+The README is the front door, and it was telling the visitor the wrong numbers: **"113 constructs / 43 compile"** and **"corpus 51/51 / 105 docs"** had been typed by hand and were two waves stale (the code is 115 / 45). Nothing checked them — the gate read `MAP.md` and `COMPILED.md`, never the README.
+- **The README counts are now generated.** `tools/docs-counts.mjs` derives the construct tally, the facade coverage (47/47), the corpus size and the docs verdict count from `tools/constructs.json`, the corpus manifest and the `MAP.md` coverage index, writes them into `README.md` between `<!-- readme-counts:start -->`/`<!-- readme-counts:end -->`, and **`tools/gate.mjs` runs it with `--check`** — a stale README now fails the gate, the same way a stale COMPILED table already did. No count in this repository is hand-typed any more.
+- **Reordered for the first 30 seconds.** The landing text ("what this is / what it is not", the pipeline, the coverage block, a `Contents` line and a "who reads what" line) now comes first, and `Quick start` → `Requirements` → `CLI` → `deploy` come before the internal sections (`Compiles today`, `What's inside`, `Architecture`). Two duplicated blocks were merged (the coverage paragraph, printed twice).
+- **The public face has assets.** `docs/banner.svg` (+ rasterised `docs/banner.png`, 1280×280) and `docs/social-preview.svg` (+ `.png`, 1280×640) — the README hero and the GitHub social card. The README links the PNG through an **absolute `raw.githubusercontent.com` URL** because npm does not resolve repository-relative image paths; `docs/banner.png` is a `REQUIRED_DOCS` entry in `tools/pack-gate.mjs`, so a dead hero link fails the pack check. The images are plain SVG with the default font stack — no toolchain lives in the repo (`npx --yes sharp-cli` rasterises once, on demand).
+- **`docs/PROCESS.md` §7** records the rule behind all of it: *never hand-type a number the repo can compute; images are absolute; svg is a source, png is the artifact.*
+- Repository metadata refreshed: a tighter description and four more topics; the homepage link was **removed** (there is no homepage yet).
+
 ## 0.4.6 — line-by-line parity audit + `json_encode` flags (2026-10-30)
 
 Findings #274/#275/#276 (the JSON flag path), reproduced against the oracle and fixed. Suite: `npm test` 1003/1003, corpus 55/55, shadow harness 12/12 byte-identical at 100% coverage, `gate.mjs --strict` + constant audit PASS.
