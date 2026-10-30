@@ -23,6 +23,13 @@
 
 import { match, dispatch, routeKey, allowedMethods } from './router.mjs';
 import { imageInfo } from './image.mjs';
+import { ownSet, ownGet, ownHas, assignOwn, copyOwn } from './own-key.mjs';
+// The PHP variable-registration bag + `parse_str()` subset live in php-bag.mjs
+// (the multipart parser registers its field names through the same code).
+import { parsePhpQuery } from './php-bag.mjs';
+// http.mjs's public surface keeps `parsePhpQuery` (kernel/tests/http.test.mjs and
+// the default export below both read it from here).
+export { parsePhpQuery };
 import {
   makeCookie,
   parseCookieHeader,
@@ -176,166 +183,17 @@ function arrSetRef(target, key, value, forget) {
   let current = target;
   for (let i = 0; i < segments.length - 1; i += 1) {
     const seg = segments[i];
-    if (!isPlainObject(current[seg])) current[seg] = {};
-    current = current[seg];
+    // Own-property walk: a key the client sent (`__proto__`, `constructor`) is
+    // DATA to PHP, never a step into the prototype chain.
+    if (!isPlainObject(ownGet(current, seg))) ownSet(current, seg, {});
+    current = ownGet(current, seg);
   }
   const last = segments[segments.length - 1];
   if (forget) delete current[last];
-  else current[last] = value;
+  else ownSet(current, last, value);
   return target;
 }
 
-/** urldecode() with `+` → space and %XX bytes decoded as UTF-8. */
-function urldecodePlus(input) {
-  const s = String(input ?? '').replace(/\+/g, ' ');
-  let out = '';
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === '%' && /^[0-9a-fA-F]{2}$/.test(s.slice(i + 1, i + 3))) {
-      const bytes = [];
-      while (s[i] === '%' && /^[0-9a-fA-F]{2}$/.test(s.slice(i + 1, i + 3))) {
-        bytes.push(parseInt(s.slice(i + 1, i + 3), 16));
-        i += 3;
-      }
-      i--;
-      try {
-        out += new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
-      } catch {
-        out += '?';
-      }
-    } else {
-      out += s[i];
-    }
-  }
-  return out;
-}
-
-/** parse_str() base-name rule: spaces and dots become underscores. */
-function phpBaseKey(name) {
-  return String(name).replace(/[.\s]/g, '_');
-}
-
-function parseNameSegments(name) {
-  const open = name.indexOf('[');
-  if (open === -1) return { base: phpBaseKey(name), segs: null };
-  const base = phpBaseKey(name.slice(0, open));
-  const segs = [];
-  let rest = name.slice(open);
-  while (rest.length) {
-    if (rest[0] !== '[') return { base, segs: null };
-    const close = rest.indexOf(']');
-    if (close === -1) return { base, segs: null };
-    segs.push(rest.slice(1, close));
-    rest = rest.slice(close + 1);
-  }
-  return { base, segs };
-}
-
-/** Canonical PHP integer-string key (matches the Repository::itemKey() rule). */
-const PHP_INT_KEY = /^(?:0|[1-9][0-9]*)$/;
-
-/**
- * A parse container: a plain object plus a hidden insertion-order log.
- *
- * PHP's parse_str() keeps insertion order even for integer keys, and json_encode()
- * emits a JSON *list* only when the keys are exactly 0..n-1 in that order (an object
- * otherwise). JS objects re-order integer-like keys, so the order is tracked here and
- * the containers PHP would have stored as lists are promoted in normalizePhpArrays().
- */
-function newBag() {
-  const bag = {};
-  Object.defineProperty(bag, '__order', { value: [], writable: true, enumerable: false, configurable: true });
-  return bag;
-}
-
-function isBag(node) {
-  return node !== null && typeof node === 'object' && !Array.isArray(node);
-}
-
-function bagOrder(node) {
-  return Object.prototype.hasOwnProperty.call(node, '__order') ? node.__order : Object.keys(node);
-}
-
-/** Assign, recording insertion order (PHP keeps a key's first position). */
-function bagSet(node, key, value) {
-  if (!Object.prototype.hasOwnProperty.call(node, key)) bagOrder(node).push(key);
-  node[key] = value;
-}
-
-/** The key `$a[]` uses: the next free integer index (max int key + 1, else 0). */
-function appendKey(node) {
-  let max = -1;
-  for (const k of bagOrder(node)) if (PHP_INT_KEY.test(k)) max = Math.max(max, Number(k));
-  return String(max + 1);
-}
-
-/** Ensure a nested container at `key` (PHP replaces a scalar with an array). */
-function ensureBag(node, key) {
-  const cur = node[key];
-  if (!isBag(cur)) bagSet(node, key, newBag());
-  return node[key];
-}
-
-function setNested(node, segs, value) {
-  const seg = segs[0] === '' ? null : segs[0];
-  if (segs.length === 1) {
-    if (seg === null) bagSet(node, appendKey(node), value);
-    else bagSet(node, seg, value);
-    return;
-  }
-  if (seg === null) {
-    // `a[][x]`: every `[]` appends a NEW container (PHP does not reuse).
-    const child = newBag();
-    bagSet(node, appendKey(node), child);
-    setNested(child, segs.slice(1), value);
-    return;
-  }
-  setNested(ensureBag(node, seg), segs.slice(1), value);
-}
-
-/** Promote the containers PHP would have stored as lists (keys exactly 0..n-1). */
-function normalizePhpArrays(node) {
-  if (!isBag(node)) return node;
-  const order = bagOrder(node);
-  for (const k of order) node[k] = normalizePhpArrays(node[k]);
-  if (order.length > 0 && order.every((k, i) => PHP_INT_KEY.test(k) && Number(k) === i)) {
-    return order.map((k) => node[k]);
-  }
-  return node;
-}
-
-/**
- * PHP parse_str() subset used for query strings and form bodies.
- * Supported: flat keys, `a[b]`, `a[b][c]`, `a[]` list append (next free integer
- * index), duplicate scalar last-wins, scalar→array overwrite, and list promotion
- * for integer-keyed sequences. Exotic conflicts (scalar vs array on the same key)
- * follow the common shape rather than every PHP warning path — covered by
- * kernel/tests/http.test.mjs against a live PHP oracle.
- */
-export function parsePhpQuery(input) {
-  const out = newBag();
-  const s = input == null ? '' : String(input);
-  if (s === '') return out;
-  for (const pair of s.split('&')) {
-    if (pair === '') continue;
-    const eq = pair.indexOf('=');
-    const name = urldecodePlus(eq === -1 ? pair : pair.slice(0, eq));
-    const value = urldecodePlus(eq === -1 ? '' : pair.slice(eq + 1));
-    const { base, segs } = parseNameSegments(name);
-    if (!segs) {
-      bagSet(out, base, value);
-      continue;
-    }
-    if (segs.length === 0) {
-      bagSet(out, base, value);
-      continue;
-    }
-    if (!Object.prototype.hasOwnProperty.call(out, base) || !isBag(out[base])) {
-      bagSet(out, base, newBag());
-    }
-    setNested(out[base], segs, value);
-  }
-  return normalizePhpArrays(out);
-}
 
 /** Arr::get() / data_get() subset: exact key first, then dot segments. */
 export function dataGet(target, key, def = null) {
@@ -630,7 +488,7 @@ export function buildRequest(raw, options = {}) {
         let value = cleanBag(node[key], path + '.');
         if (trimOn) value = trimOne(path, value);
         if (emptyToNullOn) value = convertOne(value);
-        out[key] = value;
+        ownSet(out, key, value);
       }
       return out;
     };
@@ -640,7 +498,7 @@ export function buildRequest(raw, options = {}) {
       for (const key of Object.keys(node)) delete node[key];
       // The bag's own order log (parsePhpQuery) is dropped with the keys; the
       // key order of `next` is the bag order the transformer produced.
-      Object.assign(node, next);
+      assignOwn(node, next);
       return node;
     };
     if (Object.keys(query).length) retrim(query);
@@ -679,7 +537,7 @@ export function buildRequest(raw, options = {}) {
   // `Object.assign({}, query, source)` answered the same VALUES in the other
   // ORDER, so a body that echoes `$request->all()` (or
   // `json_encode($request->all())`) differed from PHP's byte for byte.
-  const inputUnion = () => Object.assign({}, inputSource(), query);
+  const inputUnion = () => copyOwn(inputSource(), query);
   // InteractsWithData::isEmptyString(): `$value = $this->data($key)` — `data()`
   // is `input()`, which unions the query bag in (`inputUnion`); oracle:
   // `filled('flag')` is true for `POST /x?flag=1`. A file-only key is absent
@@ -889,8 +747,7 @@ export function buildRequest(raw, options = {}) {
       // DOT NOTATION works and an absent key answers null. The edge ignored the
       // argument, so `all(['name'])` answered the whole input (an app that
       // validates or creates from `$request->all(['name'])` saw every field).
-      const out = Object.assign({}, fileObjects());
-      const data = Object.assign(out, inputUnion());
+      const data = copyOwn(fileObjects(), inputUnion());
       const keys = phpKeyList(args);
       if (keys.length === 0) return data;
       const results = {};

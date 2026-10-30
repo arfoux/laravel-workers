@@ -20,6 +20,8 @@
 // subject, html, text }. The html (and the text) are the compiled views
 // (the runtime renders them with the mailable's data - Laravel's
 // buildViewData(): the PUBLIC properties merged with the with() data).
+import { copyOwn } from './own-key.mjs';
+
 export class Mailable {
   constructor() {
     // The private values (the fluent setters write them).
@@ -44,13 +46,13 @@ export class Mailable {
   view(name, data) {
     this.__view = String(name);
     if (data && typeof data === 'object') {
-      this.__viewData = Object.assign({}, this.__viewData || {}, data);
+      this.__viewData = copyOwn(this.__viewData || {}, data);
     }
     return this;
   }
   with(data) {
     if (data && typeof data === 'object') {
-      this.__viewData = Object.assign({}, this.__viewData || {}, data);
+      this.__viewData = copyOwn(this.__viewData || {}, data);
     }
     return this;
   }
@@ -106,7 +108,7 @@ export class Mailable {
     // silent 200 where Laravel answers 500.
     if (html == null && !view && !textView) throw new Error('Invalid view.');
     // The views: Laravel renders the mailable's view (and its text twin).
-    const data = Object.assign({}, publicProperties(this), viewData || {});
+    const data = copyOwn(publicProperties(this), viewData || {});
     let renderedHtml = html;
     if (renderedHtml == null && view) {
       // Laravel's View::render() returns the RAW output (the HTTP response path

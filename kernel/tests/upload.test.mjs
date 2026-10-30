@@ -191,3 +191,47 @@ test('upload: a file whose CONTENT contains the boundary is not truncated', () =
   assert.equal(file.getSize(), content.length, 'the whole content is the file');
   assert.equal(new TextDecoder().decode(file.get()), content);
 });
+test('upload: a bracketed field name is a PHP nested array (rfc1867 -> php_register_variable_ex)', () => {
+  // Measured on the PHP 8.3 SAPI: a multipart field named `a[b]` is
+  // `$_POST['a']['b']` and `c[]=1&c[]=2` is the list ["1","2"] — the multipart
+  // parser registers names through the same rule as parse_str(), not literally.
+  const req = uploadRequest([
+    { name: 'a[b]', content: 'v' },
+    { name: 'c[]', content: '1' },
+    { name: 'c[]', content: '2' },
+    { name: 'plain', content: 'x' },
+  ]);
+  assert.equal(req.input('a.b'), 'v');
+  assert.deepEqual(req.input('c'), ['1', '2']);
+  assert.equal(req.input('plain'), 'x');
+});
+
+test('upload: a hostile field/file name never mutates Object.prototype', () => {
+  // A key named `__proto__` is ordinary DATA in PHP; the JS writer must use
+  // own-property writes (kernel/own-key.mjs) or Object.prototype is polluted
+  // for the whole isolate.
+  const baseline = Object.getOwnPropertyNames(Object.prototype).sort().join(',');
+  const cases = [
+    [{ name: 'a[__proto__][polluted]', content: '1' }],
+    [{ name: '__proto__[polluted]', content: '1' }],
+    [{ name: 'a[constructor][prototype][polluted]', content: '1' }],
+    [{ name: 'a[__proto__][x]', filename: 'f.txt', content: 'hi' }],
+    [{ name: 'a[constructor][prototype][y]', filename: 'f.txt', content: 'hi' }],
+    [{ name: '__proto__[z]', filename: 'f.txt', content: 'hi' }],
+  ];
+  for (const parts of cases) {
+    const label = parts[0].name;
+    const req = uploadRequest(parts);
+    assert.equal(
+      Object.getOwnPropertyNames(Object.prototype).sort().join(','),
+      baseline,
+      `Object.prototype mutated by ${label}`
+    );
+    assert.equal(Object.prototype.polluted, undefined, `polluted leaked from ${label}`);
+    // The value stayed data: it is reachable through the request's bag.
+    if (parts[0].filename === undefined) {
+      assert.equal(JSON.stringify(req.all()).includes('"polluted"'), true, `${label} lost the value`);
+    }
+  }
+  assert.equal(Object.prototype.z, undefined);
+});
