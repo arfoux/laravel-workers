@@ -68,6 +68,8 @@ The change-by-change record is in **[CHANGELOG.md](CHANGELOG.md)**; the full map
 ```bash
 # in a real Laravel app (vendor + public/build there):
 cd my-laravel-app
+# install it once, pinned in the app's package.json — or skip this line and keep using npx:
+npm i -D laravel-workers        # or: bun add -d laravel-workers
 
 # the guided path — prompts for mode/name, then does build (+ D1 + deploy) for you:
 npx laravel-workers deploy
@@ -87,6 +89,8 @@ npx laravel-workers init              # scaffold registry.json + wrangler.jsonc 
 npx laravel-workers status            # what's deployed, which D1, which account, when
 npx laravel-workers doctor --cloud    # preflight: php, vendor, wrangler, account, deploy state
 ```
+
+**Nothing else to install.** `npx laravel-workers` fetches the toolchain, and Cloudflare's `wrangler` is reached the same way (`npx wrangler` — a `wrangler` you already have locally or globally wins instead), so it is not bundled and not a prerequisite. The `devDependency` line is what you want for CI, `npm run` scripts and reproducible deploys: it records the version the app was tested with in `package.json` (use an exact version there if you need a hard pin), it costs no fetch per run, and `npx` picks up the local binary — while a bare `npx laravel-workers` resolves the latest published version on every run.
 
 From checkout (developing the toolchain, tests):
 
@@ -113,7 +117,7 @@ npx laravel-workers verify  # VERIFY-S0 15/15 (else SKIP — needs parent vendor
 | Node | `22.18.0` | **≥ 22** (`engines`) |
 | Bun | `1.4.0` | **≥ 1.0** (the full test suite passes — `bun run test`) |
 | npm | `10.9.3` | ≥ 10 |
-| Cloudflare Workers | `wrangler` 4.151.1 (fixture app; live mode 2/3 smoke on a stock Laravel 13 app, HTTP 200) / 3.114.13 (repo) | **wrangler 4.x** (operator-installed; not bundled); `compatibility_date` `2026-10-01` |
+| Cloudflare Workers | `wrangler` 4.151.1 (fixture app; live mode 2/3 smoke on a stock Laravel 13 app, HTTP 200) / 3.114.13 (repo) | **wrangler 4.x** (nothing to install — the toolchain runs `npx wrangler`, and a wrangler you already have locally or globally is used instead; not bundled); `compatibility_date` `2026-10-01` |
 | PHP extensions (build only) | `pdo_sqlite`, `sqlite3` | for `tools/schema-compile.php` |
 
 ### The Cloudflare tiers we target (in order)
@@ -129,6 +133,7 @@ npx laravel-workers verify  # VERIFY-S0 15/15 (else SKIP — needs parent vendor
 
 ## CLI
 
+With the package installed (otherwise prefix every command with `npx `):
 ```bash
 laravel-workers build            # --strict (needs Laravel app root); --scaffold generates port stubs
 laravel-workers deploy           # interactive: build, then D1 (+ deploy) on request
