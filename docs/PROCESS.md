@@ -163,12 +163,19 @@ than a missing feature.
   and **the gate fails when they drift** (`tools/gate.mjs` runs it with `--check`). The same idea
   writes the `COMPILED.md` table (`tools/construct-audit.mjs`). A hand-typed count rots silently —
   the README said "113 constructs / corpus 51" for two waves after the code moved on.
-- **Images use an absolute GitHub URL, in the `?raw=1` form.** npm renders the README but does not
+- **Images are absolute URLs; pick the host deliberately.** npm renders the README but does not
   resolve repository-relative image paths, so `![...](docs/banner.png)` shows on GitHub and breaks
-  on npmjs.com. Use
-  `https://github.com/<owner>/<repo>/raw/main/docs/banner.png?raw=1` — **not** the
-  `raw.githubusercontent.com` form: this repository serves 404 for that host (measured: 404 vs 200
-  for the same file), so the hero would be a broken image on both surfaces.
+  on npmjs.com. Three hosts were measured on the same file (all 200, 41425 B, `image/png`):
+
+  | host | form | property |
+  |---|---|---|
+  | GitHub | `https://github.com/<owner>/<repo>/raw/main/docs/banner.png?raw=1` | zero dependency; no caching tier; **the current hero** |
+  | jsDelivr | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@main/docs/banner.png` | CDN + version pinning; **a ref is required** (the ref-less form 404s); `@main` is mutable, so pin a tag for immutability |
+  | Statically | `https://cdn.statically.io/gh/<owner>/<repo>/main/docs/banner.png` | same idea |
+
+  What does **not** work here: `raw.githubusercontent.com` (404 — measured), the ref-less jsDelivr
+  path (404), and any relative path (fine on GitHub, dead on npm). A CDN is an extra dependency and
+  an extra failure mode for one PNG; stay on the GitHub URL unless the README grows many images.
 - **Inline `<svg>` is stripped** by GitHub's markdown sanitiser; a *linked* `.svg` renders, but the
   safe hero is a PNG. Ship the `.svg` source and the rasterised `.png` together
   (`docs/banner.svg` → `docs/banner.png`), and keep both in the tarball.
