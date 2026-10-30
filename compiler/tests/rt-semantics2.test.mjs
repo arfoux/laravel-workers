@@ -109,3 +109,63 @@ test('rt-semantics2: === on arrays is by VALUE, on objects by IDENTITY', () => {
   assert.equal(rt.in_array(o1, [o2], true), false);
   assert.equal(rt.in_array(o1, [o1], true), true);
 });
+
+test('rt-semantics2: a stdClass is an OBJECT, an assoc array is an ARRAY', () => {
+  // PHP 8.3 (probed): is_array((object)[]) is false, is_object(['a'=>1]) is
+  // false, is_array(['a'=>1]) is true, and an OBJECT is always truthy while an
+  // empty assoc ARRAY is falsy.
+  const o = rt.objectCast({ a: 1 });
+  assert.equal(rt.is_array(rt.objectCast([])), false);
+  assert.equal(rt.is_array({ a: 1 }), true);
+  assert.equal(rt.is_array([1]), true);
+  assert.equal(rt.is_object({ a: 1 }), false);
+  assert.equal(rt.is_object([1]), false);
+  assert.equal(rt.is_object(o), true);
+  assert.equal(rt.is_countable(rt.objectCast([])), false);
+  assert.equal(rt.is_countable({ a: 1 }), true);
+  assert.equal(rt.truthy(rt.objectCast([])), true);
+  assert.equal(rt.truthy([]), false);
+  assert.equal(rt.truthy({ a: 1 }), true);
+  // The relational table: an array is greater than a scalar, an object greater
+  // than both (PHP 8).
+  assert.equal(rt.gt([1, 2], 1), true);
+  assert.equal(rt.lt([], 1), false);
+  assert.equal(rt.gt(o, []), true);
+  assert.equal(rt.lt(o, []), false);
+});
+
+test('rt-semantics2: PHP string/array conversions of a stdClass and an array', () => {
+  // 'x' . ['a'=>1] answers 'xArray' (PHP warns "Array to string conversion");
+  // 'x' . (object)[] raises Error("Object of class stdClass could not be
+  // converted to string") in PHP 8.
+  assert.equal(rt.concat('x', { a: 1 }), 'xArray');
+  assert.equal(rt.concat('x', []), 'xArray');
+  assert.equal(rt.str({ a: 1 }), 'Array');
+  assert.throws(() => rt.concat('x', rt.objectCast({})), /could not be converted to string/);
+  assert.throws(() => rt.strval(rt.objectCast({})), /could not be converted to string/);
+  // PHP's own TypeError wording for the array functions.
+  const o = rt.objectCast({ a: 1 });
+  assert.throws(() => rt.count(o), /count\(\): Argument #1 \(\$value\) must be of type Countable\|array, stdClass given/);
+  assert.throws(() => rt.array_keys(o), /array_keys\(\): Argument #1 \(\$array\) must be of type array, stdClass given/);
+  assert.throws(() => rt.array_key_exists('a', o), /array_key_exists\(\): Argument #2/);
+  assert.throws(() => rt.implode(',', o), /implode\(\): Argument #2 \(\$array\) must be of type \?array, stdClass given/);
+  assert.throws(() => rt.array_values(o), /array_values\(\): Argument #1/);
+  // implode() converts each value through the string cast: a nested array is
+  // 'Array', true is '1' and null is '' (probed on PHP 8.3).
+  assert.equal(rt.implode(',', [[1, 2], [3]]), 'Array,Array');
+  assert.equal(rt.implode(',', [null, true, 1.5, 'x']), ',1,1.5,x');
+  assert.throws(() => rt.implode(',', [rt.objectCast({})]), /could not be converted to string/);
+  // The plain array cases still answer.
+  assert.equal(rt.count({ a: 1 }), 1);
+  assert.deepEqual(rt.array_keys({ a: 1 }), ['a']);
+});
+
+test('rt-semantics2: array_sum casts each value the way PHP does', () => {
+  // PHP: array_sum([[1]]) is 0 (a nested array contributes 0 - it is not cast
+  // to a number), array_sum(['a'=>1,'b'=>[2]]) is 1, and
+  // array_sum([true,'3x',null]) is 4.
+  assert.equal(rt.array_sum([[1]]), 0);
+  assert.equal(rt.array_sum({ a: 1, b: [2] }), 1);
+  assert.equal(rt.array_sum([true, '3x', null]), 4);
+  assert.equal(rt.array_sum([1.5, 2]), 3.5);
+});

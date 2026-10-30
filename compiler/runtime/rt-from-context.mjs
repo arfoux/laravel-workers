@@ -182,13 +182,22 @@ export function buildRt(context, opts = {}) {
     return NaN;
   };
   // A PHP array: a list or a plain object (the compiled side represents an
-  // array as an object literal; a model instance is not one).
+  // array as an object literal; a model instance is not one). A value that
+  // carries the stdClass marker ((object) cast, json_decode assoc=false) is a
+  // PHP OBJECT, never an array.
   const isPhpArray = (v) => {
     if (Array.isArray(v)) return true;
     if (v === null || typeof v !== 'object') return false;
+    if (v.__lwObject === true) return false;
     const proto = Object.getPrototypeOf(v);
     return proto === Object.prototype || proto === null;
   };
+  const isPlainObj = (v) => {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+    const proto = Object.getPrototypeOf(v);
+    return proto === Object.prototype || proto === null;
+  };
+  const isPhpObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && !isPhpArray(v);
   const phpTypeName = (v) => {
     if (v === null || v === undefined) return 'null';
     if (typeof v === 'boolean') return 'bool';
@@ -249,11 +258,29 @@ export function buildRt(context, opts = {}) {
       if (typeof v.toString === 'function' && typeof v.toJson === 'function' && typeof v.all === 'function') {
         return v.toString();
       }
+      // A plain object is a PHP ARRAY: `'x' . ['a'=>1]` is `xArray` (PHP warns
+      // "Array to string conversion"). phpToStr stays TOTAL for a stdClass
+      // ('Object') - the explicit conversion sites (concat/strval/sprintf %s)
+      // raise PHP's Error, while array_unique() compares objects without
+      // raising (probed: array_unique([(object)[]]) answers the object).
+      if (isPlainObj(v)) return 'Array';
       return 'Object';
     }
     return String(v);
   };
-  rt.concat = (a, b) => phpToStr(a) + phpToStr(b);
+  // PHP's `(string)` of a stdClass raises
+  // Error("Object of class stdClass could not be converted to string") - the
+  // explicit conversion sites use this, phpToStr itself stays total.
+  const phpStrCast = (v) => {
+    if (v !== null && typeof v === 'object' && v.__lwObject === true) {
+      const err = new Error('Object of class stdClass could not be converted to string');
+      err.name = 'Error';
+      err.phpClass = 'Error';
+      throw err;
+    }
+    return phpToStr(v);
+  };
+  rt.concat = (a, b) => phpStrCast(a) + phpStrCast(b);
 
   // ---- rt.config ----
   rt.config = (k, d) => {
@@ -1027,7 +1054,10 @@ export function buildRt(context, opts = {}) {
     return false;
   };
   rt.unset = () => {}; // no-op in emitted code (variables are lets; M1 has none)
-  rt.count = (v) => (Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 0));
+  rt.count = (v) => {
+    requireArrayArg('count', 1, 'value', 'Countable|array', v);
+    return Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 0);
+  };
   rt.in_array = (needle, haystack, strict) => {
     // A PHP array is a list OR an assoc array (a plain object on the compiled
     // side) - in_array walks the VALUES of both.
@@ -1040,8 +1070,24 @@ export function buildRt(context, opts = {}) {
     return arr.some((x) => rt.looseEq(x, needle));
   };
   const isObj = (v) => v !== null && typeof v === 'object';
+  // PHP's array functions type-check their argument: a stdClass raises
+  // TypeError("<fn>(): Argument #<n> ($<name>) must be of type <type>, stdClass
+  // given") (probed on PHP 8.3; the message is PHP's own). Only a TAGGED
+  // stdClass raises - a PHP array (list or assoc) and a kernel instance pass.
+  const requireArrayArg = (name, pos, varName, type, v) => {
+    if (v !== null && typeof v === 'object' && v.__lwObject === true) {
+      throw new TypeError(
+        name + '(): Argument #' + pos + ' ($' + varName + ') must be of type ' + type + ', stdClass given'
+      );
+    }
+  };
   const arrValues = (v) => (Array.isArray(v) ? v.slice() : (isObj(v) ? rt.phpKeys(v).map((k) => v[k]) : []));
-  rt.implode = (glue, arr) => arrValues(arr).map((x) => (x == null ? '' : String(x))).join(glue == null ? '' : String(glue));
+  rt.implode = (glue, arr) => {
+    requireArrayArg('implode', 2, 'array', '?array', arr);
+    // Each value goes through PHP's string cast: null -> '', true -> '1', a
+    // nested array -> 'Array', a stdClass -> Error (probed on PHP 8.3).
+    return arrValues(arr).map((x) => (x === null || x === undefined ? '' : phpStrCast(x))).join(glue == null ? '' : String(glue));
+  };
   // PHP explode(): the third argument caps the split. Positive N keeps N-1
   // separators (the tail stays whole), 0 is treated as 1, and a negative N
   // drops the last -N components. PHP 8 throws ValueError on an empty
@@ -1068,7 +1114,10 @@ export function buildRt(context, opts = {}) {
     }
     return parts.slice(0, Math.max(parts.length + n, 0));
   };
-  rt.array_key_exists = (k, arr) => (isObj(arr) ? Object.prototype.hasOwnProperty.call(arr, k) : false);
+  rt.array_key_exists = (k, arr) => {
+    requireArrayArg('array_key_exists', 2, 'array', 'array', arr);
+    return isObj(arr) ? Object.prototype.hasOwnProperty.call(arr, k) : false;
+  };
   // PHP preserves an array's insertion order; a JS object does not (an
   // integer-like key enumerates first). A literal that mixes both kinds is
   // built by `rt.assoc()`, which records the order in a non-enumerable marker
@@ -1086,8 +1135,14 @@ export function buildRt(context, opts = {}) {
     Object.defineProperty(out, '__lwOrder', { value: order, enumerable: false });
     return out;
   };
-  rt.array_keys = (arr) => (isObj(arr) ? rt.phpKeys(arr).map((k) => (/^\d+$/.test(k) ? Number(k) : k)) : []);
-  rt.array_values = (arr) => arrValues(arr);
+  rt.array_keys = (arr) => {
+    requireArrayArg('array_keys', 1, 'array', 'array', arr);
+    return isObj(arr) ? rt.phpKeys(arr).map((k) => (/^\d+$/.test(k) ? Number(k) : k)) : [];
+  };
+  rt.array_values = (arr) => {
+    requireArrayArg('array_values', 1, 'array', 'array', arr);
+    return arrValues(arr);
+  };
   rt.array_merge = (...arrs) => {
     if (arrs.every((a) => Array.isArray(a))) {
       const out = [];
@@ -1227,7 +1282,7 @@ export function buildRt(context, opts = {}) {
         case 's': {
           // PHP's string cast: true -> '1', false/null -> '', an array ->
           // 'Array' (phpToStr matches; String(true) would answer 'true').
-          body = value === null || value === undefined ? '' : phpToStr(value);
+          body = value === null || value === undefined ? '' : phpStrCast(value);
           if (prec !== null) body = body.slice(0, prec);
           break;
         }
@@ -1472,7 +1527,12 @@ export function buildRt(context, opts = {}) {
     if (typeof v === 'number') return v !== 0;
     if (typeof v === 'string') return v !== '' && v !== '0';
     if (Array.isArray(v)) return v.length !== 0;
-    if (typeof v === 'object') return Object.keys(v).length !== 0;
+    if (typeof v === 'object') {
+      // PHP: an OBJECT is always true (even an empty stdClass); an assoc ARRAY
+      // is true only when it has elements.
+      if (v.__lwObject === true || !isPlainObj(v)) return true;
+      return Object.keys(v).length !== 0;
+    }
     return true;
   };
   rt.not = (v) => !rt.truthy(v);
@@ -1625,10 +1685,20 @@ export function buildRt(context, opts = {}) {
     if (na !== null && nb !== null) return [na, nb];
     return [phpToStr(a), phpToStr(b)];
   };
-  rt.lt = (a, b) => { const p = relPair(a, b); return p[0] < p[1]; };
-  rt.gt = (a, b) => { const p = relPair(a, b); return p[0] > p[1]; };
-  rt.lte = (a, b) => { const p = relPair(a, b); return p[0] <= p[1]; };
-  rt.gte = (a, b) => { const p = relPair(a, b); return p[0] >= p[1]; };
+  // PHP's comparison table (PHP 8): an ARRAY is greater than any scalar, and an
+  // OBJECT is greater than both. The structured compare of two arrays (count,
+  // then element-wise) and of two objects of the same class is NOT ported - an
+  // equal-rank pair answers "equal" (documented).
+  const relRank = (v) => (isPhpArray(v) ? 1 : isPhpObject(v) ? 2 : 0);
+  const rankRel = (a, b) => {
+    const ra = relRank(a), rb = relRank(b);
+    if (ra !== rb) return ra < rb ? -1 : 1;
+    return ra === 0 ? null : 0;
+  };
+  rt.lt = (a, b) => { const r = rankRel(a, b); if (r !== null) return r < 0; const p = relPair(a, b); return p[0] < p[1]; };
+  rt.gt = (a, b) => { const r = rankRel(a, b); if (r !== null) return r > 0; const p = relPair(a, b); return p[0] > p[1]; };
+  rt.lte = (a, b) => { const r = rankRel(a, b); if (r !== null) return r <= 0; const p = relPair(a, b); return p[0] <= p[1]; };
+  rt.gte = (a, b) => { const r = rankRel(a, b); if (r !== null) return r >= 0; const p = relPair(a, b); return p[0] >= p[1]; };
 
   // ---- PHP arithmetic ----
   rt.sub = (a, b) => {
@@ -1726,11 +1796,14 @@ export function buildRt(context, opts = {}) {
   rt.is_int = (v) => typeof v === 'number' && Number.isInteger(v);
   rt.is_float = (v) => typeof v === 'number' && !Number.isInteger(v);
   rt.is_string = (v) => typeof v === 'string';
-  rt.is_array = (v) => Array.isArray(v) || isObj(v);
-  rt.is_object = (v) => isObj(v) && !Array.isArray(v);
+  rt.is_array = isPhpArray;
+  rt.is_object = isPhpObject;
   rt.is_numeric = isNum;
   rt.is_callable = (v) => typeof v === 'function';
-  rt.is_countable = (v) => Array.isArray(v) || isObj(v);
+  // PHP: is_countable() is true for an array and for a Countable object; a
+  // stdClass is not countable. (A kernel class instance is left true - the
+  // runtime does not track Countable).
+  rt.is_countable = (v) => Array.isArray(v) || (isObj(v) && v.__lwObject !== true);
   rt.is_boolean = rt.is_bool;
   rt.is_integer = rt.is_int;
   rt.is_long = rt.is_int;
@@ -2206,15 +2279,28 @@ export function buildRt(context, opts = {}) {
   };
 
   // ---- more array helpers ----
-  rt.array_sum = (arr) => arrValues(arr).reduce((s, x) => s + Number(x), 0);
+  // PHP's array_sum(): each value is cast the way a numeric context does -
+  // bool -> 0/1, a numeric (or leading-numeric) string -> its number, and a
+  // null/array/object contributes 0 (`array_sum([[1]])` is 0, probed).
+  rt.array_sum = (arr) => arrValues(arr).reduce((s, x) => s + phpSumValue(x), 0);
+  function phpSumValue(x) {
+    if (typeof x === 'number') return x;
+    if (typeof x === 'boolean') return x ? 1 : 0;
+    if (typeof x === 'string') { const n = phpNum(x); return Number.isNaN(n) ? 0 : n; }
+    return 0;
+  };
   rt.array_slice = (arr, offset, length) => {
+    requireArrayArg('array_slice', 1, 'array', 'array', arr);
     const a = arrValues(arr);
     const off = Number(offset) | 0;
     const o = off < 0 ? Math.max(a.length + off, 0) : off;
     if (length === undefined || length === null) return a.slice(o);
     return a.slice(o, o + Math.max(0, Number(length) | 0));
   };
-  rt.array_reverse = (arr) => arrValues(arr).slice().reverse();
+  rt.array_reverse = (arr) => {
+    requireArrayArg('array_reverse', 1, 'array', 'array', arr);
+    return arrValues(arr).slice().reverse();
+  };
   rt.array_unique = (arr) => {
     const out = [];
     for (const v of arrValues(arr)) if (!out.some((x) => phpToStr(x) === phpToStr(v))) out.push(v);
@@ -2229,6 +2315,7 @@ export function buildRt(context, opts = {}) {
     return o;
   };
   rt.array_flip = (arr) => {
+    requireArrayArg('array_flip', 1, 'array', 'array', arr);
     const o = {};
     if (isObj(arr)) for (const k of Object.keys(arr)) o[phpToStr(arr[k])] = /^\d+$/.test(k) ? Number(k) : k;
     return o;
@@ -2295,8 +2382,8 @@ export function buildRt(context, opts = {}) {
     return out;
   };
 
-  rt.str = phpToStr;
-  rt.strval = phpToStr;
+  rt.str = phpStrCast;
+  rt.strval = phpStrCast;
   rt.optional = (value, cb = null) => {
     if (typeof cb === 'function') return value == null ? null : cb(value);
     if (value == null) {
