@@ -9,6 +9,7 @@
 // The surface the compiler allows (Arr::x() -> rt.Arr.x()).
 export const ARR_METHODS = new Set(['except', 'wrap', 'get', 'has', 'only', 'first', 'last', 'dot']);
 
+import { ownSet, ownHas } from './own-key.mjs';
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 /** Delete one key from a copy of `node`, cloning the level it touches. */
@@ -174,8 +175,10 @@ export const arr = {
         if (value !== null && typeof value === 'object' && keyCount(value) > 0 && currentDepth < depth) {
           flatten(value, newKey + '.', currentDepth + 1);
         } else {
-          if (!Object.prototype.hasOwnProperty.call(results, newKey)) order.push(newKey);
-          results[newKey] = value;
+          if (!ownHas(results, newKey)) order.push(newKey);
+          // `Arr::dot()` keys are data (PHP arrays have no prototype chain); a
+          // dotted path like `__proto__.x` must not reach setPrototypeOf.
+          ownSet(results, newKey, value);
         }
       }
     };

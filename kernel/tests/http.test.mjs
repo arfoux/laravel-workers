@@ -112,6 +112,19 @@ const MATCH_CASES = [
   'a=b%26c',
   'k[n][]=1',
   'k[][]=1',
+  // A key named `__proto__`/`constructor`/`prototype` is ordinary DATA in PHP
+  // (`parse_str` builds a PHP array); registered through kernel/php-bag.mjs it
+  // stays data on the JS side too, and Object.prototype is never touched
+  // (the invariant test below runs the same table through the pristine check).
+  'a[__proto__][p]=1',
+  'x[__proto__]=1',
+  '__proto__[p]=1',
+  'x[constructor][prototype][polluted]=1',
+  'a[prototype]=1',
+  'x[__proto__][p]=1&x[a]=2',
+  'a[__proto__][]=1',
+  'x[__proto__][]=1&x[__proto__][]=2',
+  'a[toString]=1',
 ];
 
 // PHP's parse_str walks the *decoded* name as a C string, so a NUL byte (%00)
@@ -149,6 +162,48 @@ test('parsePhpQuery matches PHP 8.3 parse_str exactly', () => {
   for (let i = 0; i < MATCH_CASES.length; i += 1) {
     const js = JSON.parse(JSON.stringify(parsePhpQuery(MATCH_CASES[i])));
     assert.deepEqual(js, php[i], `parsePhpQuery diverged for ${MATCH_CASES[i]}`);
+  }
+});
+
+// The security invariant the hostile keys above exist for: registering a name
+// through the bag must never write through an inherited property. (`out['__proto__'][p] = 1`
+// on a plain object literal walks the prototype chain and pollutes
+// Object.prototype for the whole isolate.) kernel/tests/proto-pollution.test.mjs
+// covers the other writers; this one pins the query-string parser.
+test('parsePhpQuery never mutates Object.prototype', () => {
+  const baseline = Object.getOwnPropertyNames(Object.prototype).sort().join(',');
+  const hostile = [
+    ...MATCH_CASES,
+    'x[__proto__][p]=1',
+    'x[constructor][prototype][polluted]=1',
+    '__proto__=1',
+    'x[__proto__]=1&x[__proto__][p]=2',
+    'x[toString][__proto__]=1',
+  ];
+  for (const c of hostile) {
+    const out = parsePhpQuery(c);
+    assert.equal(
+      Object.getOwnPropertyNames(Object.prototype).sort().join(','),
+      baseline,
+      `Object.prototype mutated by ${c}`
+    );
+    assert.equal(
+      Object.prototype.polluted,
+      undefined,
+      `Object.prototype.polluted leaked from ${c}`
+    );
+    // The bag answers the same DATA PHP does for the hostile key (`{"__proto__":{"p":"1"}}`):
+    // either an own `__proto__` property holding it, or a null-prototype-ish bag
+    // that kept it as data. What must never happen is a write THROUGH the
+    // inherited accessor, which the pristine check above catches.
+    if (c.startsWith('__proto__[p]')) {
+      assert.equal(out.__proto__.p, '1', `the sent __proto__ value was lost for ${c}`);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out, '__proto__'),
+        true,
+        `__proto__ (as data) is not an own key for ${c}`
+      );
+    }
   }
 });
 

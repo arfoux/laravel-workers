@@ -420,6 +420,7 @@ const soleFilterFor = (key, operator, value, argCount) => {
 
 /** Values of an arrayable-ish argument: Collection, array, object or scalar. */
 import { phpJsonEncode, phpJsonEncodeWithFlags } from './php-json.mjs';
+import { ownSet, ownGet } from './own-key.mjs';
 
 export const toList = (input) => {
   if (input instanceof Collection) return input.items.slice();
@@ -990,7 +991,9 @@ export class Collection {
     if (this.phpKeys.every((key, index) => normKey(key) === index)) return this.items.slice();
     const out = {};
     this.phpKeys.forEach((key, index) => {
-      out[String(key)] = this.items[index];
+      // Own-key write: a collection key can be attacker data (`{"__proto__": 1}`
+      // from a request), and PHP's array key is data, never a prototype write.
+      ownSet(out, String(key), this.items[index]);
     });
     return out;
   }
@@ -1002,7 +1005,7 @@ export class Collection {
     if (this.phpKeys) {
       if (this.phpKeys.every((key, index) => normKey(key) === index)) return this.items.slice();
       const out = {};
-      this.phpKeys.forEach((key, index) => { out[String(key)] = this.items[index]; });
+      this.phpKeys.forEach((key, index) => { ownSet(out, String(key), this.items[index]); });
       return out;
     }
     return this.items.slice();
@@ -1032,12 +1035,13 @@ export class Collection {
       const out = {};
       this.phpKeys.forEach((key, index) => {
         const item = this.items[index];
-        out[String(key)] =
+        ownSet(out, String(key),
           item instanceof Collection
             ? item.toArray()
             : item !== null && typeof item === 'object' && typeof item.toArray === 'function'
               ? item.toArray()
-              : item;
+              : item
+        );
       });
       return out;
     }
@@ -1713,7 +1717,11 @@ export class Collection {
       let node = root;
       for (let i = 0; i < parts.length - 1; i++) {
         const segment = String(arrayKey(parts[i]));
-        const existing = node[segment];
+        // Own-property walk (kernel/own-key.mjs): a dotted key is attacker data
+        // when it comes from the request, and PHP's `Arr::set()` has no
+        // prototype chain - `->undot()` on `{"__proto__.x": 1}` must build a
+        // data key, not mutate Object.prototype.
+        const existing = ownGet(node, segment);
         // `Arr::set()`: a missing/null/non-array node becomes an array. A
         // Collection is an OBJECT in PHP, so it is replaced too.
         if (
@@ -1722,11 +1730,11 @@ export class Collection {
           typeof existing !== 'object' ||
           existing instanceof Collection
         ) {
-          node[segment] = {};
+          ownSet(node, segment, {});
         }
-        node = node[segment];
+        node = ownGet(node, segment);
       }
-      node[String(arrayKey(parts[parts.length - 1]))] = item;
+      ownSet(node, String(arrayKey(parts[parts.length - 1])), item);
     });
     return new Collection(root);
   }
@@ -3019,7 +3027,7 @@ export class Collection {
         // EXIST (a null value counts), and the read is the literal `$item[$key]`
         // (no dotted data_get).
         if (!selectHasKey(item, key)) continue;
-        out[String(key)] = selectReadKey(item, key);
+        ownSet(out, String(key), selectReadKey(item, key));
         any = true;
       }
       // `Arr::select()` builds a PHP array - an item without any of the keys
@@ -3158,9 +3166,9 @@ export class Collection {
         const at = keys.findIndex((key) => String(key) === asString);
         if (at === -1) {
           keys.push(k);
-          merged[asString] = entry.value;
+          ownSet(merged, asString, entry.value);
         } else {
-          merged[asString] = entry.value;
+          ownSet(merged, asString, entry.value);
         }
       }
     }

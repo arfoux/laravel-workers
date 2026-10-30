@@ -1608,6 +1608,8 @@ writeTree(tmpRoot, {
   'kernel/model.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'model.mjs'), 'utf8'),
   'kernel/str.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'str.mjs'), 'utf8'),
   'kernel/arr.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'arr.mjs'), 'utf8'),
+  // own-key.mjs: the own-property helpers every untrusted-key writer imports.
+  'kernel/own-key.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'own-key.mjs'), 'utf8'),
   'kernel/db.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'db.mjs'), 'utf8'),
   'kernel/hash.mjs': fs
     .readFileSync(path.join(pkgDir, 'kernel', 'hash.mjs'), 'utf8')

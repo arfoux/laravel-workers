@@ -35,6 +35,7 @@
 // Handler I/O is async (D1 is), so start/save/migrate/invalidate/regenerate
 // return promises; everything else is synchronous like PHP.
 
+import { ownSet, ownGet } from './own-key.mjs';
 import { phpJsonEncode, phpJsonDecode } from './php-json.mjs';
 import { phpSerialize, phpUnserialize } from './php-serialize.mjs';
 import { makeCookie } from './cookies.mjs';
@@ -73,11 +74,14 @@ function hasKey(container, key) {
 }
 
 function rawGet(container, key) {
-  return container[String(key)];
+  return ownGet(container, String(key));
 }
 
 function assignKey(container, key, value) {
-  container[String(key)] = value;
+  // Session payload keys arrive from the decrypted envelope (and, through
+  // `Session::put()`, from the app). PHP arrays have no prototype chain, so a
+  // `__proto__` key is ordinary data - never a prototype write.
+  ownSet(container, String(key), value);
 }
 
 function resolveDefault(def) {
@@ -144,6 +148,7 @@ export function arrSetInternal(root, key, value) {
   for (let i = 0; i < keys.length - 1; i++) {
     const segment = keys[i];
     let child = hasKey(container, segment) ? rawGet(container, segment) : undefined;
+    // `hasKey`/`rawGet` are own-only, so the walk cannot climb into the chain.
     if (child === null || child === undefined || !isPhpArrayValue(child)) {
       child = {};
       assignKey(container, segment, child);

@@ -13,6 +13,7 @@
 // WebCrypto). Everything else is synchronous and workerd-compatible.
 
 import { encryptString, decryptString, DecryptError } from './encrypter.mjs';
+import { ownSet, ownGet, ownHas } from './own-key.mjs';
 
 export class CookieError extends Error {
   constructor(message) {
@@ -250,7 +251,7 @@ function nextBracketIndex(node) {
 function assignBracketValue(target, name, value) {
   const m = /^([^\[]+)((?:\[[^\]]*\])*)$/.exec(name);
   if (!m) {
-    target[name] = value;
+    ownSet(target, name, value);
     return;
   }
   const base = m[1];
@@ -260,21 +261,24 @@ function assignBracketValue(target, name, value) {
   while ((match = re.exec(m[2])) !== null) indices.push(match[1]);
 
   if (indices.length === 0) {
-    target[base] = value;
+    ownSet(target, base, value);
     return;
   }
-  if (!(base in target) || typeof target[base] !== 'object' || target[base] === null) {
-    target[base] = {};
+  // A cookie NAME is attacker-controlled (the raw Cookie header), so every
+  // step is an own-property read/write: PHP's $_COOKIE has no prototype chain,
+  // and `node['__proto__'] = {}` on a JS object would poison the prototype.
+  if (!ownHas(target, base) || typeof ownGet(target, base) !== 'object' || ownGet(target, base) === null) {
+    ownSet(target, base, {});
   }
-  let node = target[base];
+  let node = ownGet(target, base);
   for (let i = 0; i < indices.length - 1; i++) {
     const key = indices[i] === '' ? nextBracketIndex(node) : indices[i];
-    if (typeof node[key] !== 'object' || node[key] === null) node[key] = {};
-    node = node[key];
+    if (typeof ownGet(node, key) !== 'object' || ownGet(node, key) === null) ownSet(node, key, {});
+    node = ownGet(node, key);
   }
   const last = indices[indices.length - 1];
   const finalKey = last === '' ? nextBracketIndex(node) : last;
-  node[finalKey] = value;
+  ownSet(node, finalKey, value);
 }
 
 /**

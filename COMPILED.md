@@ -153,7 +153,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 - Arrays (ordered maps) — done; references → cells; int64 → BigInt discipline + overflow fail-loud
 - Loose-compare tables, string coercion, float→string formatting (corpus grows)
 - `preg_*`: PCRE→JS translation layer; exotic constructs fail loud per pattern
-- `mb_*`/`Intl`, `json_*`, HTML helpers, `url`/`parse_str`/`http_build_query`, `ctype`, `filter_var`
+- `mb_*`/`Intl`, `json_*`, HTML helpers, `url`/`parse_str`/`http_build_query` (the parse_str bag lives in `kernel/php-bag.mjs` and is shared with the multipart parser), `ctype`, `filter_var`
 - `ob_*` output buffering, header/status semantics
 - Generators / fibers-lite: JS iterators / async mapping with declared edges
 
@@ -177,7 +177,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 
 | Area | Full target | Notes |
 |---|---|---|
-| Request | input/query/post/json/headers/cookies/files (multipart subset)/ip/fullUrl/is/route/validate | dot paths; request cookies are parsed off `Cookie:` and decrypted before StartSession; the `InteractsWithData` accessors (`boolean`/`integer`/`float`/`string`/`filled`/`isNotFilled`/`missing`/`hasAny`/`only`/`except`) are implemented — `string()` models `Stringable` as a plain string (method chains are not transpiled yet); `old()`/`user()`/`session()` hang off session/auth |
+| Request | input/query/post/json/headers/cookies/files (multipart subset)/ip/fullUrl/is/route/validate | dot paths (`kernel/php-bag.mjs` is the PHP *variable-registration bag* both bags are built with: plain keys, `a[b][c]` nesting, `a[]` append, duplicate-scalar last-wins, list promotion — and every key written as an OWN property, because a key the client sent (`__proto__`, `constructor`, `prototype`) is ordinary DATA in PHP and mutating an inherited slot would reach Object.prototype for the whole isolate (`kernel/own-key.mjs`). The multipart parser registers a part's name through the same code (`rfc1867.c` -> `php_register_variable_ex()`), so `a[b]` in a form field and in an uploaded file's name both nest like PHP — verified against the PHP 8.3 SAPI and `parse_str`); request cookies are parsed off `Cookie:` and decrypted before StartSession; the `InteractsWithData` accessors (`boolean`/`integer`/`float`/`string`/`filled`/`isNotFilled`/`missing`/`hasAny`/`only`/`except`) are implemented — `string()` models `Stringable` as a plain string (method chains are not transpiled yet); `old()`/`user()`/`session()` hang off session/auth |
 | Response | json/make/view/download(stream)/file; redirect→route/away/back/intended; `with/withErrors/withInput`; cookie queue; headers | `back()` needs session; `intended()` compiled (M20) |
 | Middleware | groups (`web`/`api`), route params (`throttle:60,1`, `can:`), sorting, terminable | compiled pipeline |
 | Route-model binding | implicit/explicit/scoped/nullable | |

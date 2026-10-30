@@ -16,6 +16,9 @@ function indexOfBytes(hay, needle, from) {
   return -1;
 }
 
+import { ownSet, ownGet } from './own-key.mjs';
+import { newBag, bagPut, normalizePhpArrays } from './php-bag.mjs';
+
 export function parseMultipart(bytes, contentType) {
   if (!(bytes instanceof Uint8Array)) {
     throw new Error('multipart/form-data: the body must be the raw bytes');
@@ -24,7 +27,7 @@ export function parseMultipart(bytes, contentType) {
   if (!m) throw new Error('multipart/form-data: the boundary is missing');
   const boundary = (m[1] || m[2] || '').trim();
   const delim = enc.encode('--' + boundary);
-  const fields = {};
+  const fields = newBag();
   const files = {};
   // PHP's rfc1867 parser (ext/standard/rfc1867.c): the delimiter is
   // CRLF + "--boundary" - a file whose CONTENT contains the boundary bytes
@@ -85,12 +88,16 @@ export function parseMultipart(bytes, contentType) {
           __part: true,
         });
       } else {
-        fields[name] = dec.decode(content);
+        // PHP registers a multipart field name through the SAME rule as
+        // `parse_str()` (`rfc1867.c` -> `php_register_variable_ex()`): a field
+        // named `a[b]` is `$_POST['a']['b']` and `c[]=1&c[]=2` is a list
+        // (measured on PHP 8.3). Own-key writes only - see kernel/own-key.mjs.
+        bagPut(fields, name, dec.decode(content));
       }
     }
     pos = next + delim.length;
   }
-  return { fields, files };
+  return { fields: normalizePhpArrays(fields), files };
 }
 
 // PHP's $_FILES naming: 'photos[]' is an append, 'photos[0]' is an index,
@@ -100,8 +107,8 @@ function setFile(files, name, desc) {
   const base = m ? m[1] : name;
   const brackets = m ? m[2] : '';
   if (!brackets) {
-    if (base === '') files[''] = desc;
-    else files[base] = desc;
+    if (base === '') ownSet(files, '', desc);
+    else ownSet(files, base, desc);
     return;
   }
   // The path: the base + every bracket key ('' means "append").
@@ -112,14 +119,14 @@ function setFile(files, name, desc) {
     const key = keys[i];
     if (container === '') {
       container = '0';
-      if (!node[container] || typeof node[container] !== 'object') node[container] = [];
+      if (!ownGet(node, container) || typeof ownGet(node, container) !== 'object') ownSet(node, container, []);
     }
-    let child = node[container];
-    if (!child || typeof child !== 'object' || child.__uploadedFile || child.__part) {
+    let child = ownGet(node, container);
+    if (!child || typeof child !== 'object' || ownGet(child, '__uploadedFile') || ownGet(child, '__part')) {
       // The next key decides the shape: '' or a number is a list, else a map.
       const next = keys[i + 1];
       child = next === undefined || next === '' || /^\d+$/.test(next) ? [] : {};
-      node[container] = child;
+      ownSet(node, container, child);
     }
     if (Array.isArray(child)) {
       if (key === '') {
@@ -140,20 +147,20 @@ function setFile(files, name, desc) {
         child[idx] = desc;
         return;
       }
-      if (!child[idx] || typeof child[idx] !== 'object') child[idx] = [];
-      node = child[idx];
+      if (!ownGet(child, idx) || typeof ownGet(child, idx) !== 'object') ownSet(child, idx, []);
+      node = ownGet(child, idx);
       container = '';
       continue;
     }
     if (i === keys.length - 1) {
-      child[key] = desc;
+      ownSet(child, key, desc);
       return;
     }
     const next = keys[i + 1];
-    if (!child[key] || typeof child[key] !== 'object') {
-      child[key] = next === '' || /^\d+$/.test(next) ? [] : {};
+    if (!ownGet(child, key) || typeof ownGet(child, key) !== 'object') {
+      ownSet(child, key, next === '' || /^\d+$/.test(next) ? [] : {});
     }
-    node = child[key];
+    node = ownGet(child, key);
     container = key;
   }
 }
