@@ -1,6 +1,13 @@
 # Changelog
 
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
+### Fix — two route URIs that compile to one controller module are refused (2026-10-31)
+A-series finding #282, continuing the `build.mjs` / `tools/` audit.
+- `slugifyRoute()` (`build.mjs`) turns `/a/b`, `/a-b` and `/{a}-{b}` into the **same** slug, and the build writes `dist/src/controllers/<slug>.mjs` per route. Two such routes wrote one handler over the other, and `routes.generated.mjs` pointed **both** URLs at whichever was written last — a silent wrong serve with no warning anywhere in the build log.
+- `tools/routes-dump.mjs` now refuses such a route set: it still prints the JSON table (its stdout stays the `route:list --json` shape) and reports the pair on stderr as a parse issue, and `build.mjs` turns that refusal into a `BUILD FAILED` block naming both URIs, so nothing is written and `dist` keeps the last build that completed.
+- The scanner is now spawned with `spawnSync` so its stderr is captured and echoed **and** read (a refused dump exits 0, so stderr was previously the only carrier of the reason, printed but never acted on). A scanner that *crashes* is re-raised in the shape the existing handler expects — the crash path still prints `route export crashed` with the scanner's own output.
+- Verification: `tools/tests/routes-dump.test.mjs` gained a refusal case and a no-collision case (6/6; the refusal case **fails** with the guard reverted); an end-to-end build over the fixture app with `/clash/x` + `/clash-x` added printed `BUILD FAILED: the route URIs "clash/x" and "clash-x" both compile to the controller module "clash-x.mjs"` and `READINESS: DOES NOT RUN`; removing the scanner made the crash path print `route export crashed`; shadow harness 12/12 byte-identical at 100% coverage; `npm test` 1008/1008.
+
 ### Fix — a route view whose name is also an error view name was written to the wrong module (2026-10-31)
 Found in the continuing line-by-line audit of `build.mjs` (A-series finding #281).
 - A **route** view's module was written under its RAW name (`dist/src/views/<view>.mjs`) while an **error** view uses the same precomputed shape, `errors.<code>.mjs`. A view named `errors/404` — a legal Laravel name — was written to `views/errors/404.mjs`, a path no controller ever imports (the handler imports `../views/errors/404.mjs`, which is a directory), so a `GET` route rendering that view would answer 500 "view not compiled" where PHP answers 200. Two page views whose names sanitize to the same file (`a/b` vs `a-b`) went through unguarded in this file too, so one silently overwrote the other.

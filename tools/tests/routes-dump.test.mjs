@@ -38,7 +38,7 @@ Route::query('/q', fn () => 'q');
 Route::match($verbs, '/dynamic', fn () => 'd');
 `;
 
-function runTool(env = {}) {
+function runTool(env = {}, routesSource = ROUTES) {
   const dir = mkdtempSync(join(tmpdir(), 'lw-routes-'));
   mkdirSync(join(dir, 'bootstrap'), { recursive: true });
   mkdirSync(join(dir, 'routes'), { recursive: true });
@@ -53,7 +53,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )->create();
 `
   );
-  writeFileSync(join(dir, 'routes', 'web.php'), ROUTES);
+  writeFileSync(join(dir, 'routes', 'web.php'), routesSource);
   const res = spawnSync(process.execPath, [TOOL], {
     cwd: dir,
     env: { ...process.env, LW_APP_ROOT: dir, ...env },
@@ -126,4 +126,38 @@ test('the app-declared health route is reported, never dropped silently', () => 
   assert.match(res.stderr, /health route/);
   assert.match(res.stderr, /GET \/up answers 404 where PHP answers 200/);
   assert.ok(entries.some((e) => e.uri === 'about'), 'the app routes are still listed');
+});
+
+test('two URIs that compile to one controller module are refused, not silently merged', () => {
+  // build.mjs slugifyRoute() turns `/clash/x` and `/clash-x` into the SAME module
+  // name, `clash-x.mjs`, and writes `dist/src/controllers/<slug>.mjs` per route -
+  // so one handler would overwrite the other and the route table would point both
+  // URIs at it. The scan refuses instead of letting the build serve one handler
+  // for two URLs.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+Route::get('/clash/x', fn () => 'a');
+Route::get('/clash-x', fn () => 'b');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(Array.isArray(entries), 'the JSON route table is still printed');
+  assert.match(res.stderr, /both compile to the controller module "clash-x\.mjs"/);
+  assert.match(res.stderr, /rename one route/);
+});
+
+test('distinct URIs that do NOT collide stay silent', () => {
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+Route::get('/posts/{post}', fn () => 'a');
+Route::get('/posts-latest', fn () => 'b');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal((entries || []).length, 2);
+  assert.doesNotMatch(res.stderr, /both compile to the controller module/);
 });
