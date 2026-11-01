@@ -25,7 +25,7 @@ Laravel app (your dev machine)
   Cloudflare Workers  (V8 isolates — the same runtime as every other Worker)
 ```
 
-The edge is just a Worker. It boots in **microseconds** (V8 isolates, no PHP, no WASM), runs your Blade views, queries D1, manages sessions — all in ~**5 ms CPU** (p95, measured by `kernel/tests/budget.test.mjs`).
+The edge is just a Worker. It boots in **microseconds** (V8 isolates, no PHP, no WASM), runs your Blade views, queries D1, manages sessions — all in ~**5 ms CPU** (p95 on the reference machine, measured by `kernel/tests/budget.test.mjs`; the numbers are wall-clock, so a slower machine scales them).
 
 What this is **not:** a Laravel runtime, or PHP-in-Worker. Your Laravel app is the source of truth in development; the edge runs compiled output that was verified byte-identical against PHP 8.3 during the build. Any construct the compiler cannot handle **fails the build** — no silently wrong answer ships.
 
@@ -33,7 +33,7 @@ What this is **not:** a Laravel runtime, or PHP-in-Worker. Your Laravel app is t
 
 <!-- readme-counts:start -->
 ```
-constructs   45 compile · 63 fail loud · 7 documented   (115 audited)
+constructs   45 compile · 64 fail loud · 7 documented   (116 audited)
 facades      47/47 classified (100%)
 blade corpus 55/55 byte-identical vs PHP 8.3
 docs         105/105 pages with a verdict
@@ -328,6 +328,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 - `[B] list existing` with no databases on the account → `no D1 databases on the account — use [A] auto`.
 - `[B]` with an out-of-range pick → `invalid pick`.
 - Wrangler resolves a different Cloudflare account than `lw-state.json` records → stops **before any D1 or deploy call** (exit 2); switch explicitly with `--allow-account-change` or a TTY `y` (`--yes`/non-TTY never confirm).
+- `npx wrangler --version` answers **v3 or older** → a mode 2/3 run stops before the first Wrangler call (`wrangler 3.x is too old — laravel-workers drives Wrangler v4+`), and `--plan --check` records the same line as a blocking issue; install a v4+ Wrangler or run through `npx --package wrangler@4`.
 - `wrangler whoami` shows several accounts and nothing pins one (`account_id` or the env) → stops; accounts are never guessed.
 - A set `account_id` or `CLOUDFLARE_ACCOUNT_ID` is not a 32-hex account id → stops.
 - `wrangler whoami` fails or Wrangler is logged out → the account cannot be verified: a real run exits 1, `--plan --check` exits 1.
@@ -355,7 +356,7 @@ Works on any Laravel ≥ 10 project — a fresh clone or an app you've been runn
 
 | Requirement | Old way | Now |
 |---|---|---|
-| PHP vendor files | `composer install` (~379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader. Content-addressed cache (pays once per lock). No composer binary. |
+| PHP vendor files | `composer install` (~379 s cold) | **vendor-lite** — reads `composer.lock`, fetches dist zips from packagist, writes its own autoloader and Laravel's `vendor/composer/installed.json` (so package auto-discovery still finds providers/aliases). Content-addressed cache (pays once per lock; entries that predate the manifest are healed in place, never re-downloaded). No composer binary. |
 | Database schema | `touch database/database.sqlite && php artisan migrate --force` | **`tools/schema-compile.php`** — boots app, migrates in-memory SQLite, dumps via pragma. Your `database/` is never touched: when the app has no database file, the build seeds a throwaway SQLite in `.cache/` (schema applied, empty) so it can boot for prerender. Driver-agnostic (MySQL/Postgres/SQLite source → same D1 DDL output). |
 | `APP_KEY` | `php artisan key:generate` | **Automatic** — `build.mjs` writes `base64:<32 bytes>` into `.env` if absent. Stable across rebuilds (the worker encrypts cookies with it). `tools/_root.php` also auto-injects it for standalone tool runs. |
 

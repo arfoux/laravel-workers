@@ -1,0 +1,70 @@
+name: Bug report
+description: A build that fails, or compiled output that behaves differently from Laravel.
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before you file: a build that *refuses* a construct is often working as
+        designed — `COMPILED.md` §9 lists the refusal codes and their operator
+        text. A *silent wrong answer* is always a bug; paste the divergence.
+  - type: input
+    id: version
+    attributes:
+      label: laravel-workers version
+      description: '`npm ls laravel-workers`, or the CLI banner (`npx laravel-workers --version`).'
+      placeholder: 0.4.7
+    validations:
+      required: true
+  - type: input
+    id: laravel
+    attributes:
+      label: Laravel and PHP version
+      description: '`php artisan --version` and `php -v` (the oracle parity compares against PHP 8.3).'
+      placeholder: 'Laravel 13.37 / PHP 8.3.30'
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it goes wrong
+      options:
+        - The build fails (a construction the compiler refuses)
+        - The build succeeds but a route behaves differently from Laravel
+        - The generated dist/ is wrong (worker, routes, schema, assets)
+        - The deploy (wrangler, D1, KV) fails
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Smallest reproduction
+      description: |
+        The route, controller, Blade view, model, or config line involved — and
+        the command you ran. Keep it to the smallest input that still shows the
+        problem.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What Laravel does (expected)
+      description: What the same app answers when served by `php artisan serve`, and how you checked.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What the compiled worker does (actual)
+      description: The exact output, status code, or the verbatim build error (`LW0xx`).
+    validations:
+      required: true
+  - type: input
+    id: commands
+    attributes:
+      label: Commands run
+      placeholder: 'npx laravel-workers build --strict  /  wrangler dev'
+    validations:
+      required: false

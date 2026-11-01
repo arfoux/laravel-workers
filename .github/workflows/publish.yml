@@ -71,12 +71,12 @@ jobs:
           cache: npm
       - run: npm install
       - run: npm --prefix compiler install
-      - run: npm test
-      - run: npm run test:corpus
-      - run: node tools/gate.mjs --strict
-      - name: Syntax check shipped ESM
-        run: find build.mjs kernel compiler/src compiler/runtime bin tools shadow src -name '*.mjs' -print0 | xargs -0 -n1 node --check
-      - run: npm pack --dry-run
+      # The same script CI runs on every push (package.json → `gate:ci`): the
+      # suite, the corpus, the docs gate, the benchmarks, the shipped sources
+      # parsing, and the tarball gate. Writing the steps out again here is how
+      # the release gate drifted behind CI in the first place.
+      - name: Verify (npm run gate:ci)
+        run: npm run gate:ci
       - run: npm config delete '//registry.npmjs.org/:_authToken'
         continue-on-error: true
       - run: npm install -g npm@latest
@@ -97,8 +97,9 @@ jobs:
           cache: npm
       - run: npm install
       - run: npm --prefix compiler install
-      - run: npm test
-      - run: npm run test:corpus
+      # The same verify script CI and the npm publish job run.
+      - name: Verify (npm run gate:ci)
+        run: npm run gate:ci
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -111,9 +112,13 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cp package.json /tmp/package.json.bak
+          # The scope rename edits the checked-out package.json; the trap
+          # restores it on the way out however this step ends, so a failed
+          # publish cannot leave the runner's manifest renamed for the steps
+          # that follow.
+          trap 'cp /tmp/package.json.bak package.json' EXIT
           npm pkg set name=@arfoux/laravel-workers
           npm publish --registry=https://npm.pkg.github.com --access public
-          cp /tmp/package.json.bak package.json
   release:
     # A GitHub release must not appear unless npm actually published the tag —
     # without this the Release could go green while `npm publish` failed.

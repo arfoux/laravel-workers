@@ -1,0 +1,35 @@
+name: Feature request
+description: A Laravel construct the compiler should support, or a workflow it should make easier.
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This compiler is deliberately fail-loud: a construct that is not
+        supported yet is refused at build time with a code from
+        `COMPILED.md` §9 rather than compiled into something plausible. If
+        what you want is already refused, say so — the refusal text names the
+        code, and that is the fastest way to find the right thread.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you are trying to do
+      description: The Laravel feature and the app code that uses it.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What happens today
+      description: The refusal code, the workaround you are using, or the missing capability.
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: What the compiled edge should do
+      description: |
+        Optional: how the parity test could prove it (what the PHP app answers
+        that the compiled worker would have to answer byte-for-byte).
+    validations:
+      required: false

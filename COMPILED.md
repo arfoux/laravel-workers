@@ -58,7 +58,7 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 - Events → listener map (sync listeners compiled via 1.2)
 - Middleware groups + priority → ordered pipeline dump
 - Translations → per-locale dumps; plurals via `Intl.PluralRules` (parity-checked)
-- Schedule → cron manifest (delivery is adapter-later; manifest now)
+- Schedule → cron manifest; the expression is converted to the event's UTC instants (the cron-trigger note in §8b covers the why and the three strategies). Delivery is adapter-later; the manifest is emitted now
 - Morph map / casts inventory / pivot tables → extends `tools/model-dump.php`
 
 ### 1.2 Class compiler (controllers → general classes)
@@ -335,8 +335,15 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
 10. Runtime `WebAssembly.compile()` — codegen disallowed by the embedder (static `.wasm` imports
     only); WASM-native crypto libs (hash-wasm etc.) are out — pure-JS equivalents stand in
     (bcryptjs measured above)
-10. **The app's timezone** — `config('app.timezone')` reaches the edge: `tools/config-dump.php` dumps it, the runtime's Carbon stub renders every date in it through `Intl` (`format`/`toDateTimeString`/`toDateString`/`today()`/`timezoneName`), and the model writes/serialises its timestamps in it (`phpDateString` writes the local wall clock, `isoDateString` converts back to UTC before the `Z` - Carbon/Converter.php:442-455). Closed in M70. A date **attribute** read too: `date`/`datetime`/`immutable_*`/`custom_datetime` casts and `created_at`/`updated_at`/`deleted_at` answer a Carbon subset (`format` with the app-timezone `date()` letters, `toDateString`, `toDateTimeString`, `timestamp`, `addDays`/`subHours`/`copy`, `(string)` = the model's date format, `json_encode()` = the ISO8601 `Z` form), so `$post->created_at->format('d M Y')` compiles; `diffForHumans`, `isoFormat` and the `CarbonImmutable` API are NOT implemented (a loud JS error at the edge - write a port), and the stored attribute/JSON body/binding keep the TEXT. A stored date value the reader cannot parse (a row whose column does not hold `Y-m-d[ H:i:s]`, e.g. `'02/01/2024'` under a `datetime:d/m/Y` cast) stays the raw TEXT, where PHP's `asDateTime()` raises `InvalidFormatException` (a 500): the app's own bad row is served, not invented as a Carbon - a declared silent-not-loud gap (audit #273), left to the maintainer because Carbon's parse grammar is broader than this reader (a value Carbon *can* parse but this reader cannot would be mis-thrown as a 500).
+11. **The app's timezone** — `config('app.timezone')` reaches the edge: `tools/config-dump.php` dumps it, the runtime's Carbon stub renders every date in it through `Intl` (`format`/`toDateTimeString`/`toDateString`/`today()`/`timezoneName`), and the model writes/serialises its timestamps in it (`phpDateString` writes the local wall clock, `isoDateString` converts back to UTC before the `Z` - Carbon/Converter.php:442-455). Closed in M70. A date **attribute** read too: `date`/`datetime`/`immutable_*`/`custom_datetime` casts and `created_at`/`updated_at`/`deleted_at` answer a Carbon subset (`format` with the app-timezone `date()` letters, `toDateString`, `toDateTimeString`, `timestamp`, `addDays`/`subHours`/`copy`, `(string)` = the model's date format, `json_encode()` = the ISO8601 `Z` form), so `$post->created_at->format('d M Y')` compiles; `diffForHumans`, `isoFormat` and the `CarbonImmutable` API are NOT implemented (a loud JS error at the edge - write a port), and the stored attribute/JSON body/binding keep the TEXT. A stored date value the reader cannot parse (a row whose column does not hold `Y-m-d[ H:i:s]`, e.g. `'02/01/2024'` under a `datetime:d/m/Y` cast) stays the raw TEXT, where PHP's `asDateTime()` raises `InvalidFormatException` (a 500): the app's own bad row is served, not invented as a Carbon - a declared silent-not-loud gap (audit #273), left to the maintainer because Carbon's parse grammar is broader than this reader (a value Carbon *can* parse but this reader cannot would be mis-thrown as a 500).
 
+12. **The collection sort against non-BMP text** — PHP's `asort()`/`sortBy()` compare
+    two non-numeric strings BYTE-wise (UTF-8), and UTF-8 order is CODE POINT order,
+    while JS `<` walks UTF-16 units. The two disagree only when a supplementary-plane
+    character (a surrogate pair, U+10000+) meets a BMP character in U+E000-U+FFFF:
+    probed on 8.3, `'😀' > '＀'` (strcmp 1) while JS answers `'😀' < '＀'`. ASCII and
+    all-BMP sorts are byte-identical; only such a pair is a declared gap
+    *(escape: sort on a code-point/collation key of your own)*.
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
 ## 7. Order of attack (dependency-driven)
@@ -397,6 +404,7 @@ stay refused, with the reason).
 | ~~M68~~ -> **done** | the integrations (ph3) | passport, sanctum, socialite, cashier-paddle, billing, mcp, ai-sdk, pulse | each page carries a verdict, the edge's share, the refusal and the port in `tools/integrations.json` (rendered below) - all eight are a PORT: the vendor package is never compiled (a service provider is vendor code), and the HTTP/D1 half the edge does have is the port's job | the docs gate: `tools/docs-check.mjs` fails when a page loses its verdict/refusal/port or the set drifts | the vendor packages themselves (a service provider is not compiled, by design) | medium | done |
 | ~~M69~~ -> **done** | the hard pages (🔴) | broadcasting, images, processes, redis, reverb | each page has its verdict: `image`/`dimensions` compile (a header read) and the raster ops refuse loudly (`kernel/image.mjs`); the Redis store is a D1 table with Redis's own ttl/del/exists shapes and the server-only commands refused (`kernel/redis.mjs`); the framework's error pages (401/402/403/404/419/429/500/503) compile and render byte-identically | the shadow: 54/56 byte-identical, 1 shape-verified, 1 documented divergence (the D1 1.5 MB object cap), 0 unexplained | broadcasting/processes/reverb (each needs a runtime the edge does not have: a websocket subscriber, a child process, a fan-out server) | high | done |
 | ~~M70~~ -> **done** | the app timezone | localization, helpers, eloquent | the app's `app.timezone` reaches the edge: `tools/config-dump.php` dumps it, and the runtime's Carbon stub renders every date (`format`/`toDateTimeString`/`toDateString`/`today()`/`timezoneName`) in that zone through `Intl` (the only timezone database a Worker has), with the UTC fast path | the unit test: a frozen instant at `Asia/Jakarta` renders `2025-10-23 07:00:00` (PHP's own answer), `today()` is the zone's midnight, and a UTC app still renders UTC | the Carbon methods the stub does not implement (`diffForHumans`, `isoFormat`, the `CarbonImmutable` API) | medium | medium |
+| M71 | PHP's loose `==` in ONE place | collections, validation | `kernel/php-loose-eq.mjs` is the single definition of PHP 8's `==` as the edge meets it (`in_array()` without strict, `array_unique(SORT_REGULAR)`, `where($k, '=', $v)`): the scalar rung (`'1e2' == '100'`, `'10a' == 1` false), the null/bool rungs (`null == '0'` is FALSE), and the recursive ARRAY/OBJECT rules (`[1] == [true]`); `collections.mjs` builds its Collection-aware pair out of `makeLooseEq()` and the validator imports the plain pair for `in`/`contains`/`distinct` | the unit tests plus the 8.3 oracle, pair by pair | the validator's private scalar copy and collections' private array branch are gone; one canon, no drift | low | low |
 
 **M61a (done, 2026-10-21)** - the kernel parses a rule's parameters with Laravel's own `str_getcsv`
 (`ValidationRuleParser::parseParameters`): a **quoted** parameter (the shape `Rule::in(['admin','user'])` normalizes to -
@@ -408,6 +416,46 @@ trimmed the parameters where Laravel never trims. M62's rule objects depend on t
 answered like PHP at the edge **stays fail loud**, with the reason the operator needs (what
 Laravel does, what the edge does instead, and what the working path is: a port handler, a
 product, or a documented divergence).
+
+#### The cron trigger is UTC; the app's schedule is wall-clock
+
+Cloudflare evaluates a cron trigger in **UTC**. A Laravel event, meanwhile, is a wall-clock
+expression in the app's timezone — Laravel copies `config('app.timezone')` onto every event
+(framework 13.37), so `->dailyAt('09:00')` in an `Asia/Jakarta` app means 09:00 **Jakarta**,
+not 09:00 UTC. The build used to copy the expression verbatim, so the trigger fired 7 hours
+late, the runtime's timezone-aware filter (`kernel/scheduler.mjs` `dueEvents`) saw 16:00
+local and dropped the occurrence, and the job **never ran** — with a green build and a
+populated `dist/cron.json` as the only evidence.
+
+`tools/schedule-utc.mjs` maps each expression onto the UTC instants the event actually fires
+at. Three strategies, chosen per event:
+
+| strategy | when | trigger | why it is safe |
+| --- | --- | --- | --- |
+| **identity** | the timezone is UTC (or unset) | the expression, verbatim | nothing to shift |
+| **shifted** | the zone has a **constant** offset all year (most zones people deploy with) | the minute/hour fields moved by the offset, the day/month fields as `*` | every local occurrence maps onto exactly one UTC instant, and the runtime filter re-applies the fields the shift cannot carry (a UTC instant can land on the previous calendar day) |
+| **per-minute** | the zone **observes DST**, is unknown to `Intl`, or the shifted product is too wide to spell | `* * * * *` | a fixed conversion is wrong for part of the year, and a missed occurrence is silent — the runtime filter picks the exact minute instead. Costs 1440 fires/day, so the build writes a `DECLARED` note naming the event |
+
+The proof is `kernel/tests/schedule-utc.test.mjs`: it sweeps 14 days minute-by-minute over
+constant-offset zones and asserts the UTC trigger fires **iff** the original expression is
+due in the event's own timezone (`cronMatches`, the same code the worker runs), plus the
+superset property for day-constrained expressions.
+
+`src/worker.mjs` hands the dump's events to `dueEvents` with `config('app.timezone')` as the
+default, because an event the dump left without a timezone still means that zone (Laravel
+already copied it onto the event); the default was UTC, which by itself put every such event
+hours off in a non-UTC app. Setting `->timezone('UTC')` on an event remains the cheapest way
+to get a one-fire-per-occurrence trigger.
+
+The handler contract is the runtime's, not ours: the Workers runtime calls
+`scheduled(controller, env, ctx)` — the **controller** is the first argument
+(`controller.cron`, `controller.scheduledTime`), exactly as `fetch(request, env, ctx)` puts
+the request first. The due test therefore runs against `controller.scheduledTime` (the
+instant the trigger was scheduled for), not the arrival time, and the queue drain reads
+`env.DB`. Declaring it as `(env, ctx)` binds the *controller* to `env`: every `env.DB` /
+`env.QUEUE` read is `undefined`, the drain answers `{ran: 0}` without touching D1, and every
+scheduled job is a **silent** no-op. `kernel/tests/worker-entry.test.mjs` drives the built
+entry with the runtime's real argument order and fails if the real env is not read.
 
 ### The integrations (M68) — one verdict per page
 
@@ -432,7 +480,14 @@ table below is generated: `check:docs` fails when it drifts from the code, so it
 rot. The invariant: a construct is either **compiled and proven** by the shadow harness,
 or it **fails the build** - there is no third state (no silent degradation).
 
-The codes: LW001–LW004 are the **intended** refusals (the operator acts on them). LW999
+The codes: LW001–LW004 are the **intended** refusals (the operator acts on them). LW006 is
+a **runtime** refusal, not a build one: every PHP-facing `json_decode()` (`rt.json_decode`,
+`Collection::fromJson`, a `json`/`array`/`collection` cast, a JSON request body, the
+session payload's own round-trip) goes through the PHP reader
+(`kernel/php-json-ordered.mjs`), so the document's key order survives and an integer PHP
+holds exactly but a JS number would ROUND stops loudly instead of answering a wrong id
+(store such an id as a string, or port the route). A literal a double carries exactly
+(`10000000000000000`, `2^60`) is untouched - PHP's bytes and ours agree there. LW999
 is not a refusal but an **internal compiler error**: a construct that should have compiled
 or refused cleanly threw without a `lw` payload. It is reported as a bug (its own code and
 message), never dressed up as a user-facing LW002 - so an internal regression cannot hide
@@ -557,8 +612,9 @@ behind a build rule.
 | The `Vite` facade | ⛔ fails loud (`LW002`) | The Vite facade is not compiled at the edge (Laravel 13 lists 32 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | an API resource (`return new PostResource($post)`) | ✅ compiles | The controller answers a JsonResource; the Router's prepareResponse() wraps it in a ResourceResponse - `{"data": {...}, ...with($request)}` (JsonResource::toArray + the `$wrap` key, ResourceResponse.php:31-52). The app declares only toArray()/with(); the rest is the kernel base. Byte-proven by the shadow (`GET /resource-demo` identical) and by compiler/tests/resource-class.test.mjs; the audit probes it as a controller fragment with the class registry the build passes. A body that needs an await fails loud (the response path is synchronous). | M66 |
 | A FormRequest that overrides `validator()` | — documented (build level) | Laravel asks the app's own factory for the validator (`FormRequest::getValidatorInstance()`), so an override decides the rules, the messages and the factory itself. The edge has ONE validator factory, so the dump refuses the class (LW003, `tools/formrequest-dump.php`) and the build stops instead of validating with different rules than Laravel. | M62f |
+| A `try/catch/finally` statement | ⛔ fails loud (`LW002`) | The transpiler has no `try` handler, so the whole route (and any class method that carries one) fails the build with LW002 (MAP.md 6b lists `try/catch/finally` as UNSUPPORTED - matches). The tracked gap is the missing APP-SOURCE SWEEP rule: a try/catch that no compiled route touches is silent until it is reached. Rewrite without try/catch, or port the route. | GAP |
 
-**115 constructs: 45 compile, 63 fail loud, 7 documented at the build level.** Every probed construct is either compiled *and* proven by the shadow harness, or it fails the build; the 7 documented rows are build-level decisions the compiler cannot judge, and each one names its own proof (the 'proof' field: a shadow step, a test file or the dump that decides it). The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
+**116 constructs: 45 compile, 64 fail loud, 7 documented at the build level.** Every probed construct is either compiled *and* proven by the shadow harness, or it fails the build; the 7 documented rows are build-level decisions the compiler cannot judge, and each one names its own proof (the 'proof' field: a shadow step, a test file or the dump that decides it). The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
 
 <!-- construct-audit:end -->
 
@@ -775,3 +831,30 @@ behind a build rule.
 - fits the Free-plan budget (CPU / D1 queries / D1 writes) or is explicitly flagged Paid-tier in `report` and docs
 - fail-loud hint exists for the construct's out-of-subset neighbors
 - `report` reflects it; `MAP.md` row updated; e2e fixture (fresh-app / sim) exercises it
+
+### Client IP on the edge (M69, #404)
+
+`$request->ip()` answers the **`cf-connecting-ip`** header first and falls back to
+`x-forwarded-for` (first entry), then to `127.0.0.1` — the Cloudflare edge always
+sets `cf-connecting-ip`, so on a Worker the client IP is the real visitor even
+behind Cloudflare.
+
+Laravel on a normal host reads `X-Forwarded-For` only for a proxy you listed in
+`TrustProxies`. A deployment that fronts the Worker with its own proxy
+(nginx/Traefik) and compares `ip()` against the PHP app will see a DIFFERENT
+value: PHP answers the header the proxy appended, the edge answers
+`cf-connecting-ip`. Both are the trusted-proxy answer for their host; they are
+not interchangeable. Port the route, or normalise the proxy's header, if the app
+compares IPs across the two rungs.
+
+### Vendor resolution for the build tools (M69, #375)
+
+Every PHP helper under `tools/` resolves the framework through
+`lw_vendor_autoload_for($appRoot)` (in `tools/_root.php`), which honours — in
+order — `LW_VENDOR_DIR`, `COMPOSER_VENDOR_DIR`, and finally `<app>/vendor`. Set
+one of them when the app's vendor directory lives somewhere else (a monorepo
+hoist, a shared cache): without it the helper exits 3 (`the framework's
+validation.php is missing`) or the build reports a vendor it cannot read.
+`tools/validation-messages.php` and the rest of the `*-dump` helpers all take the
+same path; an app whose `App\` namespace maps to a non-default directory is a
+different axis (see the composer-free note in MAP.md).

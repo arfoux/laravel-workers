@@ -1,0 +1,4 @@
+# The compiler, the kernel it emits, and the gates that prove parity all belong
+# to the maintainer: a change to any of them can alter what a user's build
+# ships, so it wants a review before it lands.
+* @arfoux
