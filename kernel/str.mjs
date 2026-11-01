@@ -373,6 +373,66 @@ export function squish(value) {
     .replace(/(?:[\s\u3000])+/g, ' ');
 }
 
+// PHP's `(string)` cast, shared by everything that ports PHP's own coercion
+// (the validator's rule comparisons AND Eloquent's `'string'` model cast):
+// true becomes '1', false becomes '', null becomes '', an array becomes the
+// literal 'Array' (PHP's warning, NOT joiner output such as 'a,b'), and a
+// non-integer number goes through PHP's `precision=14` float-to-string so a
+// small float prints as `1.0E-5` instead of JS's `1e-5`.
+export function phpStringCast(value) {
+  if (value === null || value === undefined) return '';
+  if (value === true) return '1';
+  if (value === false) return '';
+  if (Array.isArray(value)) return 'Array';
+  if (typeof value === 'number') {
+    // `Number.isInteger(-0)` is true, so the float path below would miss it:
+    // PHP's `(string) -0.0` is the two-character `-0`, while `String(-0)` in
+    // JS is `'0'` (a probe on 8.3: `var_dump((string) -0.0)` -> string(2) "-0",
+    // and `json_encode([-0.0])` -> `[-0.0]`).
+    if (Object.is(value, -0)) return '-0';
+    if (!Number.isInteger(value)) return phpFloatToString(value);
+  }
+  return String(value);
+}
+
+// PHP's float-to-string with the default `precision=14` (php.ini): it uses
+// `%.14G` unconditionally (it does NOT pick the shortest round-tripping form -
+// `(string) 0.3333333333333333` is the 14-digit `0.33333333333333`) with the
+// `E+NN` / `E-NN` exponent spelling (`-1e-300` prints as `-1.0E-300`). This
+// matters wherever PHP casts a float with `(string)` - e.g. the validator's
+// `alpha_dash` sees the `.` and fails, while a raw `String(value)` would pass.
+export function phpFloatToString(value) {
+  if (!Number.isFinite(value)) return value > 0 ? 'INF' : (value < 0 ? '-INF' : 'NAN');
+  if (value === 0) return Object.is(value, -0) ? '-0' : '0';
+  return formatPhpG(value, 14);
+}
+
+// PHP's `%.{p}G` for a non-zero finite float: `toPrecision` already picks the
+// fixed vs exponential form the way `%G` does (exponential only when the
+// decimal exponent is < -4 or >= p). The result is normalised to PHP's
+// spelling: an `E+`/`E-` exponent with no leading zero, a mantissa that keeps
+// at least one fractional digit, and no trailing zeros. (PHP's `zend_gcvt`
+// rounds half-to-even at the last digit, which JS `toPrecision` rounds
+// half-away; a value landing exactly on the p-th digit can therefore differ in
+// the last place - a documented limit.)
+function formatPhpG(value, precision) {
+  const exp = Math.floor(Math.log10(Math.abs(value)));
+  if (exp < -4 || exp >= precision) {
+    return normalizePhpExponential(value.toExponential(precision - 1));
+  }
+  const digits = Math.max(precision - 1 - exp, 0);
+  const fixed = value.toFixed(digits);
+  return fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
+}
+
+function normalizePhpExponential(text) {
+  const m = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(text);
+  if (m === null) return text;
+  const frac = (m[3] || '').replace(/0+$/, '');
+  const mant = frac === '' ? m[2] + '.0' : m[2] + '.' + frac;
+  return m[1] + mant + 'E' + m[4];
+}
+
 /** Str::ucfirst() */
 export function ucfirst(value) {
   // Laravel: `mb_ucfirst($string, 'UTF-8')` - the first CHARACTER is

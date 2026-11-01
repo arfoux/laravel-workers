@@ -498,3 +498,125 @@ test('a Carbon value is compared, concatenated and json_encoded like PHP', async
   await table(db, 'posts').where('d', d).get();
   assert.equal(seen[0][0], '2024-01-02 03:04:05');
 });
+
+// --- cast grammar: `decimal:N` and `string` (driven by the PHP oracle) ---
+// The `decimal` cast is `BigDecimal::of((string) $value)->toScale(N, HalfUp)`.
+// Brick\Math's parser is NOT the JS regex instinct: surrounding whitespace is
+// rejected, an exponent is accepted, and the rounding happens on the decimal
+// string ('2.675' -> '2.68', where toFixed() says '2.67'). Probed against PHP
+// 8.3.30 + Laravel 13.37 with the framework's own brick/math; the [value,
+// places, expected] rows below are the oracle's answers, and the rows whose
+// expected value is null are the ones PHP throws NumberFormatException for.
+test('decimal cast follows Brick\\Math grammar and half-up rounding', () => {
+  const { applyCast } = model;
+  const cases = [
+    ['2.675', 2, '2.68'],
+    ['2.5', 2, '2.50'],
+    ['1', 2, '1.00'],
+    ['0.005', 2, '0.01'],
+    ['-2.675', 2, '-2.68'],
+    ['5', 2, '5.00'],
+    ['+2.5', 2, '2.50'],
+    ['.5', 2, '0.50'],
+    ['00.5', 2, '0.50'],
+    ['2.6750', 2, '2.68'],
+    ['9223372036854775808.5', 2, '9223372036854775808.50'],
+    ['1e3', 2, '1000.00'],
+    ['1E3', 2, '1000.00'],
+    ['1e-3', 2, '0.00'],
+    ['1e+3', 2, '1000.00'],
+    ['.5e1', 2, '5.00'],
+    ['1.e3', 2, '1000.00'],
+    ['1.5e2', 2, '150.00'],
+    ['-1.5e2', 2, '-150.00'],
+    ['1e10', 2, '10000000000.00'],
+    ['1e-10', 2, '0.00'],
+    ['9.995', 2, '10.00'],
+    ['9.994', 2, '9.99'],
+    ['0.999', 2, '1.00'],
+    ['-9.995', 2, '-10.00'],
+    ['-0.001', 2, '0.00'],
+    ['-0.000', 2, '0.00'],
+    ['0.000', 2, '0.00'],
+    ['1', 0, '1'],
+    ['2.5', 0, '3'],
+    ['2.5', 3, '2.500'],
+    ['2.5', 6, '2.500000'],
+    // PHP throws on all of these (NumberFormatException -> MathException):
+    [' 2.5', 2, null],
+    ['2.5 ', 2, null],
+    [' 2.5 ', 2, null],
+    ['\t2.5', 2, null],
+    ['1e', 2, null],
+    ['e3', 2, null],
+    ['1_000', 2, null],
+    ['1,5', 2, null],
+    ['', 2, null],
+    ['abc', 2, null],
+    ['1.2.3', 2, null],
+    ['.', 2, null],
+  ];
+  for (const [value, places, expected] of cases) {
+    if (expected === null) {
+      assert.throws(
+        () => applyCast(value, 'decimal:' + places),
+        (e) => e.phpClass === 'MathException' && e.message === 'Unable to cast value to a decimal.',
+        `decimal:${places} of ${JSON.stringify(value)} must throw like PHP`
+      );
+    } else {
+      assert.equal(applyCast(value, 'decimal:' + places), expected, `decimal:${places} of ${JSON.stringify(value)}`);
+    }
+  }
+});
+
+test("string cast is PHP's (string): array -> 'Array', floats via precision=14", () => {
+  const { applyCast } = model;
+  assert.equal(applyCast('x', 'string'), 'x');
+  assert.equal(applyCast(5, 'string'), '5');
+  assert.equal(applyCast(2.5, 'string'), '2.5');
+  // not 'a,b' (Array.prototype.toString) - PHP's own array-to-string conversion
+  assert.equal(applyCast([1, 2], 'string'), 'Array');
+  assert.equal(applyCast(1e-5, 'string'), '1.0E-5');
+});
+
+test('a json/collection cast decodes with PHP key order (json_decode, not JSON.parse)', async () => {
+  const { Model } = model;
+  const { phpJsonEncode } = await import('../php-json.mjs');
+  class CastPost extends Model {
+    static casts = { meta: 'array', rows: 'collection' };
+  }
+  const raw = '{"b":1,"2":"x","a":2}';
+  const p = new CastPost();
+  p.attributes.meta = raw;
+  p.attributes.rows = raw;
+  // PHP: json_encode(json_decode($raw, true)) => {"b":1,"2":"x","a":2};
+  // JSON.parse alone gave {"2":"x","a":2,"b":1} - a different response body.
+  assert.equal(phpJsonEncode(p.get('meta')), raw);
+  assert.equal(p.get('rows').toJson(), raw);
+  // An invalid document is NULL (PHP's answer), never a thrown SyntaxError.
+  const bad = new CastPost();
+  bad.attributes.meta = 'nope';
+  assert.equal(bad.get('meta'), null);
+});
+
+test('a fresh model reads a missing attribute as NULL, like Laravel\'s container->make', () => {
+  const { Model } = model;
+  class FreshPost extends Model {
+    static casts = { id: 'int', published: 'bool' };
+  }
+  // Laravel's getAttributeFromArray() is `$this->getAttributes()[$key] ?? null`,
+  // so a cast-declared key with no attribute answers NULL (not undefined), and
+  // phpIntCast(null) stays null (castAttribute() short-circuits a null primitive
+  // cast). This is the object the compiled rung hands a route parameter whose
+  // OPTIONAL segment is absent: `/p/{post?}` + `mb(?Post $post)` on `/p`
+  // answers 200 `{"isNull":false,"id":null}` (probed on Laravel 13.37).
+  const m = new FreshPost();
+  assert.equal(m.get('id'), null);
+  assert.equal(m.get('published'), null);
+  // A key with no column at all still answers null (Eloquent's getAttribute).
+  assert.equal(m.get('bogus'), null);
+  // And the row-loading path is unchanged: a present attribute still casts.
+  const row = new FreshPost({ id: '7', published: 1 });
+  assert.equal(row.get('id'), 7);
+  assert.equal(row.get('published'), true);
+});

@@ -22,34 +22,27 @@
 // in the route's skip line ("controller <route>: skipped - $<param> (<type>):
 // <the dump's error>"), so the reason carries the fail-loud code too.
 //
-// The test needs a real Laravel app (PHP 8.3 + vendor/): LW_LARAVEL_APP, or
-// the dev-machine default. Without one it SKIPS with the reason (the repo's
-// convention for the oracle tests) - it never fails.
+// The test needs a real Laravel app (PHP 8.3 + vendor/): LW_LARAVEL_APP, or the
+// conventional `parity-app` / `e2e-app` directories at the repo root. Without
+// one it SKIPS with the reason (the repo's convention for the oracle tests) - it
+// never fails.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { oracleAppRoot } from '../../kernel/tests/oracle-app.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const pkgDir = path.resolve(testsDir, '..', '..');
 const dumpPath = path.join(pkgDir, 'tools', 'formrequest-dump.php');
 const PHP = process.env.PHP_BIN || 'php';
 
-// The dev-machine fixture (a fresh Laravel 13 app). It is only a default:
-// LW_LARAVEL_APP wins.
-const DEFAULT_APP_ROOT = 'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+// The app the oracle parity runs against (the resolver is shared with the kernel
+// oracle tests, see the header).
+const APP = oracleAppRoot();
 
-function appRoot() {
-  const app = process.env.LW_LARAVEL_APP || DEFAULT_APP_ROOT;
-  if (!app) return null;
-  if (!existsSync(path.join(app, 'vendor', 'autoload.php'))) return null;
-  if (!existsSync(path.join(app, 'app'))) return null;
-  return app;
-}
-
-const APP = appRoot();
 // The dump is a PHP tool: without PHP the test skips too.
 function hasPhp() {
   try {
@@ -229,6 +222,55 @@ const FIXTURE_BODIES = {
         ];
     }
 `,
+  // A unique/exists rule object whose constraint is a query CALLBACK: its
+  // string form DROPS the callback (formatWheres() writes the where pairs
+  // only) while Laravel keeps the object and merges the callback into the
+  // query - so the edge would answer the opposite (an exists rule PASSES where
+  // Laravel fails).
+  RuleCallbackRequest: `
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'email' => [\\Illuminate\\Validation\\Rule::exists('users', 'email')->whereIn('tenant_id', [1])],
+        ];
+    }
+`,
+  // The same shape written as where PAIRS: those DO live in the string form, so
+  // the class is not refused and the rule travels through unchanged.
+  RulePairRequest: `
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'slug' => [\\Illuminate\\Validation\\Rule::unique('posts', 'slug')->where('tenant_id', 1)],
+            'email' => [\\Illuminate\\Validation\\Rule::exists('users', 'email')->whereNot('tenant_id', 2)],
+        ];
+    }
+`,
+  // A model FQCN table: parseTable() resolves it to the model's table AND the
+  // model's key as the id column, which the rule string cannot carry.
+  ClassTableRequest: `
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'email' => ['unique:App\\\\Models\\\\User,email'],
+        ];
+    }
+`,
 };
 
 // The hooks the compiled lifecycle RUNS: the hook, the class that declares it
@@ -255,6 +297,61 @@ const REFUSED_HOOK = {
 };
 
 const NS = APP ? rootNamespace(APP) : 'App\\';
+// The app's default connection name: the dump treats `default.table` as the
+// app's own database (it drops the prefix) and refuses every other prefix, so
+// those two fixtures are built from the app's real answer.
+function defaultConnection(app) {
+  if (!app || !hasPhp()) return null;
+  const code = [
+    '$root = $argv[1];',
+    "require $root . '/vendor/autoload.php';",
+    '$app = require $root . "/bootstrap/app.php";',
+    '$app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap();',
+    "echo (string) config('database.default');",
+  ].join(' ');
+  try {
+    const out = execFileSync(PHP, ['-r', code, app], { cwd: app, encoding: 'utf8' }).trim();
+    return out === '' ? null : out;
+  } catch {
+    return null;
+  }
+}
+const DEFAULT_CONN = defaultConnection(APP);
+const CONN_BODIES = DEFAULT_CONN
+  ? {
+      // The app's own connection as a prefix: the same query, so the dump drops
+      // the prefix instead of refusing the class.
+      DefaultConnTableRequest: `
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'email' => ['unique:${DEFAULT_CONN}.users,email'],
+        ];
+    }
+`,
+      // Any other connection: PHP runs the check on that database, and the
+      // compiled app queries one.
+      OtherConnTableRequest: `
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'email' => ['exists:${DEFAULT_CONN}other.users,email'],
+        ];
+    }
+`,
+    }
+  : {};
+const FIXTURE_BODIES_ALL = { ...FIXTURE_BODIES, ...CONN_BODIES };
 const FIXTURE_DIR = APP ? path.join(APP, 'app', 'LwDumpFixtures') : null;
 
 // The fixtures go into the app (the app's autoloader finds them through the
@@ -264,7 +361,7 @@ let fixturesError = null;
 if (FIXTURE_DIR) {
   try {
     mkdirSync(FIXTURE_DIR, { recursive: true });
-    for (const [name, body] of Object.entries(FIXTURE_BODIES)) {
+    for (const [name, body] of Object.entries(FIXTURE_BODIES_ALL)) {
       writeFileSync(
         path.join(FIXTURE_DIR, name + '.php'),
         `<?php\n\nnamespace ${NS}LwDumpFixtures;\n\nuse Illuminate\\Foundation\\Http\\FormRequest;\n\n` +
@@ -389,4 +486,66 @@ test('the refusal reaches the operator (the build prints the dump error)', { ski
   assert.match(line, /LW003 validator\(\) is overridden/);
   assert.match(line, /Illuminate\/Foundation\/Http\/FormRequest\.php:104/);
   assert.match(line, /the working path: /);
+});
+test('the dump REFUSES a unique/exists object that carries query callbacks (the string form drops them)', { skip }, () => {
+  // A-series #299. `Rule::exists('users','email')->whereIn('tenant_id',[1])`
+  // keeps the callback OUT of its string form: `whereIn()` routes into
+  // `DatabaseRule::$using` (Unique.php/Exists.php `__toString()` writes
+  // `formatWheres()` = the where PAIRS only). Laravel never stringifies such a
+  // rule - `ValidationRuleParser::prepareRule()` keeps the object and
+  // `validateExists()` merges `queryCallbacks()` into the query - so the edge,
+  // which only gets the string, would validate a DIFFERENT query. Probed on
+  // 13.37 with one matching row: the object FAILS, the bare string PASSES
+  // (fail-open), so the class is refused instead.
+  const entry = runDump([fqcnOf('RuleCallbackRequest')]).get(fqcnOf('RuleCallbackRequest'));
+  assert.ok(entry, 'the dump answered for RuleCallbackRequest');
+  assert.equal(typeof entry.error, 'string', 'the dump must refuse the class');
+  assert.match(entry.error, /^LW003 the rules use a rule object/);
+  assert.match(entry.error, /query callbacks/);
+  assert.match(entry.error, /Exists/, 'the reason names the rule class');
+  assert.match(entry.error, /whereIn/, 'the reason names the shape that is dropped');
+  assert.match(entry.error, /the working path: /);
+  assert.deepEqual(entry.rules, [], 'a refused class carries no rules');
+});
+test('the dump keeps a unique/exists object whose constraint IS a where pair', { skip }, () => {
+  // The other half of #299: a where PAIR lives in `$this->wheres`, so
+  // `formatWheres()` writes it into the string and the edge runs the same
+  // query. Refusing these too would break working apps.
+  const entry = runDump([fqcnOf('RulePairRequest')]).get(fqcnOf('RulePairRequest'));
+  assert.ok(entry, 'the dump answered for RulePairRequest');
+  assert.equal(entry.error, null, 'a where pair is carried by the string form');
+  assert.deepEqual(entry.rules.slug, ['unique:posts,slug,NULL,id,tenant_id,"1"']);
+  assert.deepEqual(entry.rules.email, ['exists:users,email,tenant_id,"!2"']);
+});
+test('the dump REFUSES a table given as a class name (PHP resolves it, the string cannot carry it)', { skip }, () => {
+  // `ValidatesAttributes::parseTable()` (:1193-1200) turns
+  // `unique:App\Models\User,email` into the model's table AND the model's key
+  // as the id column (`getUniqueIds()` prefers that key over the rule's own id
+  // parameter) - neither travels in the rule string, so the edge would query a
+  // table named after the class.
+  const entry = runDump([fqcnOf('ClassTableRequest')]).get(fqcnOf('ClassTableRequest'));
+  assert.ok(entry, 'the dump answered for ClassTableRequest');
+  assert.equal(typeof entry.error, 'string', 'the dump must refuse the class');
+  assert.match(entry.error, /^LW003 the rules use a unique\/exists table/);
+  assert.match(entry.error, /is a class name/);
+  assert.match(entry.error, /parseTable/);
+  assert.match(entry.error, /the working path: /);
+});
+test('the dump refuses a foreign connection prefix and drops the app\'s own', { skip: skip || !DEFAULT_CONN ? skip || 'no default connection could be read' : false }, () => {
+  // `parseTable()` (:1191) splits `connection.table` on the first dot and the
+  // presence verifier then runs on THAT connection. The compiled app queries
+  // one database: the prefix that names it is the same query (drop it), any
+  // other prefix is a different database (refuse).
+  const entries = runDump([fqcnOf('DefaultConnTableRequest'), fqcnOf('OtherConnTableRequest')]);
+  const own = entries.get(fqcnOf('DefaultConnTableRequest'));
+  assert.ok(own, `the dump answered for DefaultConnTableRequest (${DEFAULT_CONN})`);
+  assert.equal(own.error, null, `the app's own connection prefix is the same query`);
+  assert.deepEqual(own.rules.email, ['unique:users,email'], 'the prefix is dropped');
+  const other = entries.get(fqcnOf('OtherConnTableRequest'));
+  assert.ok(other, 'the dump answered for OtherConnTableRequest');
+  assert.equal(typeof other.error, 'string', 'a foreign connection is refused');
+  assert.match(other.error, /^LW003 the rules use a unique\/exists table/);
+  assert.match(other.error, /names the connection/);
+  assert.ok(other.error.includes(`${DEFAULT_CONN}other`), 'the reason names the connection');
+  assert.match(other.error, /the working path: /);
 });

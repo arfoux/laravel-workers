@@ -1,7 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Validator, validate, strGetcsv, splitRuleString } from '../validator.mjs';
 import { buildRequest } from '../http.mjs';
+import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
+
+// The unique/exists parity test at the bottom drives the real Laravel validator
+// in PHP; without an app it skips (the oracle half) and asserts the pinned
+// verdicts only. Same contract as the other oracle tests (ratelimit, session).
+const ORACLE_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'tools',
+  'php-unique-exists-oracle.php'
+);
+const PHP_BIN = process.env.PHP_BIN || 'php';
+const APP_ROOT = oracleAppRoot();
 
 test('required/nullable/sometimes', async () => {
   let v = new Validator({ a: '' }, { a: 'required' });
@@ -290,6 +307,26 @@ test('unique without resolver fails loud', async () => {
   await assert.rejects(
     () => new Validator({ email: 'a@b.c' }, { email: 'unique:users,email' }).passes(),
     /needs opts\.db or opts\.unique/
+  );
+});
+test('a connection-qualified or class-name table fails loud (A-series #299)', async () => {
+  // PHP resolves both shapes before the query and the edge cannot:
+  // `ValidatesAttributes::parseTable()` splits `connection.table` (:1191) and
+  // the presence verifier then runs on THAT connection, while a model FQCN
+  // (:1193-1200) becomes the model's table AND the model's key as the id
+  // column. The compiled app queries one database, so a rule that arrives here
+  // in either shape stops with a reason instead of querying a table literally
+  // named "mysql.users" (which the operator would read as a missing table).
+  // The build refuses both earlier, in tools/formrequest-dump.php; this is the
+  // runtime half, for a rule string written inside a compiled controller.
+  const db = { prepare() { throw new Error('the guard must stop before any query'); } };
+  await assert.rejects(
+    () => new Validator({ email: 'a@b.c' }, { email: 'unique:mysql.users,email' }, {}, { db }).passes(),
+    /needs a plain table name/
+  );
+  await assert.rejects(
+    () => new Validator({ email: 'a@b.c' }, { email: 'exists:App\\Models\\User,email' }, {}, { db }).passes(),
+    /is a class name/
   );
 });
 
@@ -919,6 +956,52 @@ test("unique: the 'NULL' column and the 'NULL' except mean what Laravel means", 
   assert.equal(payload.idColumn, 'id');
 });
 
+test('unique: the except id reaches the query as the string stripslashes() made', async () => {
+  // Probed against Laravel 13.37 through tools/php-unique-exists-oracle.php
+  // (table `u`: ('Null','v1'), ('','v2'), ('a"b\c','v3'), ('7','v4'), ('x','v5')).
+  // validateUnique() runs stripslashes() over every non-null id, and PHP's
+  // stripslashes() answers a STRING even for an int subject: a spy
+  // PresenceVerifier reports `'7'` for `unique:u,a,7,id`. The kernel bound the
+  // int, and SQLite's TEXT affinity never compares `'7'` equal to 7 - so the
+  // id = '7' row was NOT excluded and the verdict flipped (JS FAIL vs PHP PASS).
+  const sqlite = new DatabaseSync(':memory:');
+  sqlite.exec('create table u (id text primary key, a text null)');
+  sqlite.exec("insert into u (id, a) values ('Null','v1'),('','v2'),('a\"b\\c','v3'),('7','v4'),('x','v5')");
+  const db = {
+    prepare(sql) {
+      let params = [];
+      return {
+        bind(...p) { params = p; return this; },
+        async all() {
+          const st = sqlite.prepare(sql);
+          return { results: (params.length ? st.all(...params) : st.all()).map((r) => ({ ...r })) };
+        },
+        async first() {
+          const st = sqlite.prepare(sql);
+          const row = params.length ? st.get(...params) : st.get();
+          return row ? { ...row } : null;
+        },
+      };
+    },
+  };
+  const verdict = async (value, rule) => (await new Validator({ a: value }, { a: rule }, {}, { db }).passes());
+  // Each row: [rule, data, the PHP oracle verdict].
+  const oracle = [
+    ['unique:u,a,7,id', 'v4', true],
+    [String.raw`unique:u,a,\7,id`, 'v4', true],
+    ['unique:u,a, 7 ,id', 'v4', true],
+    ['unique:u,a,007,id', 'v4', false],
+    ['unique:u,a,Null,id', 'v4', false],
+    ['unique:u,a,,id', 'v2', true],
+    ['unique:u,a,,id', 'v4', false],
+    ['unique:u,a,abc,id', 'v4', false],
+    ['unique:u,a,"a\\"b\\\\c",id', 'v3', true],
+  ];
+  for (const [rule, value, expected] of oracle) {
+    assert.equal(await verdict(value, rule), expected, `${rule} with a=${value}`);
+  }
+});
+
 test("unique: the wildcard column and the bracketed id are Laravel's", async () => {
   // Probed against the real Laravel 13 (a spy presence verifier):
   //   'items.*.id' => 'unique:items,id'  -> the column is 'id' (the last dot
@@ -945,7 +1028,10 @@ test("unique: the wildcard column and the bracketed id are Laravel's", async () 
     { unique: async (p) => { payload2 = p; return true; } }
   );
   assert.equal(await v2.passes(), true);
-  assert.equal(payload2.except, 7, "the bracketed id is the field's value in the data");
+  // The id went through stripslashes() (validateUnique, ValidatesAttributes.php
+  // :1120-1124), which answers a STRING even for an int subject (`stripslashes(7)`
+  // is '7') - probed on PHP 8.3.
+  assert.equal(payload2.except, '7', "the bracketed id is the field's value in the data");
   assert.equal(payload2.idColumn, 'id');
 });
 
@@ -1209,4 +1295,183 @@ test('in_array uses the dot-flattened wildcard path and a STRICT compare', async
   assert.equal(await v({ n: { a: 1, b: 2 }, x: 2 }, 'in_array:n.*'), true);
   assert.equal(await v({ n: { a: 1, b: 2 }, x: 1 }, 'in_array:n'), false);
   assert.equal(await v({ tags: ['a', 'b'], x: 'a' }, 'in_array:tags.*'), true);
+});
+
+// ---------------------------------------------------------------------------
+// unique / exists against a REAL database: the extra `where` pairs, the id
+// exception, the flattenValue() head, and the COUNT(DISTINCT) form.
+//
+// The expected answers below are the output of the real Laravel 13.37 validator
+// (Illuminate\Validation\Factory + DatabasePresenceVerifier) over the same
+// SQLite schema: tools/php-unique-exists-oracle.php builds this table, reads the
+// `cases` below (as {data, rules} pairs) and prints one PASS/FAIL per case - the
+// test itself drives it whenever a Laravel app is available, and falls back to
+// the pinned answers below when one is not.
+// The oracle's answers for the 34 cases below, in order (PHP 8.3 + Laravel
+// 13.37, tools/php-unique-exists-oracle.php). Kept here so the matrix still
+// guards the kernel when no app is available.
+const PINNED = [
+  // 0 unique:t,a             1 unique:t,a nope@x
+  false, true,
+  // 2 unique:t,a,3,id        3 unique:t,a,1,id
+  false, false,
+  // 4..7 the Null/null/NULL/'' ids
+  false, false, false, false,
+  // 8..10 tenant 1 / tenant 2 / nope@x tenant 2
+  false, false, true,
+  // 11..13 deleted_at NULL / NOT_NULL / tenant "!1"
+  true, false, false,
+  // 14..15 [id] and x[id]y
+  false, false,
+  // 16..17 the array value (head) and the empty array
+  false, true,
+  // 18 exists:t,a            19 exists:t,a nope@x
+  true, false,
+  // 20..21 exists tenant 1 / tenant 2
+  true, false,
+  // 22..23 exists array ok / array missing
+  true, false,
+  // 24..25 exists empty array / exists deleted_at NULL
+  true, false,
+  // 26..28 u: Null id / empty id / escaped id
+  false, true, true,
+  // 29..31 u: x[id]y / [id] / the literal 7
+  true, true, true,
+  // 32..35 u: the except id travels as the string stripslashes() made -
+  // `\7` and ` 7 ` match the TEXT id '7' (excluded -> PASS), `007` and `abc`
+  // stay literal comparisons (no row matches them -> FAIL).
+  true, true, false, false,
+  // 36..37 u: except '' still emits the clause, so the id = '' row is excluded
+  // (a = 'v2' PASSES) while a = 'v1' keeps the id = 'Null' row (FAILS).
+  true, false,
+  // 38 u: exists
+  true,
+];
+
+// node:sqlite only exists from Node 22.5; on an older runtime the parity half
+// would throw inside the test instead of skipping (the engines field is just
+// `>=22`), so the guard mirrors kernel/tests/sqlite-integration.test.mjs.
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = await import('node:sqlite'));
+} catch {
+  // Older Node without node:sqlite: the matrix still runs, the SQL tests skip.
+}
+const sqliteSkip = DatabaseSync ? false : 'node:sqlite unavailable (needs Node >= 22.5)';
+
+test('unique/exists match Laravel over SQLite: extras, id exception, array value', { skip: sqliteSkip }, async () => {
+  const sqlite = new DatabaseSync(':memory:');
+  // A D1-shaped adapter over the local SQLite.
+  const d1 = {
+    prepare(sql) {
+      let params = [];
+      return {
+        bind(...p) { params = p; return this; },
+        async all() {
+          const st = sqlite.prepare(sql);
+          const rows = params.length ? st.all(...params) : st.all();
+          return { results: rows.map((r) => ({ ...r })) };
+        },
+        async first() {
+          const st = sqlite.prepare(sql);
+          const row = params.length ? st.get(...params) : st.get();
+          return row ? { ...row } : null;
+        },
+      };
+    },
+  };
+  // The schema and rows tools/php-unique-exists-oracle.php builds - keep the two
+  // in sync when a case is added.
+  sqlite.exec('create table t (id integer primary key, a text null, tenant integer null, deleted_at text null)');
+  sqlite.exec("insert into t (id, a, tenant, deleted_at) values (1,'dup@x',1,NULL),(2,'other@x',1,'2024-01-01'),(3,'dup@x',2,NULL),(4,NULL,2,NULL)");
+  sqlite.exec('create table u (id text primary key, a text null)');
+  sqlite.exec("insert into u (id, a) values ('Null','v1'),('','v2'),('a\"b\\c','v3'),('7','v4'),('x','v5')");
+
+  // [data, rule] - the expected verdicts come from the PHP oracle below.
+  const cases = [
+    [{ a: 'dup@x' }, 'unique:t,a'],
+    [{ a: 'nope@x' }, 'unique:t,a'],
+    [{ a: 'dup@x' }, 'unique:t,a,3,id'],
+    [{ a: 'dup@x' }, 'unique:t,a,1,id'],
+    // prepareUniqueId(): the `null`/`NULL` id is no exception at all, the empty
+    // id filters `id != ''`, and the value is stripslashes()d.
+    [{ a: 'dup@x' }, 'unique:t,a,Null,id'],
+    [{ a: 'dup@x' }, 'unique:t,a,null,id'],
+    [{ a: 'dup@x' }, 'unique:t,a,NULL,id'],
+    [{ a: 'dup@x' }, 'unique:t,a,,id'],
+    // getExtraConditions() + addWhere(): a plain pair, NULL, NOT_NULL and the
+    // leading `!` inequality.
+    [{ a: 'dup@x' }, 'unique:t,a,NULL,id,tenant,1'],
+    [{ a: 'dup@x' }, 'unique:t,a,NULL,id,tenant,2'],
+    [{ a: 'nope@x' }, 'unique:t,a,NULL,id,tenant,2'],
+    [{ a: 'other@x' }, 'unique:t,a,NULL,id,deleted_at,"NULL"'],
+    [{ a: 'other@x' }, 'unique:t,a,NULL,id,deleted_at,"NOT_NULL"'],
+    [{ a: 'dup@x' }, 'unique:t,a,NULL,id,tenant,"!1"'],
+    // The bracketed id is the field's value in the data; a [id] inside a wider
+    // prefix/suffix is still substituted.
+    [{ a: 'dup@x', id: 3 }, 'unique:t,a,[id]'],
+    [{ a: 'dup@x', id: 3 }, 'unique:t,a,x[id]y'],
+    // An ARRAY value: flattenValue() binds the head (unique).
+    [{ a: ['dup@x', 'nope@x'] }, 'unique:t,a'],
+    [{ a: [] }, 'unique:t,a'],
+    // exists: whereIn + COUNT(DISTINCT), so the WHOLE list is bound.
+    [{ a: 'dup@x' }, 'exists:t,a'],
+    [{ a: 'nope@x' }, 'exists:t,a'],
+    [{ a: 'other@x' }, 'exists:t,a,tenant,1'],
+    [{ a: 'other@x' }, 'exists:t,a,tenant,2'],
+    [{ a: ['dup@x', 'other@x'] }, 'exists:t,a'],
+    [{ a: ['dup@x', 'nope@x'] }, 'exists:t,a'],
+    [{ a: [] }, 'exists:t,a'],
+    [{ a: 'other@x' }, 'exists:t,a,deleted_at,"NULL"'],
+    // A TEXT primary key: the id comparison stays textual (`id != '7'`), and an
+    // escaped id is unescaped before it is compared.
+    [{ a: 'v1' }, 'unique:u,a,Null,id'],
+    [{ a: 'v2' }, 'unique:u,a,,id'],
+    [{ a: 'v3' }, 'unique:u,a,"a\\"b\\\\c",id'],
+    [{ a: 'v4', id: '7' }, 'unique:u,a,x[id]y,id'],
+    [{ a: 'v4', id: '7' }, 'unique:u,a,[id],id'],
+    [{ a: 'v4' }, 'unique:u,a,7,id'],
+    // The except id travels as the STRING stripslashes() produced: PDO sends it
+    // as text, so a `id = '7'` row is excluded (`7`/`\7`/` 7 ` all pass) while
+    // a non-integer id stays a literal comparison (`007`/`abc` do not). An
+    // EMPTY except is not null and not 'NULL', so the clause still runs with ''
+    // as its value (probed: the oracle reports '' at getCount) - the id = ''
+    // row is excluded and a = 'v2' passes.
+    [{ a: 'v4' }, String.raw`unique:u,a,\7,id`],
+    [{ a: 'v4' }, 'unique:u,a, 7 ,id'],
+    [{ a: 'v4' }, 'unique:u,a,007,id'],
+    [{ a: 'v4' }, 'unique:u,a,abc,id'],
+    [{ a: 'v2' }, 'unique:u,a,,id'],
+    [{ a: 'v1' }, 'unique:u,a,,id'],
+    [{ a: 'v1' }, 'exists:u,a'],
+  ];
+
+  // The expected verdicts: the real Laravel 13.37 validator in PHP (skipped
+  // where no app/vendor is available - the CI `test` job has none, the `e2e`
+  // job runs it for real). The kernel side is always exercised.
+  let expected = null;
+  if (APP_ROOT) {
+    const res = spawnSync(PHP_BIN, [ORACLE_PATH], {
+      input: JSON.stringify({ app_root: APP_ROOT, cases: cases.map(([data, rule]) => ({ data, rules: { a: rule } })) }),
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (res.error) throw new Error(`PHP oracle failed to start (${res.error.message})`);
+    if (res.status !== 0) throw new Error(`PHP oracle exited ${res.status}: ${res.stderr}`);
+    expected = JSON.parse(res.stdout).results;
+    assert.equal(expected.length, cases.length, 'the oracle answered every case');
+  }
+
+  for (let i = 0; i < cases.length; i++) {
+    const [data, rule] = cases[i];
+    const v = new Validator(data, { a: rule }, {}, { db: d1 });
+    const got = await v.passes();
+    if (expected) {
+      assert.notEqual(expected[i].slice(0, 5), 'ERROR', `${rule}: oracle ${expected[i]}`);
+      assert.equal(got, expected[i] === 'PASS', `${rule} with ${JSON.stringify(data)}`);
+    }
+    // Re-assert the pinned verdicts so the matrix still guards the kernel when
+    // the oracle is unavailable.
+    assert.equal(got, PINNED[i], `${rule} with ${JSON.stringify(data)} (pinned)`);
+  }
 });

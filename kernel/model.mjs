@@ -3,6 +3,8 @@ import { table as tableBuilder } from './db.mjs';
 import { isHashedDigest, makeSync, verifyConfiguration } from './hash.mjs';
 import { Collection } from './collections.mjs';
 import { phpJsonEncode, tagPhpObjectDeep } from './php-json.mjs';
+import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
+import { phpStringCast } from './str.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
 /**
@@ -37,12 +39,10 @@ function encodeJsonCast(value, spec) {
 function decodeJsonCast(value, spec) {
   if (typeof value !== 'string') return value;
   if (value === '') return null;
-  let decoded;
-  try {
-    decoded = JSON.parse(value);
-  } catch {
-    return null;
-  }
+  // `json_decode($value, true)`: PHP's key ORDER and its integer rule (LW006).
+  // An invalid document answers NULL (PHP's answer, no throw).
+  const decoded = phpJsonDecodeOrdered(value, { text: true });
+  if (decoded === null) return null;
   if (spec.collection) return new Collection(decoded);
   // The `object` cast is stdClass (json_decode($value, false)).
   return spec.stdObject ? tagPhpObjectDeep(decoded) : decoded;
@@ -103,21 +103,63 @@ function phpFloatCast(value) {
 // Laravel's decimal cast: BigDecimal::of((string) $value)->toScale($decimals,
 // RoundingMode::HalfUp) - the rounding happens on the DECIMAL string, not on
 // the binary double ('2.675' -> '2.68', where toFixed() says '2.67').
+//
+// The accepted grammar is Brick\Math\BigNumber's own parser, NOT the JS regex
+// instinct: NO surrounding whitespace (`' 2.5 '` throws in PHP too - the old
+// `^\s*` prefix accepted it and diverged in the other direction), an OPTIONAL
+// exponent (`'1e3'` -> '1000.00', `'.5e1'` -> '5.00', `'1.e3'` -> '1000.00'),
+// a sign that applies to the whole number (`'-1.5e2'` -> '-150.00'), and
+// `'1e'`/`'e3'`/`'1_000'`/`'1,5'` all rejected. Probed against PHP 8.3.30 with
+// the framework's own brick/math.
 function phpDecimalCast(value, places) {
-  const m = /^\s*([+-]?)(\d*)(?:\.(\d*))?$/.exec(String(value));
-  if (!m || (m[2] === '' && (m[3] === undefined || m[3] === ''))) {
+  const m = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(String(value));
+  if (!m) {
     const err = new Error('Unable to cast value to a decimal.');
     err.phpClass = 'MathException';
     throw err;
   }
   const sign = m[1] === '-' ? '-' : '';
   const int = m[2] || '0';
-  const frac = (m[3] || '').padEnd(places + 1, '0');
-  const roundUp = Number(frac[places] || '0') >= 5;
-  const scaled = BigInt(int + frac.slice(0, places)) + (roundUp ? 1n : 0n);
-  const digits = scaled.toString().padStart(places + 1, '0');
-  const intPart = digits.slice(0, digits.length - places) || '0';
-  return sign + intPart + (places ? '.' + digits.slice(digits.length - places) : '');
+  const frac = m[3] !== undefined ? m[3] : m[4] || '';
+  const exp = Number(m[5] || 0);
+  // The parser's coefficient (int + frac) is an integer; the point sits at its
+  // END, so value = coefficient x 10^(exp - frac.length). Normalising the digit
+  // string changes that exponent: stripping LEADING zeros does not (005 -> 5
+  // keeps the scale), stripping TRAILING zeros does (1500 -> 15 is x100).
+  let digits = int + frac;
+  let shift = exp - frac.length;
+  const lead = /^0*/.exec(digits)[0].length;
+  digits = digits.slice(lead);
+  const trail = digits === '' ? 0 : digits.length - digits.replace(/0+$/, '').length;
+  digits = trail ? digits.slice(0, digits.length - trail) : digits;
+  shift += trail;
+  // Every digit was a zero: BigDecimal normalises -0 to 0, so `'-0.000'` prints
+  // '0.00' (the sign never survives an all-zero coefficient).
+  if (digits === '') return '0' + (places ? '.' + '0'.repeat(places) : '');
+  const breakAt = digits.length + shift;
+  const rounded =
+    breakAt <= 0
+      ? phpDecimalRound('0.' + '0'.repeat(-breakAt) + digits, places)
+      : breakAt >= digits.length
+        ? phpDecimalRound(digits + '0'.repeat(breakAt - digits.length), places)
+        : phpDecimalRound(digits.slice(0, breakAt) + '.' + digits.slice(breakAt), places);
+  // Same rule after rounding: '-0.001' to 2 places is '0.00', not '-0.00'.
+  const zero = [...rounded].every((c) => c === '0' || c === '.');
+  return (zero ? '' : sign) + rounded;
+}
+
+// Half-up rounding on the decimal string, then pad/trim to `places` (exactly
+// what BigDecimal::toScale(places, HalfUp) + (string) answers).
+function phpDecimalRound(decimal, places) {
+  const dot = decimal.indexOf('.');
+  const int = dot === -1 ? decimal : decimal.slice(0, dot);
+  const frac = dot === -1 ? '' : decimal.slice(dot + 1);
+  const kept = frac.slice(0, places).padEnd(places, '0');
+  const nextDigit = frac.length > places ? frac[places] : '0';
+  let scaled = BigInt(int + kept) + (Number(nextDigit) >= 5 ? 1n : 0n);
+  const text = scaled.toString().padStart(places + 1, '0');
+  const intPart = text.slice(0, text.length - places) || '0';
+  return intPart + (places ? '.' + text.slice(text.length - places) : '');
 }
 
 // Laravel's `asTimestamp()`: the date's Unix timestamp (the model's date
@@ -363,7 +405,7 @@ function applyCast(value, cast) {
   if (spec === 'timestamp') return phpTimestampCast(value);
   if (spec === 'float' || spec === 'double' || spec === 'real') return phpFloatCast(value);
   if (spec === 'bool' || spec === 'boolean') return phpBoolCast(value);
-  if (spec === 'string') return String(value);
+  if (spec === 'string') return phpStringCast(value);
   // A date cast WITH a format serializes in that format (Laravel hands the
   // column to Carbon and the model's serializeDate() writes the custom
   // format); a bare date/datetime keeps the stored text as-is.
@@ -655,7 +697,13 @@ export class Model {
     const hasAttribute = Object.prototype.hasOwnProperty.call(this.attributes, key);
     const hasCast = ctor.casts && Object.prototype.hasOwnProperty.call(ctor.casts, key);
     if (hasAttribute || hasCast || hasAccessor) {
-      const raw = this.attributes[key];
+      // Laravel's `getAttributeFromArray()` answers NULL for a key that is not
+      // in the attribute array (`$this->getAttributes()[$key] ?? null`), so a
+      // cast-declared key with no attribute (`$fresh->id`) and an accessor both
+      // receive null - not undefined. A fresh model built by `rt.newModel()`
+      // (the route parameter whose optional segment is absent) reads exactly
+      // like Laravel's `container->make(<model>)`.
+      const raw = hasAttribute ? this.attributes[key] : null;
       // Laravel's `transformModelValue()` (HasAttributes.php:585-600): an
       // ACCESSOR wins and receives the RAW attribute value - the cast does NOT
       // run for it, and the accessor's result is not cast afterwards. Probed:
