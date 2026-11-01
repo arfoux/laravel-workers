@@ -71,3 +71,19 @@ test('dist-swap: a discarded build leaves the previous dist byte-identical', () 
     s.done();
   }
 });
+
+test('dist-swap: a failed swap puts the previous dist back', () => {
+  const s = sandbox();
+  try {
+    write(s.final, 'classes.generated.mjs', 'the last good build');
+    // `staging === final`: the move-aside succeeds and the landing can never
+    // follow (its source was just renamed away). That is the window the restore
+    // covers - the worker must not be left without a `dist/`.
+    assert.throws(() => commitDist(s.final, s.final), /the previous build was restored/);
+    assert.equal(readFileSync(join(s.final, 'src', 'classes.generated.mjs'), 'utf8'), 'the last good build');
+    // Nothing is left renamed aside under `dist.old-*`.
+    assert.deepEqual(readdirSync(s.dir), ['dist']);
+  } finally {
+    s.done();
+  }
+});

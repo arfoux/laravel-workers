@@ -143,3 +143,49 @@ test('a push without a database binding fails loud', async () => {
   const rt = buildRt(null, { strict: false, runtime: true, db: null });
   await assert.rejects(() => rt.queuePush('App\\Jobs\\X', []), /no database binding/);
 });
+
+test('the drain runs a COMPILED job: rt.newClass resolves the ctor deps and handle() gets the runtime', async () => {
+  // The compiled contract (compiler/src/classes.mjs): `classes[fqcn] =
+  // { ctor(args, deps), deps, methods }` and every method is `(rt, ...args)`.
+  // The worker's consumer builds through `rt.newClass()` and calls
+  // `handle(rt)` — hand-rolling the ctor with an empty dep map and calling
+  // `handle()` without the runtime made every job whose handle() touched
+  // `$this` or an injected service throw, and the row was dropped after three
+  // attempts (the work silently never happened).
+  const db = makeDb();
+  const logged = [];
+  const seen = [];
+  const classes = {
+    'App\\Jobs\\SendWelcomeNote': {
+      ctor: (args, deps) => ({ note: args[0], logger: deps.logger }),
+      deps: [{ param: 'logger', kind: 'adapter', adapter: 'log', type: 'Psr\\Log\\LoggerInterface' }],
+      methods: {
+        handle: async function (rt, ...rest) {
+          seen.push({ rt, note: this.note, logger: this.logger, rest });
+          this.logger.info('job ran: ' + this.note);
+        },
+      },
+    },
+  };
+  const rt = buildRt(null, {
+    strict: false,
+    runtime: true,
+    db,
+    classes,
+    http: { log: (level, message) => logged.push([level, message]) },
+  });
+  const handlers = {
+    'App\\Jobs\\SendWelcomeNote': {
+      build: async (runtime, args) => runtime.newClass('App\\Jobs\\SendWelcomeNote', args),
+    },
+  };
+  await rt.queuePush('App\\Jobs\\SendWelcomeNote', ['hello']);
+  const out = await rt.queueDrain(db, handlers);
+  assert.deepEqual(out, { ran: 1, failed: 0 });
+  assert.equal(seen.length, 1, 'handle() ran');
+  assert.equal(seen[0].rt, rt, 'the compiled method received the runtime');
+  assert.equal(seen[0].note, 'hello', 'the constructor argument arrived');
+  assert.equal(typeof seen[0].logger.info, 'function', 'the injected adapter was resolved');
+  assert.deepEqual(logged, [['info', 'job ran: hello']], 'the injected log adapter is live');
+  assert.equal(db.rows.length, 0, 'the row is deleted once it ran');
+});

@@ -583,6 +583,29 @@ export function emitController(source, methodName, meta = {}) {
   );
 
   let segIndex = 0;
+  // #356: PHP treats a parameter that carries a default as REQUIRED when a
+  // later parameter has none ("optional parameter before required"). Laravel's
+  // route matching then 404s a request the compiled rung would answer with the
+  // default (`/w/{a?}/{b}` with `/w/B`: PHP 404, a naive port answers a='x').
+  // The faithful behaviour is subtle enough that the build refuses rather than
+  // guesses — fail loud, like every other unsupported shape.
+  for (let i = 0; i < params.length; i++) {
+    const p = params[i];
+    if (!p.hasDefault) continue;
+    const laterRequired = params.slice(i + 1).find((q) => !q.hasDefault && !q.variadic);
+    if (laterRequired) {
+      errors.push(
+        lwErr(
+          'LW002',
+          `parameter $${p.name} has a default value but $${laterRequired.name} after it is required — PHP treats $${p.name} as required, and Laravel then 404s a request the compiled rung would answer with the default — ` +
+            PORT_HINT,
+          null,
+          PORT_HINT
+        )
+      );
+      break;
+    }
+  }
   for (let i = 0; i < params.length; i++) {
     const p = params[i];
     if (p.variadic) errors.push(lwErr('LW002', `parameter $${p.name} is variadic — ` + PORT_HINT, null, PORT_HINT));
@@ -863,10 +886,25 @@ export function emitController(source, methodName, meta = {}) {
     if (p.modelBound) {
       // The implicit route-model binding: the segment is the model's key, and
       // a missing model is a 404 (Laravel's ModelNotFoundException).
+      //
+      // The OPTIONAL case: when the route's segment is absent, nothing is bound
+      // and Laravel's container builds a FRESH, EMPTY model instead
+      // (RouteDependencyResolverTrait::transformDependency -> make($className))
+      // - or the signature's default when it has one. The compiled rung used to
+      // run findOrFail(null), which answered 404 where Laravel answers 200
+      // (probed: `/p/{post?}` + `mb(?Post $post)` and `/q/{post?}` +
+      // `mb2(Post $post)`, both 200 `{"isNull":false,"id":null}`).
       seg++;
+      const keyName = p.routeParamName || p.name;
+      const absent =
+        p.hasDefault
+          ? JSON.stringify(p.default === undefined ? null : p.default)
+          : `rt.newModel(${JSON.stringify(p.modelBound.fqcn)})`;
       return (
-        `    let ${vname(p.name)} = (await rt.model(${JSON.stringify(p.modelBound.fqcn)}).findOrFail(` +
-        `rt.param(ctx.params, ${JSON.stringify(p.routeParamName || p.name)}, "raw", false, null)));`
+        `    let ${vname(p.name)} = (ctx.params[${JSON.stringify(keyName)}] === undefined)\n` +
+        `      ? ${absent}\n` +
+        `      : (await rt.model(${JSON.stringify(p.modelBound.fqcn)}).findOrFail(` +
+        `rt.param(ctx.params, ${JSON.stringify(keyName)}, "raw", false, null)));`
       );
     }
     const segName = seg < routeParams.length ? routeParams[seg] : p.name;

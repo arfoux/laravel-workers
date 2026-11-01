@@ -12,10 +12,11 @@ import {
   tagPhpObjectDeep,
   JSON_THROW_ON_ERROR,
 } from '../../kernel/php-json.mjs';
+import { phpJsonDecodeOrdered } from '../../kernel/php-json-ordered.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
 import { setModelRuntime, setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
-import { JsonResource, resourceResponse } from '../../kernel/resources.mjs';
+import { JsonResource, ResourceCollection, resourceResponse, setResourceResolver } from '../../kernel/resources.mjs';
 import { setRequestProvider } from '../../kernel/request-scope.mjs';
 import { Collection } from '../../kernel/collections.mjs';
 
@@ -745,6 +746,29 @@ export function buildRt(context, opts = {}) {
     }
     return out;
   };
+  // The resource classes a compiled collection can `collects` by convention
+  // (`PostCollection` -> `PostResource`): CollectsResources::collects()
+  // resolves the name through the compiled registry, so the runtime hands
+  // the resource layer the same constructor `newClass` builds.
+  setResourceResolver((name) => {
+    const wanted = String(name).replace(/^\\+/, '');
+    let key = classesMap[wanted] ? wanted : null;
+    if (!key) {
+      // A stem (`Post`) or a short name: the compiled registry keys are FQCNs,
+      // so the FIRST class whose short name matches answers - ambiguous short
+      // names were already refused when the build emitted the registry.
+      const short = wanted.split('\\').pop();
+      for (const fqcn of Object.keys(classesMap)) {
+        if (fqcn.split('\\').pop() === short) {
+          key = fqcn;
+          break;
+        }
+      }
+    }
+    if (!key) return undefined;
+    return (item) => rt.newClass(key, [item]);
+  });
+
   rt.newClass = (fqcn, args) => {
     const entry = classesMap[String(fqcn)];
     if (!entry) {
@@ -779,7 +803,15 @@ export function buildRt(context, opts = {}) {
               // toArray()), so the wrapped value is the first constructor
               // argument - the compiled class has no constructor of its own.
               Object.assign(new JsonResource(Array.isArray(args) ? args[0] : undefined), built)
-            : built;
+            : entry.base === 'resourceCollection'
+              ? // `Illuminate\Http\Resources\Json\ResourceCollection::__construct($resource)`
+                // - the app's `PostCollection extends ResourceCollection {}` IS a
+                // collection: the items are mapped through `$collects` (the
+                // class-name convention when the app declares none), so wrapping
+                // it in a plain JsonResource would answer the raw models where
+                // Laravel answers the resources.
+                Object.assign(new ResourceCollection(Array.isArray(args) ? args[0] : undefined), built)
+              : built;
     // The runtime: a mailable renders its view through it (`__lwMail`).
     Object.defineProperty(obj, '__rt', { value: rt, enumerable: false, configurable: true });
     // The class of the instance (the dispatch needs it) — not enumerable, so a
@@ -793,8 +825,9 @@ export function buildRt(context, opts = {}) {
       // carries the `with` ARRAY (the extra top-level keys); JS cannot keep the
       // two apart under one name, so the compiled method lands on `withData` -
       // the name the payload already reads (`resource.withData()`).
-      const key = entry.base === 'resource' && name === 'with' ? 'withData' : name;
-      obj[key] = entry.base === 'resource' ? (...a) => fn.call(obj, rt, ...a) : fn.bind(obj);
+      const isResourceBase = entry.base === 'resource' || entry.base === 'resourceCollection';
+      const key = isResourceBase && name === 'with' ? 'withData' : name;
+      obj[key] = isResourceBase ? (...a) => fn.call(obj, rt, ...a) : fn.bind(obj);
     }
     return obj;
   };
@@ -917,7 +950,10 @@ export function buildRt(context, opts = {}) {
     return Number((res && res.meta && res.meta.last_row_id) || 0);
   };
   // The consumer: run up to `limit` due rows through the compiled job classes.
-  // `handlers` maps a job FQCN to `{ ctor, handle }` (the compiled class).
+  // `handlers` maps a job FQCN to `{ build }` (the compiled class, built
+  // through `rt.newClass()`); the compiled methods are `(rt, ...args)`, so the
+  // runtime is handed to `handle()` - without it every `$this->db()->...`
+  // inside the job threw and the row was dropped after 3 attempts.
   rt.queueDrain = async (db, handlers, limit = 10) => {
     if (!db || !handlers) return { ran: 0, failed: 0 };
     await ensureQueueTable(db);
@@ -940,7 +976,8 @@ export function buildRt(context, opts = {}) {
       try {
         const args = JSON.parse(String(row.payload || '[]'));
         const instance = await entry.build(rt, args);
-        await instance.handle();
+        // The compiled methods take the runtime first (`(rt, ...args)`).
+        await instance.handle(rt);
         await db.prepare('DELETE FROM "' + QUEUE_TABLE + '" WHERE "id" = ?').bind(row.id).run();
         ran++;
       } catch (e) {
@@ -2066,8 +2103,18 @@ export function buildRt(context, opts = {}) {
     const throwOnError = Number(flags || 0) & JSON_THROW_ON_ERROR;
     let out;
     try {
-      out = JSON.parse(String(s == null ? '' : s));
+      // PHP's reader (kernel/php-json-ordered.mjs), not `JSON.parse`: the
+      // document's key ORDER survives in the non-enumerable `__lwOrder` marker
+      // and an integer outside the JS safe range is LW006 - never a silently
+      // rounded number. The depth budget and its messages stay this function's
+      // own (probed on PHP 8.3), so the reader gets no depth authority.
+      out = phpJsonDecodeOrdered(String(s == null ? '' : s), {
+        text: true,
+        depth: Number.MAX_SAFE_INTEGER,
+        throwOnError: true,
+      });
     } catch (e) {
+      if (e.name !== 'JsonException') throw e; // LW006 / ValueError: loud
       if (throwOnError) {
         const err = new Error('Syntax error');
         err.name = 'JsonException';
@@ -2785,7 +2832,23 @@ export function buildRt(context, opts = {}) {
     // to the parameter, so a non-nullable scalar type throws a TypeError
     // (`f(null)` for `int $n` is "must be of type int, null given") - the
     // compiled rung used to answer null, a 200 where Laravel answers 500.
-    if (v === undefined) return hasDefault ? def : null;
+    if (v === undefined) {
+      if (hasDefault) return def;
+      // A nullable parameter is spliced a null (Laravel's
+      // RouteDependencyResolverTrait::resolveMethodDependencies: a parameter
+      // that `allowsNull()` gets null when the route has no value for it).
+      if (nullable) return null;
+      // Nothing is spliced at all for a parameter with no default and no
+      // nullability, so the call has too few arguments: PHP 8 raises an
+      // ArgumentCountError and Laravel answers 500. The compiled rung used to
+      // answer null here - a 200 where Laravel answers 500 (found by the shadow
+      // harness: `/v/{a}/{b?}` with `req(string $a, string $b)`, request
+      // `/v/A`).
+      throw new TypeError(
+        'Too few arguments: the route has no segment for $' + name + ' and the parameter has no default ' +
+          '(PHP 8 throws an ArgumentCountError here, so Laravel answers 500)'
+      );
+    }
     if (v === null) {
       if (nullable) return null;
       if (type === 'int' || type === 'float' || type === 'string') {
@@ -2905,6 +2968,19 @@ export function buildRt(context, opts = {}) {
     const M = modelsMap[key];
     if (!M) throw new Error('rt.model: unknown model ' + JSON.stringify(key));
     return makeFacade(M);
+  };
+
+  // Laravel's `$this->container->make(<model>)`: a route parameter whose OPTIONAL
+  // segment is absent and that carries no default is not null - the container
+  // builds a fresh, empty model (RouteDependencyResolverTrait::transformDependency
+  // falls through to `make($className)` when the parameter has no default). Probed
+  // against Laravel 13.37: `/p/{post?}` with `mb(?Post $post)` on `/p` answers
+  // 200 `{"isNull":false,"id":null}`.
+  rt.newModel = (name) => {
+    const key = String(name);
+    const M = modelsMap[key];
+    if (!M) throw new Error('rt.newModel: unknown model ' + JSON.stringify(key));
+    return new M();
   };
 
   // ---- rt.paginate: the LengthAwarePaginator (Illuminate\Pagination) ----

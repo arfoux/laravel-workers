@@ -9,13 +9,11 @@ const args = process.argv.slice(2);
 
 let input = null;
 let jsonMode = false;
-let templateMode = false;
 let outPath = null;
 
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--json') jsonMode = true;
-  else if (a === '--template') templateMode = true;
   else if (a === '--out') { outPath = args[++i]; }
   else if (!input) input = a;
   else { console.error(JSON.stringify([{ code: 'LW004', message: 'unexpected arg ' + a, line: 0, column: 0, hint: '' }])); process.exit(1); }

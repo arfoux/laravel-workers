@@ -832,6 +832,11 @@ function aliasMapFor(options) {
   return map;
 }
 
+function isResourceCollection(info) {
+  return !!(info && (info.parent === 'Illuminate\\Http\\Resources\\Json\\ResourceCollection' ||
+    info.parentFqcn === 'Illuminate\\Http\\Resources\\Json\\ResourceCollection'));
+}
+
 export function compileClasses(dump, opts = {}) {
   const events = (dump && dump.events) || {};
   const classMap = (dump && dump.classes) || {};
@@ -919,7 +924,7 @@ export function compileClasses(dump, opts = {}) {
           : info.kind === 'formRequest'
             ? 'formRequest'
             : info.kind === 'resource'
-              ? 'resource'
+              ? (isResourceCollection(info) ? 'resourceCollection' : 'resource')
               : null,
     });
   }
@@ -994,7 +999,7 @@ export function compileClasses(dump, opts = {}) {
     const traitUses = classMembers(classNode).filter((m) => m && m.kind === 'traituse');
     if (traitUses.length) {
       const names = traitUses
-        .map((m) => (m.uses || []).map((u) => nodeName(u.trait) || (u.trait && u.trait.name) || '?').join(', '))
+        .map((m) => (m.traits || []).map((u) => nodeName(u) || (u && u.name) || '?').join(', '))
         .join(', ');
       errors.push({
         class: fqcn,
@@ -1026,6 +1031,11 @@ export function compileClasses(dump, opts = {}) {
       info.kind === 'resource' &&
       (parentFqcn === 'Illuminate\\Http\\Resources\\Json\\JsonResource' ||
         parentFqcn === 'Illuminate\\Http\\Resources\\Json\\ResourceCollection');
+    // The app class extends ResourceCollection (`PostCollection extends
+    // ResourceCollection {}`): the kernel base is the COLLECTION (the items are
+    // mapped through `$collects`), not the plain JsonResource - `rt.newClass`
+    // reads the base to choose what to instantiate.
+    const isCollectionResource = isResource && parentFqcn === 'Illuminate\\Http\\Resources\\Json\\ResourceCollection';
     if (classNode.extends && !isMailable && !isFormRequest && !isResource) {
       errors.push({
         class: fqcn,
@@ -1128,7 +1138,7 @@ export function compileClasses(dump, opts = {}) {
       // The kernel's base the class extends (a mailable's fluent surface, a
       // FormRequest's request surface) - a call on an inline instance needs
       // to know it (the base's methods take only their own arguments).
-      base: isMailable ? 'mailable' : isFormRequest ? 'formRequest' : isResource ? 'resource' : null,
+      base: isMailable ? 'mailable' : isFormRequest ? 'formRequest' : isResource ? (isCollectionResource ? 'resourceCollection' : 'resource') : null,
     };
     entries.push({
       fqcn,
@@ -1137,7 +1147,7 @@ export function compileClasses(dump, opts = {}) {
       deps: ctor.deps || [],
       // The kernel base the compiled class extends: a mailable's fluent
       // surface, a FormRequest's request surface, a JsonResource's wrapping.
-      base: isMailable ? 'mailable' : isFormRequest ? 'formRequest' : isResource ? 'resource' : null,
+      base: isMailable ? 'mailable' : isFormRequest ? 'formRequest' : isResource ? (isCollectionResource ? 'resourceCollection' : 'resource') : null,
     });
   }
 
@@ -1191,31 +1201,56 @@ export function compileClasses(dump, opts = {}) {
   // names the cycle at build time - so the build does too.
   {
     const depsOf = new Map(entries.map((e) => [e.fqcn, (e.deps || []).filter((d) => d && d.kind === 'class').map((d) => d.type)]));
+    // A depth-first walk with three colours (white/gray/black): a cycle is
+    // found when a GRAY node is reached again, and the current path holds the
+    // whole cycle. #363: the old walk RETURNED EARLY on the first cycle, which
+    // left the DFS path un-popped, so a later root produced a phantom
+    // self-cycle (`[B, B]`) and the same cycle was reported twice. Colours keep
+    // every frame's pop/unwind intact, so each real cycle is found exactly once.
+    const state = new Map(); // fqcn -> 'gray' | 'black'
     const stack = [];
-    const done = new Set();
+    const cycles = [];
+    const seenCycle = new Set();
     const visit = (fqcn) => {
-      if (done.has(fqcn)) return null;
+      if (state.get(fqcn) === 'black') return;
       const at = stack.indexOf(fqcn);
-      if (at >= 0) return stack.slice(at).concat(fqcn);
+      if (at >= 0) {
+        const cycle = stack.slice(at).concat(fqcn);
+        const key = [...new Set(cycle)].sort().join('|');
+        if (!seenCycle.has(key)) { seenCycle.add(key); cycles.push(cycle); }
+        return;
+      }
       stack.push(fqcn);
+      state.set(fqcn, 'gray');
       for (const dep of depsOf.get(fqcn) || []) {
         if (!depsOf.has(dep)) continue;
-        const cycle = visit(dep);
-        if (cycle) return cycle;
+        visit(dep);
       }
       stack.pop();
-      done.add(fqcn);
-      return null;
+      state.set(fqcn, 'black');
     };
-    for (const e of entries) {
-      const cycle = visit(e.fqcn);
-      if (cycle) {
+    for (const e of entries) visit(e.fqcn);
+    // #363: report EVERY member of EVERY cycle (the old code broke after the
+    // first and left the other members in the registry, so a class the runtime
+    // could never build still shipped). Each cycle member is named on its own
+    // `errors[]` row so build.mjs marks every one of them blocked.
+    const cycleMembers = new Set();
+    for (const cycle of cycles) {
+      for (const m of cycle) cycleMembers.add(m);
+      for (const member of [...new Set(cycle)]) {
         errors.push({
-          class: cycle[0],
+          class: member,
           message: 'Circular dependency detected [' + cycle.join(', ') + '] — the edge would build the services forever',
           code: 'LW002',
         });
-        break;
+      }
+    }
+    if (cycleMembers.size) {
+      for (let i = entries.length - 1; i >= 0; i--) {
+        if (cycleMembers.has(entries[i].fqcn)) entries.splice(i, 1);
+      }
+      for (const fqcn of Object.keys(meta)) {
+        if (cycleMembers.has(fqcn)) delete meta[fqcn];
       }
     }
   }
@@ -1256,7 +1291,7 @@ function emitRegistry(entries, listeners) {
   }
   lines.push('};');
   lines.push('');
-  lines.push('export const eventListeners = ' + JSON.stringify(listeners, null, 2).split('\n').join('\n') + ';');
+  lines.push('export const eventListeners = ' + JSON.stringify(listeners, null, 2) + ';');
   lines.push('');
   lines.push('export default classes;');
   lines.push('');

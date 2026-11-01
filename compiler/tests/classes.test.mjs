@@ -596,9 +596,17 @@ class B
     },
     { ...OPTIONS, classes: new Set(['App\\Services\\A', 'App\\Services\\B']) }
   );
-  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  // #363: every member of the cycle is named on its own row, so build.mjs
+  // blocks EVERY one of them (the old code reported only the head and left
+  // the rest in the registry, where the runtime could never build them).
+  assert.equal(res.errors.length, 2, JSON.stringify(res.errors));
+  assert.deepEqual(
+    res.errors.map((e) => e.class).sort(),
+    ['App\\Services\\A', 'App\\Services\\B']
+  );
   assert.match(res.errors[0].message, /Circular dependency detected \[App\\Services\\A, App\\Services\\B, App\\Services\\A\]/);
   assert.equal(res.errors[0].code, 'LW002');
+  assert.equal(res.errors[1].code, 'LW002');
 });
 
 test('classes: the runtime names a circular service dependency (Laravel: circular dependency detected)', async () => {

@@ -203,8 +203,8 @@ test('rt.param coerces like PHP 8 and throws where PHP throws', () => {
     assert.throws(() => p(bad, 'int'), TypeError, 'int(' + JSON.stringify(bad) + ')');
     assert.throws(() => p(bad, 'float'), TypeError, 'float(' + JSON.stringify(bad) + ')');
   }
-  // A missing segment with no default is null (the compiler refuses that shape
-  // at build time; a default answers the default).
+  // A missing segment takes the default when there is one; with no default the
+  // call has too few arguments in PHP (see the dedicated test below).
   assert.equal(rt.param({}, 'n', 'int', true, 5), 5);
 });
 
@@ -217,4 +217,21 @@ test('rt.param accepts null only for a nullable type (PHP 8 TypeError otherwise)
   assert.throws(() => rt.param({ n: null }, 'n', 'string', false, null, false), TypeError);
   // A missing segment (not null) still takes the default.
   assert.equal(rt.param({}, 'n', 'int', true, 7, false), 7);
+});
+
+test('rt.param re-splices an absent parameter as PHP does: default, then null, then a loud error', () => {
+  const rt = buildRt({}, { strict: false });
+  // The route carries no value for the parameter: Laravel's parameter binding
+  // (RouteDependencyResolverTrait::resolveMethodDependencies) skips a parameter
+  // that has no default and does not `allowsNull()`, so PHP 8's call has too
+  // few arguments. Probed: `/v/{a}/{b?}` + `req(string $a, string $b)` on
+  // `/v/A` answers 500 (ArgumentCountError) - the compiled rung answered a
+  // 200 with $b = null before this guard (shadow harness, 500-vs-200).
+  assert.throws(() => rt.param({}, 'b', 'string', false, null, false), TypeError);
+  assert.throws(() => rt.param({}, 'b', 'mixed', false, null, false), TypeError);
+  assert.throws(() => rt.param({}, 'b', 'int', false, null, false), TypeError);
+  // A NULLABLE parameter is spliced a null.
+  assert.equal(rt.param({}, 'b', 'string', false, null, true), null);
+  // A default wins over both.
+  assert.equal(rt.param({}, 'b', 'string', true, 'x', false), 'x');
 });

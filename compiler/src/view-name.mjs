@@ -26,15 +26,21 @@ export function viewFileName(view) {
   // A name that starts with a dot would be hidden; an empty one would break
   // the path.
   const file = safe.replace(/^\.+/, '_') || '_';
-  const previous = usedFileNames.get(file);
+  // #352/#366: the guard must be CASE-INSENSITIVE. The build writes these
+  // modules to a local filesystem (Windows and macOS are case-insensitive by
+  // default), so `Posts.Index` and `posts.index` — two genuinely different
+  // views on Linux — land on the same file on the build machine and one
+  // silently overwrites the other. Refuse instead.
+  const key = file.toLowerCase();
+  const previous = usedFileNames.get(key);
   if (previous !== undefined && previous !== name) {
     throw new Error(
-      'two view names sanitize to the same compiled file name "' + file + '": ' +
+      'two view names sanitize to the same compiled file name "' + file + '" (case-insensitively): ' +
         JSON.stringify(previous) + ' and ' + JSON.stringify(name) +
         ' — the build would write one module over the other and serve the wrong view; rename one of the views'
     );
   }
-  usedFileNames.set(file, name);
+  usedFileNames.set(key, name);
   return file;
 }
 

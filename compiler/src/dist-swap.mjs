@@ -36,7 +36,11 @@ function wipe(dir, onLocked) {
  *
  * The previous `dist/` is renamed aside first and deleted only AFTER the new
  * one landed: a crash between the two renames leaves the old build recoverable
- * under `<dist>.old-*` (the next build sweeps those), never a mix of both.
+ * under `<dist>.old-*`, never a mix of both. A FAILED second rename (a handle
+ * still open on `dist/`) renames the previous build straight back, so a failed
+ * swap never leaves the app without a `dist/` — only the fallback path, where
+ * the locked directory had to be wiped in place, can lose the old contents
+ * (the build rewrites everything anyway).
  *
  * @param {string} staging the directory the build wrote
  * @param {string} final the directory the app (and wrangler) reads
@@ -56,7 +60,27 @@ export function commitDist(staging, final, onLocked) {
       wipe(final, onLocked);
     }
   }
-  renameSync(staging, final);
+  try {
+    renameSync(staging, final);
+  } catch (err) {
+    // The new build could not land (a handle is still open on `dist/`).
+    // Put the previous one back so the app never ends up WITHOUT a dist and
+    // has to wait for another build; the rename-aside is reversible exactly
+    // for this case.
+    if (moved) {
+      try {
+        renameSync(previous, final);
+      } catch {
+        /* even the restore is locked: the build stays under `previous` on disk */
+        err.message +=
+          ' (the previous build was moved aside and could not be restored; it is at ' +
+          previous + ')';
+        throw err;
+      }
+      err.message += ' (the previous build was restored)';
+    }
+    throw err;
+  }
   if (moved) {
     try {
       rmSync(previous, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

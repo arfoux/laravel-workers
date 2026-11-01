@@ -129,3 +129,21 @@ test('rt-json: (object) cast and json_decode(assoc=false) carry the stdClass mar
   assert.deepEqual(Object.keys(rt.objectCast([])), []);
   assert.deepEqual(rt.json_decode('{"a":1}'), { a: 1 });
 });
+
+test('rt-json: json_decode keeps PHP key order and stops loudly on a lossy int', () => {
+  // PHP: json_encode(json_decode('{"b":1,"2":"x","a":2}', true)) => {"b":1,"2":"x","a":2}
+  // JSON.parse answered {"2":"x","a":2,"b":1} - a different body.
+  assert.equal(phpJsonEncode(rt.json_decode('{"b":1,"2":"x","a":2}', true)), '{"b":1,"2":"x","a":2}');
+  // `$assoc = false` (stdClass) keeps the document order too: PHP prints
+  // json_decode('{"b":1,"2":"x"}') as {"b":1,"2":"x"}.
+  assert.equal(phpJsonEncode(rt.json_decode('{"b":1,"2":"x"}')), '{"b":1,"2":"x"}');
+  // PHP holds 9223372036854775807 exactly; a JS number would round it, so the
+  // decode stops loudly instead of answering a wrong id.
+  assert.throws(() => rt.json_decode('9223372036854775807', true), (e) => e.code === 'LW006');
+  assert.throws(() => rt.json_decode('{"id":9223372036854775807}', true), (e) => e.code === 'LW006');
+  // A document PHP itself answers exactly is NOT an error (10^16 is exact).
+  assert.equal(rt.json_decode('10000000000000000', true), 10000000000000000);
+  // Invalid JSON is still NULL / JsonException, unchanged.
+  assert.equal(rt.json_decode('{bad', true), null);
+  assert.throws(() => rt.json_decode('{bad', true, null, 4194304), (e) => e.name === 'JsonException');
+});
