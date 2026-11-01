@@ -290,7 +290,14 @@ return new class extends Migration
 
 for (const [rel, body] of Object.entries(FILES)) {
   const file = join(root, rel);
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, body, 'utf8');
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, body, 'utf8');
+  } catch (e) {
+    // #393: a write failure used to surface as a raw Node stack from inside the
+    // fixture generator; say which file could not be written.
+    console.error(`shadow/fixture-app.mjs: cannot write ${file}: ${e && e.message ? e.message : e}`);
+    process.exit(1);
+  }
 }
 console.log(`shadow/fixture-app.mjs: wrote ${Object.keys(FILES).length} files into ${root}`);

@@ -1,0 +1,44 @@
+# Dependabot: the three runtime dependencies are pinned exactly (bcryptjs,
+# blade2php, php-parser) because the compiled output is byte-compared against
+# PHP 8.3 — a silent minor bump of the parser or the Blade converter would
+# change what ships without changing a line of this repo. Exact pins make the
+# upgrade an explicit, reviewable pull request instead of a floating install.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+    ignore:
+      # Majors of the byte-relevant deps land as deliberate, hand-reviewed
+      # changes (they can change the compiled output), not as automatic PRs.
+      - dependency-name: bcryptjs
+        update-types: ['version-update:semver-major']
+      - dependency-name: blade2php
+        update-types: ['version-update:semver-major']
+      - dependency-name: php-parser
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: npm
+    directory: /compiler
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      compiler-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ['*']

@@ -40,6 +40,17 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const ORACLE = path.join(ROOT, 'tools', 'php-shadow-oracle.php');
 const PHP = process.env.PHP_BIN || 'php';
 
+// #401: Git-Bash/MSYS hands over POSIX-style paths ("/c/Users/..."), which
+// `path.resolve` on Windows turns into "<cwd-drive>:\c\Users\..." — the app
+// then looks like it "has no vendor/", a misleading error for a valid path.
+function toNativePath(p) {
+  if (process.platform !== 'win32' || typeof p !== 'string') return p;
+  const s0 = p.replace(/\\/g, '/');
+  const m = s0.match(/^\/([a-zA-Z])(?:\/|$)/);
+  if (m) return path.resolve(`${m[1].toUpperCase()}:/${s0.slice(3)}`);
+  return p;
+}
+
 const BASE = 'http://localhost';
 const FREEZE_S = 1767225600; // 2026-01-01T00:00:00Z
 const USER_AGENT = 'laravel-workers-shadow/1.0';
@@ -151,16 +162,17 @@ function normHeaders(headers) {
 
 // A body is "equal" when the bytes match, or when both sides are JSON with the
 // same structure (the volatile values — session ids, CSRF tokens, timestamps —
-// are normalised away first).
+// are normalised away first). #412: the caller must be able to tell a BYTE
+// match from a structural one, so `byte` records which happened.
 function bodiesEqual(phpBody, jsBody) {
-  if (phpBody === jsBody) return { equal: true };
+  if (phpBody === jsBody) return { equal: true, byte: true };
   const a = tryJson(phpBody);
   const b = tryJson(jsBody);
-  if (a === null || b === null) return { equal: false };
+  if (a === null || b === null) return { equal: false, byte: false };
   const na = normaliseVolatile(a);
   const nb = normaliseVolatile(b);
-  if (JSON.stringify(na) === JSON.stringify(nb)) return { equal: true };
-  return { equal: false, php: na, js: nb };
+  if (JSON.stringify(na) === JSON.stringify(nb)) return { equal: true, byte: false };
+  return { equal: false, byte: false, php: na, js: nb };
 }
 
 function tryJson(text) {
@@ -538,7 +550,7 @@ async function main() {
     );
     process.exit(args.help ? 0 : 2);
   }
-  const appRoot = path.resolve(args.app);
+  const appRoot = path.resolve(toNativePath(args.app));
   if (!existsSync(path.join(appRoot, 'vendor', 'autoload.php'))) {
   console.error(`shadow: ${appRoot} has no vendor/ - run 'npx laravel-workers vendor:ensure' first (no composer install needed)`);
     process.exit(2);
@@ -584,6 +596,7 @@ async function main() {
     const results = [];
     let matched = 0;
     let shaped = 0;
+    let structural = 0;
     let diverged = 0;
     let failed = 0;
     for (let i = 0; i < scenario.steps.length; i++) {
@@ -655,7 +668,15 @@ async function main() {
       const expected = step.expect || 'match';
       let verdict;
       if (ok) {
-        verdict = expected === 'diverges' ? 'MATCHED (expected a divergence)' : 'match';
+        // #412: `body.equal` is true for a BYTE match AND for a JSON-structural
+        // one (volatile values normalised away) — but "byte-identical" must
+        // only count the former.
+        if (body.byte) {
+          verdict = expected === 'diverges' ? 'MATCHED (expected a divergence)' : 'match';
+        } else {
+          verdict = expected === 'diverges' ? 'MATCHED (expected a divergence)' : 'match (json-equivalent)';
+          structural++;
+        }
         matched++;
       } else if (shapeOk && statusOk && headerDiff.length === 0 && expectBodyOk) {
         // The body is random by construction (a bcrypt digest): both sides match
@@ -701,10 +722,12 @@ async function main() {
       total: scenario.steps.length,
       matched,
       shaped,
+      structural,
       diverged,
       failed,
-      // The byte-identical rate — a shape-verified step is *not* byte-identical.
-      coverage: scenario.steps.length ? (matched - shaped) / scenario.steps.length : 1,
+      // The byte-identical rate — a shape- or json-structural-verified step is
+      // *not* byte-identical.
+      coverage: scenario.steps.length ? (matched - shaped - structural) / scenario.steps.length : 1,
       // Every step is accounted for: identical, shape-verified, documented, or
       // unexplained.
       accounted: scenario.steps.length ? (matched + diverged) / scenario.steps.length : 1,
@@ -751,7 +774,8 @@ async function main() {
         }
       }
       console.log(
-        `\nshadow: ${matched - shaped}/${scenario.steps.length} byte-identical, ${shaped} shape-verified, ` +
+        `\nshadow: ${matched - shaped - structural}/${scenario.steps.length} byte-identical, ${shaped} shape-verified, ` +
+          `${structural} json-equivalent, ` +
           `${diverged} documented divergence(s), ${failed} unexplained — coverage ` +
           `${(report.coverage * 100).toFixed(0)}% (accounted ${(report.accounted * 100).toFixed(0)}%)`
       );

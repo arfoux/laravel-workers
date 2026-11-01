@@ -15,19 +15,12 @@ jobs:
           cache: npm
       - run: npm install
       - run: npm --prefix compiler install
-      - run: npm test
-      - run: npm run test:corpus
-      - run: node tools/gate.mjs --strict
-      - run: node tools/bench.mjs
-      - name: Syntax check shipped ESM
-        run: find build.mjs kernel compiler/src compiler/runtime bin tools shadow src -name '*.mjs' -print0 | xargs -0 -n1 node --check
-      - name: Pack dry-run — asserted tarball gate
-        # The build runs out of the installed tarball (a user installs the
-        # artifact, not the repo). Every module build.mjs/the deploy CLI load
-        # must ship, and every file the README links must resolve on npm.
-        # `npm pack --dry-run --json` is parsed by tools/pack-gate.mjs — the
-        # required list lives there, in one place, instead of in this YAML.
-        run: node tools/pack-gate.mjs
+      # One definition of "verified" (package.json → tools/check-syntax.mjs):
+      # the suite, the corpus, the docs gate, the benchmarks, the shipped
+      # sources parsing, and the tarball gate. The release workflow runs the
+      # same script, so CI and a release can no longer drift apart.
+      - name: Verify (npm run gate:ci)
+        run: npm run gate:ci
 
   # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
   # Laravel app — the `test` job has none, so those tests skip there. This job
@@ -57,17 +50,15 @@ jobs:
           php artisan migrate --force
       - run: npm install
       - name: PHP oracle parity (auth, cache, csrf, session, rate limiter)
+        # tools/oracle-ran.mjs runs the set itself and asserts the summary: exit
+        # 0, at least one test, and 0 failed/skipped/cancelled/todo. A plain
+        # `node --test` here is green even when every oracle test skipped (this
+        # job has no app unless LW_LARAVEL_APP points at one), and the old
+        # `grep '# skipped 0'` guard on the TAP text also let a *failing* run
+        # through.
         env:
           LW_LARAVEL_APP: ${{ github.workspace }}/parity-app
-        run: |
-          node --test kernel/tests/auth.test.mjs kernel/tests/cache.test.mjs kernel/tests/csrf.test.mjs kernel/tests/session.test.mjs kernel/tests/ratelimit.test.mjs
-      - name: The oracle parity must not be skipped
-        env:
-          LW_LARAVEL_APP: ${{ github.workspace }}/parity-app
-        run: |
-          out=$(node --test kernel/tests/auth.test.mjs 2>&1)
-          echo "$out" | tail -n 12
-          if echo "$out" | grep -q "# skipped 0"; then :; else echo "the oracle parity was skipped — LW_LARAVEL_APP does not point at a Laravel app"; exit 1; fi
+        run: node tools/oracle-ran.mjs
 
   e2e-fresh-laravel:
     name: e2e (fresh Laravel, zero config)
@@ -125,6 +116,18 @@ jobs:
           test -f e2e-app/dist/public/index.html
           test -f e2e-app/dist/schema.json
           test -f e2e-app/dist/schema.sql
+      - name: The Worker entry obeys the runtime's handler contract
+        # The built `dist/src/worker.mjs` is driven with the Workers runtime's
+        # real call order — `scheduled(controller, env, ctx)` — and must read the
+        # real env bindings. The `test` job has no built app, so this is the only
+        # place the shipped entry is exercised (the shadow harness never calls
+        # `scheduled()`). `oracle-ran.mjs` fails the step unless the test really
+        # RAN: a plain `node --test` exits 0 even when it skips.
+        env:
+          LW_LARAVEL_APP: ${{ github.workspace }}/e2e-app
+        run: |
+          test -f e2e-app/dist/kernel/http.mjs
+          node tools/oracle-ran.mjs kernel/tests/worker-entry.test.mjs
       - name: Runtime smoke (worker boots; / and /health answer 200)
         run: |
           cd e2e-app
