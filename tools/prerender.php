@@ -15,6 +15,19 @@ $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 // Boot the full bootstrap pipeline (LoadEnvironmentVariables, LoadConfiguration,
 // RegisterProviders, BootProviders…) — without it the container lacks the
 // `config` binding and every prerender 500s with BindingResolutionException.
+// The request is bound BEFORE the bootstrap, in the order Laravel's own kernel
+// uses it (Kernel::handle(): instance('request') -> Facade::clearResolvedInstance
+// -> bootstrap()). Boot straight away and a provider that resolves `url` while
+// booting builds the URL generator from the request the container holds RIGHT
+// NOW: Laravel 13 passes `$app->rebinding('request', ...)` there
+// (RoutingServiceProvider.php:63), so an unbound request arrives as NULL -
+//   TypeError: UrlGenerator::__construct(): Argument #2 ($request) must be of
+//   type Illuminate\Http\Request, null given
+// and the build dies before it renders anything. Found on BookStack, whose
+// AppServiceProvider::boot() calls URL::forceRootUrl(). The loop below rebinds
+// the real request per URI through $kernel->handle(), exactly like Laravel.
+$app->instance('request', Illuminate\Http\Request::create($argv[1] ?? '/', 'GET'));
+Illuminate\Support\Facades\Facade::clearResolvedInstance('request');
 $kernel->bootstrap();
 
 // Track E: every URI renders in this ONE boot — one process, one Laravel

@@ -6,7 +6,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import {
-  classFile, parsePhpFile, parsePhpSource, nodeName, callMethodName, callArgs, argValue, readEnvFile,
+  classFile, parsePhpFile, parsePhpSource, nodeName, callMethodName, callArgs, argValue, readEnvFile, appPsr4Dirs,
 } from './static.mjs';
 
 let appDir = process.env.LW_APP_ROOT || '';
@@ -89,9 +89,16 @@ let bindingsGlobal = null;
 const appBindings = () => {
   if (bindingsGlobal) return bindingsGlobal;
   bindingsGlobal = {};
-  const provDir = join(appDir, 'app', 'Providers');
-  let files = [];
-  try { files = readdirSync(provDir).filter(f => f.endsWith('.php')).map(f => join(provDir, f)); } catch { files = []; }
+  // Providers live under the composer `App\` mapping (`app/Providers` in the
+  // skeleton, `src/Providers` when the app remaps the prefix).
+  const provFiles = [];
+  for (const srcDir of appPsr4Dirs(appDir)) {
+    const provDir = join(srcDir, 'Providers');
+    try {
+      for (const f of readdirSync(provDir)) if (f.endsWith('.php')) provFiles.push(join(provDir, f));
+    } catch { /* no Providers dir under this mapping */ }
+  }
+  const files = provFiles;
   for (const file of files) {
     const parsed = parsedOf(file);
     if (parsed.error || !parsed.source) continue;
@@ -143,6 +150,18 @@ const collapseType = (type) => {
   if (type.kind === 'nullabletype') return collapseType(type.type || null);
   if (type.kind === 'intersectiontype') return null;
   return type;
+};
+
+// The resolved parent FQCN of a class (`extends` through the file's own
+// `use` map) - null when the class is in the same file without a parent, when
+// the parent is not an app class, or when the source cannot be read.
+const parentFqcn = (fqcn) => {
+  const f = classFile(appDir, fqcn);
+  if (!f) return null;
+  const parsed = parsedOf(f);
+  const cls = findCls(parsed, fqcn);
+  if (!cls || !cls.extends) return null;
+  return resolveName(cls.extends, parsed) || null;
 };
 
 const ctorDump = (fqcn) => {
@@ -253,7 +272,10 @@ const addClass = (fqcn, kind = 'service') => {
   if (!isAppClass(fqcn)) return;
   const f = classFile(appDir, fqcn);
   if (!f) return;
-  classes[fqcn] = { file: f, kind, ctor: ctorDump(fqcn) };
+  // `parent` is the resolved parent FQCN: the class compiler distinguishes a
+  // plain resource (JsonResource) from a collection resource
+  // (ResourceCollection) with it.
+  classes[fqcn] = { file: f, kind, parent: parentFqcn(fqcn), ctor: ctorDump(fqcn) };
   for (const p of (classes[fqcn].ctor || [])) {
     if ((p.kind || '') !== 'class') continue;
     addClass(p.impl || p.type, 'service');
@@ -272,11 +294,28 @@ const mailViewsFinal = [];
 const mailViewsByClassFinal = {};
 const mailableClassesFinal = [];
 
-for (const f of listPhpByDir(join(appDir, 'app/Jobs'))) addClass('App\\Jobs\\' + f.split(/[\\/]/).pop().replace(/\.php$/, ''), 'job');
-for (const f of listPhpByDir(join(appDir, 'app/Http/Resources'))) addClass('App\\Http\\Resources\\' + f.split(/[\\/]/).pop().replace(/\.php$/, ''), 'resource');
-for (const f of listPhpByDir(join(appDir, 'app/Http/Requests'))) addClass('App\\Http\\Requests\\' + f.split(/[\\/]/).pop().replace(/\.php$/, ''), 'formRequest');
-for (const f of listPhpByDir(join(appDir, 'app/Mail'))) {
-  const fqcn = 'App\\Mail\\' + f.split(/[\\/]/).pop().replace(/\.php$/, '');
+// The app classes the build compiles, discovered under the composer `App\`
+// mapping (see appPsr4Dirs) rather than a hard-coded `app/`: a project that
+// maps the prefix to `src/` keeps these in `src/Jobs`, `src/Mail`, ...
+const appClassFiles = (sub) => {
+  const out = [];
+  for (const srcDir of appPsr4Dirs(appDir)) {
+    out.push(...listPhpByDir(join(srcDir, sub)));
+  }
+  return out;
+};
+const shortName = (f) => f.split(/[\\/]/).pop().replace(/\.php$/, '');
+const dedupeByShortName = (files) => {
+  const seen = new Map();
+  for (const f of files) if (!seen.has(shortName(f))) seen.set(shortName(f), f);
+  return [...seen.values()];
+};
+
+for (const f of dedupeByShortName(appClassFiles('Jobs'))) addClass('App\\Jobs\\' + shortName(f), 'job');
+for (const f of dedupeByShortName(appClassFiles('Http/Resources'))) addClass('App\\Http\\Resources\\' + shortName(f), 'resource');
+for (const f of dedupeByShortName(appClassFiles('Http/Requests'))) addClass('App\\Http\\Requests\\' + shortName(f), 'formRequest');
+for (const f of dedupeByShortName(appClassFiles('Mail'))) {
+  const fqcn = 'App\\Mail\\' + shortName(f);
   addClass(fqcn, 'mailable');
   mailableClassesFinal.push(fqcn);
   let src = '';
@@ -310,9 +349,12 @@ const addListenerEnv = (evName, listener, srcFile) => {
   }
 };
 
-// 1) explicit `$listen` map in app/Providers/EventServiceProvider.php
-const esp = join(appDir, 'app/Providers/EventServiceProvider.php');
-if (existsSync(esp)) {
+// 1) explicit `$listen` map in the app's EventServiceProvider (under the
+// composer `App\` mapping: `app/Providers` or `src/Providers`).
+const esp = appPsr4Dirs(appDir)
+  .map((srcDir) => join(srcDir, 'Providers', 'EventServiceProvider.php'))
+  .find((p) => existsSync(p)) || null;
+if (esp) {
   const parsed = parsedOf(esp);
   if (!parsed.error) {
     const cls = parsed.classes.find((c) => fullName(parsed, c) === 'App\\Providers\\EventServiceProvider');
@@ -344,8 +386,8 @@ if (existsSync(esp)) {
 }
 
 // 2) auto-discovery: App\Listeners classes with a handle(Event $e) method.
-for (const f of listPhpByDir(join(appDir, 'app/Listeners'))) {
-  const fqcn = 'App\\Listeners\\' + f.split(/[\\/]/).pop().replace(/\.php$/, '');
+for (const f of dedupeByShortName(appClassFiles('Listeners'))) {
+  const fqcn = 'App\\Listeners\\' + shortName(f);
   if (!classFile(appDir, fqcn)) continue;
   const parsed = parsedOf(f);
   if (parsed.error) continue;

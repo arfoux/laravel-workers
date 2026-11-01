@@ -75,6 +75,41 @@ function wranglerCapture(args, opts = {}) {
   return runCapture(NPX, ['wrangler', ...args], opts);
 }
 
+// The lowest Wrangler major this CLI can drive. `npx wrangler` resolves a
+// globally installed copy first, so a machine with Wrangler 3 pinned would
+// silently run the older CLI against v4-era config (`d1 list --json`,
+// `[[d1_databases]]`). tools/doctor.mjs warns about the same drift; deploy
+// refuses it before the first mutation (findings #277/#295).
+const MIN_WRANGLER_MAJOR = 4;
+
+/** Parse `wrangler --version` output ("4.151.1", "wrangler 4.151.1"). */
+function parseWranglerMajor(text) {
+  const m = /(\d+)\.\d+\.\d+/.exec(String(text || ''));
+  if (!m) return null;
+  const major = Number(m[1]);
+  return Number.isFinite(major) ? major : null;
+}
+
+/**
+ * Refuse to drive a Wrangler older than v4 (findings #277/#295). Returns the
+ * problem string, or null when the CLI is new enough (or the probe could not
+ * run at all - the later command surfaces its own error). Callers decide how
+ * loud the refusal is: a live run stops, `--plan --check` records an issue.
+ */
+function wranglerVersionProblem() {
+  const res = wranglerCapture(['--version'], { timeout: 30000 });
+  if (res.error) return null;
+  if (res.status !== 0) return null;
+  const text = ((res.stdout || '') + (res.stderr || '')).trim().split('\n')[0] || '';
+  const major = parseWranglerMajor(text);
+  if (major === null || major >= MIN_WRANGLER_MAJOR) return null;
+  return (
+    `wrangler ${text || '?'} is too old — laravel-workers drives Wrangler v${MIN_WRANGLER_MAJOR}+ ` +
+    '(d1 list --json, d1_databases config). Install a v4+ Wrangler (npm i -g wrangler@latest) or ' +
+    'run through `npx --package wrangler@4`.'
+  );
+}
+
 function buildArgsFor(extra) {
   if (testBuild) return [testBuild, ...extra];
   return [join(pkgDir, 'build.mjs'), '--strict', ...extra];
@@ -987,6 +1022,12 @@ async function runPlan({ state, mode, workerName, nameExplicit, d1Decision }) {
   let db = null;
   let account = null;
   let cloudBlocked = false;
+  if (mode >= 2 && check) {
+    // The verification path also drives Wrangler (whoami + d1 list), so gate
+    // it on the same version rule (findings #277/#295).
+    const oldWrangler = wranglerVersionProblem();
+    if (oldWrangler) issues.push(oldWrangler);
+  }
   if (mode >= 2) {
     account = await planAccount(state);
     if (account.issue) issues.push(account.issue);
@@ -1272,7 +1313,7 @@ async function main() {
   }
 
   // --- 5. build -----------------------------------------------------------
-  console.log(`\n» building ${workerName} (mode ${mode}) …\n`);
+  console.log(`\n» building ${workerName} (mode ${mode}) ...\n`);
   const build = runInherit(process.execPath, buildArgsFor(buildExtra));
   if (build.error) fail(build.error.message, 1);
   if (build.status !== 0) fail(`build failed (exit ${build.status}) — nothing was deployed`, 1);
@@ -1293,6 +1334,12 @@ async function main() {
       dbName = autoD1Name(workerName);
       assertWranglerD1Target(dbName);
     }
+
+    // Everything below spawns Wrangler: refuse a CLI older than v4 first
+    // (findings #277/#295). The local config checks above still report their
+    // own errors without touching the network.
+    const oldWrangler = wranglerVersionProblem();
+    if (oldWrangler) fail(oldWrangler, 2);
 
     const account = await ensureCloudAccount(state);
     chosen.account = { id: account.id, name: account.name, email: account.email };

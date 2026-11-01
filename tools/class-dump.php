@@ -25,8 +25,14 @@ $isAppClass = function (string $fqcn) use ($root): bool {
     $file = $rc->getFileName();
     if (! $file) return false;
     $file = str_replace('\\', '/', $file);
-    $root = str_replace('\\', '/', $root);
-    return str_starts_with($file, $root . '/app/');
+    // The app's own source roots come from composer's `App\` mapping (`app/` in
+    // the skeleton, `src/` when the prefix is remapped) - a hard-coded
+    // `<root>/app/` called every remapped app class a framework class.
+    foreach (lw_app_psr4_dirs($root) as $dir) {
+        $prefix = rtrim(str_replace('\\', '/', $dir), '/') . '/';
+        if (str_starts_with($file, $prefix)) return true;
+    }
+    return false;
 };
 
 $ctorDump = function (string $fqcn) use ($app, $isAppClass): array {

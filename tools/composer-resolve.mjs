@@ -284,6 +284,10 @@ async function pickVersion(name, constraints, platform, meta) {
     replace: chosen.v.replace || {},
     provide: chosen.v.provide || {},
     type: chosen.v.type || 'library',
+    // `extra.laravel` (providers/aliases/dont-discover) is what Laravel's package
+    // auto-discovery reads; vendor-lite writes it into vendor/composer/installed.json
+    // so the build boots the same set of providers as a real `composer install`.
+    extra: chosen.v.extra || {},
     pkgdir: `vendor/${name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : 'vendor'}/${name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name}`,
   };
 }

@@ -377,7 +377,7 @@ if (($argv[1] ?? '') === '--batch') {
                     if (isset($seen[$dep])) continue;
                     $queue[] = [
                         'name' => $dep,
-                        'uri' => '/',
+                        'uri' => $parentUri,
                         'out' => rtrim($outDir, '/\\') . DIRECTORY_SEPARATOR . $viewFileName($dep) . '.compiled.json',
                     ];
                 }

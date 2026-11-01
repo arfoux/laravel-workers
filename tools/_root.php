@@ -126,14 +126,83 @@ function lw_boot_app(?string $root = null)
         putenv('APP_KEY=' . $key);
     }
 
+    // Vendor-lite provisions a cache OUTSIDE the checkout and Laravel's package
+    // auto-discovery reads exactly `<composer vendor dir>/composer/installed.json`
+    // (`Illuminate\Foundation\PackageManifest`: `Env::get('COMPOSER_VENDOR_DIR')
+    // ?: base_path('vendor')`). Without this line the manifest is built from the
+    // app's own absent vendor/ — empty — so EVERY auto-discovered package
+    // provider (and its aliases/config/migrations/routes) stays unregistered and
+    // the build boots a different application than `php artisan` does: measured
+    // 5-37 providers per pilot app. vendor-lite writes that file itself
+    // (installedJsonOf() in tools/vendor-lite.mjs); here we point Laravel at it.
+    // Only set when LW_VENDOR_DIR is in play, so an app with its own vendor/ is untouched.
+    if (!getenv('COMPOSER_VENDOR_DIR')) {
+        $lwVendor = getenv('LW_VENDOR_DIR');
+        if (is_string($lwVendor) && $lwVendor !== '') {
+            $base = rtrim($lwVendor, "/\\");
+            if (is_file($base . '/autoload.php')) {
+                $base = dirname($base); // LW_VENDOR_DIR pointed straight at vendor/
+            }
+            $cand = $base . '/vendor';
+            if (is_dir($cand)) {
+                $_ENV['COMPOSER_VENDOR_DIR'] = $cand;
+                $_SERVER['COMPOSER_VENDOR_DIR'] = $cand;
+                putenv('COMPOSER_VENDOR_DIR=' . $cand);
+            }
+        }
+    }
+
     require lw_vendor_autoload_for($root);
     spl_autoload_register(function (string $class) use ($root): void {
         $prefix = 'App\\';
         if (strpos($class, $prefix) !== 0) { return; }
-        $rel = str_replace('\\', '/', substr($class, strlen($prefix)));
-        $file = rtrim($root, '/\\') . '/app/' . $rel . '.php';
-        if (is_file($file)) { require $file; }
+        $rel = str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+        // The composer-generated autoloader maps App\* only when the app has its
+        // own vendor/. With a vendor-lite cache it does not, so the checkout's
+        // mapping is registered here (see the docblock above). Read it from
+        // composer.json instead of assuming `app/`: a project may map `App\` to
+        // a different directory (`"psr-4": {"App\\": "src/"}`), or to several
+        // ones (an array, tried in order - composer's own behaviour).
+        foreach (lw_app_psr4_dirs($root) as $dir) {
+            $file = $dir . '/' . $rel;
+            if (is_file($file)) { require $file; return; }
+        }
     });
 
     return require $root . '/bootstrap/app.php';
+}
+
+/**
+ * The directories composer maps the `App\` prefix to, as absolute paths, in the
+ * order composer declares them. Falls back to `<root>/app` (the skeleton's
+ * mapping) when composer.json is absent, unreadable, or declares no `App\`
+ * prefix under psr-4.
+ */
+function lw_app_psr4_dirs(string $root): array
+{
+    static $cache = [];
+    $key = rtrim($root, '/\\');
+    if (isset($cache[$key])) { return $cache[$key]; }
+
+    $dirs = [];
+    $composerJson = $key . '/composer.json';
+    if (is_file($composerJson)) {
+        $decoded = json_decode((string) file_get_contents($composerJson), true);
+        $map = is_array($decoded) && isset($decoded['autoload']['psr-4']) && is_array($decoded['autoload']['psr-4'])
+            ? $decoded['autoload']['psr-4']
+            : [];
+        // The prefix is spelled "App\\" in JSON (a trailing backslash is escaped);
+        // accept the unescaped spelling too for a hand-written file.
+        foreach (['App\\', 'App'] as $prefix) {
+            if (!array_key_exists($prefix, $map)) { continue; }
+            foreach ((array) $map[$prefix] as $dir) {
+                if (!is_string($dir) || $dir === '') { continue; }
+                $abs = rtrim($key . '/' . trim(str_replace('\\', '/', $dir), '/'), '/');
+                if (!in_array($abs, $dirs, true)) { $dirs[] = $abs; }
+            }
+        }
+    }
+
+    if (!$dirs) { $dirs[] = $key . '/app'; }
+    return $cache[$key] = $dirs;
 }

@@ -1521,6 +1521,17 @@
       "batch": "M62f",
       "status": "done",
       "proof": "test:compiler/tests/formrequest-dump.test.mjs"
+    },
+    {
+      "id": "try_catch",
+      "label": "A `try/catch/finally` statement",
+      "php": "try { $x = 1; } catch (Throwable $e) { $y = 2; } finally { $z = 3; }\n            return response(\"ok\");",
+      "expect": "fail",
+      "code": "LW002",
+      "reason": "unsupported construct: try",
+      "note": "The transpiler has no `try` handler, so the whole route (and any class method that carries one) fails the build with LW002 (MAP.md 6b lists `try/catch/finally` as UNSUPPORTED - matches). The tracked gap is the missing APP-SOURCE SWEEP rule: a try/catch that no compiled route touches is silent until it is reached. Rewrite without try/catch, or port the route.",
+      "batch": "GAP",
+      "status": "open"
     }
   ],
   "meta": {

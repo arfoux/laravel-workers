@@ -89,7 +89,13 @@ if (preg_match('/app\\(\\s*([\'"])Illuminate\\\\Foundation\\\\Vite\\1\\s*\\)\\s*
 }
 $app->forgetInstance(Illuminate\Foundation\Vite::class);
 $vite = $app->make(Illuminate\Foundation\Vite::class);
-$recomputed['vite'] = ['fonts' => (string) $vite->fonts(), 'invoke' => ''];
+// `Vite::fonts()` lands in Laravel 11; on an older major the bare call threw a
+// BadMethodCallException and killed this legacy tool. Same guard as
+// tools/compile-view.php.
+$recomputed['vite'] = [
+    'fonts' => method_exists($vite, 'fonts') ? (string) $vite->fonts() : '',
+    'invoke' => '',
+];
 if ($viteInvokeArgs !== null) {
     $recomputed['vite']['invoke'] = (string) $vite($viteInvokeArgs);
 }

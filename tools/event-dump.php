@@ -189,7 +189,16 @@ $addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$
     }
     $file = $rc->getFileName();
     if (!$file) return;
-    $classes[$fqcn] = ['file' => $file, 'kind' => $kind, 'ctor' => $ctorDump($fqcn)];
+    // `parent` is the resolved parent FQCN (PHP's own resolution for the
+    // shortest path): the class compiler distinguishes a plain resource
+    // (JsonResource) from a collection resource (ResourceCollection) with it.
+    $parent = $rc->getParentClass();
+    $classes[$fqcn] = [
+        'file' => $file,
+        'kind' => $kind,
+        'parent' => $parent ? $parent->getName() : null,
+        'ctor' => $ctorDump($fqcn),
+    ];
     // The dependencies: the edge builds them too.
     foreach ($classes[$fqcn]['ctor'] as $p) {
         if (($p['kind'] ?? '') !== 'class') continue;
@@ -197,44 +206,60 @@ $addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$
     }
 };
 
-// The mailables (app/Mail): the classes the build compiles, so the
-// `Mail::to($u)->send(new OrderMail())` call can be compiled (the mailable
-// renders its own view). The dump also carries the VIEW the mailable renders
-// (the build compiles that view too - a mailable's view is not reached from
-// a route).
-// The JOBS (app/Jobs): `Job::dispatch()` writes a row and the cron consumer
-// runs the class's handle() - the class must be compiled for that to exist.
-// A job is a plain class with a handle(), so the same class compiler covers it.
-foreach (glob($appRoot . '/app/Jobs/*.php') ?: [] as $jobFile) {
-    $fqcn = 'App\\Jobs\\' . basename($jobFile, '.php');
-    if (!class_exists($fqcn)) continue;
-    $addClass($fqcn, 'job');
+// The app classes the build compiles: mailables, Jobs, API Resources and
+// FormRequests. Each is discovered through composer's own `App\` mapping
+// (lw_app_psr4_dirs) rather than a hard-coded `app/` - a project that maps
+// `App\` to `src/` keeps its classes in `src/Jobs`, `src/Mail`, ... and a
+// flat `app/` glob would find none of them (the class would stay uncompiled
+// and `Mail::to()->send(new OrderMail())` would refuse the build).
+// The JOBS: `Job::dispatch()` writes a row and the cron consumer runs the
+// class's handle() - the class must be compiled for that to exist. A job is a
+// plain class with a handle(), so the same class compiler covers it.
+$appSrcDirs = lw_app_psr4_dirs($appRoot);
+$appClasses = function (string $sub, string $ns) use ($appSrcDirs): array {
+    $out = [];
+    foreach ($appSrcDirs as $srcDir) {
+        $dir = rtrim($srcDir, '/\\') . '/' . $sub;
+        if (!is_dir($dir)) continue;
+        foreach (glob($dir . '/*.php') ?: [] as $file) {
+            $name = basename($file, '.php');
+            // Two dirs declaring the same basename: the first `App\` mapping
+            // wins, the same order composer's psr-4 lookup uses.
+            if (!isset($out[$name])) {
+                $out[$name] = ['fqcn' => $ns . '\\' . $name, 'file' => $file];
+            }
+        }
+    }
+    return array_values($out);
+};
+
+foreach ($appClasses('Jobs', 'App\\Jobs') as $c) {
+    if (!class_exists($c['fqcn'])) continue;
+    $addClass($c['fqcn'], 'job');
 }
 
-// The API RESOURCES (app/Http/Resources): `return new PostResource($post)`
-// from a controller. Laravel's Router wraps the value in a ResourceResponse
-// (the `data` key, the resource's `with`/`additional`), and the app's class
-// declares only `toArray()` - the rest is inherited from
+// The API RESOURCES: `return new PostResource($post)` from a controller.
+// Laravel's Router wraps the value in a ResourceResponse (the `data` key, the
+// resource's `with`/`additional`), and the app's class declares only
+// `toArray()` - the rest is inherited from
 // Illuminate\Http\Resources\Json\JsonResource, which the kernel provides.
-foreach (glob($appRoot . '/app/Http/Resources/*.php') ?: [] as $resourceFile) {
-    $fqcn = 'App\\Http\\Resources\\' . basename($resourceFile, '.php');
-    if (!class_exists($fqcn)) continue;
-    $addClass($fqcn, 'resource');
+foreach ($appClasses('Http/Resources', 'App\\Http\\Resources') as $c) {
+    if (!class_exists($c['fqcn'])) continue;
+    $addClass($c['fqcn'], 'resource');
 }
 
-// The FormRequests (app/Http/Requests): the build compiles them too, so the
-// hooks Laravel runs on them (prepareForValidation) are compiled and run.
-foreach (glob($appRoot . '/app/Http/Requests/*.php') ?: [] as $requestFile) {
-    $fqcn = 'App\\Http\\Requests\\' . basename($requestFile, '.php');
-    if (!class_exists($fqcn)) continue;
-    $addClass($fqcn, 'formRequest');
+// The FormRequests: the build compiles them too, so the hooks Laravel runs on
+// them (prepareForValidation) are compiled and run.
+foreach ($appClasses('Http/Requests', 'App\\Http\\Requests') as $c) {
+    if (!class_exists($c['fqcn'])) continue;
+    $addClass($c['fqcn'], 'formRequest');
 }
 
 $mailViews = [];
 $mailViewsByClass = [];
 $mailableClasses = [];
-foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
-    $fqcn = 'App\\Mail\\' . basename($mailFile, '.php');
+foreach ($appClasses('Mail', 'App\\Mail') as $c) {
+    $fqcn = $c['fqcn'];
     if (!class_exists($fqcn)) continue;
     $addClass($fqcn, 'mailable');
     // EVERY app mailable: the build must be able to tell a mailable it knows
@@ -253,7 +278,7 @@ foreach (glob($appRoot . '/app/Mail/*.php') ?: [] as $mailFile) {
     // request time (a 500 where Laravel sends the mail). The name can be in
     // single OR double quotes, and a DYNAMIC name (`->view($name)`) is no
     // name at all (the build cannot know which view to compile).
-    $views = lw_mailable_views((string) file_get_contents($mailFile));
+    $views = lw_mailable_views((string) file_get_contents($c['file']));
     if ($views) {
         // Per mailable: only the route that SENDS a mailable needs its view.
         $mailViewsByClass[$fqcn] = $views;

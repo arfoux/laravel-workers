@@ -94,7 +94,44 @@ try {
     console.log('  ' + line.trim());
   });
 
-  // 4. the compiler import (php-parser must resolve from the consumer install)
+  // 4. the cron gate on the BUILT worker. `POST /__lw/cron` is the schedule's
+  //    HTTP face (src/worker.mjs:163-177); the dist only exists after step 3,
+  //    so this cannot be a unit test - `src/worker.mjs` imports
+  //    `*.generated.mjs`, which does not exist in the repo. Without
+  //    `LW_CRON_SECRET` the path must stay indistinguishable from a missing
+  //    route, and the secret must actually open it (not a blanket 404).
+  step('the built worker: /__lw/cron is closed without the secret', () => {
+    const worker = join(appRoot, 'dist', 'src', 'worker.mjs');
+    if (!existsSync(worker)) throw new Error(`no built worker at ${worker}`);
+    const script = `
+const mod = await import(${JSON.stringify(pathToFileURL(worker).href)});
+const handler = mod.default || mod;
+const post = (headers, env) =>
+  handler.fetch(new Request('https://edge.test/__lw/cron', { method: 'POST', headers }), env || {}, {});
+const bare = await post({});
+if (bare.status !== 404) { console.error('no secret: ' + bare.status + ' (want 404)'); process.exit(1); }
+const wrong = await post({ 'x-lw-cron': 'nope' }, { LW_CRON_SECRET: 'sekret' });
+if (wrong.status !== 404) { console.error('wrong secret: ' + wrong.status + ' (want 404)'); process.exit(1); }
+let opened = 'threw';
+try {
+  opened = String((await post({ 'x-lw-cron': 'sekret' }, { LW_CRON_SECRET: 'sekret' })).status);
+} catch (e) {
+  opened = 'threw (' + e.message + ')';
+}
+// The schedule itself needs the D1 binding, absent here: any answer but 404
+// proves the gate opened (a 404 would mean it never does).
+if (opened === '404') { console.error('right secret: the gate never opens'); process.exit(1); }
+console.log('  no secret 404, wrong secret 404, right secret -> ' + opened);
+`;
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: appRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    console.log(out.trim());
+  });
+
+  // 5. the compiler import (php-parser must resolve from the consumer install)
   step('the installed compiler imports (php-parser resolves)', () => {
     const url = pathToFileURL(join(pkg, 'compiler', 'src', 'transpiler.mjs')).href;
     execFileSync(process.execPath, ['-e', `import('${url}').then(()=>0).catch(e=>{console.error(e.message);process.exit(1)})`], {
@@ -104,7 +141,7 @@ try {
     });
   });
 
-  // 5. the shadow harness, when the package ships a scenario for this app
+  // 6. the shadow harness, when the package ships a scenario for this app
   const scenario = join(pkg, 'shadow', 'scenarios', `${appRoot.split(/[\\/]/).pop()}.mjs`);
   if (existsSync(scenario)) {
     step('the installed shadow harness runs', () => {

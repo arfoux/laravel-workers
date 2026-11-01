@@ -22,16 +22,18 @@
 // framework class.
 //
 // The test needs a real Laravel app (PHP 8.3 + vendor/): LW_LARAVEL_APP, or the
-// dev-machine default. Without one it SKIPS with the reason (the repo's
-// convention for the oracle tests) - it never fails. The fixture classes are
-// written into the app's own `app/` tree (the app autoloads them through its
-// PSR-4 prefix) and removed again, like formrequest-dump.test.mjs.
+// conventional `parity-app` / `e2e-app` directories at the repo root. Without
+// one it SKIPS with the reason (the repo's convention for the oracle tests) - it
+// never fails. The fixture classes are written into the app's own `app/` tree
+// (the app autoloads them through its PSR-4 prefix) and removed again, like
+// formrequest-dump.test.mjs.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { oracleAppRoot } from '../../kernel/tests/oracle-app.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const pkgDir = path.resolve(testsDir, '..', '..');
@@ -39,17 +41,25 @@ const dumpMjs = path.join(pkgDir, 'tools', 'event-dump.mjs');
 const dumpPhp = path.join(pkgDir, 'tools', 'event-dump.php');
 const PHP = process.env.PHP_BIN || 'php';
 
-const DEFAULT_APP_ROOT = 'C:\\Users\\HP\\AppData\\Local\\Temp\\opencode\\lw-fresh-e2e\\fresh-app';
+// The app the oracle parity runs against (shared resolver, see the header).
+const APP = oracleAppRoot();
 
-function appRoot() {
-  const app = process.env.LW_LARAVEL_APP || DEFAULT_APP_ROOT;
-  if (!app) return null;
-  if (!existsSync(path.join(app, 'vendor', 'autoload.php'))) return null;
-  if (!existsSync(path.join(app, 'app'))) return null;
-  return app;
+// The dumps record the app's absolute file paths, and the two runtimes can
+// disagree about what that path IS: PHP's realpath() answers the target of a
+// symlink or a Windows junction, the port echoes the path it was handed.
+// Normalising exactly those roots (nothing else) keeps the byte-for-byte
+// comparison strict for the rest of the dump.
+function realAppRoot(app) {
+  try {
+    return realpathSync(app);
+  } catch {
+    return app;
+  }
 }
-
-const APP = appRoot();
+const APP_PATH_FORMS = APP
+  ? [...new Set([APP, realAppRoot(APP)])].map((root) => JSON.stringify(root).slice(1, -1))
+  : [];
+const withoutAppRoot = (s) => APP_PATH_FORMS.reduce((acc, form) => acc.split(form).join('<APP>'), s);
 
 function hasPhp() {
   try {
@@ -167,7 +177,7 @@ test('event-dump: the port matches the PHP oracle byte for byte', { skip: skip |
   try {
     const mjs = runDump(process.execPath, [dumpMjs, APP]);
     const php = runDump(PHP, [dumpPhp, APP]);
-    assert.equal(mjs, php);
+    assert.equal(withoutAppRoot(mjs), withoutAppRoot(php));
   } finally {
     removeFixtures();
   }

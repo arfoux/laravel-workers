@@ -207,6 +207,22 @@ test('buildRequest: a stack without the transformers leaves the input verbatim',
   assert.equal(r.input('e'), '');
 });
 
+test('buildRequest: an app-added skip entry keeps its field untrimmed (the dump carries it)', () => {
+  // `->trimStrings(except: ['card_number'])` / `TrimStrings::except(['iban'])`
+  // end up in the dumped `transform.trim.except` (tools/config-dump.mjs), and
+  // the kernel reads that list - NOT its own three names. The list used to be
+  // hard-coded to the framework's three, so the field the app asked to keep was
+  // trimmed at the edge while Laravel skipped it.
+  const transformers = {
+    trim: true,
+    emptyToNull: true,
+    trimExcept: ['current_password', 'password', 'password_confirmation', 'card_number'],
+  };
+  const r = form('card_number=%204242%20&otp=%2012%20', transformers);
+  assert.equal(r.input('card_number'), ' 4242 ', 'the app-added entry skips the trim');
+  assert.equal(r.input('otp'), '12', 'a field outside the list still trims');
+});
+
 test('handleHttp: global middleware the kernel does not run fails loud', async () => {
   await assert.rejects(
     () =>

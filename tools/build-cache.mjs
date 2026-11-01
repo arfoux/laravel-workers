@@ -144,6 +144,36 @@ function makeHasher() {
   return { add, addFile, addTree, stats, digest: () => hash.digest('hex') };
 }
 
+/** The APP_DIRS entry for the app's own code (replaced by the psr-4 walk). */
+const CONVENTIONAL_APP_DIR = 'app';
+
+/**
+ * The directories `App\` is mapped to in the app's composer.json (PSR-4), as
+ * absolute paths. An unreadable/absent composer.json - or a mapping that only
+ * names the convention - yields nothing, and the literal `app/` in APP_DIRS
+ * stands in.
+ */
+function appPsr4DeclaredDirs(appDir) {
+  const out = [];
+  try {
+    const composer = JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8'));
+    const map = (composer.autoload && composer.autoload['psr-4']) || {};
+    for (const prefix of ['App\\', 'App']) {
+      if (!Object.prototype.hasOwnProperty.call(map, prefix)) continue;
+      const val = map[prefix];
+      for (const entry of Array.isArray(val) ? val : [val]) {
+        if (typeof entry !== 'string' || entry.trim() === '') continue;
+        const abs = join(appDir, entry.replace(/[\\/]+$/, ''));
+        if (abs !== join(appDir, CONVENTIONAL_APP_DIR) && !out.includes(abs)) out.push(abs);
+      }
+      if (out.length) break;
+    }
+  } catch {
+    /* no/unreadable composer.json: the conventional `app/` in APP_DIRS stands */
+  }
+  return out;
+}
+
 export function computeBuildCacheKey({
   appDir,
   pkgDir,
@@ -178,6 +208,18 @@ export function computeBuildCacheKey({
 
   for (const file of APP_FILES) h.addFile(appDir, file);
   for (const dir of APP_DIRS) h.addTree(appDir, dir);
+  // The app's OWN source tree comes from composer.json's `App\` PSR-4 mapping,
+  // not from the literal `app/`: an app that maps `App\` to `src/` (a supported
+  // layout) would otherwise never hash its controllers/models, and the fast path
+  // would serve a worker built from the previous revision. `appPsr4Dirs()` is the
+  // same source of truth the class resolver uses, so the key and the compiler
+  // agree on where the app's code lives. `app/` stays in APP_DIRS as the
+  // conventional default (also covering an app with no composer.json).
+  for (const abs of appPsr4DeclaredDirs(appDir)) {
+    const rel = relative(appDir, abs).split('\\').join('/');
+    if (!rel || rel.startsWith('..')) continue;
+    h.addTree(appDir, rel);
+  }
 
   // Composer's own identity, not the whole vendor tree.
   const vendorRoot = vendorDir || join(appDir, 'vendor');

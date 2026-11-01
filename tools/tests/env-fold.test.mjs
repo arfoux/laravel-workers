@@ -93,6 +93,35 @@ test('a single-quoted .env value keeps backslash escapes literal; double-quoted 
   }
 });
 
+test('a double-quoted .env value unescapes exactly phpdotenv\'s set, in one pass', () => {
+  // Probed against vlucas/phpdotenv v5.7 through `Dotenv::createImmutable()` on
+  // PHP 8.3: `"a\"b"` -> `a"b`, `"a\\b"` -> `a\b`, `"a\$b"` -> `a$b`,
+  // `"a\vb"`/`"a\fb"` -> vertical tab / form feed, and an unknown escape keeps
+  // its backslash (`"a\qb"` -> `a\qb`). The single pass matters: `"a\\nb"`
+  // is a backslash followed by `n`, never a newline.
+  const dir = appWith(
+    'DQ_QUOTE="a\\"b"\n' +
+    'DQ_BS="a\\\\b"\n' +
+    'DQ_DOLLAR="a\\$b"\n' +
+    'DQ_V="a\\vb"\n' +
+    'DQ_F="a\\fb"\n' +
+    'DQ_UNKNOWN="a\\qb"\n' +
+    'DQ_BSN="a\\\\nb"\n'
+  );
+  try {
+    const env = readEnvFile(dir);
+    assert.equal(env.DQ_QUOTE, 'a"b');
+    assert.equal(env.DQ_BS, 'a\\b');
+    assert.equal(env.DQ_DOLLAR, 'a$b');
+    assert.equal(env.DQ_V, 'a\vb');
+    assert.equal(env.DQ_F, 'a\fb');
+    assert.equal(env.DQ_UNKNOWN, 'a\\qb');
+    assert.equal(env.DQ_BSN, 'a\\nb');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('`?:` / ternary follow PHP truthiness: "0" and [] are falsy', () => {
   const envCall = (key) => ({
     kind: 'call',

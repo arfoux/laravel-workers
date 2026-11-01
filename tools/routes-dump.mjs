@@ -45,11 +45,13 @@ import {
   callArgs,
   argValue,
   classFile,
+  appPsr4Dirs,
   readEnvFile,
   loadConfig,
   configGet,
 } from './static.mjs';
 import { singular as strSingular } from './inflect.mjs';
+import { slugifyRoute } from './route-slug.mjs';
 
 const appDir =
   process.env.LW_APP_ROOT ||
@@ -302,8 +304,9 @@ function parse() {
     );
   }
 
-  const providersDir = join(appDir, 'app', 'Providers');
-  if (existsSync(providersDir)) {
+  const providerDirs = appPsr4Dirs(appDir).map((srcDir) => join(srcDir, 'Providers'));
+  for (const providersDir of providerDirs) {
+    if (!existsSync(providersDir)) continue;
     for (const f of readdirSync(providersDir)) {
       if (!f.endsWith('.php')) continue;
       const pFile = join(providersDir, f);
@@ -828,21 +831,23 @@ function phpParse(source) {
 
 const { routes, errors } = parse();
 // Two DIFFERENT URIs can slugify to the same controller module file
-// (build.mjs slugifyRoute: `/a/b` and `/a-b` and `/{a}-{b}` all answer `a-b`),
+// (tools/route-slug.mjs: `/a/b` and `/a-b` and `/{a}-{b}` all answer `a-b`),
 // and the build writes `dist/src/controllers/<slug>.mjs` per route - so one
 // route's handler would overwrite the other's and the handler table would point
 // BOTH uris at whichever was written last. A collision is a build-level defect
-// the operator must resolve, not a silent wrong answer: refuse the dump.
+// the operator must resolve, not a silent wrong answer: refuse the dump. The
+// remediation names both ways out, because the first one (editing routes) is
+// not available inside a third-party app.
 {
-  const slugify = (uri) => String(uri).replace(/^\//, '').replace(/[{}]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'home';
   const owner = new Map();
   for (const r of routes) {
-    const slug = slugify(r.uri);
+    const slug = slugifyRoute(r.uri);
     const prior = owner.get(slug);
     if (prior !== undefined && prior !== r.uri) {
       errors.push(
         'the route URIs ' + JSON.stringify(prior) + ' and ' + JSON.stringify(r.uri) +
-          ' both compile to the controller module "' + slug + '.mjs" — rename one route (the build would serve both URLs with one handler)'
+          ' both compile to the controller module "' + slug + '.mjs" — rename one route (the build would serve both URLs with one handler),' +
+          ' or declare one of them in registry.json (port/ignore) if the app is not yours to rename'
       );
     } else {
       owner.set(slug, r.uri);

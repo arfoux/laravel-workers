@@ -37,4 +37,7 @@ function run(script, args) {
 run('tools/docs-check.mjs', flags);
 run('tools/construct-audit.mjs', ['--check', ...flags]);
 run('tools/docs-counts.mjs', ['--check']);
+// The generated validation-messages module vs the framework's own file (#353).
+// Skips (exit 0) unless LW_APP_ROOT points at a Laravel app with a PHP binary.
+run('tools/validation-messages-check.mjs', []);
 console.log('gate PASS: the docs and the construct audit match the code');

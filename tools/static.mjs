@@ -111,6 +111,37 @@ function psr4Map(file, vendorDir, appDir) {
 }
 
 /**
+ * The directories composer maps the `App\` prefix to, as absolute paths, in
+ * declaration order. `app/` is the skeleton default; a project may map the
+ * prefix elsewhere (`"App\\": "src/"`) or to several dirs (an array).
+ * Walkers that used to glob `<appDir>/app` use this so a relocated `App\`
+ * keeps its classes discoverable.
+ */
+export function appPsr4Dirs(appDir) {
+  const dirs = [];
+  const add = (dir) => {
+    if (typeof dir !== 'string' || dir === '') return;
+    const abs = resolve(appDir, dir.replace(/[\\/]+$/, ''));
+    if (!dirs.includes(abs)) dirs.push(abs);
+  };
+  try {
+    const composer = JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8'));
+    const map = (composer.autoload && composer.autoload['psr-4']) || {};
+    for (const prefix of ['App\\', 'App']) {
+      if (!Object.prototype.hasOwnProperty.call(map, prefix)) continue;
+      const val = map[prefix];
+      if (Array.isArray(val)) val.forEach(add);
+      else add(val);
+      if (dirs.length) break;
+    }
+  } catch {
+    /* no/unreadable composer.json: fall through to the convention below */
+  }
+  if (!dirs.length) dirs.push(resolve(appDir, 'app'));
+  return dirs;
+}
+
+/**
  * Resolve an FQCN to an app source file via composer.json PSR-4 autoload.
  * @returns {string|null} the absolute file path, or null when unmapped
  */
@@ -154,13 +185,17 @@ export function classFile(appDir, fqcn) {
     }
     if (vbest && existsSync(vbest)) return resolve(vbest);
   }
-  // No composer mapping matched — try the conventional App\ -> app/ directly.
+  // No composer mapping matched — try the conventional App\ -> app/ (and any
+  // other dir the composer mapping names) directly.
   if (full.startsWith('App\\')) {
-    const fb = join(appDir, 'app', full.slice(4).replace(/\\/g, '/') + '.php');
-    // MUST verify: without this every `App\...` FQCN answered a path, so
-    // isAppClass() said true for classes that do not exist and a namespaced
-    // global (App\Mail\DateTimeInterface) was treated as an app class.
-    if (existsSync(fb)) return resolve(fb);
+    const rel = full.slice(4).replace(/\\/g, '/') + '.php';
+    for (const dir of appPsr4Dirs(appDir)) {
+      const fb = join(dir, rel);
+      // MUST verify: without this every `App\...` FQCN answered a path, so
+      // isAppClass() said true for classes that do not exist and a namespaced
+      // global (App\Mail\DateTimeInterface) was treated as an app class.
+      if (existsSync(fb)) return resolve(fb);
+    }
   }
   return null;
 }
@@ -1166,7 +1201,22 @@ function dotenvValue(s) {
   // (vlucas/phpdotenv's EntryParser keeps a single-quoted value verbatim). A
   // single-quoted value is returned with the quotes stripped and nothing else.
   if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
-    return s.slice(1, -1).replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t').replace(/"/g, '"');
+    // phpdotenv's EntryParser DOUBLE_QUOTED_STATE unescapes exactly `\n` `\r`
+    // `\t` `\v` `\f` `\"` `\\` `\$`; any OTHER `\x` keeps the backslash. One
+    // pass, so `"a\\nb"` is a backslash followed by `n` (probed against
+    // vlucas/phpdotenv via Dotenv::createImmutable on PHP 8.3).
+    return s
+      .slice(1, -1)
+      .replace(/\\(.)/g, (m, ch) =>
+        ch === 'n' ? '\n'
+        : ch === 'r' ? '\r'
+        : ch === 't' ? '\t'
+        : ch === 'v' ? '\v'
+        : ch === 'f' ? '\f'
+        : ch === '"' ? '"'
+        : ch === '\\' ? '\\'
+        : ch === '$' ? '$'
+        : m);
   }
   if (s.length >= 2 && s[0] === "'" && s[s.length - 1] === "'") {
     return s.slice(1, -1);
@@ -1184,6 +1234,38 @@ function phpStr(v) {
   return String(v);
 }
 
+/**
+ * `Str::ascii()` (Str.php, backed by voku/portable-ascii): the Latin letters
+ * fold through NFD + a combining-mark strip; the non-decomposable ones through
+ * a small table. A LETTER the porter cannot map is a REFUSAL (#294): PHP's
+ * table would KEEP it as a letter and the porter would drop it, so a config
+ * value built with `Str::slug` would silently differ from the app's.
+ */
+const ASCII_SPECIAL = {
+  'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'þ': 'th',
+  'ł': 'l', 'ħ': 'h', 'ı': 'i', 'ĸ': 'k', 'ſ': 's', 'ƒ': 'f', 'ŋ': 'n',
+  'ª': 'a', 'º': 'o', 'µ': 'u', 'ĳ': 'ij', 'ĉ': 'c', 'ĝ': 'g', 'ĥ': 'h',
+  'ĵ': 'j', 'ŝ': 's', 'ŭ': 'u', 'ĉ': 'c',
+};
+function asciiValue(value, where) {
+  const decomposed = String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let out = '';
+  for (const ch of decomposed) {
+    const code = ch.codePointAt(0);
+    if (code < 0x80) { out += ch; continue; }
+    const mapped = Object.prototype.hasOwnProperty.call(ASCII_SPECIAL, ch) ? ASCII_SPECIAL[ch] : null;
+    if (mapped !== null) { out += mapped; continue; }
+    if (/[\p{L}\p{N}]/u.test(ch)) {
+      throw new Error(
+        `${where}(): cannot transliterate ${JSON.stringify(ch)} (U+${code.toString(16).toUpperCase()}) to ASCII — ` +
+          'set the config value explicitly so the build does not guess where the app transliterates'
+      );
+    }
+    out += ch; // punctuation/symbol: the slug regex below maps it to the separator
+  }
+  return out;
+}
+
 /** The Illuminate\Support\Str helpers the config files use — the pure ones. */
 const StrMethod = {
   // `Str::slug()` (Str.php slug() + ascii()): the transliteration table keeps
@@ -1192,16 +1274,23 @@ const StrMethod = {
   // 'A&nbsp;B' -> 'anbspb', 'A &amp;amp; B' -> 'a-ampamp-b'. Dropping the whole
   // entity (the old `/&[a-z]+;/ -> ''` with a dead `{'&': 'and'}` map) answered
   // 'a-b' where PHP answers 'a-amp-b'.
-  // Known limitation: a non-ASCII letter is REMOVED here where PHP's ascii()
-  // transliterates it ('Ünïcode' -> PHP 'unicode', this -> 'ncode') — a JS
-  // build has no portable-ascii table.
-  slug: (value, sep = '-') => String(value)
-    .toLowerCase()
-    .replace(/&[a-z]+;/g, (e) => e.slice(1, -1))
-    .replace(/[&;]/g, '')
-    .replace(/[^a-z0-9-]+/g, sep)
-    .split(sep + sep).join(sep)
-    .replace(new RegExp(sep + '$'), ''),
+  // Known limitation (closed, #294): the old code REMOVED a non-ASCII letter
+  // ('Ünïcode' -> 'ncode') where PHP's `ascii()` transliterates it ('unicode').
+  // The porter below still carries the full Vietnamese set Laravel's own
+  // `Str::ascii()` table starts with (Str.php:357+) and composes it with NFD,
+  // so a config file that slugs accented text folds to the same value the app
+  // does. Above U+FFFF, and for the table entries the regex cannot express,
+  // the build REFUSES instead of silently emitting a different config.
+  slug: (value, sep = '-') => {
+    const input = String(value).toLowerCase();
+    const slugInput = asciiValue(input, 'Str::slug');
+    return slugInput
+      .replace(/&[a-z]+;/g, (e) => e.slice(1, -1))
+      .replace(/[&;]/g, '')
+      .replace(/[^a-z0-9-]+/g, sep)
+      .split(sep + sep).join(sep)
+      .replace(new RegExp(sep + '$'), '');
+  },
   lower: (s) => String(s).toLowerCase(),
   upper: (s) => String(s).toUpperCase(),
   ucfirst: (s) => { const t = String(s); return t.charAt(0).toUpperCase() + t.slice(1); },
@@ -1244,46 +1333,92 @@ export function evalConfigExpr(node, ctx, depth = 0) {
       return node.value;
     case 'array': {
       // PHP arrays are ordered maps: JSON encodes as a LIST when the integer
-      // keys are 0..n-1 consecutive, else as an OBJECT. Collect into an
-      // ordered Map first, then decide the emitted form.
-      const entries = []; // [key, value] insertion order, key may be null (auto list)
-      let maxIndex = -1;
-      let autoCount = 0;
-      const autoKeyBudget = new Set();
+      // keys are 0..n-1 consecutive, else as an OBJECT.
+      //
+      // The key rule is PHP's own (zend_hash): a DECIMAL integer literal IS the
+      // integer ('5' -> 5, '-3' -> -3, 0x10 -> 16, 017 -> 15, 1_000 -> 1000);
+      // a decimal integer STRING normalizes the same way; a float key TRUNCATES
+      // (1.5 -> 1); and anything else stays a string ('+5', '05', '5.0', ' '
+      // '5', an out-of-int-range decimal). A KEYLESS entry takes
+      // `nextFreeElement` - the HIGHEST integer key used SO FAR plus one,
+      // computed as PHP walks the literal, so `[0 => 'a', 'b', 5 => 'c']` is
+      // {0:a, 1:b, 5:c} and `[5 => 'x', 'y']` is {5:x, 6:y}. (The previous code
+      // keyed every auto entry after scanning the WHOLE literal for its highest
+      // integer key, then used `maxIndex + 1` - `['a', 3 => 'b', 'c']` came out
+      // {3:b, 4:a, 5:c} where PHP answers {0:a, 3:b, 4:c}.)
+      // A NEGATIVE literal key is parsed as the unary minus around a number, so
+      // the key is read from the raw source, not the AST kind.)
+      const entries = []; // [key|number, value] in insertion order (key NaN = PHP's next free integer)
+      const intOfLiteral = (raw) => {
+        const s = String(raw).replace(/_/g, '');
+        if (/^0[xX][0-9a-fA-F]+$/.test(s)) return parseInt(s.slice(2), 16);
+        if (/^0[bB][01]+$/.test(s)) return parseInt(s.slice(2), 2);
+        if (/^0[oO][0-7]+$/.test(s)) return parseInt(s.slice(2), 8);
+        if (/^0[0-7]+$/.test(s)) return parseInt(s, 8);
+        if (/^\d+$/.test(s)) return Number(s);
+        return null;
+      };
+      const asPhpKey = (raw) => {
+        if (typeof raw === 'number') return Number.isFinite(raw) ? Math.trunc(raw) : raw;
+        const s = String(raw);
+        // A numeric literal written as a STRING: '5' -> 5, '-3' -> -3, ... but
+        // '05'/'+5'/'5.0'/' 5' stay strings (PHP's decimal-int-string rule).
+        if (/^-?\d+$/.test(s)) {
+          const n = Number(s);
+          return Number.isSafeInteger(n) ? n : s;
+        }
+        return s;
+      };
+      const keyExprOf = (k) => {
+        if (!k) return { value: undefined };
+        if (k.kind === 'number') {
+          const n = intOfLiteral(k.value);
+          if (n !== null) return { value: n };
+          const f = Number(String(k.value).replace(/_/g, ''));
+          return { value: Number.isFinite(f) ? Math.trunc(f) : String(k.value) };
+        }
+        if (k.kind === 'string') return { value: asPhpKey(k.value) };
+        if (k.kind === 'unary' && (k.type === '-' || k.type === '+')) {
+          const inner = k.what || {};
+          if (inner.kind === 'number') {
+            const n = intOfLiteral(inner.value);
+            if (n !== null) return { value: k.type === '-' ? -n : n };
+            const f = Number(String(inner.value).replace(/_/g, ''));
+            if (Number.isFinite(f)) return { value: Math.trunc(k.type === '-' ? -f : f) };
+          }
+          return { value: asPhpKey(String(k.type === '-' ? '-' : '') + String(inner.value)) };
+        }
+        return { value: evalConfigExpr(k, ctx, depth + 1) };
+      };
       for (const e of (node.items || [])) {
         if (!e || e.kind !== 'entry') continue;
+        const keyKind = e.key ? 'literal' : 'auto';
         let kv;
         if (e.key) {
-          if (e.key.kind === 'string') kv = e.key.value;
-          else if (e.key.kind === 'number') kv = Number(e.key.value);
-          else kv = evalConfigExpr(e.key, ctx, depth + 1);
+          const kk = keyExprOf(e.key);
+          kv = kk.value;
+          if (typeof kv === 'string') kv = asPhpKey(kv);
+          else if (typeof kv === 'number') kv = asPhpKey(kv);
+          else if (typeof kv === 'boolean') kv = kv ? 1 : 0;
+          else if (kv === null || kv === undefined) kv = undefined;
+          else kv = undefined;
         }
         const val = evalConfigExpr(e.value, ctx, depth + 1);
         if (val === undefined) continue; // never give an unknown expression a slot
-        if (kv === undefined || kv === null) {
-          // A list item: PHP assigns the next integer key (from the max key).
-          entries.push({ key: null, val });
-          ++autoCount;
-        } else {
-          entries.push({ key: kv, val });
-          if (typeof kv === 'number' && Number.isInteger(kv)) maxIndex = Math.max(maxIndex, kv);
-        }
+        // `$key === null` is PHP's KEYLESS entry (it becomes nextFreeElement);
+        // a computed key the evaluator could not resolve is skipped instead.
+        if (keyKind === 'auto') entries.push({ key: NaN, val });
+        else if (kv === undefined) continue;
+        else entries.push({ key: kv, val });
       }
-      // Auto keys: PHP uses index of next integer (max+1). Simulate.
+      // The running `nextFreeElement`: the highest integer key seen so far + 1
+      // (PHP starts it at 0 and NEGATIVE keys do not move it).
+      let nextFree = 0;
       const placed = [];
-      const used = new Set();
       for (const it of entries) {
-        if (it.key === null) {
-          let i = 0;
-          while (used.has(i) || (typeof i === 'number' && i <= maxIndex && false)) i++;
-          i = maxIndex + 1;
-          placed.push([String(i), it.val]);
-          used.add(i);
-          maxIndex = i;
-        } else {
-          placed.push([String(it.key), it.val]);
-          if (typeof it.key === 'number') used.add(it.key);
-        }
+        const k = Number.isNaN(it.key) ? nextFree : it.key;
+        placed.push([String(k), it.val]);
+        if (Number.isInteger(k) && k >= nextFree) nextFree = k + 1;
       }
       // List form iff the string keys are exactly 0..placed.length-1.
       let isList = true;
@@ -1293,8 +1428,14 @@ export function evalConfigExpr(node, ctx, depth = 0) {
         listVals.push(placed[i][1]);
       }
       if (isList) return listVals;
+      // The keys keep their PHP INSERTION order: a JS object literal cannot
+      // (an integer-like key enumerates before every string key), so the order
+      // is recorded in the non-enumerable `__lwOrder` marker the kernel's
+      // `phpKeys()`/`phpJsonEncode` read back. `['x' => 1, 'b']` used to reach
+      // the edge as `{"0":"b","x":1}` where PHP answers `{"x":1,"0":"b"}`.
       const obj = {};
       for (const [k, v] of placed) obj[k] = v;
+      Object.defineProperty(obj, '__lwOrder', { value: placed.map(([k]) => k), enumerable: false });
       return obj;
     }
     case 'bin':

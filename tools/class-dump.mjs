@@ -6,7 +6,7 @@
 // Mirrors the PHP oracle's Reflection-based classification exactly.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { classFile, parsePhpFile, evalConstantExpr, nodeName } from './static.mjs';
+import { classFile, parsePhpFile, evalConstantExpr, nodeName, appPsr4Dirs } from './static.mjs';
 
 const appDir = process.env.LW_APP_ROOT || (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
 if (!appDir) { process.stderr.write('class-dump.mjs: cannot find app root\n'); process.exit(1); }
@@ -14,7 +14,9 @@ if (!appDir) { process.stderr.write('class-dump.mjs: cannot find app root\n'); p
 const BUILTINS = new Set(['int', 'float', 'string', 'bool', 'array', 'callable', 'iterable', 'object', 'mixed', 'void', 'null', 'true', 'false']);
 
 const normalize = (p) => p.replace(/\\/g, '/');
-const appPrefix = normalize(appDir) + '/app/';
+// The app's own source roots = the composer `App\` mapping (`app/` in the
+// skeleton, `src/` when the prefix is remapped).
+const appPrefixes = appPsr4Dirs(appDir).map((d) => normalize(d) + '/');
 
 /** Is this type node PHP's `null` (a union member)? */
 const isNullType = (t) => {
@@ -60,13 +62,13 @@ const typeInfo = (type, parsed) => {
   return null;
 };
 
-/** Is the FQCN an app class per the PHP oracle's check (file under $root/app/)? */
+/** Is the FQCN an app class (its file lives under one of the app's own source dirs)? */
 const isAppClass = (fqcn) => {
   if (typeof fqcn !== 'string' || !fqcn) return false;
   const f = classFile(appDir, fqcn);
   if (!f) return false;
   const nf = normalize(f);
-  return nf.startsWith(appPrefix);
+  return appPrefixes.some((p) => nf.startsWith(p));
 };
 
 /** Evaluate an AST default node to a scalar/null JS value, or undefined. */

@@ -20,13 +20,35 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { evalConfigExpr, parsePhpFile, configGet, loadConfig, readEnvFile, appMiddlewareState, returnExpr } from './static.mjs';
+import { serializeOrdered } from './order-json.mjs';
 
-const appDir =
-  process.env.LW_APP_ROOT ||
-  (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+// #401/#417: Git-Bash/MSYS hands over POSIX-style paths ("/c/Users/..."), which
+// `join()`/`existsSync` on Windows read as "<cwd-drive>:\c\Users\..." — the app
+// then loaded NO config at all and the dump came out all-null with **exit 0**
+// (a build compiling an empty configuration, silently). Normalise the shell
+// form first, then refuse anything that is not a Laravel app root.
+function toNativePath(p) {
+  if (process.platform !== 'win32' || typeof p !== 'string') return p;
+  const s = p.replace(/\\/g, '/');
+  const m = s.match(/^\/([a-zA-Z])(?:\/|$)/);
+  return m ? `${m[1].toUpperCase()}:/${s.slice(3)}` : p;
+}
+
+const appDir = (() => {
+  const fromEnv = process.env.LW_APP_ROOT;
+  if (fromEnv) return toNativePath(fromEnv);
+  return existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null;
+})();
 
 if (!appDir) {
   process.stderr.write('config-dump.mjs: cannot find app root (set LW_APP_ROOT)\n');
+  process.exit(1);
+}
+
+if (!existsSync(join(appDir, 'artisan'))) {
+  process.stderr.write(
+    `config-dump.mjs: ${appDir} is not a Laravel app root (no artisan) — check LW_APP_ROOT\n`
+  );
   process.exit(1);
 }
 
@@ -158,11 +180,25 @@ $put('transform.empty_to_null', transform ? transform.emptyToNull !== false : tr
 // (`TrimStrings::$except`, the three password fields) with the app's
 // `TrimStrings::except()` / `->trimStrings(except:)` entries; the skip is
 // `Str::is($except, $key)`, so a nested key matches through the pattern.
-$put('transform.trim.except', [
+// The list is COMPUTED at build time (`appMiddlewareState` walks the app's
+// final global stack and answers `Transformers::$except`'s accumulated value
+// plus `TrimStrings::except()`), because `->trimStrings(except: [...])` and
+// `TrimStrings::except()` are app decisions the three names below cannot
+// express: an app that added `card_number` had that field trimmed at the edge
+// while Laravel skipped it. The kernel reads this key as
+// `transformers.trimExcept` (kernel/http.mjs:1481); the framework list stays
+// the fallback for a dump whose transformer shape could not be read
+// (`transform` is null then, and both passes run).
+// TrimStrings::skipWhen() and a Closure inside ->trimStrings() are refusals
+// above (`mwReport.failure`), so a readable list here is exact.
+const frameworkTrimExcept = [
   'current_password',
   'password',
   'password_confirmation',
-]);
+];
+$put('transform.trim.except', transform && Array.isArray(transform.trimExcept)
+  ? transform.trimExcept
+  : frameworkTrimExcept);
 // Global middleware on the app's final stack that the compiled kernel does not
 // implement (TrustHosts, HandleCors, TrustProxies, an app class, ...). Every
 // request fails loud in the worker; the build reports them.
@@ -215,7 +251,10 @@ for (const [name, disk] of Object.entries(disksObj)) {
   $put('filesystems.disks.' + name + '.driver', disk && typeof disk === 'object' && 'driver' in disk ? disk.driver : null);
 }
 
-process.stdout.write(JSON.stringify(dump) + '\n');
+// `serializeOrdered` carries each value's PHP key order (`__lwOrder`, #416);
+// a plain JSON.stringify would drop the non-enumerable marker and reorder a
+// `[-1 => 'm', 'n']`-shaped config value.
+process.stdout.write(serializeOrdered(dump) + '\n');
 
 /** Deep merge in the spirit of array_replace_recursive (later wins, both ears). */
 function deepMerge(a, b) {

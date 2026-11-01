@@ -9,8 +9,8 @@ require_once __DIR__ . '/_root.php';
 // verified byte-for-byte against real Laravel behaviour.
 //
 // Usage: php tools/http-oracle.php <app-path>
-//   stdin:  {"driver":"cookie","steps":[...]}
-//   stdout: {"app":..., "session_cookie_name":..., "steps":[{"label":..., "status":..., "headers":{...}, "set_cookie":[...], "body":...}]}
+//   stdin:  {"driver":"cookie","steps":[...]}   (driver: cookie|database; default cookie)
+//   stdout: {"app":..., "session_cookie_name":..., "steps":[{...}]}
 //
 // Step fields:
 //   method, uri, jar (bool: attach jar cookies), headers (map), form (map),
@@ -18,7 +18,9 @@ require_once __DIR__ . '/_root.php';
 //   placeholders in strings: @xsrf -> decrypted XSRF-TOKEN cookie value,
 //                            @session_token -> session _token seen last step.
 
-putenv('SESSION_DRIVER=cookie');
+// `CACHE_STORE=array` keeps the compile self-contained. The session driver is
+// read from stdin BELOW, before Laravel boots its config — the app is booted
+// here only far enough to resolve the autoloader.
 putenv('CACHE_STORE=array');
 
 $appPath = $argv[1] ?? getenv('LW_APP');
@@ -26,13 +28,25 @@ if (!$appPath || !is_file($appPath . '/bootstrap/app.php')) {
     fwrite(STDERR, "usage: php http-oracle.php <laravel-app-path>\n");
     exit(1);
 }
-$app = lw_boot_app($appPath);
 
 $input = json_decode(stream_get_contents(STDIN), true);
 if (!is_array($input)) {
     fwrite(STDERR, "bad input json\n");
     exit(1);
 }
+
+// #391: the input advertises a session driver; honour it instead of always
+// running the cookie driver (an oracle that silently ignored its contract
+// would calibrate the wrong driver). Set it BEFORE `lw_boot_app()` so the env
+// fold sees it.
+$sessionDriver = $input['driver'] ?? 'cookie';
+if (!in_array($sessionDriver, ['cookie', 'database'], true)) {
+    fwrite(STDERR, "unsupported session driver: {$sessionDriver} (cookie|database)\n");
+    exit(1);
+}
+putenv('SESSION_DRIVER=' . $sessionDriver);
+
+$app = lw_boot_app($appPath);
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 $kernel->bootstrap();

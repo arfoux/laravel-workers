@@ -19,6 +19,23 @@
  */
 
 require_once __DIR__ . '/_root.php';
+
+// #309: a PHP *fatal* during boot (an undefined helper from an app whose
+// composer autoload.files is missing, a class autoloader that never registered)
+// used to surface to `build.mjs` as a bare "PHP Fatal error:" line on stderr
+// with no snapshot written — and, depending on the SAPI, sometimes with a
+// misleading exit status. This shutdown guard turns every uncaught fatal into
+// one clean STDERR line and a non-zero exit, so the build's "schema snapshot
+// missing" check fires with a readable cause.
+register_shutdown_function(static function (): void {
+    $e = error_get_last();
+    if ($e !== null && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        fwrite(STDERR, 'schema-compile: fatal during boot: ' . $e['message'] . "\n");
+        // exit() from a shutdown handler sets the process status.
+        exit(1);
+    }
+});
+
 $root = lw_app_root();
 
 // `lw_boot_app()` resolves the autoloader (own vendor/ or LW_VENDOR_DIR), registers
@@ -206,7 +223,10 @@ if ($outputPath !== null) {
     if (!is_dir($dir)) {
         mkdir($dir, 0777, true);
     }
-    file_put_contents($outputPath, $json . "\n");
+    if (file_put_contents($outputPath, $json . "\n") === false) {
+        fwrite(STDERR, "schema-compile: cannot write {$outputPath}\n");
+        exit(1);
+    }
 } else {
     echo $json . "\n";
 }

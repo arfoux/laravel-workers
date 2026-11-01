@@ -148,6 +148,39 @@ Route::get('/clash-x', fn () => 'b');
   assert.match(res.stderr, /rename one route/);
 });
 
+test('the root URI and /home do not collide (BookStack declares both)', () => {
+  // `slugifyRoute('/')` used to fall back to the literal `home`, so the LEGAL
+  // route `/home` collided with it and the whole build refused - in an app whose
+  // routes nobody can rename. BookStack's routes/web.php:225-226 declares both,
+  // both answering HomeController@index.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+Route::get('/', fn () => 'a');
+Route::get('/home', fn () => 'b');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal((entries || []).length, 2);
+  assert.doesNotMatch(res.stderr, /both compile to the controller module/);
+});
+
+test('the root fallback is only reachable by a URI with no alphanumeric left', async () => {
+  const { slugifyRoute, ROOT_SLUG } = await import('../route-slug.mjs');
+  // The empty-slug family shares one name (`/`, `/-`, `/__`): two of them at
+  // once still refuse, which is honest - they really are two URIs, one module.
+  assert.equal(slugifyRoute('/'), ROOT_SLUG);
+  assert.equal(slugifyRoute('/__'), ROOT_SLUG);
+  // A URI that carries a segment can never answer the fallback, which is what
+  // made the old `home` fallback wrong: `/home` is a route of its own.
+  assert.equal(slugifyRoute('/home'), 'home');
+  assert.equal(slugifyRoute('/_home'), 'home');
+  for (const uri of ['/home', '/root', '/_root', '/index', '/{a}/{b}']) {
+    assert.notEqual(slugifyRoute(uri), ROOT_SLUG);
+  }
+});
+
 test('distinct URIs that do NOT collide stay silent', () => {
   const { res, entries } = runTool(
     {},

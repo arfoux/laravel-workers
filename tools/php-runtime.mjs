@@ -96,10 +96,16 @@ export function satisfies(version, constraint) {
       else hi = [0, 0, pat + 1];                   // ^0.0.3 -> <0.0.4
       return cmpArr(v, lo) >= 0 && cmpArr(v, hi) < 0;
     }
-    // ~8.4 (next major) / ~8.4.1 (next minor)
+    // ~8.4 (next MAJOR: >=8.4 <9.0) / ~8.4.1 (next minor: >=8.4.1 <8.5.0).
+    // Composer's rule is "the last digit specified may go up": `~1.2` is
+    // `>=1.2 <2.0.0` (versions.md), NOT `<1.3`; only a 3-component `~` caps
+    // the minor. The old 2-component bound `<8.5` rejected the 8.5/8.9
+    // interpreters Composer itself admits as satisfying.
     if ((m = c.match(/^~(\d+)(?:\.(\d+))?(?:\.(\d+))?$/))) {
       lo = [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)];
-      hi = m[2] === undefined ? [Number(m[1]) + 1, 0, 0] : [Number(m[1]), Number(m[2]) + 1, 0];
+      hi = m[3] !== undefined
+        ? [Number(m[1]), Number(m[2]) + 1, 0]
+        : [Number(m[1]) + 1, 0, 0];
       return cmpArr(v, lo) >= 0 && cmpArr(v, hi) < 0;
     }
     // 13.* / 13.X (any minor) ; 1.2.* / 1.2.X (any patch)
@@ -150,8 +156,27 @@ export function satisfies(version, constraint) {
   };
 
   let sawUnknown = false;
-  for (const branch of constraint.split('||')) {
-    const parts = branch.trim().split(/\s+/).filter(Boolean);
+  // Composer's grammar (versions.md): ranges separated by a SPACE or a COMMA
+  // are a logical AND; `||` (and, for backwards compatibility, a single `|`) is
+  // a logical OR. Splitting only on `||`/spaces turned a comma constraint into
+  // an unparsable token, and a hyphenated range (`8.2 - 8.4`) into a false
+  // "does not satisfy" instead of the AND of its two bounds.
+  for (const rawBranch of constraint.split(/\|\|?/)) {
+    const branch = rawBranch.trim();
+    // Hyphenated range: inclusive, a partial right side is completed as a
+    // wildcard — `1.0 - 2.0` is `>=1.0.0 <2.1`, `1.0.0 - 2.1.0` is `<=2.1.0`.
+    const hy = branch.match(/^(\d+(?:\.\d+)*)\s+-\s+(\d+(?:\.\d+)*)$/);
+    if (hy) {
+      const a = hy[1].split('.').map(Number);
+      const b = hy[2].split('.').map(Number);
+      const lo = [a[0], a[1] || 0, a[2] || 0];
+      const inclusive = b.length >= 3;
+      const hi = inclusive ? [b[0], b[1] || 0, b[2]] : [b[0], (b[1] || 0) + 1, 0];
+      const ok = cmpArr(v, lo) >= 0 && (inclusive ? cmpArr(v, hi) <= 0 : cmpArr(v, hi) < 0);
+      if (ok) return true;
+      continue;
+    }
+    const parts = branch.split(/[\s,]+/).filter(Boolean);
     if (!parts.length) continue;
     let branchUnknown = false;
     let branchOk = true;

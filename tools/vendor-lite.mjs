@@ -48,11 +48,20 @@ export function vendorLiteDir(hash) {
   return join(cacheBase(), 'vendor-lite', hash.slice(0, 16));
 }
 
-function hashFor(appDir) {
+export function hashFor(appDir) {
   const lockPath = join(appDir, 'composer.lock');
   const jsonPath = join(appDir, 'composer.json');
   const h = createHash('sha256');
   h.update(process.version);
+  // #315: the cache entry's generated autoloader hard-codes the app's own
+  // namespace roots (`buildAutoloadPhp(entries, appDir, dir)`) and `lw_boot_app`
+  // points COMPOSER_VENDOR_DIR at that entry. Two apps with an identical set of
+  // composer files but different locations therefore MUST NOT share an entry —
+  // without the path in the key, a moved/renamed app reused the old entry and
+  // booted with an autoloader rooted at the OLD directory (the #303/#315
+  // failure: `trans_key()` undefined, wrong app silently served). The path is
+  // normalised so the key is stable regardless of how the caller spelled it.
+  h.update(':' + String(toNativePath(appDir)).replace(/\\/g, '/'));
   if (existsSync(lockPath)) {
     h.update(readFileSync(lockPath));
   } else if (existsSync(jsonPath)) {
@@ -108,9 +117,42 @@ function readLockPackages(appDir) {
       url: (p.dist && p.dist.url) || null,
       shasum: (p.dist && p.dist.shasum) || null,
       source: (p.source && p.source.url) || null,
+      reference: (p.dist && p.dist.reference) || (p.source && p.source.reference) || null,
       autoload: p.autoload || {},
+      // Laravel's package auto-discovery lives in `extra.laravel` (providers,
+      // aliases, dont-discover) — see installedJsonOf().
+      extra: p.extra || {},
       pkgdir: join('vendor', vendor, pkg),
     });
+  }
+  return out;
+}
+
+// A composer repository may declare a dist URL as a template and Composer fills
+// the package's own fields in at install time, so the lock keeps the template
+// verbatim (ssddanbrown/htmldiff in a real Laravel app's lock carries
+// `.../archive/%prettyVersion%.zip`). Fetching it verbatim asks the host for a
+// file literally named `%prettyVersion%.zip`: codeberg answers 502 and the
+// build dies on a network-looking error instead of naming the cause.
+// `%prettyVersion%` is the lock's `version` as stored — verified against
+// codeberg/gitea: `archive/v2.0.0.zip` answers 200 while the stripped
+// `archive/2.0.0.zip` answers 404, so the tag form is not normalised here.
+// Only the placeholders the lock states outright are filled; a template this
+// installer cannot fill is refused WITH the URL, so the operator switches
+// strategy (composer install) instead of chasing a 4xx through three retries.
+function fillDistUrl(e) {
+  const url = String(e.url || '');
+  if (!url.includes('%')) return e.url;
+  let out = url;
+  if (out.includes('%package%')) out = out.replaceAll('%package%', e.name);
+  if (out.includes('%prettyVersion%')) out = out.replaceAll('%prettyVersion%', e.version);
+  if (e.reference && out.includes('%reference%')) out = out.replaceAll('%reference%', e.reference);
+  const left = out.match(/%[A-Za-z][A-Za-z0-9]*%/);
+  if (left) {
+    throw new Error(
+      `${e.name}: the dist URL uses the placeholder ${left[0]}, which this installer does not fill (${url}) — ` +
+        'run `composer install` for this project, or commit a lock whose dist URL is concrete'
+    );
   }
   return out;
 }
@@ -260,6 +302,33 @@ export function classNames(filePath) {
   };
   walk(ast, '');
   return out;
+}
+
+/**
+ * The one piece of composer-generated metadata Laravel itself reads.
+ *
+ * `Illuminate\Foundation\PackageManifest` loads
+ * `Env::get('COMPOSER_VENDOR_DIR') ?: base_path('vendor')` + `/composer/installed.json`
+ * and builds `bootstrap/cache/packages.php` from every package's `extra.laravel`
+ * (providers, aliases, `dont-discover`). Composer writes that file at install
+ * time; vendor-lite never runs composer, so it has to write it itself — without
+ * it EVERY auto-discovered package provider stays unregistered and the build
+ * boots a different application than `php artisan` does. Measured on the pilot
+ * apps: 5 (BookStack) to 37 (akaunting) providers per app; cachet's own fatal
+ * (`Call to undefined function`/`array_key_exists(): ... null given` inside
+ * spatie/laravel-settings, reached from cachethq/core) comes from exactly this.
+ */
+export function installedJsonOf(entries) {
+  return {
+    packages: entries.map((e) => ({
+      name: e.name,
+      version: String(e.version || ''),
+      type: e.type || 'library',
+      extra: e.extra || {},
+    })),
+    dev: false,
+    'dev-package-names': [],
+  };
 }
 
 function buildAutoloadPhp(entries, appDir, rootDir) {
@@ -432,9 +501,46 @@ export async function ensureVendorLite(appDir, opts = {}) {
   const hash = hashFor(appDir);
   const dir = vendorLiteDir(hash);
   const autoload = join(dir, 'vendor', 'autoload.php');
+  const installedJson = join(dir, 'vendor', 'composer', 'installed.json');
+  const stampPath = join(dir, '.lw-app');
   if (existsSync(autoload) && !opts.force) {
+    // #315: the entry's generated autoloader is rooted at the app dir it was
+    // built for. The hash above now includes the path, so a foreign entry can
+    // only appear through a copied cache dir or a hash collision — but verify
+    // the written stamp anyway, and refuse a mismatch instead of booting a
+    // different application's autoloader.
+    let stampOwnsApp = true;
+    if (existsSync(stampPath)) {
+      try { stampOwnsApp = readFileSync(stampPath, 'utf8').trim() === appDir; } catch { stampOwnsApp = false; }
+    }
+    if (!stampOwnsApp) {
+      if (!opts.silent) console.log(`vendor-lite: ${dir} belongs to another app path — re-provisioning for ${appDir}`);
+      return provision(appDir, dir, autoload, hash, opts);
+    }
+    if (!existsSync(stampPath)) { try { writeFileSync(stampPath, appDir + '\n'); } catch {} }
+    // A cache entry written before `installed.json` existed (or by an older
+    // generator) would otherwise hit forever and keep Laravel's package
+    // auto-discovery empty — the failure class of #303/#315: the build silently
+    // boots a different application. Self-HEAL from the entry's own artifacts
+    // (the provisioning path copies `composer.json`/`composer.lock` in) rather
+    // than treating the hit as a miss: a miss would re-download every package
+    // from packagist, which is impossible offline and pointless here. Only when
+    // the entry kept neither file do we fall through to a real re-provision.
+    if (!existsSync(installedJson)) {
+      if (existsSync(join(dir, 'composer.lock'))) {
+        mkdirSync(join(dir, 'vendor', 'composer'), { recursive: true });
+        writeFileSync(installedJson, JSON.stringify(installedJsonOf(readLockPackages(dir)), null, 4) + '\n');
+      } else {
+        if (!opts.silent) console.log(`vendor-lite: ${dir} predates installed.json and kept no composer.lock — re-provisioning`);
+        return provision(appDir, dir, autoload, hash, opts);
+      }
+    }
     return { dir, autoload, hash, hit: true };
   }
+  return provision(appDir, dir, autoload, hash, opts);
+}
+
+async function provision(appDir, dir, autoload, hash, opts) {
   const hasLock = existsSync(join(appDir, 'composer.lock'));
   if (!hasLock && !existsSync(join(appDir, 'composer.json'))) {
     throw new Error(`vendor-lite: ${appDir} contains neither composer.lock nor composer.json — nothing to install`);
@@ -456,11 +562,17 @@ export async function ensureVendorLite(appDir, opts = {}) {
       );
     }
     const zip = join(tmpdir(), `lw-vendor-${process.pid}-${Date.now()}-${e.pkg}.zip`);
-    await downloadFile(e.url, zip, e.shasum, e.pkg);
+    await downloadFile(fillDistUrl(e), zip, e.shasum, e.pkg);
     extractZip(zip, pkgDir);
     rmSync(zip, { force: true });
   }
   writeFileSync(autoload, buildAutoloadPhp(entries, appDir, dir));
+  // composer's own metadata lands where Laravel looks for it (see
+  // installedJsonOf()); `lw_boot_app()` points COMPOSER_VENDOR_DIR at the same
+  // directory. The file is not optional, and `vendor/composer/` only exists when
+  // the app happens to depend on a composer/* package — create it either way.
+  mkdirSync(join(dir, 'vendor', 'composer'), { recursive: true });
+  writeFileSync(installedJson, JSON.stringify(installedJsonOf(entries), null, 4) + '\n');
   try { writeFileSync(join(dir, '.lw-app'), appDir + '\n'); } catch {}
   if (!hasLock) {
     // Evidence of the resolved set — also re-read for `vendor-lite --lock`.

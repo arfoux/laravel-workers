@@ -841,3 +841,61 @@ test('flag conflicts and misuse exit 2 before any work', (t) => {
   assert.deepEqual(app.buildCalls(), []);
   assert.deepEqual(app.calls(), []);
 });
+test('a Wrangler older than v4 stops a real run before any Wrangler mutation', (t) => {
+  const app = makeApp(t, {
+    state: stateFor({ schemaHash: sha256(SCHEMA) }),
+    databases: [{ uuid: DB_ID, name: 'my-app-db', tables: 2 }],
+  });
+  const result = app.run(['--mode', '3', '--d1-auto', '--yes', '--name', 'my-app'], {
+    FAKE_WRANGLER_VERSION: '3.114.13',
+  });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /wrangler 3\.114\.13 is too old/);
+  assert.match(result.stderr, /Wrangler v4\+/);
+  // The version probe is the ONLY Wrangler call: no whoami/list/create/execute
+  // and no deploy (the local build may already have run).
+  assert.deepEqual(
+    app.calls().filter((call) => call.args?.[0] !== '--version'),
+    [],
+  );
+});
+
+test('a v4 Wrangler passes the version preflight', (t) => {
+  const app = makeApp(t, {
+    state: stateFor({
+      schemaHash: sha256(SCHEMA),
+      account: { id: ACCOUNT_ID, name: 'Fake Account', email: 'fake@example.com' },
+    }),
+    databases: [{ uuid: DB_ID, name: 'my-app-db', tables: 2 }],
+  });
+  const result = app.run(['--mode', '2', '--d1-auto', '--yes', '--name', 'my-app'], {
+    FAKE_WRANGLER_VERSION: '4.151.1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    app.calls().filter((call) => call.args?.[0] === '--version').length,
+    1,
+  );
+});
+
+test('--plan --check reports an old Wrangler as a blocking issue without mutating', (t) => {
+  const app = makeApp(t, {
+    state: stateFor({
+      schemaHash: sha256(SCHEMA),
+      account: { id: ACCOUNT_ID, name: 'Fake Account', email: 'fake@example.com' },
+    }),
+    databases: [{ uuid: DB_ID, name: 'my-app-db', tables: 2 }],
+  });
+  const beforeConfig = app.readConfig();
+  const result = app.run(['--plan', '--mode', '3', '--d1-auto', '--name', 'my-app', '--check'], {
+    FAKE_WRANGLER_VERSION: '3.99.0',
+  });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stdout, /too old/);
+  assert.match(result.stdout, /Plan NOT ready/);
+  // A read-only plan never mutates, whatever the CLI version.
+  assert.equal(app.calls().filter((call) => call.args?.[0] === 'create').length, 0);
+  assert.equal(app.calls().filter((call) => call.args?.[0] === 'deploy').length, 0);
+  assert.equal(app.readConfig(), beforeConfig);
+  assert.equal(existsSync(app.statePath), true);
+});

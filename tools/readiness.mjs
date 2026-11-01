@@ -52,6 +52,37 @@ export function verdictOf(findings) {
 }
 
 const AREA_ORDER = ['config', 'binding', 'middleware', 'queue', 'class', 'route', 'registry', 'sweep'];
+
+/**
+ * Does this build-time failure come from the environment the BUILD runs in,
+ * rather than from the app?
+ *
+ * `prerender` boots the real app, and at build time there is no live database
+ * unless the operator prepared one: `build.mjs` only provisions a schema sandbox
+ * for a SQLite app that has no database yet, so MySQL/Postgres apps (and any app
+ * whose connection is not configured) hit a connection-level driver error. That
+ * failure is un-actionable as a BLOCK — "fix the route" blames the app for a
+ * condition the build can never satisfy — so it must be classified DECLARED and
+ * worded as "the build cannot prerender a route that needs a live connection".
+ *
+ * Two families qualify:
+ *   1. the container has no connection configured at all ("Database connection
+ *      [x] not configured") and the two Cloudflare-driver shapes the compiled
+ *      rung emits for a missing binding;
+ *   2. the driver REACHED a connection attempt and it failed: SQLSTATE class
+ *      08 (connection exception — [2002]/[2003]), 1049 unknown database, the
+ *      human "No connection could be made / Connection refused" strings, or a
+ *      missing PDO driver ("could not find driver").
+ * Everything else stays BLOCK: a real `no such table` (the migrations were never
+ * run) is the app's own gap and keeps its own hint.
+ */
+export const BUILD_ENV_DB_REASON =
+  /Database connection \[[^\]]+\] not configured|D1 (?:database configuration|Worker driver) requires (?:a|an) "|SQLSTATE\[08[0-9A-Z]{3}\]|SQLSTATE\[HY000\] \[(?:2002|2003|1049)\]|Unknown database|No connection could be made|Connection refused|could not find driver/i;
+
+export function isBuildEnvDbFailure(reason) {
+  return BUILD_ENV_DB_REASON.test(String(reason ?? ''));
+}
+
 const AREA_LABEL = {
   config: 'runtime config',
   binding: 'bindings',
@@ -178,9 +209,33 @@ export function stripPhpCommentsAndStrings(source) {
   let out = '';
   let i = 0;
   const s = String(source);
+  const IDENT = '[A-Za-z_\\x80-\\xff][A-Za-z0-9_\\x80-\\xff]*';
+  // PHP heredoc/nowdoc: `<<<ID`, `<<<"ID"`, `<<<'ID'` + newline, body up to a
+  // line whose first non-space text is ID (then `;` and the newline). The body
+  // is literal text, not code: scanning it flagged SQL (`exec(`) and template
+  // strings as process spawning. Nowdoc/heredoc end of line semantics are
+  // relaxed here on purpose - an unterminated doc simply swallows the rest.
+  const heredoc = new RegExp(`<<<[ \\t]*(?:'(${IDENT})'|"(${IDENT})"|(${IDENT}))[ \\t]*\\r?\\n`);
+  const closerFor = (id) => new RegExp(`(?:^|\\r?\\n)[ \\t]*${id};?[ \\t]*(?=\\r?\\n|$)`);
+  // A literal is not code, but its NEWLINES must survive: `sweepAppSources`
+  // reports `file:line` from the stripped text, so collapsing a multi-line
+  // string or heredoc onto one line moved every later finding to an early line.
+  const blank = (text) => text.replace(/[^\n\r]/g, ' ');
   while (i < s.length) {
     const c = s[i];
     const n = s[i + 1];
+    if (c === '<' && n === '<' && s[i + 2] === '<') {
+      const hd = heredoc.exec(s.slice(i));
+      if (hd) {
+        const id = hd[1] || hd[2] || hd[3];
+        const bodyStart = i + hd[0].length;
+        const close = closerFor(id).exec(s.slice(bodyStart));
+        const end = close ? bodyStart + close.index + close[0].length : s.length;
+        out += blank(s.slice(i, end)); // keep the offsets, drop the text
+        i = end;
+        continue;
+      }
+    }
     if (c === '/' && n === '/') {
       while (i < s.length && s[i] !== '\n') i++;
       continue;
@@ -197,6 +252,7 @@ export function stripPhpCommentsAndStrings(source) {
     }
     if (c === "'" || c === '"') {
       const quote = c;
+      const start = i;
       i++;
       while (i < s.length) {
         if (s[i] === '\\') {
@@ -209,7 +265,7 @@ export function stripPhpCommentsAndStrings(source) {
         }
         i++;
       }
-      out += ' '; // a literal is not code: keep the offsets, drop the text
+      out += blank(s.slice(start, i)); // a literal is not code; keep the newlines
       continue;
     }
     out += c;
@@ -248,6 +304,8 @@ export default {
   DECLARED,
   ADVISORY,
   TIER,
+  BUILD_ENV_DB_REASON,
+  isBuildEnvDbFailure,
   verdictOf,
   renderReadiness,
   sweepAppSources,

@@ -141,7 +141,13 @@ function lw_dump_policies(array $fqcns): array
     $stringCallbacks = is_array($stringCallbacks) ? $stringCallbacks : [];
 
     // For a string callback, the guest rule is the METHOD's first parameter
-    // (Gate::methodAllowsGuests(), :489-... -> parameterAllowsGuests(), :529-533).
+    // (Gate::methodAllowsGuests(), :489-506 -> parameterAllowsGuests(), :529-533):
+    // `isset($parameters[0]) && parameterAllowsGuests($parameters[0])`. A method
+    // with NO parameters answers false - Laravel hands the guest the empty
+    // closure (denied, Gate.php:642-644), it does not call the ability.
+    // Oracle (PHP 8.3 + framework 13.37, fresh-app): a guest `Gate::allows('x')`
+    // for `Gate::define('x', 'Class@noArgs')` is FALSE, while for
+    // `Class@oneNullableArg` it is TRUE.
     $guestAllowedFor = function (string $target): bool {
         $parts = explode('@', $target, 2);
         $class = $parts[0];
@@ -153,7 +159,7 @@ function lw_dump_policies(array $fqcns): array
             return false;
         }
         $params = $m->getParameters();
-        if (! $params) return true;
+        if (! $params) return false;
         $p = $params[0];
         return ($p->hasType() && $p->allowsNull()) || ($p->isDefaultValueAvailable() && $p->getDefaultValue() === null);
     };
