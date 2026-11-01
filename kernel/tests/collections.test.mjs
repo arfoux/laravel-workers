@@ -70,6 +70,21 @@ test('sortBy/sortByDesc/sum/avg/max/min', () => {
   assert.equal(collect([1, 2, 3]).avg(), 2);
   assert.equal(collect([1, 9, 3]).max(), 9);
   assert.equal(collect([4, 9, 3]).min(), 3);
+  // EnumeratesValues::min()/max() REJECT the nulls first and then fold with
+  // PHP's `<`/`>` - a null in the MIDDLE must not re-seed the accumulator
+  // (probed on 8.3: min(['', null, false]) is '', not false; max(['a', null,
+  // 'b']) is 'b'), and the comparison is PHP's operator, NOT the "numeric
+  // sorts first" shortcut the old phpCompare() carried:
+  //   max(['10a', 2]) is 2   (PHP compares the number with the string as
+  //                           STRINGS: '2' > '10a'), min([2, '10a']) is '10a'.
+  //   max(['0.0', '0']) is '0.0' (two equal NUMERIC strings keep the first).
+  assert.equal(collect(['', null, false]).min(), '');
+  assert.equal(collect(['a', null, 'b']).max(), 'b');
+  assert.equal(collect([null, null]).max(), null);
+  assert.equal(collect(['10a', 2]).max(), 2);
+  assert.equal(collect([2, '10a']).min(), '10a');
+  assert.equal(collect(['0.0', '0']).max(), '0.0');
+  assert.equal(collect([true, false]).min(), false);
   // sum with a key (a probe: 5 for [{v:2},{v:3}]).
   assert.equal(collect([{ v: 2 }, { v: 3 }]).sum('v'), 5);
   // PHP 8.3 (probed) walks TWO different failure paths, and Laravel's error
@@ -206,8 +221,10 @@ test('firstOrFail answers the first item, or fails loud when none matches', () =
   assert.deepEqual(collect([{ n: 1 }, { n: 2 }]).firstOrFail('n', '!=', 1), { n: 2 });
   // A miss throws PHP's ItemNotFoundException, whose message is EMPTY (a probe:
   // msg=[]). An empty message names nothing at the edge, so the error names the
-  // failure: the item, or the key that was looked up.
-  assert.throws(() => collect([]).firstOrFail(), { name: 'Error', message: 'Item not found.' });
+  // failure: the item, or the key that was looked up. The CLASS is what an
+  // app-side `catch` matches, so it is `err.name` too (the vendor class
+  // `sole()` throws - the two methods carry the same shape).
+  assert.throws(() => collect([]).firstOrFail(), { name: 'ItemNotFoundException', message: 'Item not found.' });
   assert.throws(() => collect([1, 2]).firstOrFail((v) => v > 9), { message: 'Item not found.' });
   assert.throws(() => collect([]).firstOrFail('name', 'z'), {
     message: 'Item with key `name` not found.',
@@ -244,12 +261,13 @@ test('sole answers the only item, or throws the none / multiple error', () => {
   // No match throws PHP's ItemNotFoundException, whose message is EMPTY (a
   // probe: msg=[]); the edge names the failure. More than one match throws
   // MultipleItemsFoundException with its own "<count> items were found."
-  // message (probes: 2 and 3 items).
-  assert.throws(() => collect([]).sole(), { name: 'Error', message: 'Item not found.' });
-  assert.throws(() => collect([1, 2, 3]).sole((v) => v > 9), { message: 'Item not found.' });
-  assert.throws(() => collect([1, 2]).sole(), { name: 'Error', message: '2 items were found.' });
-  assert.throws(() => collect([1, 2, 3]).sole((v) => v > 1), { message: '2 items were found.' });
-  assert.throws(() => collect([1, 2, 3]).sole(), { message: '3 items were found.' });
+  // message (probes: 2 and 3 items). The CLASS is what an app-side `catch`
+  // matches, so it is `err.phpClass` as well as `err.name`.
+  assert.throws(() => collect([]).sole(), { name: 'ItemNotFoundException', message: 'Item not found.' });
+  assert.throws(() => collect([1, 2, 3]).sole((v) => v > 9), { name: 'ItemNotFoundException', message: 'Item not found.' });
+  assert.throws(() => collect([1, 2]).sole(), { name: 'MultipleItemsFoundException', message: '2 items were found.' });
+  assert.throws(() => collect([1, 2, 3]).sole((v) => v > 1), { name: 'MultipleItemsFoundException', message: '2 items were found.' });
+  assert.throws(() => collect([1, 2, 3]).sole(), { name: 'MultipleItemsFoundException', message: '3 items were found.' });
   // A single nullish argument filters nothing (probes: null, false, 0 and ''
   // all reach the count check); a single non-callable, non-nullish argument is
   // PHP's TypeError (probes: 'name', '0', 1 and a non-empty array).
@@ -317,6 +335,8 @@ test('join: 0, 1, 2 and 3+ items, and the final glue', () => {
   assert.equal(collect(['a', 'b', 'c']).join(', '), 'a, b, c');
   assert.equal(collect([]).join(', ', ' and '), '');
   assert.equal(collect(['a']).join(', ', ' and '), 'a');
+  // The single-item branch is `return $this->last()`, so a NON-string item is
+  // answered as it is - a PHP probe answers the int 1.
   assert.equal(collect([1]).join(', ', ' and '), 1);
   assert.equal(collect(['a', 'b']).join(', ', ' and '), 'a and b');
   assert.equal(collect(['a', 'b', 'c']).join(', ', ' and '), 'a, b and c');
@@ -668,4 +688,14 @@ test('collections: keyBy keeps the LAST item for a duplicate key', () => {
     new Collection([{ id: 1, v: 'a' }, { id: 1, v: 'b' }]).keyBy('id').toJson(),
     '{"1":{"id":1,"v":"b"}}'
   );
+});
+
+test('fromJson keeps PHP key order (json_decode, not JSON.parse)', () => {
+  // PHP: json_encode(json_decode('{"b":1,"2":"x","a":2}', true)) => {"b":1,"2":"x","a":2}
+  // JSON.parse alone answers {"2":"x","a":2,"b":1} - a different response body.
+  assert.equal(Collection.fromJson('{"b":1,"2":"x","a":2}').toJson(), '{"b":1,"2":"x","a":2}');
+  // An invalid document is PHP's NULL - an EMPTY collection, not a SyntaxError.
+  assert.equal(Collection.fromJson('{bad').toJson(), '[]');
+  // PHP holds 9223372036854775807 exactly; a JS number would round it (LW006).
+  assert.throws(() => Collection.fromJson('9223372036854775807'), (e) => e.code === 'LW006');
 });

@@ -24,6 +24,20 @@ import { phpJsonEncode } from '../php-json.mjs';
 
 const C = Collection;
 const make = (v) => new Collection(v);
+/**
+ * A PHP-order associative array. A JS object LITERAL reorders integer-like keys
+ * (JS lists `'2'` before `'a'`), so a literal cannot express PHP's insertion
+ * order (`['k' => 'b', 0 => 'c']`); carry it in the non-enumerable `__lwOrder`
+ * the encoder honours - the same marker `Collection::all()` attaches itself.
+ * The expectations below are PHP's OWN recorded bytes, not what a literal
+ * happens to enumerate.
+ */
+const assoc = (...entries) => {
+  const out = {};
+  for (const [k, v] of entries) out[k] = v;
+  Object.defineProperty(out, '__lwOrder', { value: entries.map(([k]) => String(k)), enumerable: false });
+  return out;
+};
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const group = (c) => c.all();
 class PipeTarget {
@@ -365,13 +379,7 @@ const EXPECTED = {
   },
   "shift_keyed": {
     "ok": true,
-    "value": [
-      "a",
-      {
-        "k": "b",
-        "0": "c"
-      }
-    ]
+    "value": ["a", assoc(['k', 'b'], ['0', 'c'])]
   },
   "shift_neg": {
     "ok": true,
@@ -436,16 +444,7 @@ const EXPECTED = {
   },
   "splice_keyed": {
     "ok": true,
-    "value": [
-      {
-        "b": 2
-      },
-      {
-        "a": 1,
-        "0": "x",
-        "c": 3
-      }
-    ]
+    "value": [assoc(['b', 2]), assoc(['a', 1], ['0', 'x'], ['c', 3])]
   },
   "splice_neg": {
     "ok": true,
@@ -583,10 +582,7 @@ const EXPECTED = {
   },
   "add": {
     "ok": true,
-    "value": {
-      "k": "v",
-      "0": "x"
-    }
+    "value": assoc(['k', 'v'], ['0', 'x'])
   },
   "add_int": {
     "ok": true,

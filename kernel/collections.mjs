@@ -74,50 +74,68 @@ const phpStr = (v) => {
   if (v === null || v === undefined) return '';
   if (v === true) return '1';
   if (v === false) return '';
-  if (Array.isArray(v)) return 'Array';
-  if (v instanceof Collection) return 'Array';
+  // A PHP ARRAY answers the literal `Array` (PHP's own warning) - and a keyed
+  // array arrives as a plain object (`json_decode($body, true)`), so the
+  // predicate is `isArrayLike()`, not `Array.isArray()`: `implode()`/`join()`
+  // answered "Object" where PHP answers "Array".
+  if (isArrayLike(v) || v instanceof Collection) return 'Array';
   if (typeof v === 'object') return 'Object';
   return String(v);
 };
 
-/** True for values PHP compares as numbers (numbers plus numeric strings). */
-const isNumeric = (v) =>
-  typeof v === 'number' ||
-  (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v)));
-
 /**
- * PHP 8 loose equality for scalars (`in_array($v, $items)` without strict).
- * Objects are never loosely equal to scalars (PHP 8).
+ * PHP's `(bool)` cast for the values a loose comparison can see (see
+ * kernel/php-loose-eq.mjs): `''`/`'0'` are false, `-0.0` is false, NAN is
+ * TRUE, and an array is `count() > 0` - which is what makes `null == []` /
+ * `false == []` / `[1] == true` true in PHP (probed).
  */
-const looseEq = (a, b) => {
-  if (a === b) return true;
-  if (a === null || a === undefined || b === null || b === undefined) {
-    return (a === null || a === undefined) && (b === null || b === undefined);
+const isCollectionValue = (v) => v instanceof Collection;
+const phpBool = (v) => phpBoolOf(v, isCollectionValue);
+/**
+ * PHP 8 loose equality for two SCALARS (`in_array($v, $items)` without strict,
+ * `where($k, '=', $v)` -> `operatorForWhere()` -> `==`). The definition lives
+ * in kernel/php-loose-eq.mjs (`phpScalarEquals`) as the ONE canon shared with
+ * the validator; this pair only adds the Collection rules on top.
+ */
+const { looseEq, phpLooseEquals } = makeLooseEq({ scalarEq: phpScalarEquals, isCollection: isCollectionValue });
+/**
+ * PHP's comparison operators for two SCALARS - `phpCompare()` below is the
+ * `<=>`, and `phpLt()`/`phpGt()` are `<`/`>`. Each is `phpSortCompare()` (PHP
+ * 8's zend comparison, i.e. SORT_REGULAR) for scalars; that function's doc is
+ * the ONE canon for the scalar rules. Two consequences the old hand-rolled
+ * version got wrong: equal numerics answer 0 (`'0.0' <=> '0'`), and a number
+ * against a non-numeric string compares as STRINGS, so `max(['10a', 2])` is 2
+ * (a probe on 8.3).
+ */
+const phpCompare = (a, b) => phpSortCompare(a, b);
+/**
+ * `$a < $b` / `$a > $b` for two values. Scalars walk `phpCompare()`; an ARRAY
+ * or object always outranks a scalar (probes: `[1] > 2` is true, `2 < [1]` is
+ * true, `max([2, [1]])` is the array) and two complex values fall through to
+ * `phpObjectCompare()` like the rest of this file.
+ */
+const phpScalarCompare = (a, b) => {
+  const aComplex = isPhpComparableComplex(a);
+  const bComplex = isPhpComparableComplex(b);
+  if (aComplex || bComplex) {
+    if (aComplex && bComplex) return phpObjectCompare(a, b) ?? 1;
+    return aComplex ? 1 : -1;
   }
-  if (typeof a === 'object' || typeof b === 'object') return false;
-  if (typeof a === 'boolean' || typeof b === 'boolean') {
-    return Boolean(a) === Boolean(b);
-  }
-  if (isNumeric(a) && isNumeric(b)) return Number(a) === Number(b);
-  if (isNumeric(a) !== isNumeric(b)) return false;
-  return String(a) === String(b);
+  return phpSortCompare(a, b);
 };
-
-/**
- * PHP 8 spaceship for sortBy()/max()/min()/where(): numeric when both sides are
- * numeric, else string comparison (PHP 8 compares number-to-non-numeric-string
- * as strings).
- */
-const phpCompare = (a, b) => {
-  if (a === b) return 0;
-  if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1;
-  if (b === null || b === undefined) return 1;
-  if (typeof a === 'boolean' || typeof b === 'boolean') {
-    return (a ? 1 : 0) - (b ? 1 : 0);
-  }
-  if (isNumeric(a) && isNumeric(b)) return Number(a) < Number(b) ? -1 : 1;
-  if (isNumeric(a) !== isNumeric(b)) return isNumeric(a) ? -1 : 1;
-  return String(a) < String(b) ? -1 : 1;
+const phpLt = (a, b) => phpScalarCompare(a, b) < 0;
+const phpGt = (a, b) => phpScalarCompare(a, b) > 0;
+/** A PHP array or object - the two complex types PHP ranks above any scalar. */
+const isPhpComparableComplex = (v) => typeof v === 'object' && v !== null;
+/** Laravel's `$callback ? $callback($item, $key) : $item`, plus property access. */
+const valueOf = (spec, item, key) => {
+  if (typeof spec === 'function') return spec(item, key);
+  if (spec === null || spec === undefined) return item;
+  // `data_get()` answers NULL for a key that is not there - PHP has no
+  // `undefined`, and a `undefined` leaking out of a `map`/`pluck`/`unique`
+  // reached the serializer as "undefined is not a PHP value" (a hard error)
+  // where PHP answers null.
+  return valueForKey(item, spec);
 };
 
 /** Laravel's `$callback ? $callback($item, $key) : $item`, plus property access. */
@@ -148,11 +166,6 @@ const readProp = (item, key) => {
     }
   }
   return target;
-};
-const valueOf = (spec, item, key) => {
-  if (typeof spec === 'function') return spec(item, key);
-  if (spec === null || spec === undefined) return item;
-  return readProp(item, spec);
 };
 
 /**
@@ -200,42 +213,6 @@ const phpSliceEntries = (items, keys, offset, length) => {
     end = len < 0 ? Math.max(n + len, off) : off + len;
   }
   return { values: items.slice(off, end), keys: keys.slice(off, end) };
-};
-
-/**
- * PHP 8's `==` - `array_unique(SORT_REGULAR)` and `in_array()` without strict
- * compare this way. `looseEq()` above covers scalars; OBJECTS compare equal
- * only to objects of the SAME class with equal properties (a probe: two
- * `(object) ['a' => 1]` answer one unique item, `(object) ['a' => 2]` answers
- * two). A MODEL compares through its attributes, which is where the row's
- * value lives at the edge (the compiler keeps them in `attributes`).
- */
-const phpClassTag = (v) => {
-  if (Array.isArray(v)) return 'Array';
-  const name = v && v.constructor && v.constructor.name;
-  return typeof name === 'string' && name !== 'Object' ? name : 'Object';
-};
-const phpLooseEquals = (a, b) => {
-  if (a === b) return true;
-  const aObj = a !== null && typeof a === 'object';
-  const bObj = b !== null && typeof b === 'object';
-  if (aObj || bObj) {
-    if (!aObj || !bObj) return false;
-    if (phpClassTag(a) !== phpClassTag(b)) return false;
-    if (a instanceof Collection || b instanceof Collection) return a === b;
-    const attrs = (v) => (v.attributes && typeof v.attributes === 'object' ? v.attributes : null);
-    const aAttrs = attrs(a);
-    const bAttrs = attrs(b);
-    const ka = aAttrs ? Object.keys(aAttrs) : Object.keys(a).filter((k) => !k.startsWith('_'));
-    const kb = bAttrs ? Object.keys(bAttrs) : Object.keys(b).filter((k) => !k.startsWith('_'));
-    if (ka.length !== kb.length) return false;
-    return ka.every((k) =>
-      aAttrs
-        ? Object.prototype.hasOwnProperty.call(bAttrs, k) && phpLooseEquals(aAttrs[k], bAttrs[k])
-        : Object.prototype.hasOwnProperty.call(b, k) && phpLooseEquals(a[k], b[k])
-    );
-  }
-  return looseEq(a, b);
 };
 
 /**
@@ -420,7 +397,22 @@ const soleFilterFor = (key, operator, value, argCount) => {
 
 /** Values of an arrayable-ish argument: Collection, array, object or scalar. */
 import { phpJsonEncode, phpJsonEncodeWithFlags } from './php-json.mjs';
+import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 import { ownSet, ownGet } from './own-key.mjs';
+// `combine()` coerces its keys with PHP's string cast before the array-key rule.
+import { phpStringCast } from './str.mjs';
+import {
+  isNumericForLooseEq,
+  phpScalarEquals,
+  phpBool as phpBoolOf,
+  phpArrayKey,
+  phpClassTag,
+  entriesOf as entriesOfShared,
+  makeLooseEq,
+} from './php-loose-eq.mjs';
+
+/** True for values PHP compares as numbers (numbers plus numeric strings). */
+const isNumeric = isNumericForLooseEq;
 
 export const toList = (input) => {
   if (input instanceof Collection) return input.items.slice();
@@ -438,40 +430,51 @@ export const toList = (input) => {
  * strings too. null is '', true is 1, false is 0, a float truncates (a probe:
  * `[1.7 => 'x']` answers `[1 => 'x']`).
  */
-const arrayKey = (v) => {
-  if (v === null || v === undefined) return '';
-  if (v === true) return 1;
-  if (v === false) return 0;
-  if (typeof v === 'number') return Number.isFinite(v) ? Math.trunc(v) : v;
-  if (typeof v === 'string' && /^(?:0|-?[1-9]\d*)$/.test(v)) {
-    const n = Number(v);
-    if (Number.isSafeInteger(n)) return n;
-  }
-  return v;
-};
-
+/** PHP's array-key coercion (kernel/php-loose-eq.mjs): a canonical integer string is an int. */
+const arrayKey = phpArrayKey;
 /** The PHP key at a list position (the index itself for a plain list). */
 const keyAt = (collection, index) =>
   collection.phpKeys ? collection.phpKeys[index] : index;
+
+/**
+ * A PHP array/object is not a valid array OFFSET, and every method that keys a
+ * result by an item's value (`countBy`, `mode`, `keyBy`, `groupBy`) writes
+ * through that path, so PHP 8.3 answers `TypeError` (probed:
+ * `collect([[1,2]])->countBy()` -> "Cannot access offset of type array in isset
+ * or empty", an object value -> "... of type stdClass ..."). The edge used to
+ * coerce silently (`String([1,2])` -> the key "1,2").
+ */
+const assertKeyable = (v, message) => {
+  const arrayish = Array.isArray(v) || v instanceof Collection;
+  // An array cannot be an array KEY (PHP: "Illegal offset type"), but the
+  // messages differ per call site: `array_key_exists()` reports the flat
+  // "must be a valid array offset type" while an assignment/`isset` reports
+  // the type it saw ("... of type array ..."). `%d` carries the latter.
+  if (arrayish) {
+    if (message.includes('valid array offset')) {
+      const err = new Error(message);
+      err.name = 'TypeError';
+      err.phpClass = 'TypeError';
+      throw err;
+    }
+    const err = new Error(message.replace('%s', phpDebugType(v)));
+    err.name = 'TypeError';
+    err.phpClass = 'TypeError';
+    throw err;
+  }
+  if (v === null || v === undefined || typeof v !== 'object') return v;
+  const err = new Error(message.replace('%s', phpDebugType(v)));
+  err.name = 'TypeError';
+  err.phpClass = 'TypeError';
+  throw err;
+};
 
 /** The collection's PHP keys as a fresh list. */
 const currentKeys = (collection) =>
   collection.phpKeys ? collection.phpKeys.slice() : collection.items.map((_, index) => index);
 
-/** `{key, value}` entries of a Collection, array or PHP-array-shaped object. */
-const entriesOf = (value) => {
-  if (value instanceof Collection) {
-    const array = value.phpArray();
-    if (Array.isArray(array)) return array.map((item, index) => ({ key: index, value: item }));
-    return Object.entries(array).map(([key, item]) => ({ key: arrayKey(key), value: item }));
-  }
-  if (Array.isArray(value)) return value.map((item, index) => ({ key: index, value: item }));
-  if (value !== null && value !== undefined && typeof value === 'object') {
-    return Object.entries(value).map(([key, item]) => ({ key: arrayKey(key), value: item }));
-  }
-  return null;
-};
-
+/** `{key, value}` entries of a Collection, array or PHP-array-shaped object (shared). */
+const entriesOf = (value) => entriesOfShared(value, isCollectionValue);
 /** PHP's next `$array[]` key: the largest integer key + 1, or 0 (a probe:
  *  `[5 => 'x']` followed by `push('y')` answers `[5 => 'x', 6 => 'y']`). */
 const nextIntKey = (keys) => {
@@ -483,9 +486,14 @@ const nextIntKey = (keys) => {
   return max === null ? 0 : max + 1;
 };
 
-/** PHP's bool cast, for the boolean rung of SORT_REGULAR ('0' and '' are false). */
-const phpTruthy = (v) =>
-  !(v === null || v === undefined || v === false || v === 0 || v === '' || v === '0');
+/**
+ * PHP's bool cast, for the boolean rung of SORT_REGULAR ('0' and '' are false).
+ * It IS `phpBool()`: an ARRAY is `count() > 0` there too, which is why
+ * `filter()`/`search()`/`every()`/`contains()` over rows holding `[]` or a
+ * non-empty array answered the opposite of PHP (`(bool) []` is FALSE and
+ * `(bool) [1, 2]` is TRUE - probed).
+ */
+const phpTruthy = phpBool;
 
 const phpStrCmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -495,7 +503,7 @@ const phpTypeName = (v) => {
   if (typeof v === 'boolean') return 'boolean';
   if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'double';
   if (typeof v === 'string') return 'string';
-  if (Array.isArray(v)) return 'array';
+  if (isArrayLike(v)) return 'array';
   return 'object';
 };
 
@@ -512,13 +520,19 @@ const phpDebugType = (v) => {
   if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
   if (typeof v === 'string') return 'string';
   if (typeof v === 'function') return 'Closure';
-  if (Array.isArray(v)) return 'array';
   if (typeof v === 'object') {
     if (typeof v.__lwClass === 'string') return v.__lwClass;
     if (v[IS_COLLECTION] === true) return 'Illuminate\\Support\\Collection';
+    // A plain object that is not tagged as a `stdClass` IS a PHP array here
+    // (`get_debug_type([])` is `array`, and a JSON request body decoded with
+    // `json_decode($body, true)` is exactly that shape) - the old shape
+    // answered `stdClass`, so every "offset of type ... " message named the
+    // wrong type.
+    if (isArrayLike(v)) return 'array';
     const name = v.constructor && v.constructor.name;
     return name && name !== 'Object' ? name : 'stdClass';
   }
+  if (isArrayLike(v)) return 'array';
   return 'string';
 };
 
@@ -683,7 +697,10 @@ const phpNumeric = (v) => {
     err.phpClass = 'TypeError';
     throw err;
   }
-  const err = new Error('Unsupported operand types: int + ' + typeof v);
+  // PHP names the operand its class/type: an array answers "array" and an
+  // object its class name (probed: `sum()` over a Collection answers
+  // "int + Illuminate\Support\Collection", over a stdClass "int + stdClass").
+  const err = new Error('Unsupported operand types: int + ' + phpDebugType(v));
   err.name = 'TypeError';
   err.phpClass = 'TypeError';
   throw err;
@@ -693,7 +710,12 @@ const phpAdd = (a, b) => a + phpNumeric(b);
 
 /**
  * PHP 8's SORT_REGULAR comparison, i.e. `asort()`/`arsort()` without flags.
- * Probed pairwise; it is NOT `phpCompare()` above:
+ * This IS the scalar canon: `phpCompare()` above simply delegates here, and
+ * `phpSortBy()` (`sortBy`/`sort`) uses it directly on the retrieved values (its
+ * sort must be stable, and the comparison is order-INSENSITIVE:
+ * `sortBy('a'); sortByDesc('a')` restores the input, `Collection.php:1634-1650`),
+ * so the bullets below are the single source of truth for scalar `<=>`. Probed
+ * pairwise:
  *   - a boolean on either side casts BOTH to bool, so `false == null == 0`
  *     and `true == 2 == 'a'` (both compare 0);
  *   - null against a number is 0, against a string is '';
@@ -709,6 +731,18 @@ const phpSortCompare = (a, b) => {
     const x = typeof a === 'boolean' ? a : phpTruthy(a);
     const y = typeof b === 'boolean' ? b : phpTruthy(b);
     return x === y ? 0 : x ? 1 : -1;
+  }
+  // PHP's `compare_function()` handles arrays BEFORE the scalar rules: a NULL
+  // against an array makes the null an EMPTY array (`null <=> [1]` is -1 and
+  // `null <=> []` is 0), and an array against any other non-array is the
+  // GREATER one (`[1, 2] <=> 'x'` is 1 - probed).
+  const aArr = isArrayLike(a) || isPhpStdObject(a);
+  const bArr = isArrayLike(b) || isPhpStdObject(b);
+  if (aArr || bArr) {
+    if (aArr && bArr) return phpArraySortCompare(a, b);
+    if (aNull) return phpArraySortCompare([], b);
+    if (bNull) return phpArraySortCompare(a, []);
+    return aArr ? 1 : -1;
   }
   if (aNull || bNull) {
     if (aNull && bNull) return 0;
@@ -744,8 +778,45 @@ const phpSortCompare = (a, b) => {
   return phpStrCmp(String(a), String(b));
 };
 
+/** True for a tagged PHP `stdClass` (`(object)` cast / `json_decode($json, false)`). */
+const isPhpStdObject = (v) => v !== null && typeof v === 'object' && !(v instanceof Collection) && v.__lwObject === true;
+/**
+ * `compare_function()` on two PHP arrays or two `stdClass` objects (probed on
+ * 8.3): a different COUNT decides by count first; otherwise the FIRST side's
+ * entries are walked in ITS order and each is looked up by the SAME KEY on the
+ * other side - a key that is missing there makes the first side the GREATER
+ * one (`['a' => 1] <=> [1]` is 1 AND `[1] <=> ['a' => 1]` is 1: PHP is not
+ * antisymmetric here), and an entry that compares unequal decides the answer.
+ * Everything equal means the two are EQUAL, which is what makes
+ * `sortBy(fn ($r) => $r)` stable over equal rows (`[] <=> []` is 0 while the
+ * old shape answered -1).
+ */
+const phpArraySortCompare = (a, b) => {
+  const ea = entriesOf(a) || [];
+  const eb = entriesOf(b) || [];
+  if (ea.length !== eb.length) return ea.length < eb.length ? -1 : 1;
+  const lookup = new Map(eb.map((entry) => [String(arrayKey(entry.key)), entry.value]));
+  for (const entry of ea) {
+    const id = String(arrayKey(entry.key));
+    if (!lookup.has(id)) return 1;
+    const cmp = phpSortCompare(entry.value, lookup.get(id));
+    if (cmp !== 0) return cmp;
+  }
+  return 0;
+};
 /** A PHP integer key (the coerced `arrayKey()` number). */
 const isIntKey = (key) => typeof arrayKey(key) === 'number';
+/**
+ * Tag a plain object built from a PHP array with its INSERTION order (a
+ * non-enumerable `__lwOrder`, the marker `rt.assoc`/`Arr::dot()` use). PHP's
+ * `json_encode` and `foreach` walk the array in insertion order, but a JS
+ * object lists integer-like keys ascending - `countBy()` over `[3, 1]` would
+ * otherwise encode `{"1":..,"3":..}` where PHP answers `{"3":..,"1":..}`.
+ */
+const attachOrder = (out, keys) => {
+  Object.defineProperty(out, '__lwOrder', { value: keys.map(String), enumerable: false });
+  return out;
+};
 
 /**
  * PHP's `array_shift()`/`array_unshift()`/`array_splice()` RENUMBER the integer
@@ -766,12 +837,37 @@ const phpArrayFrom = (values, keys) => {
   if (keys.every((key, index) => normKey(key) === index)) return values.slice();
   const out = {};
   keys.forEach((key, index) => { out[String(arrayKey(key))] = values[index]; });
-  return out;
+  // A keyed PHP array keeps its INSERTION order: a JS object would list an
+  // integer-like key first (`mergeRecursive()`'s `{"1":..,"k":..}` against
+  // PHP's `{"k":..,"1":..}`), so the order rides in the same non-enumerable
+  // marker `rt.assoc()`/`phpArray()` use.
+  return attachOrder(out, keys);
 };
 
-/** True for a value PHP treats as an array (a JS array or a PHP-array object). */
+/**
+ * True for a value PHP treats as an array: a JS array, or a plain object that
+ * is NOT tagged as a `stdClass` (`__lwObject`, the marker `rt.objectCast()`/
+ * `json_decode($json, false)`/the `object` cast set - `is_array(new stdClass)`
+ * is FALSE, so `Arr::flatten()` keeps such a value whole instead of walking
+ * it). A Collection is not an array here either (`Arr::flatten()` answers
+ * through `$item->all()` before the check).
+ */
 const isArrayLike = (v) =>
-  Array.isArray(v) || (v !== null && typeof v === 'object' && !(v instanceof Collection) && typeof v.get !== 'function' && Object.getPrototypeOf(v) === Object.prototype);
+  Array.isArray(v) ||
+  (v !== null &&
+    typeof v === 'object' &&
+    !(v instanceof Collection) &&
+    v.__lwObject !== true &&
+    typeof v.get !== 'function' &&
+    Object.getPrototypeOf(v) === Object.prototype);
+
+// A Laravel COLLECTION (or any Arrayable) folds through `all()` in
+// `Arr::collapse()` before the `is_array` test, so it is NOT an array
+// itself: `$values instanceof Enumerable` wins. `Arrayable` is the wider
+// contract (`Arr::collapse()` only accepts Enumerable), and both answer
+// `all()`.
+const isArrayable = (v) => !!v && typeof v === 'object' && typeof v.all === 'function' &&
+  (v instanceof Collection || typeof v.toArray === 'function');
 
 /**
  * `array_replace_recursive($left, $right)` as `{values, keys}`: every key of
@@ -826,19 +922,29 @@ const phpArrayMergeRecursive = (left, right) => {
   const values = [];
   const keys = [];
   const positions = new Map();
+  // `array_merge_recursive()` RENUMBERS an integer key of the LEFT side too
+  // (the fold starts from an empty array), but a STRING key keeps its name:
+  // `mergeRecursive()` over `['a' => 1, 'b' => 2, 2 => 'x', 'c' => null]`
+  // answers `{"a":1,"b":2,"0":"x","c":null}` - the old shape left the `2` and
+  // the answer differed from PHP on every keyed collection.
+  let numericCount = 0;
   for (const entry of leftEntries) {
     const k = arrayKey(entry.key);
-    const stored = typeof k === 'number' ? null : k;
-    values.push(entry.value);
-    keys.push(stored === null ? values.length - 1 : stored);
-    if (stored !== null) positions.set(String(stored), values.length - 1);
+    if (typeof k === 'number') {
+      values.push(entry.value);
+      keys.push(numericCount++);
+    } else {
+      values.push(entry.value);
+      keys.push(k);
+      positions.set(String(k), values.length - 1);
+    }
   }
   for (const entry of rightEntries) {
     const k = arrayKey(entry.key);
     const at = typeof k === 'number' ? -1 : positions.has(String(k)) ? positions.get(String(k)) : -1;
     if (at === -1) {
       values.push(entry.value);
-      keys.push(typeof k === 'number' ? values.length - 1 : k);
+      keys.push(typeof k === 'number' ? numericCount++ : k);
       if (typeof k !== 'number') positions.set(String(k), values.length - 1);
       continue;
     }
@@ -936,11 +1042,35 @@ export class Collection {
   constructor(items = [], keys = null) {
     // A plain object is a PHP array with keys: keep them (a keyed collection
     // answers `all()` as the same object and `has('a')` is true).
+    const fromObject = items !== null && items !== undefined && !Array.isArray(items) && !(items instanceof Collection) && typeof items === 'object';
     let sourceKeys = keys;
-    if (items !== null && items !== undefined && !Array.isArray(items) && !(items instanceof Collection) && typeof items === 'object') {
-      // Coerced like PHP's array keys: a JSON `{"5":"x"}` is the INT key 5,
-      // so `push()` appends at 6, not at 0.
-      sourceKeys = sourceKeys || Object.keys(items).map((k) => arrayKey(k));
+    let objectValues = null;
+    if (!fromObject && items !== null && items !== undefined && typeof items === 'object') {
+      // `collect($collection)` (a Collection, i.e. a PHP array with keys) keeps
+      // the KEYS: `Enumerable::getArrayableItems()` answers `$items->all()`,
+      // so `collect($c)->all()` is `$c->all()` (a probe: a `['k' => 'v',
+      // 4 => 'y']` collection stays keyed). `all()` tags the plain object it
+      // answers with the PHP order, so the keys come from there.
+      if (items instanceof Collection) {
+        sourceKeys = keys || (items.phpKeys ? items.phpKeys.slice() : null);
+        objectValues = items.items.slice();
+      } else {
+        const order = Array.isArray(items.__lwOrder) ? items.__lwOrder : null;
+        if (order) sourceKeys = sourceKeys || order.map((k) => arrayKey(k));
+      }
+    }
+    if (fromObject) {
+      // `Object.keys()` lists an integer-like key FIRST (`['k' => 1, 0 => 2]`
+      // enumerates `0` before `k`) and `Object.values()` follows that order, so
+      // BOTH the keys and the values must be read through the PHP order when
+      // the value carries it (`__lwOrder` - a `collect(['k' => 1, 0 => 2])`
+      // literal, an `Arr::dot()`/`countBy()` result). Otherwise the values
+      // would be paired with the wrong keys.
+      const order = Array.isArray(items.__lwOrder) ? items.__lwOrder : Object.keys(items);
+      objectValues = order.map((k) => items[k]);
+      // Coerced like PHP's array keys: a JSON `{"5":"x"}` is the INT key 5, so
+      // `push()` appends at 6, not at 0.
+      sourceKeys = sourceKeys || order.map((k) => arrayKey(k));
     }
     // `Enumerable::getArrayableItems()` (EnumeratesValues.php) ends with
     // `(array) $items`, so a SCALAR wraps into a one-element array:
@@ -952,17 +1082,19 @@ export class Collection {
       ? []
       : Array.isArray(items)
         ? items
-        : items instanceof Collection
-          ? items.items.slice()
-          : typeof items === 'object'
-            ? Object.values(items)
-            : [items];
+        : fromObject || items instanceof Collection
+          ? objectValues
+          : [items];
     // PHP's array KEYS. A list has none (the index is the key); a keyed
     // collection (`groupBy`, `keyBy`, `pluck($v, $k)`) carries them, and
     // Laravel's `all()`/`toArray()`/json_encode answer an OBJECT for it.
     // Non-enumerable: the runtime's iteration reads `items` only.
+    // The keys are PHP array keys: an explicit `keys` argument (the edge's own
+    // API, used by `combine()`/`zip()`/`groupBy()`) is coerced exactly like the
+    // keys read out of an object - `collect(['a' => 1, 2 => 'x'])->keys()` is
+    // `['a', 2]`, NOT `['a', '2']` (a probe on 13.37).
     Object.defineProperty(this, 'phpKeys', {
-      value: sourceKeys || null,
+      value: sourceKeys ? sourceKeys.map((key) => arrayKey(key)) : null,
       enumerable: false,
       writable: true,
     });
@@ -990,11 +1122,16 @@ export class Collection {
     // both answer the list.
     if (this.phpKeys.every((key, index) => normKey(key) === index)) return this.items.slice();
     const out = {};
+    // Own-key write: a collection key can be attacker data (`{"__proto__": 1}`
+    // from a request), and PHP's array key is data, never a prototype write.
     this.phpKeys.forEach((key, index) => {
-      // Own-key write: a collection key can be attacker data (`{"__proto__": 1}`
-      // from a request), and PHP's array key is data, never a prototype write.
       ownSet(out, String(key), this.items[index]);
     });
+    // PHP's array keeps its INSERTION order; a JS object enumerates an
+    // integer-like key first (`countBy()` over `[3, 1]` would encode
+    // `{"1":..,"3":..}` where PHP answers `{"3":..,"1":..}`). Carry the order
+    // in the same non-enumerable marker `rt.assoc`/`Arr::dot()` use.
+    attachOrder(out, this.phpKeys);
     return out;
   }
 
@@ -1006,7 +1143,7 @@ export class Collection {
       if (this.phpKeys.every((key, index) => normKey(key) === index)) return this.items.slice();
       const out = {};
       this.phpKeys.forEach((key, index) => { ownSet(out, String(key), this.items[index]); });
-      return out;
+      return attachOrder(out, this.phpKeys);
     }
     return this.items.slice();
   }
@@ -1043,7 +1180,7 @@ export class Collection {
               : item
         );
       });
-      return out;
+      return attachOrder(out, this.phpKeys);
     }
     return this.items.map((item) => {
       if (item instanceof Collection) return item.toArray();
@@ -1107,7 +1244,7 @@ export class Collection {
       const test = operatorForWhere(arguments.length === 2 ? '=' : String(operator));
       const expected = arguments.length === 2 ? operator : value;
       item = this.first((entry) => {
-        const actual = entry === null || entry === undefined ? null : readProp(entry, key);
+        const actual = entry === null || entry === undefined ? null : valueForKey(entry, key);
         return test(actual, expected);
       }, placeholder);
     } else {
@@ -1120,7 +1257,15 @@ export class Collection {
       item = this.first(key, placeholder);
     }
     if (item === placeholder) {
-      throw new Error(filtered ? 'Item with key `' + String(key) + '` not found.' : 'Item not found.');
+      const err = new Error(filtered ? 'Item with key `' + String(key) + '` not found.' : 'Item not found.');
+      // PHP's `Illuminate\Support\ItemNotFoundException` carries an EMPTY
+      // message (a probe: `msg=[]`); the descriptive text stays so the failure
+      // names itself at the edge, but the CLASS is what an app-side `catch`
+      // matches — the SAME vendor class `sole()` throws, so it carries the same
+      // shape here (`sole()` two methods down).
+      err.name = 'ItemNotFoundException';
+      err.phpClass = 'Illuminate\\Support\\ItemNotFoundException';
+      throw err;
     }
     return item;
   }
@@ -1149,7 +1294,7 @@ export class Collection {
       const test = operatorForWhere(arguments.length === 2 ? '=' : String(operator));
       const expected = arguments.length === 2 ? operator : value;
       predicate = (item) => {
-        const actual = key === null || key === undefined ? item : readProp(item, key);
+        const actual = key === null || key === undefined ? item : valueForKey(item, key);
         return test(actual, expected);
       };
     } else if (!(key === null || key === undefined || key === false || key === 0 || key === '' ||
@@ -1164,8 +1309,21 @@ export class Collection {
     const items = predicate === null
       ? this.items
       : this.items.filter((item, index) => predicate(item, keyAt(this, index)));
-    if (items.length === 0) throw new Error('Item not found.');
-    if (items.length > 1) throw new Error(items.length + ' items were found.');
+    if (items.length === 0) {
+      const err = new Error('Item not found.');
+      // PHP's `Illuminate\\Support\\ItemNotFoundException` carries an EMPTY
+      // message; the descriptive text stays so the failure names itself at the
+      // edge, but the CLASS is what a `catch` on the app side matches.
+      err.name = 'ItemNotFoundException';
+      err.phpClass = 'Illuminate\\Support\\ItemNotFoundException';
+      throw err;
+    }
+    if (items.length > 1) {
+      const err = new Error(items.length + ' items were found.');
+      err.name = 'MultipleItemsFoundException';
+      err.phpClass = 'Illuminate\\Support\\MultipleItemsFoundException';
+      throw err;
+    }
     return items[0];
   }
 
@@ -1372,7 +1530,9 @@ export class Collection {
    * `array_filter()`): the surviving items keep their KEYS (a probe:
    * `[1, 2, 3]->filter(fn ($v) => $v > 1)->all()` is `{"1":2,"2":3}`). Without
    * a callback array_filter() drops the FALSY items ('' / '0' / 0 / null /
-   * false / [] are all false in PHP, which `phpTruthy()` mirrors).
+   * false / [] are all false in PHP, and a NON-EMPTY array is true - which
+   * `phpBool()` mirrors; probed: `[[1,2],[3,[4]],[],null]->filter()` keeps
+   * `[[1,2],[3,[4]]]`).
    */
   filter(callback = null) {
     const values = [];
@@ -1463,7 +1623,11 @@ export class Collection {
       : Array.isArray(items)
         ? items.map((value, index) => ({ key: index, value }))
         : items !== null && items !== undefined && typeof items === 'object'
-          ? Object.entries(items).map(([key, value]) => ({ key: arrayKey(key), value }))
+          // `entriesOf()` walks a keyed PHP array in its INSERTION order (the
+          // `__lwOrder` marker), not in JS's integer-keys-first order: PHP's
+          // `array_merge($this->items, ['k' => 1, 2, null])` answers `k` BEFORE
+          // the renumbered `2`/`null`.
+          ? entriesOf(items) || []
           : [{ key: 0, value: items }];
     const sequence = this.items
       .map((value, index) => ({ key: keyAt(this, index), value }))
@@ -1636,11 +1800,24 @@ export class Collection {
    * `'a and b'`) and 3 answer `'a, b and c'`.
    */
   join(glue, finalGlue = '') {
+    // `Collection::join()`: `$finalGlue === ''` is `implode($glue)`, the empty
+    // case answers `''`, the single-item case answers the ITEM itself
+    // (`return $this->last();` — Collection.php:777-779, NOT a string: a probe
+    // answers the int 1), and otherwise the head is
+    // `$this->slice(0, -1)->implode($glue)` with the last item CONCATENATED.
+    // The head MUST go through `implode()`: over row collections Laravel's
+    // `implode()` sees an array first item and therefore `pluck($value)`s the
+    // FIRST ARGUMENT - which here is the GLUE, not a column - so
+    // `[['n' => 3], ['n' => 3], ['n' => 1]]->join(',', ' and ')` is ` and Array`
+    // (a probe), while mapping `phpStr()` over the rows answered
+    // `Array,Array and Array`.
     if (finalGlue === '') return this.implode(glue);
     const count = this.items.length;
     if (count === 0) return '';
     if (count === 1) return this.items[0];
-    const head = this.items.slice(0, -1).map(phpStr).join(String(glue));
+    // The keys do not matter to `implode()`, and PHP's `slice(0, -1)` drops the
+    // last item only.
+    const head = new Collection(this.items.slice(0, -1)).implode(glue);
     return head + String(finalGlue) + phpStr(this.items[count - 1]);
   }
 
@@ -1653,17 +1830,39 @@ export class Collection {
    * `[[1], 'x', [2]]` answers `[1, 2]`).
    */
   collapse() {
+    // `Collection::collapse()` (:168-171) folds the items with
+    // `array_merge([], ...$this->items)`: EVERY item must be an array, and an
+    // item that is not one contributes NOTHING (a probe:
+    // `collect([(object) ['b' => 1], [3]])->collapse()` is `[0 => 3]` - the
+    // stdClass is skipped, it does NOT become a key). `entriesOf()` answered a
+    // tagged stdClass with its OBJECT ENTRIES, so the object leaked into the
+    // result; the same rule now guards it here (see `isArrayLike()`).
+    // Every item is folded with `array_merge`-of-ALL: a number key is
+    // renumbered from 0, a string key keeps its FIRST slot with a later value
+    // OVERWRITING it (the slot order is what `array_merge` gives - `['b' => 1,
+    // 'a' => 2]` merged under `[3]` answers `b, a, 0`).
     const values = [];
     const keys = [];
     const stringPositions = new Map();
-    for (const item of this.items) {
-      const entries = entriesOf(item);
+    let numericCount = 0;
+    for (const raw of this.items) {
+      // `Arr::collapse()`: an `Enumerable` (a Collection, an Eloquent
+      // collection) contributes `$values->all()`; a PHP ARRAY contributes
+      // itself; anything else - a string, a number, a stdClass - is SKIPPED
+      // (a probe: `collect([new Collection([1,2]), new Collection([3])])` is
+      // `[1,2,3]`, while `[[1], 'x', [2]]` is `[1,2]`).
+      const item = isArrayable(raw) ? raw.all() : raw;
+      const entries = isArrayLike(item) ? entriesOf(item) : null;
       if (entries === null) continue;
       for (const entry of entries) {
         const k = arrayKey(entry.key);
         if (typeof k === 'number') {
+          // A NUMBER key is RENUMBERED from 0 by how many number-keyed elements
+          // were appended so far - it must NOT borrow the slot index, because a
+          // string key earlier in the fold occupies one (`['b' => 1, 'a' => 2]`
+          // merged with `[3]` answers key 0, not key 2).
           values.push(entry.value);
-          keys.push(values.length - 1);
+          keys.push(numericCount++);
         } else if (stringPositions.has(k)) {
           values[stringPositions.get(k)] = entry.value;
         } else {
@@ -1843,20 +2042,36 @@ export class Collection {
    * `[1 => '1']`; with strict it answers nothing).
    */
   duplicates(callback = null, strict = false) {
+    // `Collection::duplicates()` (:349-368) walks the MAPPED items while a
+    // `unique()` list is consumed from its HEAD: a value equal to the current
+    // head is the repeated occurrence that gets SKIPPED (`$uniqueItems->shift()`
+    // advances the head), and every other value is a duplicate and is KEPT. The
+    // old shape compared each value with EVERY value already seen, which answers
+    // a different SET whenever the comparison is not transitive - and PHP's `==`
+    // is not transitive across types (a probe with
+    // `[1, '1', '01', 'a', 0, '', null, false, true, 2.5, '2.5', '0']`:
+    // PHP keeps keys 1, 2, 6, 7, 9, 10, 11 while the seen-list kept 8 instead
+    // of 9).
     const values = [];
     const keys = [];
-    const seen = [];
     this.items.forEach((item, index) => {
-      const value = valueOf(callback, item, keyAt(this, index));
-      const duplicate = seen.some((entry) => (strict ? entry === value : phpLooseEquals(entry, value)));
-      if (duplicate) {
-        values.push(value);
-        keys.push(keyAt(this, index));
-      } else {
-        seen.push(value);
+      const key = keyAt(this, index);
+      values.push(callback === null || callback === undefined ? item : valueOf(callback, item, key));
+      keys.push(key);
+    });
+    // `$items->unique(null, $strict)` answers the FIRST item of every
+    // equivalence class, in order.
+    const head = new Collection(values, keys).unique(null, strict).items.slice();
+    const outValues = [];
+    const outKeys = [];
+    values.forEach((value, index) => {
+      if (head.length && (strict ? value === head[0] : phpLooseEquals(value, head[0]))) head.shift();
+      else {
+        outValues.push(value);
+        outKeys.push(keys[index]);
       }
     });
-    return new Collection(values, keys);
+    return new Collection(outValues, outKeys);
   }
 
   /**
@@ -1930,11 +2145,49 @@ export class Collection {
   combine(values) {
     const list = toList(values);
     if (list.length !== this.items.length) {
-      throw new Error(
+      const err = new Error(
         'array_combine(): Argument #1 ($keys) and argument #2 ($values) must have the same number of elements'
       );
+      // PHP 8 raises a ValueError here, not a bare Error.
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
     }
-    return new Collection(list, this.items.map(arrayKey));
+    // PHP converts each KEY with the string cast FIRST (`array_combine()`
+    // stringifies the key zval), so the coercion differs from every other
+    // keyed method: `true` -> "1" (integer key 1), `false`/`null` -> "" (BOTH
+    // the empty-string key, so the LATER value WINS and the result is SHORTER
+    // than the input: a probe, `array_combine([true, false, null], ['a','b','c'])`
+    // is `[1 => 'a', '' => 'c']`, count 2), `2.5` -> "2.5" and `-0.0` -> "-0"
+    // (string keys - the integer-like normalization does not fire), `1.0` -> 1.
+    // An array key answers PHP's "Array" (its warning) and an object key fails
+    // loud (`Error: Object of class stdClass could not be converted to string`)
+    // - `phpStringCast()`/`arrayKey()` carry both rules.
+    const ordered = new Map();
+    for (let i = 0; i < this.items.length; i += 1) {
+      const raw = this.items[i];
+      let key;
+      if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+        // A tagged stdClass (`__lwObject`, the marker rt.objectCast()/
+        // json_decode(assoc=false) set) has no `__toString`, so PHP's string
+        // cast THROWS: `array_combine([new stdClass], ['v'])` is
+        // `Error: Object of class stdClass could not be converted to string`.
+        // An untagged plain object IS a PHP array here (the same rule
+        // `kernel/php-json.mjs` uses to tell the two apart), and an array key
+        // answers the literal `Array` (PHP warns and keeps going).
+        if (raw.__lwObject === true) {
+          throw new Error(
+            'Object of class ' + phpDebugType(raw) + ' could not be converted to string'
+          );
+        }
+        key = 'Array';
+      } else {
+        key = arrayKey(phpStringCast(raw));
+      }
+      ordered.set(String(key), { key, value: list[i] });
+    }
+    const entries = [...ordered.values()];
+    return new Collection(entries.map((entry) => entry.value), entries.map((entry) => entry.key));
   }
 
   /**
@@ -2014,12 +2267,12 @@ export class Collection {
     if (indexKey !== null) {
       const keys = [];
       const values = this.items.map((item) => {
-        keys.push(readProp(item, indexKey));
-        return readProp(item, key);
+        keys.push(valueForKey(item, indexKey));
+        return valueForKey(item, key);
       });
       return new Collection(values, keys);
     }
-    return new Collection(this.items.map((item) => readProp(item, key)));
+    return new Collection(this.items.map((item) => valueForKey(item, key)));
   }
 
   /**
@@ -2129,20 +2382,32 @@ export class Collection {
     return count ? total / count : null;
   }
 
+  /**
+   * `max($callback = null)` (EnumeratesValues::max(), :505-516):
+   * `map($callback)->reject(fn ($v) => is_null($v))->reduce(fn ($r, $v) => is_null($r) || $v > $r ? $v : $r)`.
+   * Two details the naive `phpCompare()` loop got wrong: NULLS are REMOVED
+   * first (so `max(['a', null, 'b'])` is 'b', and an all-null set answers null,
+   * where the old loop could re-seed on a null in the middle), and the
+   * comparison is PHP's `>` - an ARRAY outranks any scalar (`max([2, [1]])` is
+   * the array, probed on 8.3).
+   */
   max(callback = null) {
-    if (this.items.length === 0) return null;
-    const values = typeof callback === 'function'
-      ? this.items.map((item, key) => callback(item, key))
-      : this.items;
-    return values.reduce((best, item) => (best === null || phpCompare(item, best) > 0 ? item : best), null);
+    const values = this.items
+      .map((item, key) => valueOf(callback, item, key))
+      .filter((v) => v !== null && v !== undefined);
+    let best = null;
+    for (const value of values) if (best === null || phpGt(value, best)) best = value;
+    return best;
   }
 
+  /** `min($callback = null)` (EnumeratesValues::min(), :496-503): the `<` mirror. */
   min(callback = null) {
-    if (this.items.length === 0) return null;
-    const values = typeof callback === 'function'
-      ? this.items.map((item, key) => callback(item, key))
-      : this.items;
-    return values.reduce((best, item) => (best === null || phpCompare(item, best) < 0 ? item : best), null);
+    const values = this.items
+      .map((item, key) => valueOf(callback, item, key))
+      .filter((v) => v !== null && v !== undefined);
+    let best = null;
+    for (const value of values) if (best === null || phpLt(value, best)) best = value;
+    return best;
   }
 
   /**
@@ -2155,7 +2420,9 @@ export class Collection {
   countBy(callback = null) {
     const counts = new Map();
     this.items.forEach((item, index) => {
-      const k = arrayKey(valueOf(callback, item, keyAt(this, index)));
+      const raw = valueOf(callback, item, keyAt(this, index));
+      assertKeyable(raw, 'Cannot access offset of type %s in isset or empty');
+      const k = arrayKey(raw);
       const id = String(k);
       if (!counts.has(id)) counts.set(id, { key: k, count: 0 });
       counts.get(id).count++;
@@ -2178,7 +2445,11 @@ export class Collection {
     const sorted = values.slice().sort(phpSortCompare);
     const middle = Math.floor(sorted.length / 2);
     if (sorted.length % 2) return sorted[middle];
-    return (Number(sorted[middle - 1]) + Number(sorted[middle])) / 2;
+    // `newInstance([$a, $b])->average()`: the pair goes through PHP's `+`, so a
+    // non-numeric middle pair raises the TypeError `int + string` PHP raises
+    // (probed: `median(['a','b'])` is a 500, not a NaN answer).
+    const pair = new Collection([sorted[middle - 1], sorted[middle]]);
+    return pair.sum() / pair.count();
   }
 
   /**
@@ -2194,6 +2465,8 @@ export class Collection {
     if (values.length === 0) return null;
     const counts = new Map();
     for (const value of values) {
+      // `$counts[$value]` - an array/object item is the same TypeError PHP raises.
+      assertKeyable(value, 'Cannot access offset of type array in isset or empty');
       const k = arrayKey(value);
       const id = String(k);
       if (!counts.has(id)) counts.set(id, { key: k, count: 0 });
@@ -2225,7 +2498,16 @@ export class Collection {
     // is one spec.
     // `useAsCallable($v)` is false for an array (PHP), so a bare array is a
     // LIST OF SPECS, not a callback.
-    const specs = Array.isArray(callback) ? callback.slice() : [callback];
+    //
+    // BUT a CALLBACK that ANSWERS an array groups by EACH element of it
+    // (Collection.php:544-548: `$groupKeys = $groupBy($value, $key); if
+    // (! is_array($groupKeys)) $groupKeys = [$groupKeys];` then a `foreach`).
+    // `groupBy(fn ($v) => $v)` over rows therefore answers one group per
+    // COLUMN VALUE (a probe: `[[3, 'a'], ['3', 'b'], [1, 'a']]` answers the
+    // groups 3, 'a', '3', 'b', 1 - the edge used to reject the row itself as an
+    // array key, with a TypeError PHP never raises here).
+    const callbackIsCallable = typeof callback === 'function';
+    const specs = Array.isArray(callback) && !callbackIsCallable ? callback.slice() : [callback];
     const primary = specs.shift();
     const order = [];
     const groups = new Map();
@@ -2234,8 +2516,14 @@ export class Collection {
       // unless `$preserveKeys` asks for them.
       const sourceKey = arrayKey(keyAt(this, key));
       const groupKeysRaw = valueOf(primary, item, key);
-      const groupKeys = Array.isArray(groupKeysRaw) ? groupKeysRaw : [groupKeysRaw];
+      // Only a CALLBACK's array answer is the multi-key list (`useAsCallable`):
+      // a plain array SPEC was already shifted off above.
+      const groupKeys =
+        callbackIsCallable && isArrayLike(groupKeysRaw) ? entriesOf(groupKeysRaw).map((e) => e.value) : [groupKeysRaw];
       for (const raw of groupKeys) {
+        // `$results[$groupKeys]` -> `array_key_exists()` (probed: the TypeError
+        // below for an array- or object-valued group).
+        assertKeyable(raw, 'array_key_exists(): Argument #1 ($key) must be a valid array offset type');
         const groupKey = arrayKey(raw);
         const id = String(groupKey);
         if (!groups.has(id)) {
@@ -2265,7 +2553,11 @@ export class Collection {
     const order = [];
     const byKey = new Map();
     this.items.forEach((item, key) => {
-      const groupKey = arrayKey(valueOf(callback, item, key));
+      // `$results[$resolvedKey] = $item` (probed: "Cannot access offset of type
+      // array on array").
+      const raw = valueOf(callback, item, key);
+      assertKeyable(raw, 'Cannot access offset of type %s on array');
+      const groupKey = arrayKey(raw);
       const id = String(groupKey);
       if (!byKey.has(id)) order.push(groupKey);
       byKey.set(id, item);
@@ -2276,7 +2568,10 @@ export class Collection {
   /**
    * `unique($key = null, $strict = false)` (Collection::unique(),
    * :1859-1876). With no key and `$strict === false` it is
-   * `array_unique($items, SORT_REGULAR)` - PHP's `==`, where two objects are
+   * `array_unique($items, SORT_REGULAR)` - PHP's SORT_REGULAR comparison, i.e.
+   * the SAME pairwise `==` rule `duplicates()` uses (probed: `[0, '0', '',
+   * null, false]` keeps `[0 => 0, 2 => '']`, and an array item matches a
+   * scalar falsy one) - where two objects are
    * equal when their CLASS and properties match. The edge compared
    * `phpStr($value)`, which answered 'Object' for EVERY object, so
    * `$posts->unique()` collapsed a whole collection of DIFFERENT rows into one
@@ -2289,6 +2584,10 @@ export class Collection {
     const values = [];
     const keys = [];
     const seen = [];
+    // (see `duplicates()` below: the same `$items->unique(null, $strict)` walk)
+    // `array_unique` walks the array once comparing each item with the ones
+    // already seen, and `phpLooseEquals` is that `==` (arrays included) - the
+    // old comparator missed the array-vs-falsy rule and collapsed nothing there.
     const isDuplicate = strict
       ? (value) => seen.some((entry) => entry === value)
       : (value) => seen.some((entry) => phpLooseEquals(value, entry));
@@ -2317,18 +2616,35 @@ export class Collection {
    * depth rung for it.
    */
   flatten(depth = Infinity) {
+    // `Arr::flatten()` (Arr.php, `flatten()`/`flatten_depth()`): an item is
+    // read through `is_array()` and a Collection through `$item->all()`, then
+    // `$depth === 1` appends `array_values($item)` (the VALUES in key order)
+    // and a deeper run recurses. A PHP array is a JS array OR a keyed plain
+    // object here (a request body decoded with `json_decode($body, true)`, an
+    // `rt.assoc()` literal, an `(array)` cast), so the predicate cannot be
+    // `Array.isArray()` alone: `flatten()` used the raw array check and left
+    // every keyed PHP array whole inside the answer.
     const out = [];
     const walk = (value, remaining) => {
       const item = value instanceof Collection ? value.items.slice() : value;
-      if (!Array.isArray(item)) {
+      if (Array.isArray(item)) {
+        if (remaining === 1) {
+          item.forEach((entry) => out.push(entry));
+          return;
+        }
+        item.forEach((entry) => walk(entry, remaining - 1));
+        return;
+      }
+      if (!isArrayLike(item)) {
         out.push(item);
         return;
       }
+      const entries = entriesOf(item);
       if (remaining === 1) {
-        item.forEach((entry) => out.push(entry));
+        entries.forEach((entry) => out.push(entry.value));
         return;
       }
-      item.forEach((entry) => walk(entry, remaining - 1));
+      entries.forEach((entry) => walk(entry.value, remaining - 1));
     };
     this.items.forEach((item) => walk(item, depth));
     return new Collection(out);
@@ -2594,7 +2910,28 @@ export class Collection {
    * the item's elements spread, with the item's KEY appended.
    */
   mapSpread(callback) {
-    return this.map((item, key) => callback(...toList(item), key));
+    // `$chunk[] = $key;` (EnumeratesValues::mapSpread(), :430-437) needs an
+    // ARRAY item: a scalar raises PHP's own Error (probed: "Cannot use a scalar
+    // value as an array" for an int/bool/null, "[] operator not supported for
+    // strings" for a string, "Cannot use object of type stdClass as array" for
+    // an object). The kernel spread the item silently.
+    return this.map((item, key) => {
+      const arrayish = Array.isArray(item) || item instanceof Collection;
+      if (!arrayish) {
+        let message;
+        if (typeof item === 'string') message = '[] operator not supported for strings';
+        else if (item !== null && item !== undefined && typeof item === 'object') {
+          message = 'Cannot use object of type ' + phpDebugType(item) + ' as array';
+        } else {
+          message = 'Cannot use a scalar value as an array';
+        }
+        const err = new Error(message);
+        err.name = 'Error';
+        err.phpClass = 'Error';
+        throw err;
+      }
+      return callback(...toList(item), key);
+    });
   }
 
   /**
@@ -2788,7 +3125,12 @@ export class Collection {
 
   /** `Collection::fromJson($json, $depth = 512, $flags = 0)` (:193-196). */
   static fromJson(json) {
-    return new Collection(JSON.parse(json));
+    // `json_decode($json, true)`: PHP's key ORDER (`__lwOrder`) and its integer
+    // rule (LW006 for an int the edge cannot hold - never a silently rounded
+    // number). TEXT mode keeps this kernel's JS text values, and an invalid
+    // document answers NULL - PHP's own answer, which `new Collection(null)`
+    // reads as the empty collection.
+    return new Collection(phpJsonDecodeOrdered(json, { text: true }));
   }
 
   /**

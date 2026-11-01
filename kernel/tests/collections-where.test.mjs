@@ -21,6 +21,20 @@ import { phpJsonEncode } from '../php-json.mjs';
 
 const C = Collection;
 const make = (v) => new C(v);
+/**
+ * A PHP-order associative array. A JS object LITERAL reorders integer-like keys
+ * (JS lists `'0'`, `'1'` before `'k'`), so a literal cannot express PHP's
+ * insertion order (`['k' => 'z', 0 => 'y', 1 => 'w']`); carry it in the
+ * non-enumerable `__lwOrder` the encoder honours - the same marker
+ * `Collection::all()` attaches itself. The expectations below are PHP's OWN
+ * recorded bytes, not what a literal happens to enumerate.
+ */
+const assoc = (...entries) => {
+  const out = {};
+  for (const [k, v] of entries) out[k] = v;
+  Object.defineProperty(out, '__lwOrder', { value: entries.map(([k]) => String(k)), enumerable: false });
+  return out;
+};
 class Other { constructor() { this.z = 1; } }
 const a = { n: 1 };
 const b = { n: 2 };
@@ -175,11 +189,7 @@ const EXPECTED_WHERE = {
   },
   "merge_mixed": {
     "ok": true,
-    "value": {
-      "k": "z",
-      "0": "y",
-      "1": "w"
-    }
+    "value": assoc(['k', 'z'], ['0', 'y'], ['1', 'w'])
   },
   "sum_leading_numeric": {
     "ok": true,
@@ -210,10 +220,7 @@ const EXPECTED_WHERE = {
   },
   "concat_keyed": {
     "ok": true,
-    "value": {
-      "a": 1,
-      "0": 2
-    }
+    "value": assoc(['a', 1], ['0', 2])
   },
   "transform_keyed": {
     "ok": true,
@@ -324,7 +331,9 @@ const WHERE_CASES = {
   flatten_full: () => make([1, [2, [3]]]).flatten().all(),
   merge_string_keys: () => make({ a: 1 }).merge({ a: 2, b: 3 }).all(),
   merge_numeric_keys: () => make({ 5: 'x' }).merge({ 9: 'y' }).all(),
-  merge_mixed: () => make({ k: 'x', 4: 'y' }).merge({ k: 'z', 4: 'w' }).all(),
+  // Keys given explicitly: a JS literal `{ k: 'x', 4: 'y' }` enumerates `4`
+  // before `k`, so it cannot express PHP's `['k' => 'x', 4 => 'y']` order.
+  merge_mixed: () => new C(['x', 'y'], ['k', 4]).merge(new C(['z', 'w'], ['k', 4])).all(),
   sum_leading_numeric: () => make(['5']).sum(),
   sum_string_numeric: () => make(['1', '2']).sum(),
   sum_non_numeric: () => make(['5a']).sum(),

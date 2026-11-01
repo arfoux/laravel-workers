@@ -11,6 +11,17 @@
 // lives once.
 import { ownSet, ownGet, ownHas, newOrderedBag, orderedKeys, orderedSet } from './own-key.mjs';
 
+// One decoder for the whole isolate: `decode()` on a fresh (non-streaming) call
+// is stateless, and a `%XX` run appears once per query/body, so allocating a
+// TextDecoder per run would be pure churn.
+//
+// `fatal: false` never throws for byte input, so there is no fallback branch -
+// an invalid sequence becomes U+FFFD. PHP's urldecode() is byte-wise and keeps
+// the raw byte (`urldecode('a%FFb')` = 61 ff 62); a JS string cannot hold it, so
+// the replacement character is the documented byte-vs-UTF-16 limit
+// (COMPILED.md §6), not a second bug.
+const UTF8_REPLACE = new TextDecoder('utf-8', { fatal: false });
+
 /** urldecode() with `+` → space and %XX bytes decoded as UTF-8. */
 function urldecodePlus(input) {
   const s = String(input ?? '').replace(/\+/g, ' ');
@@ -23,11 +34,7 @@ function urldecodePlus(input) {
         i += 3;
       }
       i--;
-      try {
-        out += new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
-      } catch {
-        out += '?';
-      }
+      out += UTF8_REPLACE.decode(new Uint8Array(bytes));
     } else {
       out += s[i];
     }
