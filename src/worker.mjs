@@ -10,6 +10,7 @@ import { createDatabaseCache } from '../kernel/cache.mjs';
 import { createMailer } from '../kernel/mail.mjs';
 import { createStorage } from '../kernel/storage.mjs';
 import { createQueue } from '../kernel/queue.mjs';
+import { timingSafeEqual } from '../kernel/encrypter.mjs';
 import { dueEvents } from '../kernel/scheduler.mjs';
 import { routeTable, handlers, builtAt } from './routes.generated.mjs';
 import { events as scheduleEvents } from './schedule.generated.mjs';
@@ -83,7 +84,12 @@ function toResponse(res, method) {
 // due event is queued for the app runtime that still exists (the edge triggers,
 // it does not run artisan).
 async function runSchedule(env, now = new Date()) {
-  const due = dueEvents(scheduleEvents, now);
+  // Laravel copies `config('app.timezone')` onto EVERY scheduled event, so an
+  // event the dump left without a timezone still means wall-clock in that zone.
+  // Falling back to UTC here (the old behaviour) made an app whose schedule has
+  // no explicit timezone fire at the WRONG local time - and with the UTC trigger
+  // conversion in the build, never at all.
+  const due = dueEvents(scheduleEvents, now, config['app.timezone'] || undefined);
   if (due.length === 0) return { due: [], queued: [] };
   const queue = makeQueue(env);
   const queued = [];
@@ -108,17 +114,16 @@ function jobHandlers() {
   const out = {};
   for (const [fqcn, entry] of Object.entries(LW_CLASSES || {})) {
     if (!entry || !entry.methods || typeof entry.methods.handle !== 'function') continue;
-    out[fqcn] = {
-      build: async (rt, args) => {
-        const instance = entry.ctor ? await entry.ctor(args, {}) : {};
-        // The compiled methods live beside the ctor: bind them to the instance
-        // so `$this->...` inside handle() reaches the constructor's properties.
-        for (const [name, fn] of Object.entries(entry.methods || {})) {
-          instance[name] = fn.bind(instance);
-        }
-        return instance;
-      },
-    };
+    // The instance is built through `rt.newClass()` - the SAME path a compiled
+    // `new OrderJob()` takes: the constructor's injected services are resolved
+    // (an adapter the worker hands down, or another compiled class), the
+    // kernel base is attached (`base`), and the compiled methods are bound to
+    // the instance so `$this->...` inside handle() reaches the constructor's
+    // properties. Hand-rolling the ctor here passed an EMPTY dependency map and
+    // an undefined `$this` target - a job whose constructor injects a service
+    // (or whose handle() touches $this) died at drain time, and the row was
+    // dropped after 3 attempts (the work silently never happened).
+    out[fqcn] = { build: async (rt, args) => rt.newClass(fqcn, args) };
   }
   return out;
 }
@@ -128,7 +133,26 @@ async function drainQueue(env, limit = 10) {
   if (!db) return { ran: 0, failed: 0 };
   const handlersByJob = jobHandlers();
   if (!Object.keys(handlersByJob).length) return { ran: 0, failed: 0 };
-  const rt = buildRt(null, { strict: false, runtime: true, db, models, config });
+  // The drain runs OUTSIDE a request, so there is no request/session to hand
+  // down - but the compiled classes (the job's own dependencies) and the
+  // service adapters are the same ones a request gets. Without them
+  // `rt.newClass()` cannot resolve a job's injected service and a
+  // `Mail::`/`Log::`/`dispatch()` inside handle() fails.
+  const rt = buildRt(null, {
+    strict: false,
+    runtime: true,
+    db,
+    models,
+    classes: LW_CLASSES,
+    http: {
+      config,
+      cache: makeCache(env),
+      storage: makeStorage(env),
+      log: makeLogger(),
+      mail: makeMail(env),
+      queue: makeQueue(env),
+    },
+  });
   return rt.queueDrain(db, handlersByJob, limit);
 }
 
@@ -137,8 +161,17 @@ export default {
     const url = new URL(request.url);
 
     // The cron trigger also has an HTTP face (`POST /__lw/cron`), so an app
-    // (or a wrangler dev session) can fire the schedule by hand.
+    // (or a wrangler dev session) can fire the schedule by hand. A Worker URL
+    // is reachable by anyone, so this face stays CLOSED unless `LW_CRON_SECRET`
+    // is set: the caller must then present the same value in `X-LW-Cron`.
+    // Without the secret the path answers 404, so the endpoint is
+    // indistinguishable from a non-existent route (no unauthenticated trigger).
     if (url.pathname === '/__lw/cron' && request.method === 'POST') {
+      const secret = env && env.LW_CRON_SECRET;
+      const provided = request.headers.get('x-lw-cron') || '';
+      if (!secret || !timingSafeEqual(provided, secret)) {
+        return new Response('Not Found', { status: 404 });
+      }
       const out = await runSchedule(env, new Date());
       return Response.json({ ok: true, ...out });
     }
@@ -198,8 +231,23 @@ export default {
 
   // The Cloudflare Cron Trigger entry point (`scheduled`): the schedule fires
   // AND the queued jobs are drained (the only consumer a Worker has).
-  async scheduled(env, ctx) {
-    const out = await runSchedule(env, new Date());
+  //
+  // The runtime calls `scheduled(controller, env, ctx)` - the CONTROLLER is the
+  // first argument (it carries `cron`, `type` and `scheduledTime`), exactly as
+  // `fetch(request, env, ctx)` puts the request first. Declaring `(env, ctx)`
+  // therefore bound the CONTROLLER to `env`: every `env.DB` / `env.QUEUE` read
+  // answered undefined, so the queue drain silently did nothing (`{ran: 0}`)
+  // and the schedule push fell back to the in-memory queue. Probed against the
+  // runtime contract: with `(controller, env, ctx)` the real env is read; with
+  // `(env, ctx)` it is read ZERO times.
+  async scheduled(controller, env, ctx) {
+    // `controller.scheduledTime` is the instant the trigger was scheduled for in
+    // ms since the epoch; the due test must use it (the trigger can arrive late,
+    // and `new Date()` would test the arrival moment instead).
+    const when = new Date(
+      controller && typeof controller.scheduledTime === 'number' ? controller.scheduledTime : Date.now()
+    );
+    const out = await runSchedule(env, when);
     const jobs = await drainQueue(env);
     return { ok: true, ...out, jobs };
   },
