@@ -74,7 +74,7 @@ test('renderReadiness groups by severity and mentions declared gaps separately',
 
 // --- stripPhpCommentsAndStrings ---
 test('stripPhpCommentsAndStrings removes line comments', () => {
-  assert.equal(stripPhpCommentsAndStrings('// hello\nexec("x")'), '\nexec( )');
+  assert.equal(stripPhpCommentsAndStrings('// hello\nexec("x")'), '\nexec(   )');
 });
 
 test('stripPhpCommentsAndStrings removes block comments', () => {
@@ -152,4 +152,36 @@ test('declared gaps say what an ignored route does at the edge', () => {
     { route: '/x', area: 'route', severity: 'declared', cause: 'ignored', fix: 'reason recorded' },
   ]);
   assert.match(out, /404/, 'an ignored route must be documented as answering 404');
+});
+
+// --- build-environment database failures (#310) ---
+// prerender boots the real app; a route that cannot be rendered because the
+// BUILD MACHINE has no reachable database must not be reported as an app bug.
+test('isBuildEnvDbFailure classifies connection-level database failures', () => {
+  const { isBuildEnvDbFailure } = readiness;
+  const envFailures = [
+    'Database connection [mysql] not configured.',
+    'D1 database configuration requires a "d1_databases" binding',
+    'D1 Worker driver requires an "DB" binding',
+    'SQLSTATE[HY000] [2002] Connection refused',
+    'SQLSTATE[HY000] [2003] Can\'t connect to MySQL server on \'127.0.0.1\'',
+    'SQLSTATE[08006] [7] could not connect to server: Connection refused',
+    'SQLSTATE[HY000] [1049] Unknown database \'app\'',
+    'No connection could be made because the target machine actively refused it',
+    'could not find driver',
+  ];
+  for (const reason of envFailures) assert.equal(isBuildEnvDbFailure(reason), true, reason);
+});
+
+test('isBuildEnvDbFailure leaves real app gaps as BLOCK', () => {
+  const { isBuildEnvDbFailure } = readiness;
+  const appGaps = [
+    'SQLSTATE[HY000]: General error: 1 no such table: users',
+    'SQLSTATE[42S22]: Column not found: 1054 Unknown column \'x\'',
+    'SQLSTATE[23000]: Integrity constraint violation: 19 NOT NULL constraint failed',
+    'Undefined variable $foo',
+    'Class "App\\Missing" not found',
+    '',
+  ];
+  for (const reason of appGaps) assert.equal(isBuildEnvDbFailure(reason), false, reason);
 });

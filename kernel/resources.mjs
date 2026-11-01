@@ -126,9 +126,17 @@ function hasKey(data, key) {
 function phpEmpty(value) {
   if (value === null || value === undefined) return true;
   if (value === false || value === 0 || value === '') return true;
+  if (value === '0') return true; // #408: PHP's empty('0') is true
   if (Array.isArray(value)) return value.length === 0;
   if (typeof value === 'object') return Object.keys(value).length === 0;
   return false;
+}
+
+// `JsonResource::$forceWrapping` (JsonResource.php:59) — when set, the resource
+// is always wrapped even if its data already carries the wrapper key.
+function forceWrappingOf(resource) {
+  const ctor = resource && resource.constructor;
+  return !!(ctor && ctor.forceWrapping);
 }
 
 // The `data` wrapper of the resource's class. PHP's static property is SHARED
@@ -826,8 +834,9 @@ function wrapPayload(resource, data, withKeys, additional) {
   let payload = data;
   const hasWrapperKey = wrapper !== null && hasKey(data, wrapper);
   // `ResourceResponse::haveDefaultWrapperAndDataIsUnwrapped()`
-  // (ResourceResponse.php:79-89).
-  const defaultWrapper = wrapper !== null && !hasWrapperKey;
+  // (ResourceResponse.php:79-89): with `$forceWrapping` the wrapper is applied
+  // whenever there IS a wrapper, even if the data already carries the key.
+  const defaultWrapper = wrapper !== null && (forceWrappingOf(resource) || !hasWrapperKey);
   // `ResourceResponse::haveAdditionalInformationAndDataIsUnwrapped()`
   // (ResourceResponse.php:95-103).
   const extraInformation =

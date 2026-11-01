@@ -408,7 +408,10 @@ export function buildRequest(raw, options = {}) {
         const decoded = phpJsonDecode(body);
         json = decoded;
         if (isPlainObject(decoded)) post = decoded;
-      } catch {
+      } catch (e) {
+        // LW006 (an integer the edge cannot hold exactly) is loud: never
+        // swallow it into a silent `null` body.
+        if (e && e.code === 'LW006') throw e;
         json = null;
       }
     } else if (contentTypeFormat === '' || contentTypeFormat === 'application/x-www-form-urlencoded') {

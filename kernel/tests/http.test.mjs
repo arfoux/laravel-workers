@@ -822,6 +822,37 @@ async function callMethod(method, uri, mutate) {
   );
 }
 
+test('fail loud: a JSON body with a lossy 64-bit integer stops loudly (LW006)', async () => {
+  const { db } = makeDb();
+  const config = baseConfig();
+  // PHP holds 9223372036854775807 exactly; a JS number rounds it to
+  // 9223372036854776000. The decode error used to be swallowed into `json =
+  // null`, so `$request->json('id')` answered null - silently wrong.
+  await assert.rejects(
+    handleHttp(
+      {
+        method: 'POST',
+        url: BASE + '/__probe/state',
+        headers: { host: 'localhost', 'content-type': 'application/json' },
+        body: '{"id":9223372036854775807}',
+      },
+      {
+        table: normalizeTable(ROUTES),
+        handlers,
+        config,
+        env: { DB: db },
+        db,
+        models: { LWOracleUser },
+        clock: () => FREEZE_S,
+        randomString: (n) => 'A'.repeat(n),
+        strRandom: (n) => 'A'.repeat(n),
+        clientIp: CLIENT_IP,
+      }
+    ),
+    (e) => e.code === 'LW006'
+  );
+});
+
 test('router: an OPTIONS request gets the automatic OPTIONS response', async () => {
   const res = await callMethod('OPTIONS', '/__probe/state', (o) => {
     o.table = normalizeTable([
@@ -1292,4 +1323,24 @@ test('the app validation messages merge with the fallback locale RECURSIVELY', (
   assert.deepEqual(fr, { required: 'Requis.', max: 'Trop long.' });
   // No dumped translations at all: no defaults (the runtime's own table wins).
   assert.equal(validationMessagesOf({ translations: {} }), null);
+});
+
+// A-series #67 / COMPILED.md §6: PHP's `urldecode()` is byte-wise, so `%FF` is
+// the raw byte 0xFF and `urldecode('a%FFb')` is `61 ff 62` (probed on PHP 8.3).
+// A JS string cannot hold a non-UTF-8 byte, so the compiled rung answers the
+// replacement character instead. This test pins the gap at exactly that width:
+// valid-UTF-8 input stays byte-identical, a non-UTF-8 byte stays U+FFFD (one per
+// undecodable byte, never silently dropped or turned into '?'). The case cannot
+// ride the parse_str oracle above because PHP cannot carry the byte through
+// json_encode.
+test('a non-UTF-8 %XX byte is the documented U+FFFD gap (COMPILED §6)', () => {
+  const value = (query) => JSON.parse(JSON.stringify(parsePhpQuery(query))).a;
+  assert.equal(value('a=%FF'), '\uFFFD');
+  assert.equal(value('a=%FF%FE'), '\uFFFD\uFFFD');
+  // The byte-identical half: a valid UTF-8 sequence decodes to the same text.
+  assert.equal(value('a=%C3%A9'), 'é');
+  assert.equal(value('a=%F0%9F%98%80'), '😀');
+  // A lone/aborted `%` is literal in PHP too (urldecode keeps it).
+  assert.equal(value('a=%'), '%');
+  assert.equal(value('a=%4'), '%4');
 });

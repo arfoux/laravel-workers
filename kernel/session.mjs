@@ -362,7 +362,9 @@ export class PhpSessionStore {
       let decoded;
       if (this.serialization === 'json') {
         try {
-          decoded = phpJsonDecode(String(data));
+          // The payload is ours (`phpJsonEncode` wrote it): a 64-bit int the
+          // kernel holds as a BigInt round-trips exactly, never as LW006.
+          decoded = phpJsonDecode(String(data), { bigint: true });
         } catch {
           decoded = null;
         }
@@ -771,11 +773,11 @@ export class CookieSessionHandler {
     const value = raw === '' || raw === '0' || raw === null || raw === undefined ? '' : raw;
     let decoded = null;
     if (value !== '') {
-      try {
-        decoded = JSON.parse(value);
-      } catch {
-        decoded = null;
-      }
+      // Laravel's CookieSessionHandler does `json_decode($value, true)`: the
+      // document's key order survives and the payload is OUR round-trip (the
+      // app's session data through the cookie), so an exact 64-bit int comes
+      // back exactly, never as LW006 and never rounded.
+      decoded = phpJsonDecode(value, { bigint: true });
     }
     if (
       decoded !== null &&

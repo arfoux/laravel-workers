@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cacheBase, vendorLiteDir, classNames } from '../../tools/vendor-lite.mjs';
+import { cacheBase, vendorLiteDir, classNames, ensureVendorLite, hashFor, installedJsonOf } from '../../tools/vendor-lite.mjs';
 
 // The cache path is derived, not configured: these tests pin the CONTRACT
 // (a stable directory per hash) without running composer.
@@ -103,5 +103,68 @@ if (!class_exists('SortDirection', false)) {
     assert.deepEqual(classNames(file), ['SortDirection']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- installed.json: Laravel's package auto-discovery metadata (#308) ---
+// `PackageManifest` reads `<vendor>/composer/installed.json`; without it every
+// package's `extra.laravel.providers`/`aliases` in the vendor-lite cache is
+// invisible and the build boots a different application (the #303/#315 class).
+test('installedJsonOf mirrors the composer manifest shape Laravel reads', () => {
+  const doc = installedJsonOf([
+    { name: 'spatie/laravel-settings', version: '3.4.0', type: 'library', extra: { laravel: { providers: ['Spatie\\LaravelSettings\\LaravelSettingsServiceProvider'] } } },
+    { name: 'psr/log', version: '3.0.2' },
+  ]);
+  assert.equal(doc.dev, false);
+  assert.deepEqual(doc['dev-package-names'], []);
+  assert.deepEqual(doc.packages[0], {
+    name: 'spatie/laravel-settings',
+    version: '3.4.0',
+    type: 'library',
+    extra: { laravel: { providers: ['Spatie\\LaravelSettings\\LaravelSettingsServiceProvider'] } },
+  });
+  // no `extra` in the lock entry -> `{}`, never `undefined` (PackageManifest
+  // reads it as an array)
+  assert.deepEqual(doc.packages[1], { name: 'psr/log', version: '3.0.2', type: 'library', extra: {} });
+});
+
+test('a cache hit that predates installed.json is healed instead of served empty', async () => {
+  const appDir = mkdtempSync(join(tmpdir(), 'lw-app-'));
+  const cacheRoot = mkdtempSync(join(tmpdir(), 'lw-cache-'));
+  const lock = {
+    packages: [
+      {
+        name: 'vendor/pkg',
+        version: '1.0.0',
+        type: 'library',
+        dist: { url: 'https://example.invalid/pkg.zip', type: 'zip' },
+        extra: { laravel: { providers: ['Vendor\\Pkg\\Provider'] } },
+      },
+    ],
+    'packages-dev': [],
+  };
+  writeFileSync(join(appDir, 'composer.lock'), JSON.stringify(lock));
+  const prev = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cacheRoot;
+  try {
+    const dir = vendorLiteDir(hashFor(appDir));
+    // the pre-fix entry as it was left on disk: autoload + the copied lock, no
+    // composer metadata at all
+    mkdirSync(join(dir, 'vendor'), { recursive: true });
+    writeFileSync(join(dir, 'vendor', 'autoload.php'), '<?php // provisioned before installed.json existed\n');
+    writeFileSync(join(dir, 'composer.lock'), JSON.stringify(lock));
+
+    const res = await ensureVendorLite(appDir, { silent: true });
+    assert.equal(res.hit, true, 'the entry is reused, not re-provisioned (no download attempted)');
+    assert.equal(res.dir, dir);
+    const doc = JSON.parse(readFileSync(join(dir, 'vendor', 'composer', 'installed.json'), 'utf8'));
+    assert.deepEqual(doc.packages.map((p) => p.name), ['vendor/pkg'], 'the manifest must list the locked package');
+    assert.deepEqual(doc.packages[0].extra.laravel.providers, ['Vendor\\Pkg\\Provider'], 'providers must survive the heal');
+    assert.equal(readFileSync(join(dir, 'vendor', 'autoload.php'), 'utf8'), '<?php // provisioned before installed.json existed\n', 'the heal must not touch the existing autoloader');
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prev;
+    rmSync(appDir, { recursive: true, force: true });
+    rmSync(cacheRoot, { recursive: true, force: true });
   }
 });

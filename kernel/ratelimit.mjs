@@ -49,6 +49,10 @@
 
 import { sha1Hex, md5Hex } from './digest.mjs';
 import { HTML_ENTITIES } from './html-entities.mjs';
+// PHP's `==` over the values a limiter key can take (the canon in
+// kernel/php-loose-eq.mjs; the vendor compares `$limit->key` with `==` in
+// `Collection::duplicates()` / `firstWhere()`).
+import { phpLooseEquals } from './php-loose-eq.mjs';
 
 export class RateLimitError extends Error {
   constructor(message) {
@@ -65,6 +69,7 @@ const PHP_NUMERIC_RE = /^[ \t\n\r\v\f]*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\
 const PHP_INT_PREFIX_RE = /^[ \t\n\r\v\f]*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/;
 
 /** PHP is_numeric() (PHP 8 rules: leading/trailing whitespace allowed). */
+
 export function phpIsNumeric(value) {
   if (typeof value === 'number') return true;
   if (typeof value === 'string') return PHP_NUMERIC_RE.test(value);
@@ -432,18 +437,6 @@ export class RateLimiter {
   }
 }
 
-/** PHP loose equality for the shapes limiter keys take (int/string/null). */
-function phpLooseEquals(a, b) {
-  if (a === b) return true;
-  if (a === null || b === null || a === undefined || b === undefined) return false;
-  if ((typeof a === 'number' || typeof b === 'number') && phpIsNumeric(a) && phpIsNumeric(b)) {
-    return Number(a) === Number(b);
-  }
-  if (typeof a === 'string' && typeof b === 'string' && phpIsNumeric(a) && phpIsNumeric(b)) {
-    return Number(a) === Number(b);
-  }
-  return false;
-}
 
 // ---------------------------------------------------------------------------
 // Limit / Unlimited (Illuminate\Cache\RateLimiting).
