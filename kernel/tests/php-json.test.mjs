@@ -222,15 +222,29 @@ test('NAN/INF fail loud like PHP json_encode returns false', () => {
 
 test('unsupported values fail loud', () => {
   assert.throws(() => phpJsonEncode(undefined), PhpJsonError);
-  assert.throws(() => phpJsonEncode(10n), PhpJsonError);
   assert.throws(() => phpJsonEncode(new Date(0)), PhpJsonError);
   assert.throws(() => phpJsonEncode({ a: new Set([1]) }), PhpJsonError);
   assert.throws(() => phpJsonEncode('\ud800'), PhpJsonError);
   assert.throws(() => phpJsonEncode('\udc00'), PhpJsonError);
 });
 
-test('documented normalization: integers beyond 2^53 encode as the double', () => {
-  assert.equal(phpJsonEncode(9223372036854775807), '"9.223372036854776e+18"'.slice(1, -1));
+test('int64: exact digits travel as BigInt; a JS number past 2^53 is the rounded double', () => {
+  // PHP 8.3: json_encode(9223372036854775807) === '9223372036854775807'.
+  // A JS number cannot hold that int64 (it rounds to …808) and cannot be told
+  // from the double, so the exact value travels as a BigInt - the same escape
+  // hatch phpJsonDecodeOrdered offers on the way in (BigInt or LW006).
+  assert.equal(phpJsonEncode(10n), '10');
+  assert.equal(phpJsonEncode(9223372036854775807n), '9223372036854775807');
+  assert.equal(phpJsonEncode(-9223372036854775808n), '-9223372036854775808');
+  assert.equal(phpJsonEncode({ id: 9223372036854775807n }), '{"id":9223372036854775807}');
+  // Documented normalization (header): a NUMBER past 2^53 is the double PHP
+  // prints for that double - json_encode(1.0e16) is '10000000000000000' and
+  // the rounded int64 encodes as the double the parity table pins.
+  assert.equal(phpJsonEncode(1.0e16), '10000000000000000');
+  assert.equal(phpJsonEncode(9223372036854775807), '9.223372036854776e+18');
+  // A BigInt outside the int64 range cannot have come from a PHP int.
+  assert.throws(() => phpJsonEncode(2n ** 63n), PhpJsonError);
+  assert.throws(() => phpJsonEncode(-(2n ** 63n) - 1n), PhpJsonError);
 });
 
 test('documented divergence: PHP json_decode loses -0 on decode', () => {

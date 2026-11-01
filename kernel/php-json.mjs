@@ -28,10 +28,19 @@
 //
 // Known normalization (same caveats as kernel/php-serialize.mjs): JS numbers
 // cannot distinguish int from float — invisible here because default
-// json_encode() prints integral doubles exactly like ints ("1.0" → "1") — and
-// lose precision beyond 2^53 (PHP int64 range).
+// json_encode() prints integral doubles exactly like ints ("1.0" → "1").
+//
+// int64. PHP ints are 64-bit; a JS number loses precision past 2^53, so an
+// int64 there must travel as a BigInt (supported below: json_encode prints its
+// exact digits, and a BigInt outside the int64 range fails loud). A JS NUMBER
+// past 2^53 is the double PHP itself would print — `json_encode(1.0e16)` is
+// '10000000000000000' — which is what the parity table pins; if the caller
+// meant an int64, the digits were already lost at the JS number, so decoding
+// and re-encoding an int64 goes through BigInt (kernel/php-json-ordered.mjs
+// answers BigInt or LW006 for exactly that reason).
 
 import { phpFloat } from './php-serialize.mjs';
+import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 
 export class PhpJsonError extends Error {
   constructor(message) {
@@ -171,7 +180,14 @@ function writeValue(value, out, opts) {
     return;
   }
   if (t === 'bigint') {
-    throw new PhpJsonError('bigint is not supported (int64 beyond the JS safe range)');
+    // A BigInt IS a PHP int64: json_encode prints its exact digits. Outside
+    // the int64 range PHP would have held a float, so the value cannot have
+    // come from a PHP int.
+    if (value > 9223372036854775807n || value < -9223372036854775808n) {
+      throw new PhpJsonError('bigint is outside the PHP int64 range');
+    }
+    out.push(String(value));
+    return;
   }
   if (Array.isArray(value)) {
     out.push('[');
@@ -550,12 +566,13 @@ export function phpJsonEncodeWithFlags(value, flags = 0, depth = 512) {
 /**
  * PHP json_decode($text, true) equivalent for the session subset.
  *
- * JSON.parse already produces the matching structures: PHP's empty-object →
- * empty-array normalization is invisible to byte output because our encoder
- * writes empty objects back as [] too. Known divergence: PHP's decoder maps
- * the JSON token -0 back to int 0 (PHP is not round-trip stable there; see
- * kernel/tests/php-json.test.mjs), and numbers beyond 2^53 lose precision.
+ * This is the PHP reader (kernel/php-json-ordered.mjs), not `JSON.parse`: the
+ * document's key ORDER is kept in the non-enumerable `__lwOrder` marker and an
+ * integer outside the JS safe range is LW006 (or the exact BigInt with
+ * `bigint: true`) - never a silently rounded number. TEXT mode keeps the JS
+ * text values this runtime stores. `JSON.parse` also threw a SyntaxError on
+ * every invalid document where PHP answers NULL; the reader answers NULL.
  */
-export function phpJsonDecode(text) {
-  return JSON.parse(text);
+export function phpJsonDecode(text, opts = {}) {
+  return phpJsonDecodeOrdered(text == null ? '' : text, { text: true, ...opts });
 }
