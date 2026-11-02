@@ -780,7 +780,24 @@ async function main() {
           `${(report.coverage * 100).toFixed(0)}% (accounted ${(report.accounted * 100).toFixed(0)}%)`
       );
     }
-    process.exit(failed ? 1 : 0);
+    // The gate: a run that is "green" only because steps were silently
+    // reclassified must fail. `failed === 0` already covers an unexplained
+    // step; this adds the coverage floor, so a scenario that stops exercising
+    // its app (a route removed, a step made unreachable) cannot pass as
+    // "100% accounted". Both rates are ratios of scenario.steps.length, so a
+    // floor below 1 is only reachable when steps are shaped/structural or
+    // documented divergences; the release gate keeps byte-identical at 100%
+    // unless a scenario declares otherwise. LW_SHADOW_MIN_COVERAGE overrides.
+    const minCoverage = Number(process.env.LW_SHADOW_MIN_COVERAGE ?? 1);
+    const coverageOk = !Number.isFinite(minCoverage) || report.coverage >= minCoverage;
+    if (!coverageOk) {
+      process.stderr.write(
+        `shadow FAILED: byte-identical coverage ${(report.coverage * 100).toFixed(0)}% is below the floor ` +
+          `${(minCoverage * 100).toFixed(0)}% — ${shaped} shape-verified, ${structural} json-equivalent, ` +
+          `${diverged} documented divergence(s)\n`,
+      );
+    }
+    process.exit(failed || !coverageOk ? 1 : 0);
   } finally {
     try {
       rmSync(work, { recursive: true, force: true });
