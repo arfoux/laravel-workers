@@ -49,6 +49,19 @@ jobs:
           php artisan key:generate
           php artisan migrate --force
       - run: npm install
+      # The scanner is TOTAL, not sampled: the per-helper tests (27 cases) never
+      # compared the whole route set with `route:list --json`, which is how
+      # `health: "/up"` (framework-registered, not a route file) shipped a 404 on
+      # the edge where PHP answers 200. This runs the scan AND the real oracle on
+      # a fresh app and asserts the sets are equal, minus the two framework-only
+      # routes named in the test. A fresh app is the point: the scan is
+      # app-agnostic, so nothing app-specific is needed.
+      - name: Create a fresh Laravel app (the route-scan oracle)
+        run: composer create-project laravel/laravel scan-app --no-interaction --prefer-dist
+      - name: The route scan is total — its set equals route:list
+        env:
+          LW_LARAVEL_APP: ${{ github.workspace }}/scan-app
+        run: node --test tools/tests/routes-oracle-parity.test.mjs
       - name: PHP oracle parity (auth, cache, csrf, session, rate limiter)
         # tools/oracle-ran.mjs runs the set itself and asserts the summary: exit
         # 0, at least one test, and 0 failed/skipped/cancelled/todo. A plain
@@ -106,20 +119,6 @@ jobs:
         env:
           LW_APP_ROOT: ${{ github.workspace }}/e2e-app
         run: node tools/facade-count-check.mjs --require
-      - name: The route scan is total — its set equals route:list
-        # The scan's own unit tests pin the Router helpers one by one; this run
-        # pins the property that matters: run the scan AND the real
-        # `route:list --json` oracle on the same app and assert the two route
-        # SETS are equal (minus the framework-only routes, named in the test).
-        # A route silently dropped from the scan does not exist for the edge —
-        # that is how `GET /up` shipped a 404 where PHP answers 200.
-        # LW_LARAVEL_APP is the oracle's own variable (kernel/tests/oracle-app.mjs),
-        # not LW_APP_ROOT: the two framework checks above use the former, this test
-        # the latter. The app is `e2e-app` at the workspace root, which the
-        # oracle's default-directory lookup also finds.
-        env:
-          LW_LARAVEL_APP: ${{ github.workspace }}/e2e-app
-        run: node --test tools/tests/routes-oracle-parity.test.mjs
       - name: Pack the published artifact
         run: npm pack --pack-destination "$GITHUB_WORKSPACE"
       - name: Gate — the tarball ships every file the build needs
