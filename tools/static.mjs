@@ -12,7 +12,7 @@
 
 import parser from 'php-parser';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { slug as phpSlug, ascii as phpAscii } from '../kernel/str.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
@@ -1469,8 +1469,22 @@ export function evalConfigExpr(node, ctx, depth = 0) {
       if (node.what && node.what.kind === 'staticlookup') {
         const cls = node.what.what && (node.what.what.name || '');
         const method = (node.what.offset && node.what.offset.name) || '';
-        if (cls === 'Str' && typeof StrMethod[method] === 'function') {
-          return StrMethod[method].apply(null, margs);
+        if (cls === 'Str') {
+          if (typeof StrMethod[method] === 'function') return StrMethod[method].apply(null, margs);
+          // `Str::` static this evaluator cannot answer. The old code returned
+          // `undefined`, which the array/keyed branches DROP WITHOUT A TRACE
+          // (see `val === undefined -> continue`) — a config entry silently
+          // missing from the dumped config where PHP boots with a value. That
+          // is the class of divergence this tool exists to prevent, so fail
+          // loud instead (the build then refuses with the reason). Auditor note
+          // #608; the same shape as the absent `Str::ascii` in #451, which was
+          // only caught by inspection.
+          throw new Error(
+            `Str::${method}() is not implemented by the build-time config evaluator ` +
+              `(tools/static.mjs); it cannot be evaluated statically, and dropping the ` +
+              `value would silently change the booted config — declare the value in ` +
+              `config/ directly, or add Str::${method}() to the evaluator`
+          );
         }
         return undefined;
       }
@@ -1488,11 +1502,14 @@ export function evalConfigExpr(node, ctx, depth = 0) {
         // PHP's storage_path() = realpath(storage) . DIRECTORY_SEPARATOR . $path,
         // and the $path arg keeps its internal '/' — on Windows the base is
         // backslash-separated while the arg stays forward: e.g.
-        // `...\storage\framework/sessions`. Replicate byte-for-byte.
+        // `...\storage\framework/sessions`. Join with the PLATFORM separator
+        // (`path.sep` == PHP's DIRECTORY_SEPARATOR on the host the tool runs on):
+        // a literal `\\` answered `...\storage\framework/sessions` on Linux too,
+        // where PHP answers `.../storage/framework/sessions` (audit #607).
         case 'storage_path': {
           const base = String(join(appDir, 'storage'));
           const tail = margs.map((x) => String(x ?? '')).filter(Boolean).join('/');
-          return tail ? base + '\\' + tail : base;
+          return tail ? base + sep + tail : base;
         }
         case 'base_path': {
           const base = String(join(appDir, ...margs.map((x) => String(x ?? ''))).replace(/\\+$/, ''));

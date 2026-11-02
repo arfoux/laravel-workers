@@ -33,17 +33,14 @@
  *   `toArray()` and `toJson()` answer an OBJECT as soon as the keys are not
  *   exactly 0..n-1 in order, which is what json_encode would answer.
  *   The limits that REMAIN:
- *     - a KEYED receiver (groupBy/keyBy/pluck($v, $k)/only/except) does not
- *       keep every key through the MUTATORS: push()/put()/pop()/pull()/
- *       prepend() do not maintain `phpKeys`, and forget() reindexes the
- *       remaining keys instead of leaving PHP's hole;
  *     - diff()/intersect()/flatten()/collapse() keep their own key rules but
  *       take the receiver's keys from `phpKeys` only where they compute them;
- *     - keyBy()/groupBy() drop the keys INSIDE each group (Laravel's
- *       `$preserveKeys` argument is not part of the signature) and a callback
- *       answering an ARRAY does not file the item under several groups;
  *     - an Eloquent model as a group/key/index key is not an "Illegal offset
  *       type" error here (PHP 8 throws), it is coerced through phpStr().
+ *   (The mutators — push()/put()/pop()/pull()/prepend() — and forget() DO
+ *   maintain `phpKeys` now (forget leaves PHP's hole), groupBy() takes
+ *   `$preserveKeys` and a callback answering an ARRAY files the item under
+ *   every group, so those are no longer limits.)
  *   These are shape limits on KEYED receivers only: for list input every method
  *   returns the value Laravel returns (values baked in
  *   kernel/tests/collections.test.mjs, probed against the vendored
@@ -971,6 +968,15 @@ const selectHasKey = (item, key) => {
     if (item.attributes && typeof item.get === 'function') {
       return Object.prototype.hasOwnProperty.call(item.attributes, String(key));
     }
+    // `Arr::select()`: a plain OBJECT that is not `Arr::accessible()` (a tagged
+    // PHP `stdClass`) answers through `isset($item->{$key})`, so a NULL property
+    // is NOT selected (a probe: `select('a')` over `[(object) ['a' => null, 'b'
+    // => 2]]` answers `[[]]`). A PHP ARRAY (an untagged plain object or a JS
+    // array) keeps a null value - `Arr::exists()`/`array_key_exists()`.
+    if (item.__lwObject === true) {
+      const value = item[key];
+      return value !== null && value !== undefined;
+    }
     return Object.prototype.hasOwnProperty.call(item, String(key));
   }
   return false;
@@ -1217,12 +1223,17 @@ export class Collection {
     return this.first(whereFilter(key, operator, value, arguments.length));
   }
 
+  // `Arr::first($items, $callback, $default)` answers `value($default)` when
+  // there is no match (or no items): a CLOSURE default is CALLED, not answered
+  // as-is (a probe: `(new Collection([]))->first(null, fn () => 'DEF')` is
+  // 'DEF', and `first(fn ($v) => $v > 9, fn () => 'DEF')` over `[1, 2]` too).
   first(predicate = null, fallback = null) {
+    const def = () => (typeof fallback === 'function' ? fallback() : fallback);
     if (typeof predicate !== 'function') {
-      return this.items.length > 0 ? this.items[0] : fallback;
+      return this.items.length > 0 ? this.items[0] : def();
     }
     const index = this.items.findIndex((item, i) => predicate(item, keyAt(this, i)));
-    return index === -1 ? fallback : this.items[index];
+    return index === -1 ? def() : this.items[index];
   }
 
   /**
@@ -1327,19 +1338,22 @@ export class Collection {
     return items[0];
   }
 
+  // `Arr::last($items, $callback, $default)` - a CLOSURE default is CALLED
+  // (`value($default)`), same as `first()`.
   last(predicate = null, fallback = null) {
+    const def = () => (typeof fallback === 'function' ? fallback() : fallback);
     if (typeof predicate !== 'function') {
-      return this.items.length > 0 ? this.items[this.items.length - 1] : fallback;
+      return this.items.length > 0 ? this.items[this.items.length - 1] : def();
     }
     for (let i = this.items.length - 1; i >= 0; i--) {
       if (predicate(this.items[i], i)) return this.items[i];
     }
-    return fallback;
+    return def();
   }
 
   get(key, fallback = null) {
     const index = this.indexOfKey(key);
-    return index === -1 ? fallback : this.items[index];
+    return index === -1 ? (typeof fallback === 'function' ? fallback() : fallback) : this.items[index];
   }
 
   has(key) {
@@ -1418,8 +1432,13 @@ export class Collection {
     return new Collection(popped);
   }
 
-  pull(key) {
-    const value = this.get(key, null);
+  // `Collection::pull($key, $default = null)` (Collection.php:494-497 ->
+  // `Arr::pull()`): the removed value, or `$default` (a CLOSURE is CALLED,
+  // `Arr::get()`'s `value($default)`) when the key is absent. The edge had no
+  // second parameter, so `->pull('missing', 'D')` answered NULL where Laravel
+  // answers 'D'.
+  pull(key, fallback = null) {
+    const value = this.get(key, fallback);
     this.forget(key);
     return value;
   }
@@ -1881,6 +1900,13 @@ export class Collection {
    * `['a.b' => 1]`). An empty array stays a value (a probe: `['a' => []]`
    * answers `['a' => []]`), and a Collection value is NOT recursed (a probe:
    * it stays the Collection).
+   *
+   * `Arr::dot()`'s recurse test is `is_array($value)`, NOT `is_object()` - so a
+   * value the kernel tags as a `stdClass` (`__lwObject`, `rt.objectCast()`/
+   * `json_decode($json, false)`/the `object` cast) is a LEAF, exactly like
+   * `Arr::flatten()`. A probe: `collect(['a' => (object)['b' => 1]])->dot()`
+   * answers `['a' => {b: 1}]`, not `['a.b' => 1]`. `isArrayLike()` already draws
+   * that line; using `typeof === 'object'` here did not.
    */
   dot() {
     const values = [];
@@ -1889,10 +1915,13 @@ export class Collection {
       for (const entry of entries) {
         const newKey = prefix + String(entry.key);
         const value = entry.value;
-        const isList = Array.isArray(value);
-        const isKeyed = value !== null && typeof value === 'object' && !(value instanceof Collection);
-        const empty = isList ? value.length === 0 : isKeyed ? Object.keys(value).length === 0 : false;
-        if ((isList || isKeyed) && !empty) {
+        const isArrayVal = isArrayLike(value);
+        const empty = isArrayVal
+          ? Array.isArray(value)
+            ? value.length === 0
+            : Object.keys(value).length === 0
+          : false;
+        if (isArrayVal && !empty) {
           walk(entriesOf(value), newKey + '.');
         } else {
           keys.push(arrayKey(newKey));
@@ -3104,11 +3133,30 @@ export class Collection {
     return callback === null || callback === undefined ? collection : collection.map(callback);
   }
 
-  /** `Collection::range($from, $to, $step = 1)` (Collection::range(), :67-70). */
+  /** `Collection::range($from, $to, $step = 1)` (Collection::range(), :67-70 ->
+   *  PHP's `range()`). PHP 8.3 VALIDATES `$step`: a `0` step is a ValueError
+   *  ("cannot be 0") and a NEGATIVE step on an INCREASING range is a ValueError
+   *  ("must be greater than 0 for increasing ranges") - a probe: `range(1,5,0)`
+   *  and `range(1,5,-1)` both throw while `range(5,1,-1)` answers `[5,4,3,2,1]`.
+   *  The edge silently treated `0` as `1` and `abs()`-ed every negative step, so
+   *  the two error cases answered a range instead. */
   static range(from, to, step = 1) {
     const start = Number(from);
     const end = Number(to);
-    const stride = Number(step) === 0 ? 1 : Math.abs(Number(step));
+    const rawStep = Number(step);
+    if (rawStep === 0) {
+      const err = new Error('range(): Argument #3 ($step) cannot be 0');
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
+    }
+    if (start <= end && rawStep < 0) {
+      const err = new Error('range(): Argument #3 ($step) must be greater than 0 for increasing ranges');
+      err.name = 'ValueError';
+      err.phpClass = 'ValueError';
+      throw err;
+    }
+    const stride = Math.abs(rawStep);
     const out = [];
     if (start <= end) {
       for (let i = start; i <= end; i += stride) out.push(i);

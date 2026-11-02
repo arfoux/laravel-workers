@@ -96,11 +96,31 @@ const middlewareList = (arg) => {
   return null;
 };
 
+/** The middleware list of a group attribute, or [] when absent/not a list. */
+const pickMiddleware = (arg) => middlewareList(arg) || [];
+
+/**
+ * Join URI SEGMENTS with '/', trimming the edges - `Router::prefix()`
+ * (`trim(trim($prefix,'/').'/'.trim($uri,'/'), '/') ?: '/'`) and
+ * `RouteGroup::formatPrefix()` (`trim($old,'/').'/'.trim($new,'/')`) both do
+ * exactly this. The scan used plain `+`, so a group/seed/chain prefix landed
+ * WITHOUT a separator: `Route::prefix('api')->group(fn => Route::get('users'))`
+ * answered `apiusers` where PHP answers `api/users` (probed vs route:list).
+ */
+const joinUri = (...parts) => {
+  const segs = [];
+  for (const p of parts) {
+    if (p == null) continue;
+    const s = String(p).replace(/\\/g, '').replace(/^\/+|\/+$/g, '');
+    if (s !== '') segs.push(s);
+  }
+  return segs.join('/');
+};
+
 const normalizeUri = (uri) => {
-  const u = String(uri || '').replace(/\\/g, '');
-  if (u === '/' || u === '') return '/';
+  const u = joinUri(uri);
   // route:list --json shows "dashboard" not "/dashboard"; root is "/".
-  return String(u).replace(/^\/+|\/+$/g, '');
+  return u === '' ? '/' : u;
 };
 
 /** The FQCN for a `Controller::class` / `Controller` action node. */
@@ -108,6 +128,12 @@ const fqcnOf = (node, parsed) => {
   let raw = '';
   if (node.kind === 'staticlookup') raw = (node.what && (node.what.name || node.what.raw)) || '';
   else if (node.kind === 'name') raw = node.name || '';
+  // A plain STRING controller is a first-class Laravel spelling:
+  // `Route::resource('photos', 'App\Http\Controllers\PhotoController')` and
+  // `Route::get('/x', 'App\Http\Controllers\X@y')`. Returning null here made the
+  // scan drop every resource registered that way ("no resolvable controller"),
+  // so the edge 404'd routes PHP serves.
+  else if (node.kind === 'string') raw = node.value || '';
   else return null;
   raw = String(raw).replace(/^\\/, '');
   if (!raw) return null;
@@ -155,10 +181,11 @@ const sourceSlice = (parsed, node) => {
 
 /** prefix / namePrefix / middleware from the steps of a chain (group excluded). */
 const chainAttrs = (steps) => {
-  const attrs = { prefix: '', namePrefix: '', middleware: [] };
+  const attrs = { prefix: '', namePrefix: '', middleware: [], domain: null };
   for (const st of steps) {
     if (st.method === 'prefix') { const v = strArg(st.args[0]); if (v != null) attrs.prefix += v; }
     else if (st.method === 'name') { const v = strArg(st.args[0]); if (v != null) attrs.namePrefix = v; }
+    else if (st.method === 'domain') { const v = strArg(st.args[0]); if (v != null) attrs.domain = v; }
     else if (st.method === 'middleware') { const m = middlewareList(st.args[0]); if (m && m.length) attrs.middleware = attrs.middleware.concat(m); }
   }
   return attrs;
@@ -181,6 +208,53 @@ const entryKey = (e) => {
   if (!e || e.kind !== 'entry' || e.key == null) return null;
   if (e.key.kind === 'string') return e.key.value;
   return nodeName(e.key) || null;
+};
+
+/**
+ * Merge a route chain's registrar attributes (a call BEFORE the verb, e.g.
+ * `Route::prefix('x')->get(...)`) with its route-method attributes (a call
+ * AFTER the verb, e.g. `->name('a')->name('b')`). Laravel splits them exactly
+ * this way: `RouteRegistrar::attribute()` is LAST-WRITE-WINS per key, while
+ * `Route::name()`/`Route::middleware()` APPEND. Walking the outermost-first
+ * `steps` in reverse yields source order, which is what decides both. Verified
+ * against `route:list --json` for prefix/domain/name/middleware chains.
+ */
+const mergeRouteAttrs = (steps, verbIdx) => {
+  const out = {
+    prefix: '',
+    name: '',
+    domain: null,
+    middlewareReg: [],
+    excludedReg: [],
+    names: [],
+    middlewareRoute: [],
+    excludedRoute: [],
+  };
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (i === verbIdx) continue;
+    const st = steps[i];
+    const sm = st.method == null ? '' : String(st.method).toLowerCase();
+    // `steps` is OUTERMOST-first (innermost last), and the verb is the inner
+    // call the registrar hangs off. So a step with `i < verbIdx` is a call
+    // AFTER the verb in source order -> Route-method semantics; `i > verbIdx`
+    // is a call BEFORE it -> RouteRegistrar (last-write-wins) semantics.
+    const afterVerb = i < verbIdx;
+    if (sm === 'prefix') { const v = strArg(st.args[0]); if (v != null) out.prefix = v; }
+    else if (sm === 'domain') { const v = strArg(st.args[0]); if (v != null) out.domain = v; }
+    else if (sm === 'name' || sm === 'as') {
+      const v = strArg(st.args[0]);
+      if (v != null) { if (afterVerb) out.names.push(v); else out.name = v; }
+    } else if (sm === 'middleware') {
+      const l = middlewareList(st.args[0]);
+      if (l && l.length) { if (afterVerb) out.middlewareRoute.push(...l); else out.middlewareReg = l.slice(); }
+    } else if (sm === 'withoutmiddleware') {
+      // `->withoutMiddleware('auth')` SUBTRACTS the named middleware from the
+      // route's gathered list (Router::resolveMiddleware() rejects by name).
+      const l = middlewareList(st.args[0]);
+      if (l && l.length) { if (afterVerb) out.excludedRoute.push(...l); else out.excludedReg = l.slice(); }
+    }
+  }
+  return out;
 };
 
 /** The callee of a call node: `base_path` / `Route::get` / `$x->y`. */
@@ -234,9 +308,21 @@ const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any',
 // ViewController); redirect() -> any(); permanentRedirect() -> redirect(301);
 // fallback() -> addRoute('GET', '{fallbackPlaceholder}')->where('.*')).
 const ROUTE_HELPERS = ['view', 'redirect', 'permanentredirect', 'fallback'];
-/** Is this chain step a route registration (verb, resource, or helper)? */
+/** Plural batch helpers: `Router::resources()`/`apiResources()`/
+ *  `softDeletableResources()` loop the map and register one resource per entry
+ *  (`Router.php`). `softDeletableResources()` is the same route set as
+ *  `resources()` — `->withTrashed()` only relaxes binding, it adds NO route
+ *  (ResourceRegistrar::register() :127). */
+const BATCH_RESOURCE_HELPERS = ['resources', 'apiresources', 'softdeletableresources'];
+/** Route helpers this static scan cannot expand yet. Their routes would simply
+ *  be absent from the table (the edge 404s what PHP answers), so the scan
+ *  REPORTS them and the build refuses instead of serving a silent 404. */
+const UNSUPPORTED_ROUTE_HELPERS = ['singleton', 'apisingleton', 'singletons', 'apisingletons'];
+/** Is this chain step a route registration (verb, resource, batch resource, or helper)? */
 const isVerbStep = (m) => m === 'resource' || m === 'apiResource'
-  || (m != null && (HTTP_METHODS.includes(String(m).toLowerCase()) || ROUTE_HELPERS.includes(String(m).toLowerCase())));
+  || (m != null && (HTTP_METHODS.includes(String(m).toLowerCase())
+    || ROUTE_HELPERS.includes(String(m).toLowerCase())
+    || BATCH_RESOURCE_HELPERS.includes(String(m).toLowerCase())));
 
 /** `Router::$verbs` (Router.php:136, Laravel 13) — what `any()`/`redirect()` register. */
 const ANY_METHODS = 'GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|QUERY';
@@ -352,15 +438,21 @@ function parse() {
       'declare the ones the edge must serve in registry.json (static/ports/ignore)'
   );
 
-  const groupStack = []; // { prefix, namePrefix, middleware[], group }
+  const groupStack = []; // { prefix, namePrefix, middleware[], group, domain, excluded[] }
   const now = () => {
-    const cur = { prefix: '', namePrefix: '', middleware: [], group: null };
+    const prefixes = [];
+    const cur = { prefix: '', namePrefix: '', middleware: [], group: null, domain: null, excluded: [] };
     for (const g of groupStack) {
-      cur.prefix += g.prefix || '';
+      if (g.prefix) prefixes.push(g.prefix);
       cur.namePrefix += g.namePrefix || '';
       cur.middleware = cur.middleware.concat(g.middleware || []);
+      cur.excluded = cur.excluded.concat(g.excluded || []);
+      if (g.domain) cur.domain = g.domain; // the innermost non-empty domain wins
       if (!cur.group && g.group) cur.group = g.group;
     }
+    // Nested prefixes JOIN with '/' (`RouteGroup::formatPrefix`): `prefix('a')`
+    // inside `prefix('b')` answers `b/a`, not `ba`.
+    cur.prefix = joinUri(...prefixes);
     return cur;
   };
 
@@ -403,6 +495,21 @@ function parse() {
           if (isVerbStep(m)) { verbIdx = i; break; }
         }
         if (verbIdx !== -1) { registerVerb(steps, verbIdx, file); return; }
+        // A `Route::singleton()`/`apiSingleton()` chain: a recognized Router
+        // helper this scan cannot expand. Refuse instead of returning nothing
+        // (which would leave the routes missing from the table — the edge 404s
+        // what PHP answers, with no signal anywhere).
+        const unsupported = steps.find(
+          (s) => s.method != null && UNSUPPORTED_ROUTE_HELPERS.includes(String(s.method).toLowerCase())
+        );
+        if (unsupported) {
+          errors.push(
+            `Route::${unsupported.method}() at ${relOf(file)} is not expanded by the static scanner ` +
+              '— its routes would be missing from the table (the edge would 404 what PHP answers); ' +
+              'declare those routes explicitly or add them to registry.json'
+          );
+          return;
+        }
       }
     }
     for (const k of Object.keys(node)) {
@@ -414,16 +521,43 @@ function parse() {
   const collectModifiers = (steps, verbIdx) => {
     const modifiers = {};
     for (const st of steps.filter((_, i) => i !== verbIdx)) {
-      if (st.method === 'name') { const n = strArg(st.args[0]); if (n != null) modifiers.name = n; }
-      if (st.method === 'middleware') { const m = middlewareList(st.args[0]); if (m && m.length) modifiers.middleware = m; }
-      if (st.method === 'can') modifiers.can = true;
-      if (st.method === 'where') modifiers.where = true;
+      // PHP method names are case-insensitive (`->Name('x')` IS `->name('x')`),
+      // so every comparison lowercases - the verb dispatch (`vmName`) and
+      // `mergeRouteAttrs` already do. Raw-case compares here silently dropped a
+      // non-canonical `->Middleware('auth')` (the guard was then NOT applied) or
+      // `->Name('x')` (the route name vanished).
+      const sm = String(st.method == null ? '' : st.method).toLowerCase();
+      if (sm === 'name') { const n = strArg(st.args[0]); if (n != null) modifiers.name = n; }
+      if (sm === 'middleware') { const m = middlewareList(st.args[0]); if (m && m.length) modifiers.middleware = m; }
+      if (sm === 'can') modifiers.can = true;
+      if (sm === 'where') modifiers.where = true;
       // Resource shape comes in two forms: `->only([...])` (a chain step) and
-      // `Route::resource(..., ['only'=>…])` (the options argument) — both count.
-      if (st.method === 'only') { const l = argStrList(st.args[0]); if (l) modifiers.only = l; }
-      if (st.method === 'except') { const l = argStrList(st.args[0]); if (l) modifiers.except = l; }
-      if (st.method === 'names' && st.args[0]) modifiers.names = st.args[0];
-      if (st.method === 'parameters' && st.args[0]) modifiers.parameters = st.args[0];
+      // `Route::resource(..., ['only'=>...])` (the options argument) — both count.
+      if (sm === 'only') { const l = argStrList(st.args[0]); if (l) modifiers.only = l; }
+      if (sm === 'except') { const l = argStrList(st.args[0]); if (l) modifiers.except = l; }
+      if (sm === 'names' && st.args[0]) modifiers.names = st.args[0];
+      if (sm === 'parameters' && st.args[0]) modifiers.parameters = st.args[0];
+      // Per-method middleware (`->middlewareFor('show', 'auth')` /
+      // `->withoutMiddlewareFor(...)`) is not modelled -> flagged so
+      // registerResource can refuse instead of serving the method unguarded.
+      if (sm === 'middlewarefor' || sm === 'withoutmiddlewarefor') modifiers.middlewareFor = true;
+      // `RouteRegistrar::resource()` (RouteRegistrar.php:173) passes the
+      // registrar attributes as $options, and `ResourceRegistrar` reads NO
+      // 'prefix'/'domain' from $options — so a chain-form `Route::prefix('v2')`
+      // or `Route::domain('d')` before `->resource()` is DROPPED by PHP itself
+      // (probed: `Route::domain('d')->resource('rr', C)` answers `rr` with an
+      // empty domain). The scanner must mirror that, not invent a prefix.
+      // `as` IS read (`getResourceRouteName()` prefixes the name), so it stays.
+      // A chain-form `->name()` after the verb is appended by getResourceRouteName()
+      // through `$options['as']` (see registerResource).
+      if (sm === 'name' || sm === 'as') {
+        const v = strArg(st.args[0]);
+        if (v != null) modifiers.as = (modifiers.as || '') + v;
+      }
+      if (sm === 'withoutmiddleware') {
+        const l = middlewareList(st.args[0]);
+        if (l && l.length) modifiers.excluded = (modifiers.excluded || []).concat(l);
+      }
     }
     return modifiers;
   };
@@ -433,8 +567,27 @@ function parse() {
     // (name/middleware/can/where), whichever end of the chain it sits at.
     const verbStep = steps[verbIdx];
     const verbMethod = verbStep.method;
-    if (verbMethod === 'resource' || verbMethod === 'apiResource') {
+    // PHP method names are case-insensitive, so `Route::ApiResource(...)` is
+    // valid; compare lowercased to dispatch the same way.
+    const vmName = String(verbMethod).toLowerCase();
+    if (vmName === 'resource') {
       registerResource(verbStep, collectModifiers(steps, verbIdx), file);
+      return;
+    }
+    if (vmName === 'apiresource') {
+      registerResource(
+        { ...verbStep, method: 'apiResource' },
+        collectModifiers(steps, verbIdx),
+        file
+      );
+      return;
+    }
+    if (vmName === 'resources' || vmName === 'apiresources' || vmName === 'softdeletableresources') {
+      registerResources(
+        { ...verbStep, method: vmName === 'apiresources' ? 'apiResources' : vmName === 'softdeletableresources' ? 'softDeletableResources' : 'resources' },
+        collectModifiers(steps, verbIdx),
+        file
+      );
       return;
     }
     const vm = String(verbMethod).toLowerCase();
@@ -446,13 +599,29 @@ function parse() {
     const actionArg = (isFallback ? verbStep.args[0] : verbStep.args[isMatch ? 2 : 1]) || null;
     const method = verbMethod;
 
-    const modifiers = collectModifiers(steps, verbIdx);
+    // A route chain carries attributes in TWO positions (Laravel's
+    // RouteRegistrar): a call BEFORE the verb is a REGISTRAR attribute
+    // (`Route::prefix('x')`, last write wins), a call AFTER the verb is a ROUTE
+    // method (`->name('a')->name('b')` APPENDS, `->middleware()` appends).
+    // mergeRouteAttrs reproduces both; the scan previously dropped them, so the
+    // edge served a URI without its prefix, with no host restriction, and
+    // WITHOUT a middleware the app expects (an auth/throttle guard).
+    const attrs = mergeRouteAttrs(steps, verbIdx);
+    const chainName = attrs.name + attrs.names.join('');
 
     const g = now();
     const group = g.group || baseGroupFor(file);
-    const uri = normalizeUri(g.prefix + (uri0 || '{any}'));
-    const name = modifiers.name != null ? g.namePrefix + modifiers.name : null;
-    const middleware = [group].concat(g.middleware, modifiers.middleware || []);
+    const excluded = attrs.excludedReg.concat(attrs.excludedRoute, g.excluded);
+    const uri = normalizeUri(joinUri(g.prefix, attrs.prefix, uri0 || '{any}'));
+    // With no `->name()`, a route inside a NAME-PREFIXED group still carries the
+    // group's prefix as its name: `Route::group(['as'=>'g2.'], fn => Route::get('y2'))`
+    // answers `g2.` (RouteGroup::formatAs keeps the old `as` when the new has
+    // none), and route:list prints it.
+    const name = chainName || g.namePrefix ? g.namePrefix + chainName : null;
+    const middleware = [group]
+      .concat(g.middleware, attrs.middlewareReg, attrs.middlewareRoute)
+      .filter((m) => !excluded.includes(String(m)));
+    const domain = attrs.domain || g.domain || null;
 
     let action = 'Closure';
     let path = null;
@@ -504,7 +673,7 @@ function parse() {
       String(method).toUpperCase();
 
     routes.push({
-      domain: null,
+      domain,
       method: methodOut,
       uri,
       name,
@@ -528,28 +697,66 @@ function parse() {
     const closureArg = groupStep.args.map(argValue).find((a) => a && a.kind === 'closure');
     if (!closureArg) return;
 
-    const attrs = { prefix: '', namePrefix: '', middleware: [] };
-    // From the chain: Route::prefix('x')->name('a.')->middleware([...])
-    for (const st of steps) {
-      if (st.method === 'prefix') { const v = strArg(st.args[0]); if (v != null) attrs.prefix += v; }
-      if (st.method === 'name') { const v = strArg(st.args[0]); if (v != null) attrs.namePrefix = v; }
-      if (st.method === 'middleware') {
-        const m = middlewareList(st.args[0]);
-        if (m) attrs.middleware = attrs.middleware.concat(m);
+    // `Route::prefix('x')->middleware([...])->group(fn)` builds a
+    // `RouteRegistrar` FIRST and throws on a second set of one
+    // (RouteRegistrar::__call -> attribute() -> RuntimeException("... tried to
+    // set ... a second time")), so the attribute BEFORE the verb/group is
+    // LAST-WRITE-WINS, not additive (probes: `prefix('a')->prefix('b')` mounts
+    // `b/`, `name('n1.')->name('n2.')` names the child `n2.`, `as()` is the
+    // SAME attribute as `name`). `middleware` REPLACES too (`middleware('m1')
+    // ->middleware('m2')` answers `[web, m2]`), but `withoutMiddleware` is a
+    // real Router method whose `->middleware()` APPENDS, so it accumulates.
+    // A PHP literal array keeps only the LAST duplicate key.
+    const attrs = { prefix: '', namePrefix: '', middleware: [], domain: null, excluded: [] };
+    const chainLast = (method) => {
+      // `steps` is OUTERMOST-first = REVERSE execution order (index 0 is the
+      // LAST call in source, `Route::prefix('a')->prefix('b')->group()` parses
+      // as steps `[group, prefix-b, prefix-a]`). The registrar write that WINS
+      // is the LAST one in SOURCE = the FIRST array index, so take the first
+      // matching step, not the last.
+      let found = null;
+      for (const st of steps) {
+        if (String(st.method == null ? '' : st.method).toLowerCase() === method) { found = st; break; }
       }
+      return found;
+    };
+    const prefStep = chainLast('prefix');
+    if (prefStep) { const v = strArg(prefStep.args[0]); if (v != null) attrs.prefix = v; }
+    // `as()` and `name()` are the SAME registrar attribute (`name => 'as'`), so
+    // a chain may not mix the spellings; take the one that appears.
+    const nameStep = chainLast('name') || chainLast('as');
+    if (nameStep) { const v = strArg(nameStep.args[0]); if (v != null) attrs.namePrefix = v; }
+    const domainStep = chainLast('domain');
+    if (domainStep) { const v = strArg(domainStep.args[0]); if (v != null) attrs.domain = v; }
+    const mwStep = chainLast('middleware');
+    if (mwStep) { const m = middlewareList(mwStep.args[0]); if (m) attrs.middleware = m.slice(); }
+    for (const st of steps) {
+      if (String(st.method == null ? '' : st.method).toLowerCase() !== 'withoutmiddleware') continue;
+      const m = middlewareList(st.args[0]);
+      if (m) attrs.excluded = attrs.excluded.concat(m);
     }
     // From the attributes array: Route::group(['prefix'=>..., 'name'=>...], fn)
     const attrArray = groupStep.args.find((a) => a && a.kind === 'array');
     if (attrArray) {
+      // A repeated literal key keeps the LAST value (a probe: `['prefix'=>'p1',
+      // 'prefix'=>'p2']` mounts `p2/`), so assign into a raw scratch map and
+      // read the typed fields back out once the array is consumed.
+      const raw = Object.create(null);
       for (const e of (attrArray.items || [])) {
         if (!e || e.kind !== 'entry') continue;
         const key = entryKey(e);
         if (!key) continue;
-        const v = e.value;
-        if (key === 'prefix') { attrs.prefix += strArg(v) || ''; }
-        if (key === 'name') { attrs.namePrefix += strArg(v) || ''; }
-        if (key === 'middleware') { const m = middlewareList(v); if (m) attrs.middleware = attrs.middleware.concat(m); }
+        raw[key] = e.value;
       }
+      if (raw.prefix !== undefined) attrs.prefix = strArg(raw.prefix) || '';
+      const asName = raw.name !== undefined ? raw.name : raw.as;
+      if (asName !== undefined) attrs.namePrefix = strArg(asName) || '';
+      if (raw.domain !== undefined) attrs.domain = strArg(raw.domain) ?? null;
+      if (raw.middleware !== undefined) attrs.middleware = pickMiddleware(raw.middleware);
+      const exAttr = pickMiddleware(raw.withoutMiddleware)
+        .concat(pickMiddleware(raw.without_middleware))
+        .concat(pickMiddleware(raw.excluded_middleware));
+      if (exAttr.length) attrs.excluded = attrs.excluded.concat(exAttr);
     }
     groupStack.push(attrs);
     const body = closureArg.body && closureArg.body.children;
@@ -732,6 +939,41 @@ function parse() {
   // model binding; tools/inflect.mjs is the faithful Pluralizer port.
   const singularOf = (word) => strSingular(String(word)).replace(/-/g, '_');
 
+  // `Router::resources(array $resources, array $options = [])` (Router.php):
+  // each map entry is one `resource($name, $controller, $options)` — the array
+  // KEY is the resource name, the VALUE its controller. `apiResources()` is the
+  // `apiResource()` variant. Each entry is handed to registerResource with a
+  // synthesized verb step, so the wildcards/names/plan match the singular path.
+  const registerResources = (verbStep, modifiers, file) => {
+    const isApi = verbStep.method === 'apiResources';
+    const listArg = verbStep.args[0];
+    if (!listArg || listArg.kind !== 'array') {
+      errors.push(
+        `Route::${verbStep.method}() at ${relOf(file)} is not expanded by the static scanner ` +
+          '(a dynamic resource list) — its routes would be missing from the table ' +
+          '(the edge would 404 what PHP answers); declare each resource() explicitly or add them to registry.json'
+      );
+      return;
+    }
+    const optsArg = verbStep.args[1] || null;
+    for (const e of listArg.items || []) {
+      if (!e || e.kind !== 'entry') continue;
+      const name = entryKey(e);
+      if (name == null) {
+        errors.push(
+          `Route::${verbStep.method}() at ${relOf(file)} has an entry without a string resource name ` +
+            '— it is not expanded by the static scanner; declare the resource() explicitly'
+        );
+        continue;
+      }
+      registerResource(
+        { method: isApi ? 'apiResource' : 'resource', args: [{ kind: 'string', value: name }, e.value, optsArg] },
+        modifiers,
+        file
+      );
+    }
+  };
+
   const registerResource = (verbStep, modifiers, file) => {
     const isApi = verbStep.method === 'apiResource';
     const resourceName = strArg(verbStep.args[0]);
@@ -744,6 +986,18 @@ function parse() {
     const optsArg = verbStep.args[2];
     if (optsArg && optsArg.kind === 'array') {
       for (const e of optsArg.items || []) { const k = entryKey(e); if (k) optMap[k] = e.value; }
+    }
+    // Options that attach/remove middleware on a SINGLE resource method
+    // (ResourceRegistrar::register() :107-118, PendingResourceRegistration
+    // ->middlewareFor()/->withoutMiddlewareFor()). The scan does not model them,
+    // and silently ignoring one would serve a method WITHOUT a guard the app
+    // relies on — refuse instead, like the other un-expandable constructs.
+    if (optMap.middleware_for || optMap.excluded_middleware_for || modifiers.middlewareFor) {
+      errors.push(
+        `Route::${verbStep.method}('${resourceName}') at ${relOf(file)} uses a per-method middleware option ` +
+          '(middleware_for / excluded_middleware_for / ->middlewareFor()), which the static scanner does not model — ' +
+          'the guard on that method would be dropped; declare the routes explicitly or add them to registry.json'
+      );
     }
     const only = (optMap.only ? argStrList(optMap.only) : null) || modifiers.only || null;
     const except = (optMap.except ? argStrList(optMap.except) : null) || modifiers.except || null;
@@ -786,20 +1040,37 @@ function parse() {
 
     const g = now();
     const group = g.group || baseGroupFor(file);
+    const excluded = (modifiers.excluded || []).concat(g.excluded);
     for (const [action, http, uriRaw] of plan) {
-      const middleware = [group].concat(g.middleware, modifiers.middleware || []);
+      const middleware = [group]
+        .concat(g.middleware, modifiers.middleware || [])
+        .filter((m) => !excluded.includes(String(m)));
       const extra = controllerMiddlewareFor(fqcn, action);
       if (extra && extra.length) middleware.push(...extra);
+      // `ResourceRegistrar::getResourceRouteName()`: the `as` option becomes a
+      // prefix WITH its own dot (`$options['as'].'.'`), the whole string is
+      // `trim(sprintf('%s%s.%s', $prefix, $name, $method), '.')` — so a chain
+      // `->name('nn.')` answers `nn..qq.index` (the interior double dot is
+      // real; only the EDGES are trimmed). The group's name prefix is then
+      // concatenated in front by RouteGroup::merge (formatAs).
+      const bare = modifiers.as
+        ? `${modifiers.as}.${namesBase != null ? namesBase : resourceName}.${action}`
+        : `${namesBase != null ? namesBase : resourceName}.${action}`;
       const name =
         namesMap && namesMap[action] != null
           ? namesMap[action]
-          : namesBase != null
-            ? `${namesBase}.${action}`
-            : `${g.namePrefix}${resourceName}.${action}`;
+          : `${g.namePrefix}${bare.replace(/^\.+|\.+$/g, '')}`;
       routes.push({
-        domain: null,
+        domain: g.domain || null,
         method: http === 'GET' ? 'GET|HEAD' : http,
-        uri: normalizeUri(uriRaw),
+        // The group's prefix applies to a resource exactly as to a verb route:
+        // `Route::prefix('api')->group(fn => Route::resource('photos', C))`
+        // answers `api/photos`, not `photos`. The scan dropped it, so every
+        // method of every resource in a prefixed group was served at the wrong
+        // URI (probed vs route:list --json). A CHAIN-form `Route::prefix('v2')`
+        // before `->resource()` is a registrar attribute and is deliberately NOT
+        // applied: PHP drops it too (see collectModifiers).
+        uri: normalizeUri(joinUri(g.prefix, uriRaw)),
         name,
         action: `${fqcn}@${action}`,
         middleware,

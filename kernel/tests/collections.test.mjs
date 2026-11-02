@@ -490,6 +490,14 @@ test('dot/undot flatten and rebuild', () => {
   });
   assert.deepEqual(collect([[1, 2], [3]]).dot().all(), { '0.0': 1, '0.1': 2, '1.0': 3 });
   assert.deepEqual(collect({ a: [] }).dot().all(), { a: [] });
+  // A value tagged as a PHP `stdClass` is a LEAF: `Arr::dot()`'s recurse test is
+  // `is_array($value)`, and `is_array(new stdClass)` is false (oracle: a probe
+  // of `collect(['a' => (object) ['b' => 1]])->dot()` answers `['a' => {b: 1}]`).
+  const stdClass = (o) => Object.defineProperty(o, '__lwObject', { value: true, enumerable: false });
+  assert.deepEqual(collect({ a: stdClass({ b: 1 }), c: 2 }).dot().all(), {
+    a: { b: 1 },
+    c: 2,
+  });
   const dotted = collect({ a: collect([1, 2]) }).dot();
   assert.deepEqual(dotted.get('a').all(), [1, 2]);
   assert.deepEqual(collect({ 'a.b': 1, 'a.c': 2, d: 3 }).undot().all(), { a: { b: 1, c: 2 }, d: 3 });
