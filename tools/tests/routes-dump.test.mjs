@@ -194,3 +194,29 @@ Route::get('/posts-latest', fn () => 'b');
   assert.equal((entries || []).length, 2);
   assert.doesNotMatch(res.stderr, /both compile to the controller module/);
 });
+
+test('two URIs differing only in case are refused (the modules land on one file)', () => {
+  // #366: the local filesystem is case-insensitive on Windows/macOS, so
+  // `/Posts` and `/posts` are two real Laravel routes whose controller modules
+  // would land on ONE `posts.mjs` - whichever was written last would serve both
+  // URLs. The slug is case-folded, so the scan sees the collision and refuses.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+Route::get('/Posts', fn () => 'a');
+Route::get('/posts', fn () => 'b');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal((entries || []).length, 2, 'the JSON route table is still printed');
+  assert.match(res.stderr, /both compile to the controller module "posts\.mjs"/);
+});
+
+test('the slug is case-folded: /Posts writes the same module name as /posts', async () => {
+  const { slugifyRoute } = await import('../route-slug.mjs');
+  assert.equal(slugifyRoute('/Posts'), 'posts');
+  assert.equal(slugifyRoute('/Posts/{Post}'), 'posts-post');
+  assert.equal(slugifyRoute('/API/v1'), 'api-v1');
+  assert.equal(slugifyRoute('_ROOT'), 'root');
+});

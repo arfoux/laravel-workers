@@ -11,6 +11,8 @@
 // Known divergence: D1 has no interactive transactions, so increment/decrement
 // are a read-then-write (Laravel wraps them in a transaction). Documented in COMPILED.md.
 import { phpSerialize, phpUnserialize } from './php-serialize.mjs';
+import { phpJsonEncode } from './php-json.mjs';
+import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 
 /** Illuminate\Cache\Repository::FLEXIBLE_CREATED_KEY_PREFIX */
 export const FLEXIBLE_CREATED_KEY_PREFIX = 'illuminate:cache:flexible:created:';
@@ -307,18 +309,24 @@ export function createCache({ kv, ttlMs = 60000, secret } = {}) {
   let readIndex, writeIndex;
 
   if (kv && typeof kv.get === 'function') {
+    // #449: the cached VALUE is a PHP value, so it is written and read with the
+    // PHP codec, not `JSON.stringify`/`JSON.parse` - the JSON pair reorders a
+    // PHP array whose string key precedes an integer-like key (`['a'=>1, 3=>'x']`
+    // came back as `[3=>'x', 'a'=>1]`), and the D1 store in this same module
+    // already serializes with `phpSerialize`. The reader is a superset of the
+    // JSON one, so an entry a previous build wrote still reads.
     base = {
-      async get(key) { const v = await kv.get(key, 'text'); return v === null ? null : JSON.parse(v); },
+      async get(key) { const v = await kv.get(key, 'text'); return v === null ? null : phpJsonDecodeOrdered(v, { text: true }); },
       async put(key, value, ttl) {
         const opts = ttl ? { expirationTtl: Math.ceil(ttl / 1000) } : undefined;
-        await kv.put(key, JSON.stringify(value), opts);
+        await kv.put(key, phpJsonEncode(value), opts);
       },
       async forget(key) { await kv.delete(key); },
       async remember(key, ttl, cb) {
         const hit = await kv.get(key, 'text');
-        if (hit !== null) return JSON.parse(hit);
+        if (hit !== null) return phpJsonDecodeOrdered(hit, { text: true });
         const val = await cb();
-        await kv.put(key, JSON.stringify(val), { expirationTtl: Math.ceil(ttl / 1000) });
+        await kv.put(key, phpJsonEncode(val), { expirationTtl: Math.ceil(ttl / 1000) });
         return val;
       },
     };

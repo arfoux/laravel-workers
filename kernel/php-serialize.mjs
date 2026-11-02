@@ -108,7 +108,12 @@ function writeValue(value, out) {
     return;
   }
   if (isPlainObject(value)) {
-    const keys = Object.keys(value);
+    // PHP arrays keep their INSERTION order, which a JS object cannot express
+    // once an integer-like key is involved (it enumerates those first) - the
+    // marker `rt.assoc()`/`phpJsonDecodeOrdered()`/`phpUnserialize()` carry is
+    // the PHP order. Without it, `phpSerialize(phpUnserialize($php))` moved
+    // `['a' => 1, 3 => 'x']` to `[3 => 'x', 'a' => 1]`.
+    const keys = orderedKeysOf(value);
     out.push('a:', String(keys.length), ':{');
     for (const key of keys) {
       if (INT_KEY_RE.test(key)) {
@@ -133,6 +138,33 @@ export function phpSerialize(value) {
   const out = [];
   writeValue(value, out);
   return out.join('');
+}
+
+/**
+ * The keys of a PHP-array-shaped object, in PHP's order: the non-enumerable
+ * `__lwOrder` marker first (it carries the order a JS object cannot express),
+ * then any key the marker does not know - PHP appends a key written after the
+ * fact to the end, and a marker must never drop or invent a key. Both encoders
+ * (`phpSerialize`, `phpJsonEncode`) use this one rule.
+ */
+export function orderedKeysOf(value) {
+  const own = Object.keys(value);
+  const order = value.__lwOrder;
+  if (!Array.isArray(order)) return own;
+  const out = [];
+  const seen = new Set();
+  for (const raw of order) {
+    const key = String(raw);
+    if (seen.has(key) || !Object.prototype.hasOwnProperty.call(value, key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  for (const key of own) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
 }
 
 // ---- decode ---------------------------------------------------------------
@@ -217,6 +249,12 @@ function readValue(bytes, state) {
     for (const [key, value] of pairs) {
       obj[typeof key === 'number' ? String(key) : key] = value;
     }
+    // PHP's array keeps its INSERTION order; a JS object enumerates an
+    // integer-like key first, so a payload PHP wrote as `['a' => 1, 3 => 'x']`
+    // would otherwise be re-serialized (session/cache) as `3` before `a`. The
+    // non-enumerable marker carries that order the same way `phpJsonDecodeOrdered`
+    // and `rt.assoc()` do, and `phpSerialize` reads it back.
+    Object.defineProperty(obj, '__lwOrder', { value: pairs.map(([k]) => String(k)), enumerable: false });
     return obj;
   }
   if (type === 'O') throw new PhpSerializeError('PHP object (O:) is outside the subset');

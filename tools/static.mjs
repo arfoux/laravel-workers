@@ -13,6 +13,7 @@
 import parser from 'php-parser';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
+import { slug as phpSlug, ascii as phpAscii } from '../kernel/str.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -1234,63 +1235,22 @@ function phpStr(v) {
   return String(v);
 }
 
-/**
- * `Str::ascii()` (Str.php, backed by voku/portable-ascii): the Latin letters
- * fold through NFD + a combining-mark strip; the non-decomposable ones through
- * a small table. A LETTER the porter cannot map is a REFUSAL (#294): PHP's
- * table would KEEP it as a letter and the porter would drop it, so a config
- * value built with `Str::slug` would silently differ from the app's.
- */
-const ASCII_SPECIAL = {
-  'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'þ': 'th',
-  'ł': 'l', 'ħ': 'h', 'ı': 'i', 'ĸ': 'k', 'ſ': 's', 'ƒ': 'f', 'ŋ': 'n',
-  'ª': 'a', 'º': 'o', 'µ': 'u', 'ĳ': 'ij', 'ĉ': 'c', 'ĝ': 'g', 'ĥ': 'h',
-  'ĵ': 'j', 'ŝ': 's', 'ŭ': 'u', 'ĉ': 'c',
-};
-function asciiValue(value, where) {
-  const decomposed = String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  let out = '';
-  for (const ch of decomposed) {
-    const code = ch.codePointAt(0);
-    if (code < 0x80) { out += ch; continue; }
-    const mapped = Object.prototype.hasOwnProperty.call(ASCII_SPECIAL, ch) ? ASCII_SPECIAL[ch] : null;
-    if (mapped !== null) { out += mapped; continue; }
-    if (/[\p{L}\p{N}]/u.test(ch)) {
-      throw new Error(
-        `${where}(): cannot transliterate ${JSON.stringify(ch)} (U+${code.toString(16).toUpperCase()}) to ASCII — ` +
-          'set the config value explicitly so the build does not guess where the app transliterates'
-      );
-    }
-    out += ch; // punctuation/symbol: the slug regex below maps it to the separator
-  }
-  return out;
-}
-
 /** The Illuminate\Support\Str helpers the config files use — the pure ones. */
 const StrMethod = {
-  // `Str::slug()` (Str.php slug() + ascii()): the transliteration table keeps
-  // the LETTERS of an HTML entity and drops the '&' and ';' — verified against
-  // PHP 8.3 + Laravel 13.37: 'A &amp; B' -> 'a-amp-b', 'A & B' -> 'a-b',
-  // 'A&nbsp;B' -> 'anbspb', 'A &amp;amp; B' -> 'a-ampamp-b'. Dropping the whole
-  // entity (the old `/&[a-z]+;/ -> ''` with a dead `{'&': 'and'}` map) answered
-  // 'a-b' where PHP answers 'a-amp-b'.
-  // Known limitation (closed, #294): the old code REMOVED a non-ASCII letter
-  // ('Ünïcode' -> 'ncode') where PHP's `ascii()` transliterates it ('unicode').
-  // The porter below still carries the full Vietnamese set Laravel's own
-  // `Str::ascii()` table starts with (Str.php:357+) and composes it with NFD,
-  // so a config file that slugs accented text folds to the same value the app
-  // does. Above U+FFFF, and for the table entries the regex cannot express,
-  // the build REFUSES instead of silently emitting a different config.
-  slug: (value, sep = '-') => {
-    const input = String(value).toLowerCase();
-    const slugInput = asciiValue(input, 'Str::slug');
-    return slugInput
-      .replace(/&[a-z]+;/g, (e) => e.slice(1, -1))
-      .replace(/[&;]/g, '')
-      .replace(/[^a-z0-9-]+/g, sep)
-      .split(sep + sep).join(sep)
-      .replace(new RegExp(sep + '$'), '');
-  },
+  // `Str::slug()` is the KERNEL's implementation (`kernel/str.mjs`), which is
+  // verified byte-identical to PHP 8.3 over the fuzz corpora. The static
+  // evaluator used to carry its own pipeline - the entity dance below, an
+  // apostrophe turned into a separator ('it's' -> 'it-s' where PHP answers
+  // 'its'), a leading separator left in place ('@@' -> '-at-at'). A second
+  // answer to the same question could only drift from the app's.
+  slug: (value, sep = '-') => phpSlug(value, sep),
+  // `Str::ascii()` is the same kernel table (`ASCII::to_ascii('en')`), so the
+  // two sites cannot drift: a config value `Str::ascii('žluťoučký')` used to
+  // fold to `undefined` here (the method was simply absent from this map, and
+  // an absent `Str::` method answers undefined rather than failing loud) while
+  // the runtime answered 'zlutoucky' - a silent wrong value in the dumped
+  // config. Audit #451.
+  ascii: (value) => phpAscii(value),
   lower: (s) => String(s).toLowerCase(),
   upper: (s) => String(s).toUpperCase(),
   ucfirst: (s) => { const t = String(s); return t.charAt(0).toUpperCase() + t.slice(1); },

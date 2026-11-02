@@ -181,10 +181,13 @@ for (const c of DATA.constructs) {
   // without saying why.
   const reasonOk = expected === 'fail' && c.reason ? p.message.includes(c.reason) : true;
   const missingReason = !isBuild && expected === 'fail' && !c.reason;
-  const proofProblem = isBuild ? resolveProof(c.proof) : null;
+  // A proof pointer must RESOLVE wherever it appears, not only on a build-level
+  // row (#427): a probed row that later names `test:...`/`shadow:...` would
+  // otherwise be able to point at a deleted test unnoticed.
+  const proofProblem = c.proof ? resolveProof(c.proof) : null;
   const ok = isBuild
     ? c.expect === undefined && c.code === undefined && !proofProblem
-    : actual === expected && (expected === 'fail' ? (c.code ? p.code === c.code : true) : true) && reasonOk && !missingReason;
+    : actual === expected && (expected === 'fail' ? (c.code ? p.code === c.code : true) : true) && reasonOk && !missingReason && !proofProblem;
   if (!ok) drift++;
   rows.push({
     id: c.id,

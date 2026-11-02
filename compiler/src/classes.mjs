@@ -24,6 +24,111 @@ import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapter
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
+// The Laravel BUS traits a job (and a queued listener) uses:
+// `use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;`.
+// Their members are NOT compiled, and the emitted code never needs them:
+//   * `Dispatchable::dispatch*()` is answered at the CALL SITE - the transpiler
+//     turns `Job::dispatch($x)` into `rt.queuePush(fqcn, [args])`, so the class
+//     itself never carries the static method (`queue-demo.mjs`);
+//   * `SerializesModels`' two hooks (`__serialize`/`__unserialize`) exist to
+//     carry the payload through PHP's own serializer - the edge's payload is
+//     JSON (the row's `payload` column);
+//   * `Queueable`/`InteractsWithQueue` add instance members the app may call
+//     INSIDE its own bodies (`release()`, `delete()`, `attempts()`, `onQueue()`,
+//     ...). Those ARE meaningful, so a class whose own body calls one is
+//     refused below: the compiled rung has no such method, and Laravel's
+//     re-queue/delete/attempts semantics would not happen.
+const BUS_TRAITS = new Map([
+  ['Illuminate\\Foundation\\Bus\\Dispatchable', 'Dispatchable'],
+  ['Illuminate\\Bus\\Queueable', 'Queueable'],
+  ['Illuminate\\Queue\\InteractsWithQueue', 'InteractsWithQueue'],
+  ['Illuminate\\Queue\\SerializesModels', 'SerializesModels'],
+]);
+// The member names the four traits add (vendor 13.37). The static ones of
+// Dispatchable are listed too: the compiled rung has no such method, so a call
+// from the class's own body (`self::dispatchSync()`) would throw at the edge.
+const BUS_TRAIT_MEMBERS = new Set([
+  // Foundation\Bus\Dispatchable
+  'dispatch',
+  'dispatchIf',
+  'dispatchUnless',
+  'dispatchSync',
+  'dispatchAfterResponse',
+  'withChain',
+  'newPendingDispatch',
+  // Bus\Queueable
+  'onConnection',
+  'onQueue',
+  'onGroup',
+  'withDeduplicator',
+  'allOnConnection',
+  'allOnQueue',
+  'delay',
+  'withoutDelay',
+  'afterCommit',
+  'beforeCommit',
+  'through',
+  'chain',
+  'prependToChain',
+  'appendToChain',
+  'serializeJob',
+  'dispatchNextJobInChain',
+  'invokeChainCatchCallbacks',
+  // Queue\InteractsWithQueue
+  'attempts',
+  'delete',
+  'fail',
+  'release',
+  'setJob',
+  // Queue\SerializesModels
+  '__serialize',
+  '__unserialize',
+  'getPropertyValue',
+]);
+
+/**
+ * The member names a class's OWN method bodies call on `$this` / `self` /
+ * `static` (`$this->release(3)`, `self::dispatchSync('x')`). The AST is walked
+ * (not a text scan), so a comment or a string that merely mentions the name
+ * does not count, and a property of the same name (`$this->delay = 3`) is not
+ * a call. A dynamic access (`$this->$name`) is not collected either - it is not
+ * the trait's member.
+ */
+function memberCallsOnSelf(classNode) {
+  const out = new Set();
+  const visit = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) {
+      for (const x of n) visit(x);
+      return;
+    }
+    // A member CALL only: `$this->release(3)` is a call whose `what` is a
+    // propertylookup on `$this`; `self::dispatchSync('x')` is a call whose
+    // `what` is a staticlookup on self/static. A property READ/WRITE
+    // (`$this->delay = 3`) is NOT a member call and is not collected - the
+    // trait's member is the method, and a class may well have a property of
+    // the same name.
+    const what = (n.kind === 'call' || n.kind === 'staticcall') && n.what ? n.what : null;
+    if (what) {
+      const offset = what.offset || {};
+      const receiver = what.what || {};
+      const isMemberCall =
+        (what.kind === 'propertylookup' && receiver.kind === 'variable' && receiver.name === 'this') ||
+        (what.kind === 'staticlookup' &&
+          (receiver.kind === 'selfreference' || receiver.kind === 'staticreference'));
+      if (isMemberCall && offset.kind === 'identifier' && offset.name) out.add(offset.name);
+    }
+    for (const key of Object.keys(n)) {
+      if (key === 'loc') continue;
+      visit(n[key]);
+    }
+  };
+  for (const m of classMembers(classNode)) {
+    if (m && m.kind === 'method' && m.body) visit(m.body);
+  }
+  return out;
+}
+
 /**
  * The compiled code with its STRING literals and comments blanked out, so a
  * scan for a KEYWORD (`await`) cannot be answered by a message or a comment
@@ -948,7 +1053,8 @@ export function compileClasses(dump, opts = {}) {
         class: fqcn,
         message:
           'the listener ' + fqcn + ' is queued (ShouldQueue) — Laravel pushes it to the queue and it runs later; ' +
-          'the edge has no queue consumer, so the compiled rung does not run it inline',
+          'the edge\'s queue path runs a JOB class (app/Jobs) through the cron drain, and a queued listener is not ' +
+          'compiled as one, so the compiled rung does not run it inline',
         code: 'LW002',
       });
       continue;
@@ -998,17 +1104,54 @@ export function compileClasses(dump, opts = {}) {
     // A trait use is a statement in the class body (`use Notifies;`).
     const traitUses = classMembers(classNode).filter((m) => m && m.kind === 'traituse');
     if (traitUses.length) {
-      const names = traitUses
-        .map((m) => (m.traits || []).map((u) => nodeName(u) || (u && u.name) || '?').join(', '))
-        .join(', ');
-      errors.push({
-        class: fqcn,
-        message:
-          'the class ' + fqcn + ' uses a trait (' + names +
-          ') — the trait members are not compiled, so the class would miss its methods at the edge',
-        code: 'LW002',
+      // The trait names as WRITTEN (a short `Queueable` or a full FQCN): a
+      // short name resolves through the file's own `use` imports (PHP's own
+      // resolution - `use Illuminate\Bus\Queueable;`).
+      const written = traitUses.flatMap((m) => (m.traits || []).map((u) => nodeName(u) || (u && u.name) || '?'));
+      const resolved = written.map((raw) => {
+        // A leading backslash (`use \Illuminate\Bus\Queueable;`) is the same
+        // class: PHP's own resolution strips it.
+        const name = raw.startsWith('\\') ? raw.slice(1) : raw;
+        if (name.includes('\\')) return name;
+        const imported = parsed.imports && parsed.imports.get(name);
+        return (imported && imported.replace(/^\\/, '')) || name;
       });
-      continue;
+      const unknown = written.filter((_, i) => !BUS_TRAITS.has(resolved[i]));
+      if (unknown.length) {
+        errors.push({
+          class: fqcn,
+          message:
+            'the class ' + fqcn + ' uses a trait (' + unknown.join(', ') +
+            ') — the trait members are not compiled, so the class would miss its methods at the edge',
+          code: 'LW002',
+        });
+        continue;
+      }
+      // The Laravel bus traits are allowed (their members are answered by the
+      // call site / are meaningless at the edge - see BUS_TRAITS), but a body
+      // that CALLS one of their members is refused: the compiled rung has no
+      // such method, so `$this->release(10)` would throw at drain time where
+      // Laravel re-queues the job.
+      const ownMethods = new Set(
+        classMembers(classNode)
+          .filter((m) => m && m.kind === 'method')
+          .map((m) => nodeName(m.name))
+      );
+      const called = [...memberCallsOnSelf(classNode)].filter(
+        (n) => BUS_TRAIT_MEMBERS.has(n) && !ownMethods.has(n)
+      );
+      if (called.length) {
+        errors.push({
+          class: fqcn,
+          message:
+            'the class ' + fqcn + ' uses ' + written.join(', ') + ' and its own body calls ' +
+            called.map((n) => n + '()').join(', ') +
+            ' — the trait members are not compiled (the edge answers `Job::dispatch()` at the call site, and PHP\'s ' +
+            'serializer is not used), so the call would throw at run time where Laravel answers the trait\'s own behaviour',
+          code: 'LW002',
+        });
+        continue;
+      }
     }
     // A mailable extends Laravel's Mailable: the compiled class extends the
     // kernel's base (the fluent surface + the payload).

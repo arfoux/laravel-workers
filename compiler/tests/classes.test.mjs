@@ -919,6 +919,105 @@ class UsesTrait
   assert.equal(res.errors[0].code, 'LW002');
 });
 
+test('classes: a job that uses Laravel\'s bus traits compiles (the call site answers dispatch())', () => {
+  // The canonical job: `use Dispatchable, InteractsWithQueue, Queueable,
+  // SerializesModels;`. Their members are answered by the CALL SITE
+  // (`Job::dispatch($x)` -> rt.queuePush) or are PHP-serializer-only, so the
+  // class must compile - otherwise the cron drain has no handler and the job
+  // silently never runs.
+  const file = classFile('SendNote', `<?php
+namespace App\\Jobs;
+use Illuminate\\Bus\\Queueable;
+use Illuminate\\Foundation\\Bus\\Dispatchable;
+class SendNote
+{
+    use Dispatchable, Queueable, \\Illuminate\\Queue\\InteractsWithQueue, \\Illuminate\\Queue\\SerializesModels;
+    public function __construct(public string $note = 'hello') {}
+    public function handle(): void
+    {
+        $this->note = 'ran';
+    }
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Jobs\\SendNote': { file, kind: 'job' } } },
+    { ...OPTIONS, classes: new Set(['App\\Jobs\\SendNote']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /"handle": async function/);
+  assert.match(res.code, /"note": \(args\[0\]/);
+});
+
+test('classes: a class whose own body CALLS a bus trait member fails loud', () => {
+  // `$this->release(3)` is Laravel's re-queue: the compiled rung has no such
+  // method, so the call would throw at drain time where Laravel re-queues the
+  // job (a different behaviour, silently). The build names the member.
+  const file = classFile('Releases', `<?php
+namespace App\\Jobs;
+use Illuminate\\Queue\\InteractsWithQueue;
+class Releases
+{
+    use InteractsWithQueue;
+    public function handle(): void
+    {
+        if ($this->attempts() > 1) { $this->release(3); }
+        self::dispatchSync('x');
+    }
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Jobs\\Releases': { file, kind: 'job' } } },
+    { ...OPTIONS, classes: new Set(['App\\Jobs\\Releases']) }
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /calls attempts\(\), release\(\), dispatchSync\(\)/);
+});
+
+test('classes: a class that defines its OWN member with a trait name still compiles', () => {
+  // The member scan must not refuse a class over its own method: `release()` is
+  // the class's, not the trait's.
+  const file = classFile('OwnMember', `<?php
+namespace App\\Jobs;
+use Illuminate\\Bus\\Queueable;
+class OwnMember
+{
+    use Queueable;
+    public function release(int $delay): void
+    {
+        $this->delay = $delay;
+    }
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Jobs\\OwnMember': { file, kind: 'job' } } },
+    { ...OPTIONS, classes: new Set(['App\\Jobs\\OwnMember']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /"release": async function/);
+});
+
+test('classes: an unknown trait alongside the bus traits is refused (and named alone)', () => {
+  const file = classFile('MixedTraits', `<?php
+namespace App\\Jobs;
+use Illuminate\\Foundation\\Bus\\Dispatchable;
+class MixedTraits
+{
+    use Dispatchable, Notifies;
+    public function handle(): void
+    {
+    }
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Jobs\\MixedTraits': { file, kind: 'job' } } },
+    { ...OPTIONS, classes: new Set(['App\\Jobs\\MixedTraits']) }
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /uses a trait \(Notifies\)/);
+});
+
 test('classes: a listener that extends another class fails loud (the inherited methods are not compiled)', () => {
   const file = classFile('ChildListener', `<?php
 namespace App\\Listeners;

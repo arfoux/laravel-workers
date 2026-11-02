@@ -449,28 +449,41 @@ export function extractController(source, methodName) {
     // A mail in the method (`Mail::to($u)->send($mailable)`): the handler then
     // renders the mailable's view (a mailable's view is not reached from a
     // route, so the build compiles it and hands it to the runtime).
-    usesMail: bodyHasMail(method.body),
+    usesMail: bodyHasMail(method.body, uses),
     viewDataKinds,
     methodNode: method,
   };
 }
 
 // Does the body send a mail? (`Mail::to($u)->send($mailable)`) — a static call
-// on the Mail facade (the FQCN or the alias).
-function bodyHasMail(node) {
+// on the Mail facade. #357: the test used to accept ANY name ending in `\Mail`,
+// so an app class `App\Support\Mail` (or `App\Mail\Mail`) counted as the facade.
+// The alias is RESOLVED against the file's imports now: `Mail`/`Mailer` counts
+// when it maps to `Illuminate\Support\Facades\Mail` (or has no import at all,
+// i.e. the global alias), and a fully qualified name must BE the facade.
+const MAIL_FACADE = 'Illuminate\\Support\\Facades\\Mail';
+function isMailFacade(name, uses) {
+  if (name === MAIL_FACADE) return true;
+  if (name.includes('\\')) return false;
+  // `uses` is the file's import map (alias -> FQCN); an alias it does not name
+  // is Laravel's own global alias.
+  const mapped = uses ? uses[name] : undefined;
+  return mapped === undefined ? name === 'Mail' : mapped === MAIL_FACADE;
+}
+function bodyHasMail(node, uses = null) {
   if (!node || typeof node !== 'object') return false;
   if (Array.isArray(node)) {
-    for (const n of node) if (bodyHasMail(n)) return true;
+    for (const n of node) if (bodyHasMail(n, uses)) return true;
     return false;
   }
   if (node.kind === 'staticlookup') {
     const w = node.what;
     const name = String((w && typeof w === 'object' ? w.name : w) || '').replace(/^\\/, '');
-    if (name === 'Mail' || name.endsWith('\\Mail')) return true;
+    if (isMailFacade(name, uses)) return true;
   }
   for (const k of Object.keys(node)) {
     if (k === 'loc') continue;
-    if (bodyHasMail(node[k])) return true;
+    if (bodyHasMail(node[k], uses)) return true;
   }
   return false;
 }
@@ -1029,7 +1042,13 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    }');
   // An error WITHOUT a status is a 500 in Laravel (the exception handler
   // renders `errors::500`). The compiled rung renders the same page instead of
-  // rethrowing into the platform's plain-text fallback.
+  // rethrowing into the platform's plain-text fallback. An expectsJson request
+  // gets prepareJsonResponse's body instead: convertExceptionToArray() answers
+  // the literal 'Server Error' outside debug (never the exception's own message,
+  // which would leak the internals), pretty-printed with JSON_UNESCAPED_SLASHES.
+  lines.push('    if (wantsJson) {');
+  lines.push('      return { status: 500, headers: { "content-type": "application/json" }, body: \'{\\n    "message": "Server Error"\\n}\' };');
+  lines.push('    }');
   lines.push('    const rendered500 = (!wantsJson && ctx && typeof ctx.renderErrorView === "function")');
   lines.push('      ? ctx.renderErrorView(500, ctx.request, ctx, e)');
   lines.push('      : null;');

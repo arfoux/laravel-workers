@@ -15,7 +15,9 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { DatabaseCacheStore } from '../cache.mjs';
+import { createCache, DatabaseCacheStore } from '../cache.mjs';
+import { phpJsonEncode } from '../php-json.mjs';
+import { phpJsonDecodeOrdered } from '../php-json-ordered.mjs';
 import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -287,4 +289,24 @@ test('a TTL of 0 forgets the key (Laravel: Repository::put)', async () => {
   assert.equal(await store.get('k'), null, 'a ttl of 0 forgets the key');
   await store.put('k2', 'v');
   assert.notEqual(await store.get('k2'), null, 'no ttl stores the key (forever)');
+});
+
+test('the KV-backed store writes and reads PHP order (createCache, audit 449)', async () => {
+  // The KV store used `JSON.stringify`/`JSON.parse`: a PHP array whose string
+  // key precedes an integer-like one (`['a' => 1, 3 => 'x']`) came back
+  // reordered. It now uses the PHP codec, and an entry a previous build wrote
+  // as plain JSON still reads.
+  const mem = new Map();
+  const kv = {
+    async get(key) { return mem.has(key) ? mem.get(key) : null; },
+    async put(key, value) { mem.set(key, String(value)); },
+    async delete(key) { mem.delete(key); },
+  };
+  const cache = createCache({ kv, ttlMs: 60000 });
+  const phpish = phpJsonDecodeOrdered('{"a":1,"3":"x"}', { text: true });
+  await cache.put('k', phpish);
+  assert.equal(mem.get('k'), '{"a":1,"3":"x"}');
+  assert.equal(phpJsonEncode(await cache.get('k')), '{"a":1,"3":"x"}');
+  mem.set('legacy', '{"3":"x","a":1}');
+  assert.equal(phpJsonEncode(await cache.get('legacy')), '{"3":"x","a":1}');
 });

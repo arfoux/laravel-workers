@@ -1094,9 +1094,20 @@ const corsPathFor = (uri) => {
   return null;
 };
 
-// The routes that dispatch a queued job, and the cron triggers the schedule
-// produced: the queue check at the end reads both.
+// The routes that dispatch a queued job, the pushed job classes, why a class
+// did not compile and the compiled set, plus the cron triggers the schedule
+// produced: the queue check at the end reads all of them.
 const queuePushes = [];
+// The job FQCN(s) the emitted handlers push (`{ route, job }`). The cron drain
+// (src/worker.mjs) builds its handler map from the COMPILED classes, so a push
+// of a job the class compiler refused is a job that can never run - the queue
+// check at the end reads this list as well as `queuePushes`.
+const queueJobs = [];
+// Why a class did not compile (FQCN -> message): the queue check names the
+// class compiler's own reason instead of a generic one.
+const queueClassErrors = new Map();
+// The FQCNs the class compiler produced (exactly the drain's handler map).
+let compiledClassFqcns = new Set();
 let cronTriggers = [];
 
 // ---------- 3b-bis. the app's schedule -> Cloudflare Cron Triggers ----------
@@ -1189,6 +1200,33 @@ let cronTriggers = [];
   for (const e of notTriggerable) {
     console.log(`     ! ${e.name}: ${e.reason || 'not triggerable at the edge'}`);
   }
+  // The due event is DELIVERED through the app's `QUEUE` producer binding (the
+  // app runtime that consumes it lives outside this Worker). Without the
+  // binding the push falls back to the kernel's in-memory queue, which is
+  // discarded when the scheduled invocation ends: the trigger fires, the event
+  // is dropped, and nothing says so. The storage/cache checks name their
+  // missing binding the same way - this one cannot be caught at request time.
+  if (uniqueTriggers.length && !hasBinding(appDir, 'queues', 'QUEUE')) {
+    note({
+      route: null,
+      area: 'schedule',
+      severity: DECLARED,
+      cause:
+        `${events.length} schedule event(s) fire through ${uniqueTriggers.length} cron trigger(s), but the app binds no QUEUE producer — the worker queues each due event with \`env.QUEUE.push()\` (the app runtime that consumes it lives outside this Worker), and without the binding the kernel's in-memory fallback drops the payload when the invocation ends`,
+      fix:
+        'bind a Cloudflare Queue producer ({"queues":{"producers":[{"binding":"QUEUE","queue":"<name>"}]}} in wrangler.jsonc) and consume it, or remove the app schedule if the triggers are only there to drain the D1 job queue. Until then the events fire and are dropped (the worker logs the names and `/__lw/cron` reports them under `dropped`).',
+      paths: [
+        {
+          tier: 'free',
+          what: 'add the QUEUE producer binding to wrangler.jsonc ({"queues":{"producers":[{"binding":"QUEUE","queue":"<name>"}]}}) — Queues has a limited free plan, and the app runtime that consumes the message is yours to run',
+        },
+        {
+          tier: 'free',
+          what: 'or drop the app schedule (the cron triggers then only drain `lw_jobs`, which needs no queue binding)',
+        },
+      ],
+    });
+  }
 }
 
 // Eloquent auth providers name their model as a string; the compiled rung needs the
@@ -1202,6 +1240,29 @@ const authProviderFqcns = Object.entries(runtimeConfig)
 // with the routes-dump collision check and the port scaffolder: three copies of
 // this rule had drifted into `|| 'home'`, which refuses any app that declares
 // both `/` and `/home`.
+//
+// #366: the collision check must be CASE-INSENSITIVE. The scanner's own check
+// sees the URIs as PHP declares them, but `route:list` (reporting the *matched
+// pattern*) is what the build writes modules for — and Windows/macOS
+// filesystems are case-insensitive, so `/Posts` and `/posts` would otherwise
+// land on one `posts.mjs` and both URLs would be served by whichever handler was
+// written last. `slugifyRoute` lowercases both, which is exactly the invariant
+// (it never produces an uppercase character, so nothing loses information).
+{
+  const owner = new Map();
+  for (const route of routes) {
+    const slug = slugifyRoute(route);
+    const prior = owner.get(slug);
+    if (prior !== undefined && prior !== route) {
+      fail(
+        'the route URIs ' + JSON.stringify(prior) + ' and ' + JSON.stringify(route) +
+          ' both compile to the controller module "' + slug + '.mjs" — the build would write one handler over the other and serve both URLs from it' +
+          '\n  fix: rename one route, or declare one of them in registry.json (port/ignore) if the app is not yours to rename'
+      );
+    }
+    owner.set(slug, route);
+  }
+}
 
 // Does the app bind a Cloudflare product under a given name? `product` is the
 // wrangler key ('r2_buckets' | 'd1_databases'). `wrangler.jsonc` is JSON with
@@ -1558,9 +1619,9 @@ if (errorViewCodes.length) {
       const detail = viewJobError(viewStderr, viewName);
       note({
         severity: BLOCK,
-        area: 'route',
-        cause: `error view ${code} failed to compile`,
-        fix: 'check the view source compiles; ensure compile-view.php can write its cache output',
+        area: 'view',
+        cause: `error view ${viewName} failed to compile`,
+        fix: `check the view source compiles; ensure compile-view.php can write its cache output (${relPath(dumpPath)})`,
       });
       fail('compile-view failed for ' + code + ': ' + detail.slice(0, 800));
     }
@@ -1587,8 +1648,17 @@ if (errorViewCodes.length) {
       // This site crashed the build with a raw execFileSync dump and no READINESS
       // block (seen: LW003 on Arr::except for a Laravel 11 app) — fail() instead.
       const detail = String(e.message || '').trim().split('\n').slice(-4).join(' / ');
+      // #313: name the VIEW as the blocking reason. Without this the READINESS
+      // banner showed whatever BLOCK finding happened to be pushed earlier —
+      // often a ROUTE — for a failure that is entirely in the error view.
+      note({
+        severity: BLOCK,
+        area: 'view',
+        cause: `transpiling the error view ${viewName} failed: ${detail}`,
+        fix: `run the standalone transpiler for the full error: node compiler/bin/transpile.mjs ${relPath(dumpPath)} --json`,
+      });
       fail(
-        `transpiling the error view errors::${code} failed: ${detail}\n` +
+        `transpiling the error view ${viewName} failed: ${detail}\n` +
           '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
           `    node compiler/bin/transpile.mjs ${dumpPath} --json`
       );
@@ -2463,6 +2533,10 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // injects a service, ...).
       const classErrors = new Map();
       for (const e of classesCompile.errors) classErrors.set(e.class, e.message);
+      // The queue check at the end reads these two: the classes block is where
+      // the compiled set and the class compiler's own reasons exist.
+      compiledClassFqcns = new Set(Object.keys(classesCompile.meta));
+      for (const [cls, why] of classErrors) queueClassErrors.set(cls, why);
       const blockedClasses = {};
       const blockedShortNames = new Set();
       // EVERY class that did not compile is blocked - not only the event
@@ -2778,9 +2852,16 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           // A handler that queues a job writes a `lw_jobs` row the CRON
           // TRIGGER drains. With no trigger the job would never run, so the
           // build refuses it below (the route itself is fine - the deployment
-          // is not).
-          if (readFileSync(outPath, 'utf8').includes('rt.queuePush(')) {
+          // is not). The pushed FQCN(s) are kept too: the drain runs a job only
+          // when its class COMPILED (worker.mjs reads `methods.handle` from
+          // dist/src/classes.generated.mjs), so a push of a job the class
+          // compiler refused is refused below as well.
+          const emitted = readFileSync(outPath, 'utf8');
+          if (emitted.includes('rt.queuePush(')) {
             queuePushes.push(p.route);
+            for (const m of emitted.matchAll(/rt\.queuePush\(\s*("(?:[^"\\]|\\.)*")/g)) {
+              queueJobs.push({ route: p.route, job: JSON.parse(m[1]) });
+            }
           }
           if (isExtraVerb) {
             verbControllers.push({ route: p.route, verb: p.verb, slug, fqcn: p.fqcn, method: p.method });
@@ -3388,6 +3469,37 @@ if (queuePushes.length && !(cronTriggers && cronTriggers.length)) {
       'a Worker has no long-lived queue consumer, so the job would never run. Add a cron trigger ' +
       '(wrangler.toml `[triggers] crons = ["*/1 * * * *"]`) or dispatch the job inline ' +
       "(Laravel's sync driver) instead"
+  );
+}
+
+// A pushed job whose class did not COMPILE can never run either: the drain
+// builds its handler map from the compiled classes (src/worker.mjs reads
+// `methods.handle` out of dist/src/classes.generated.mjs), so the row would sit
+// until the drain dropped it - the work would silently never happen while the
+// route still answered 200. Laravel runs the job, so the build refuses the
+// deployment and names the class compiler's own reason for the class.
+const uncompiledJobs = queueJobs.filter((e) => !compiledClassFqcns.has(e.job));
+if (uncompiledJobs.length) {
+  const routes = [...new Set(uncompiledJobs.map((e) => e.route))];
+  const jobs = [...new Set(uncompiledJobs.map((e) => e.job))];
+  for (const e of uncompiledJobs) {
+    const why = queueClassErrors.get(e.job);
+    note({
+      route: e.route,
+      area: 'queue',
+      severity: BLOCK,
+      cause: 'dispatches the job ' + e.job + ', but that class did not compile' + (why ? ' - ' + why : ''),
+      fix: 'make the job class compile (the class compiler error above names it) — the cron drain runs a job only when its class compiled, so an uncompiled job is a silent no-op',
+      paths: [
+        { tier: 'free', what: 'fix the class so it compiles (the reason above is the class compiler\'s own), then re-run the build' },
+        { tier: 'free', what: 'or dispatch inline with QUEUE_CONNECTION=sync when the work fits in the request — but an uncompiled class cannot run there either, so the class still has to compile' },
+      ],
+    });
+  }
+  fail(
+    'the route(s) ' + routes.join(', ') + ' dispatch a queued job whose class did not compile (' + jobs.join(', ') +
+      ') - the cron drain runs a job only when its class compiled, so the job would never run while the route ' +
+      'answered 200. Fix the class compiler error named above'
   );
 }
 

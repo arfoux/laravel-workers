@@ -796,11 +796,16 @@ test('fail loud: throttle middleware without a cache store', async () => {
 // The method-not-allowed path (Laravel's AbstractRouteCollection):
 //   - an OPTIONS request gets the automatic OPTIONS response (200, an empty
 //     body, the Allow header with the verbs the URI accepts);
-//   - any other method raises MethodNotAllowedHttpException: 405 when the app
-//     has an errors/405 view, else the framework's error renderer answers 500.
+//   - any other method raises MethodNotAllowedHttpException: the status is the
+//     exception's own - 405 - with or without an `errors/405` view (only the
+//     BODY follows the view; `convertExceptionToResponse` uses
+//     `$e->getStatusCode()`). Probed with the PHP oracle: no view, debug off,
+//     `Accept: application/json` -> 405, `Allow: POST`,
+//     `{"message":"The GET method is not supported for route queue-demo.
+//     Supported methods: POST."}`.
 // ---------------------------------------------------------------------------
 
-async function callMethod(method, uri, mutate) {
+async function callMethod(method, uri, mutate, headers) {
   const { db } = makeDb();
   const config = baseConfig();
   const options = {
@@ -817,7 +822,7 @@ async function callMethod(method, uri, mutate) {
   };
   if (mutate) mutate(options);
   return handleHttp(
-    { method, url: BASE + uri, headers: { host: 'localhost' }, body: '' },
+    { method, url: BASE + uri, headers: { host: 'localhost', ...(headers || {}) }, body: '' },
     options
   );
 }
@@ -868,23 +873,56 @@ test('router: an OPTIONS request gets the automatic OPTIONS response', async () 
   assert.equal(res.headers['cache-control'], 'no-cache, private');
 });
 
-test('router: a method that is not allowed answers like Laravel', async () => {
+test('router: a method that is not allowed answers Laravel\'s 405', async () => {
   const res = await callMethod('DELETE', '/__probe/state', (o) => {
     o.table = normalizeTable([{ uri: '/__probe/state', methods: ['GET', 'HEAD'] }]);
   });
-  // No errors/405 view in the app: the framework's error renderer answers 500.
-  assert.equal(res.status, 500);
-  assert.equal(res.headers.allow, undefined);
+  // Laravel keeps the exception's status with or without an errors/405 view
+  // (Handler::renderHttpException -> convertExceptionToResponse ->
+  // `$e->getStatusCode()`); the Allow header is Symfony's
+  // `implode(', ', $allow)` and the cache header is Laravel's.
+  assert.equal(res.status, 405);
+  assert.equal(res.headers.allow, 'GET, HEAD');
+  assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
+  assert.equal(res.headers['cache-control'], 'no-cache, private');
+  // No compiled errors/405 view: the framework's own error page is a framework
+  // asset the build does not ship, so the edge answers the minimal page.
+  assert.equal(res.body, '<html><body><h1>405</h1><p>Method Not Allowed</p></body></html>');
 });
 
-test('router: a method that is not allowed answers 405 with an errors/405 view', async () => {
+test('router: a JSON request for a method that is not allowed gets Laravel\'s message', async () => {
+  const res = await callMethod(
+    'DELETE',
+    '/__probe/state',
+    (o) => {
+      o.table = normalizeTable([{ uri: '/__probe/state', methods: ['GET', 'HEAD'] }]);
+    },
+    { accept: 'application/json' }
+  );
+  assert.equal(res.status, 405);
+  assert.equal(res.headers.allow, 'GET, HEAD');
+  assert.equal(res.headers['content-type'], 'application/json');
+  // Laravel's prepareJsonResponse: convertExceptionToArray (debug off) answers
+  // the message, JSON_PRETTY_PRINT (4 spaces), no trailing newline. The message
+  // is AbstractRouteCollection::requestMethodNotAllowed's:
+  // 'The %s method is not supported for route %s. Supported methods: %s.'
+  assert.equal(
+    res.body,
+    '{\n    "message": "The DELETE method is not supported for route __probe/state. Supported methods: GET, HEAD."\n}'
+  );
+});
+
+test('router: a method that is not allowed renders the compiled errors/405 view', async () => {
   const res = await callMethod('DELETE', '/__probe/state', (o) => {
-    o.config['errors.405_view'] = true;
     o.table = normalizeTable([{ uri: '/__probe/state', methods: ['GET', 'HEAD'] }]);
+    // The compiled view is `renderErrorView` (dist/src/error-renderer.mjs); the
+    // app's own `errors/405` (or its `errors/4xx` fallback) reaches it here.
+    o.renderErrorView = (status, request, ctx, error) =>
+      status === 405 ? '<h1>app 405</h1><p>' + error.message + '</p>' : null;
   });
   assert.equal(res.status, 405);
-  // Symfony's MethodNotAllowedHttpException: implode(', ', $allowedMethods).
   assert.equal(res.headers.allow, 'GET, HEAD');
+  assert.match(res.body, /^<h1>app 405<\/h1><p>The DELETE method is not supported for route __probe\/state\./);
 });
 
 test('router: a URI that matches no route is left to the platform', async () => {
@@ -1040,6 +1078,57 @@ test('the service adapters (storage/mail/queue) reach the handler context', asyn
     sent.map((s) => s[0]),
     ['put', 'mail', 'queue']
   );
+});
+
+// An unhandled exception inside a compiled handler has no `.status`: Laravel's
+// Handler::render() prepares it into a 500 (`prepareException()` wraps it in an
+// HttpException with status 500) and `prepareResponse()` renders errors/500 -
+// or prepareJsonResponse() for an expectsJson request. The compiled rung used to
+// rethrow here, so the exception escaped handleHttp (and the Worker's fetch, which
+// has no catch) and the platform answered "error code: 1101" instead of a 500.
+test('an unhandled exception answers a 500 (app page / PrepareJsonResponse body)', async () => {
+  const { db } = makeDb();
+  const table = normalizeTable([{ uri: '/__probe/boom', methods: ['GET', 'HEAD'], middleware: ['web'] }]);
+  const handlers = {
+    'GET /__probe/boom': async () => {
+      throw new Error('kaboom');
+    },
+  };
+  const call = (accept, extra = {}) =>
+    handleHttp(
+      { method: 'GET', url: BASE + '/__probe/boom', headers: { host: 'localhost', accept }, body: '' },
+      {
+        table,
+        handlers,
+        config: baseConfig(),
+        env: { DB: db },
+        db,
+        models: { LWOracleUser },
+        clock: () => FREEZE_S,
+        clientIp: CLIENT_IP,
+        ...extra,
+      }
+    );
+
+  // HTML: the status-only body when the build compiled no error view for the app.
+  const html = await call('text/html');
+  assert.equal(html.status, 500);
+  assert.equal(html.headers['content-type'], 'text/html; charset=utf-8');
+  assert.match(html.body, /<h1>500<\/h1>/);
+
+  // The compiled errors/500 view wins when the ctx carries renderErrorView (the
+  // Worker hands `options.renderErrorView` down to the handler ctx).
+  const withView = await call('text/html', { renderErrorView: (status) => `<h1>app ${status}</h1>` });
+  assert.equal(withView.status, 500);
+  assert.equal(withView.body, '<h1>app 500</h1>');
+
+  // JSON: Handler::prepareJsonResponse() -> convertExceptionToArray() answers
+  // ['message' => 'Server Error'] outside debug, pretty-printed
+  // (JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES).
+  const json = await call('application/json');
+  assert.equal(json.status, 500);
+  assert.equal(json.headers['content-type'], 'application/json');
+  assert.equal(json.body, '{\n    "message": "Server Error"\n}');
 });
 
 test('fail loud: session.encrypt=true and unknown drivers', async () => {

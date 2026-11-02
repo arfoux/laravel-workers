@@ -154,6 +154,9 @@ npm run test:sqlite     # in-memory SQLite integration
 npm run test:shadow     # the shadow harness (real PHP app vs compiled worker)
 npm run bench           # micro-bench p95 budget
 npm run check:docs      # the docs gate
+npm run gate:cpu        # the CPU gate: measures the real kernel hot paths on Cloudflare
+                        # (deploys a probe worker, reads cpuTime/outcome via wrangler tail,
+                        # asserts them, deletes the worker — needs a logged-in wrangler)
 npm run audit:constructs # facade coverage audit
 
 # flags / non-interactive (CI):
@@ -481,7 +484,7 @@ The honest consequence: a page that reads rows the build has never seen prerende
 | **Paginator** | `paginate(10)` → `LengthAwarePaginator` (items/total/pages/URL window); `$paginator->links()` renders `pagination::tailwind` byte-identical to Laravel | M40 |
 | **Mail** | `Mail::to()->send()` compiles the mailable class; mailer built from `mail.default` → log/noop/resend | M28/M57 |
 | **Queue | Scheduler** | `Queue::push()` fails loud (worker has no queue consumer); the schedule dumps to `dist/cron.json` + `schedule.generated.mjs`, the `scheduled` handler evaluates due events | M28/M29 |
-| **Method handling** | auto `OPTIONS` (200, `Allow` header); unmatched method → 405 with `errors/405` view else 500 | M40 |
+| **Method handling** | auto `OPTIONS` (200, `Allow` header); unmatched method → 405 (`Allow` + the app's `errors/405` view, else the framework's page; JSON gets Laravel's message) | M40 |
 | **Route-model binding** | `show(Post $post)` — model from the route segment, 404 on miss | M40 |
 
 ### Fails loud (use a port instead)
@@ -565,6 +568,8 @@ PHP boots **only at S0** (build time). The edge (S1–S6) is pure JS.
 - `MAP.md` — the construct coverage map, D1 limits, the unknown-to-verify list.
 - `tools/constructs.json` — every `Illuminate\Support\Facades\*` (Laravel 13) with a verdict.
 - `npm run check:docs` — the gate: the coverage index, the construct audit (COMPILED.md), and this README's counts (both generated — a hand-typed number here is a bug).
+- `npm run bench` — the local micro-bench (a Node proxy for CPU: a fast regression detector).
+- `npm run gate:cpu` — the platform's own numbers: deploys a probe worker running the real kernel hot paths, reads `cpuTime`/`outcome` back through `wrangler tail`, asserts a page-like load fits the Free budget **and** that a burn is caught, then deletes the worker. Outside `gate:ci` (it needs a logged-in wrangler).
 - `kernel/tests/budget.test.mjs` — p95 ≤ 5 ms hot, ≤ 30 ms for the encrypter.
 
 ---

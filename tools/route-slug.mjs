@@ -13,6 +13,14 @@
 // Two DIFFERENT URIs can still slugify to the same name (`/a/b`, `/a-b` and
 // `/{a}-{b}` all answer `a-b`); `tools/routes-dump.mjs` refuses that dump rather
 // than let one route's handler overwrite the other's.
+//
+// #366: the slug is CASE-FOLDED. The build writes these modules to a local
+// filesystem, and Windows/macOS are case-insensitive by default - `/Posts` and
+// `/posts` are two genuinely different Laravel routes, but their modules would
+// land on one file and one handler would silently serve both URLs. Lowercasing
+// here is lossless (the name is a build artifact, never a contract) and it makes
+// every collision check case-insensitive by construction: the same rule is what
+// the scanner compares and what the build writes.
 export const ROOT_SLUG = '_root';
 
 export function slugifyRoute(uri) {
@@ -21,6 +29,7 @@ export function slugifyRoute(uri) {
       .replace(/^\//, '')
       .replace(/[{}]/g, '')
       .replace(/[^a-zA-Z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '') || ROOT_SLUG
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase() || ROOT_SLUG
   );
 }

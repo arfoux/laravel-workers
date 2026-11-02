@@ -70,10 +70,38 @@ function hasPhp() {
   }
 }
 
-const skip = !APP
-  ? 'event-dump.test.mjs: no Laravel app (set LW_LARAVEL_APP to a Laravel 13 app with vendor/) ' +
-    '- the event dump test is skipped'
-  : false;
+const skip = false;
+
+// The binding tests install their `$this->app->bind()` calls into the app's
+// REGISTERED provider (the PHP oracle boots it, so the container really binds
+// them). An app whose provider declares no `register(): void` (a hand-made
+// fixture, e.g. the audit app) has nowhere to put them: the tests then SKIP
+// with the reason instead of running the probe against an unbound container and
+// reporting the port as broken — the repo's rule for oracle tests is "skip with
+// a reason, never fail on a missing prerequisite".
+function bindingFixtureSkip() {
+  if (!APP || !PROVIDER_FILE || !existsSync(PROVIDER_FILE)) {
+    return 'event-dump.test.mjs: the app has no app/Providers/AppServiceProvider.php - the binding fixtures are skipped';
+  }
+  const support = ['AbstractReporter.php', 'ListenerContract.php'].map((f) =>
+    path.join(APP, 'app', 'Support', f)
+  );
+  const missing = support.filter((p) => !existsSync(p));
+  if (missing.length) {
+    // The probe job type-hints both forms; without the classes the container
+    // cannot resolve them and the dump answers `external` for a fixture reason.
+    return `event-dump.test.mjs: the app has no ${missing
+      .map((p) => path.relative(APP, p))
+      .join(', ')} - the container-binding fixtures are skipped`;
+  }
+  try {
+    return readFileSync(PROVIDER_FILE, 'utf8').includes('    public function register(): void')
+      ? false
+      : `event-dump.test.mjs: ${PROVIDER_FILE} declares no \`register(): void\` - the container-binding fixtures are skipped`;
+  } catch {
+    return 'event-dump.test.mjs: the app provider could not be read - the binding fixtures are skipped';
+  }
+}
 
 // The container binds BOTH shapes: an interface and an abstract class.
 const REPORTER = `<?php
@@ -124,6 +152,14 @@ const BINDINGS = [
   '        $this->app->singleton(\\App\\Support\\ListenerContract::class, \\App\\Services\\LwBindingReporter::class);',
 ].join('\n');
 
+// The reason the oracle tests cannot run here, or `false`. Computed AFTER the
+// fixture paths exist (the binding fixtures need the app's provider to declare
+// `register()` — see `bindingFixtureSkip` above).
+const skipReason = !APP
+  ? 'event-dump.test.mjs: no Laravel app (set LW_LARAVEL_APP to a Laravel 13 app with vendor/) ' +
+    '- the event dump test is skipped'
+  : bindingFixtureSkip();
+
 function installFixtures() {
   if (!APP) return;
   if (!existsSync(REPORTER_FILE)) writeFileSync(REPORTER_FILE, REPORTER);
@@ -134,6 +170,11 @@ function installFixtures() {
   providerBackup = src;
   const marker = '    public function register(): void';
   const at = src.indexOf(marker);
+  // `bindingFixtureSkip` (module scope) already turned this into a SKIP: the
+  // app's provider has no `register()` for the bindings to go into, and running
+  // the probe against an unbound container would report the port as broken for
+  // a fixture reason (this really happened against the audit fixture, whose
+  // AppServiceProvider declares no `register()`).
   if (at === -1) return;
   const open = src.indexOf('{', at);
   const close = src.indexOf('}', open);
@@ -152,7 +193,7 @@ after(removeFixtures);
 
 const runDump = (bin, args) => execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
-test('event-dump: a bound interface/abstract parameter resolves to its impl', { skip }, () => {
+test('event-dump: a bound interface/abstract parameter resolves to its impl', { skip: skipReason }, () => {
   installFixtures();
   try {
     const out = JSON.parse(runDump(process.execPath, [dumpMjs, APP]));
@@ -172,7 +213,7 @@ test('event-dump: a bound interface/abstract parameter resolves to its impl', { 
   }
 });
 
-test('event-dump: the port matches the PHP oracle byte for byte', { skip: skip || (hasPhp() ? false : `event-dump.test.mjs: no PHP (${PHP}) - skipped`) }, () => {
+test('event-dump: the port matches the PHP oracle byte for byte', { skip: skipReason || (hasPhp() ? false : `event-dump.test.mjs: no PHP (${PHP}) - skipped`) }, () => {
   installFixtures();
   try {
     const mjs = runDump(process.execPath, [dumpMjs, APP]);

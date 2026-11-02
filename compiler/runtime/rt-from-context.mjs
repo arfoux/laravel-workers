@@ -942,7 +942,14 @@ export function buildRt(context, opts = {}) {
         'INSERT INTO "' + QUEUE_TABLE + '" ("job", "payload", "attempts", "available_at", "created_at") ' +
           'VALUES (?, ?, 0, ?, ?)'
       )
-      .bind(String(fqcn), JSON.stringify(args || []), Math.floor(now.getTime() / 1000), phpDateString(now))
+      // #436/#416: the payload is the PHP reader's answer on the way back, so
+      // it must be WRITTEN with the same fidelity: `JSON.stringify` reorders an
+      // integer-like key that does not come first (`['a'=>1, 3=>'x']` becomes
+      // `{"3":"x","a":1}`, where PHP writes `{"a":1,"3":"x"}`), and Laravel's
+      // `DatabaseQueue` hands `json_decode($payload, true)` straight to the
+      // job's constructor. A job whose `handle()` re-encodes a property it was
+      // built with would answer with the keys in the wrong order.
+      .bind(String(fqcn), phpJsonEncode(args || []), Math.floor(now.getTime() / 1000), phpDateString(now))
       .run();
     // Laravel's `dispatch()` answers the pending dispatch (an object), not a
     // boolean; the compiled call sites only ever chain `->onQueue()` etc.,
@@ -974,7 +981,12 @@ export function buildRt(context, opts = {}) {
         continue;
       }
       try {
-        const args = JSON.parse(String(row.payload || '[]'));
+        // The row was written by `phpJsonEncode` (the PHP answer), so it is read
+        // with the matching PHP reader, not `JSON.parse`: only that one keeps
+        // PHP's key order for an integer-like key and answers NULL for an
+        // invalid payload instead of throwing (PHP's `json_decode`) - and a row
+        // in this table can also have been written by real Laravel.
+        const args = phpJsonDecodeOrdered(String(row.payload || '[]'), { text: true });
         const instance = await entry.build(rt, args);
         // The compiled methods take the runtime first (`(rt, ...args)`).
         await instance.handle(rt);

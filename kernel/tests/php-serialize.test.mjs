@@ -141,6 +141,30 @@ test('C: PHP reads our bytes and re-serializes to the same bytes', () => {
   }
 });
 
+test('D: a PHP array keeps its key order through the JS round trip (integer-like key mixed in)', () => {
+  // PHP's array keeps its insertion order; a JS object enumerates an
+  // integer-like key FIRST, so the payload PHP writes as `['a' => 1, 3 => 'x']`
+  // used to come back as `3` before `a` - both the session payload
+  // (`PhpSessionSerializer`) and the D1 cache store (`DatabaseStore`) are this
+  // shape on the way out. The order travels in the non-enumerable `__lwOrder`
+  // marker (the same one `rt.assoc()`/`phpJsonDecodeOrdered()` set).
+  // (The PHP *string* key "0" is a separate, documented representation limit:
+  // a JS object cannot tell it from the int 0, so this test stays on the order
+  // defect - the numeric key mixed with a string one.)
+  const phpStrings = [
+    'a:2:{s:1:"a";i:1;i:3;s:1:"x";}',
+    'a:3:{s:1:"a";i:1;i:3;s:1:"x";s:1:"b";i:2;}',
+  ];
+  for (const raw of phpStrings) {
+    assert.equal(phpSerialize(phpUnserialize(raw)), raw, `order lost for ${raw}`);
+  }
+  // A key written AFTER the marker was set still lands at the end (PHP appends
+  // to the array; the marker is metadata, not a whitelist).
+  const decoded = phpUnserialize('a:2:{s:1:"a";i:1;i:3;s:1:"x";}');
+  decoded.b = 2;
+  assert.equal(phpSerialize(decoded), 'a:3:{s:1:"a";i:1;i:3;s:1:"x";s:1:"b";i:2;}');
+});
+
 test('float formatting: calibrated against PHP 8.3 strings', () => {
   // JS has no int/float split: 1.0 === 1 encodes as i:1; (documented).
   assert.equal(phpSerialize(1.0), 'i:1;');

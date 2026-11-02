@@ -85,6 +85,19 @@ jobs:
           touch database/database.sqlite
           npm install # a fresh Laravel app ships no package-lock.json, so npm ci cannot be used
           npm run build
+      - name: The validation-messages module matches the app's framework copy (#429)
+        # The `test` job has no Laravel app, so the gate SKIPs this check there.
+        # This job owns the app: `--require` turns a missing app into a failure,
+        # so the module cannot pass unaudited anywhere.
+        env:
+          LW_APP_ROOT: ${{ github.workspace }}/e2e-app
+        run: node tools/validation-messages-check.mjs --require
+      - name: The ascii-map module matches the app's portable-ascii (#294)
+        # Same contract as the validation-messages check above: the `test` job
+        # has no app, so this job owns it and makes the no-app case fatal.
+        env:
+          LW_APP_ROOT: ${{ github.workspace }}/e2e-app
+        run: node tools/ascii-map-check.mjs --require
       - name: Pack the published artifact
         run: npm pack --pack-destination "$GITHUB_WORKSPACE"
       - name: Gate — the tarball ships every file the build needs

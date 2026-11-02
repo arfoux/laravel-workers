@@ -317,15 +317,66 @@ const DATE_VALUE = '__lwDateValue';
 export function isDateValue(v) {
   return !!v && typeof v === 'object' && v[DATE_VALUE] === true;
 }
+// PHP `is_numeric()` in the safe subset (no hex/binary/octal literals, which
+// `Number()` would accept but PHP would not): sign, digits with an optional
+// point, an optional exponent. Leading/trailing whitespace is allowed (PHP 8).
+const NUMERIC_TEXT = /^\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\s*$/;
+/**
+ * HasAttributes::asDateTime() (:1614-1622) answers a Carbon or RAISES
+ * `Carbon\Exceptions\InvalidFormatException` - it never returns a string. The
+ * kernel used to hand back the stored TEXT for a value that read as no date at
+ * all: the app then hit a JS TypeError (`...format is not a function`) one
+ * call later, where PHP raised InvalidFormatException with a clear message
+ * (#273). Fail loud at the boundary instead, with the same class and message
+ * shape (probed on PHP 8.3 + 13.37).
+ */
+function throwInvalidDate(raw) {
+  const text = String(raw);
+  const first = text.length ? text[0] : '';
+  const reason = first && /[A-Za-z]/.test(first) ? 'The timezone could not be found in the database' : 'Unexpected character';
+  const err = new Error(`Could not parse '${text}': Failed to parse time string (${text}) at position 0 (${first}): ${reason}`);
+  err.name = 'InvalidFormatException';
+  err.phpClass = 'Carbon\\Exceptions\\InvalidFormatException';
+  throw err;
+}
 export function makeDateValue(raw, tz = modelTimezone.value) {
   if (raw == null) return null;
   const text = String(raw);
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/.exec(text);
-  // A value that does not read as a date stays the raw TEXT: a silent Carbon
-  // would hide a bad row, while Laravel raises InvalidFormatException - the
-  // app's own bad data is not turned into a wrong string here.
-  if (!m) return text;
-  const ms = wallClockToUtcMs(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0), tz);
+  // asDateTime() (:1582-1598): a DateTimeInterface is taken as an INSTANT, and
+  // a NUMERIC value is a UNIX timestamp (`Date::createFromTimestamp`), not a
+  // wall-clock string. Probed: asDateTime('1700000000') = 2023-11-15
+  // 05:13:20+07:00 in Asia/Jakarta, asDateTime('1700000000.5') = ...20.5.
+  let ms;
+  if (raw instanceof Date) {
+    ms = raw.getTime();
+  } else if (typeof raw === 'number' || NUMERIC_TEXT.test(text)) {
+    const seconds = Number(text);
+    if (!Number.isFinite(seconds)) throwInvalidDate(raw);
+    ms = Math.round(seconds * 1000);
+  } else {
+    // HasAttributes::asDateTime() (:1614-1622) calls
+    // `Date::createFromFormat($this->getDateFormat(), $value)` with the
+    // connection's format (`Y-m-d H:i:s`, except the `Y-m-d` fast path at
+    // :1605) and falls back to `Date::parse($value)` when that yields FALSE.
+    // Probed on PHP 8.3 + 13.37, everything through the real method:
+    //   '2024-01-02 03:04:05' -> 03:04:05      '2024-1-2 3:4:5'  -> 03:04:05
+    //   '2024-01-02 03:04'    -> 03:04:00      '2024-02-30'     -> Mar 1
+    //   '2024-01-00'          -> Dec 31 prev   '2024-13-45'     -> Feb 14 next
+    //   '2024-01-02 25:00:00' -> Jan 3 01:00   '20240202'       -> a TIMESTAMP
+    //   'garbage'             -> Carbon\Exceptions\InvalidFormatException
+    // The ported shape is the ISO one with 1-2 digit components, an optional
+    // seconds part and an optional fraction, with the SAME rollovers. What is
+    // NOT ported - the relative parser's remaining input (a US date
+    // `02/01/2024`, an offset/`Z` suffix, `next monday`, `+1 day`) - fails
+    // loud here instead of silently reading a different wall clock: those
+    // depend on the clock and the app's locale (#273).
+    const m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.\d+)?)?)?$/.exec(text);
+    if (!m) throwInvalidDate(raw);
+    // Day, month, hour, minute and second ROLL over exactly as PHP's parser
+    // does ('2024-01-00' = Dec 31, '2024-02-30' = Mar 1, '2024-13-45' =
+    // Feb 14 of the next year, '2024-01-02 25:00:00' = Jan 3 01:00).
+    ms = wallClockToUtcMs(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0), tz);
+  }
   const base = () => phpDateString(new Date(ms), tz);
   const shifted = (deltaMs) => makeDateValue(phpDateString(new Date(ms + deltaMs), tz), tz);
   const api = {

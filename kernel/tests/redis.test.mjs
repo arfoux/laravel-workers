@@ -19,6 +19,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { RedisStore, RedisUnsupportedError, LW_REDIS_SCHEMA } from '../redis.mjs';
+import { phpJsonEncode } from '../php-json.mjs';
+import { phpJsonDecodeOrdered } from '../php-json-ordered.mjs';
 
 // A tiny D1 stub: `prepare(sql).bind(...).run()/first()/all()` over a Map.
 // The store reads through `.all()` (a SELECT) and writes through `.run()`.
@@ -172,4 +174,20 @@ test('the server-only commands are refused loudly', () => {
       command
     );
   }
+});
+
+test('a stored PHP array keeps its key order (the `j:` payload is the PHP codec, audit 449)', () => {
+  // PHP's array keeps its insertion order, a JS object enumerates an
+  // integer-like key FIRST - so `['a' => 1, 3 => 'x']` used to come back as
+  // `[3 => 'x', 'a' => 1]` from the `j:` payload. It is written and read with
+  // the PHP codec now, and an entry a previous build wrote still reads.
+  const db = makeDb();
+  const store = new RedisStore(db, { prefix: '' });
+  const phpish = phpJsonDecodeOrdered('{"a":1,"3":"x"}', { text: true });
+  return store.set('k', phpish).then(async () => {
+    assert.equal(db.rows.get('k').value, 'j:{"a":1,"3":"x"}');
+    assert.equal(phpJsonEncode(await store.get('k')), '{"a":1,"3":"x"}');
+    db.rows.set('legacy', { value: 'j:{"3":"x","a":1}', expiration: null });
+    assert.equal(phpJsonEncode(await store.get('legacy')), '{"3":"x","a":1}');
+  });
 });

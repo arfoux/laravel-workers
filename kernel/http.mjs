@@ -75,7 +75,13 @@ import {
   acceptsAnyContentType,
   applyAuthenticatable,
 } from './auth.mjs';
-import { phpJsonDecode, phpJsonEncode } from './php-json.mjs';
+import {
+  phpJsonDecode,
+  phpJsonEncode,
+  phpJsonEncodeWithFlags,
+  JSON_PRETTY_PRINT,
+  JSON_UNESCAPED_SLASHES,
+} from './php-json.mjs';
 import { strIs } from './csrf.mjs';
 import { parseMultipart } from './multipart.mjs';
 import {
@@ -1333,7 +1339,40 @@ async function renderException(error, request, ctx) {
       body: `<html><body><h1>${error.status}</h1><p>${escapeHtmlText(error.message)}</p></body></html>`,
     });
   }
-  throw error;
+  // Illuminate\Foundation\Exceptions\Handler::render() (13.37): a Throwable that
+  // is not an HTTP exception is *prepared* into a 500 - `prepareException()`
+  // wraps it in an HttpException with status 500, `prepareResponse()` then renders
+  // the errors/500 view (or, for an expectsJson request, `prepareJsonResponse()`
+  // with convertExceptionToArray() answering `['message' => 'Server Error']`
+  // outside debug). This branch used to rethrow: the exception escaped
+  // handleHttp - and the Worker's fetch, which has no catch of its own - so the
+  // platform answered "error code: 1101" where Laravel renders a 500. The
+  // fail-loud contract above is for a render that itself failed (lwRenderFailed);
+  // an *unrendered* app error is not that case.
+  if (requestExpectsJson(request)) {
+    return new HttpResponse({
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+      // prepareJsonResponse uses JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES, and
+      // the message is the literal 'Server Error' (config('app.debug') is false
+      // in the compiled rung - convertExceptionToArray only answers the real
+      // message/class/file/line when debug is on).
+      body: '{\n    "message": ' + phpJsonEncode('Server Error') + '\n}',
+    });
+  }
+  const rendered500 =
+    typeof ctx.renderErrorView === 'function' ? ctx.renderErrorView(500, request, ctx, error) : null;
+  return new HttpResponse({
+    status: 500,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+    // No compiled error view: a status-only HTML page, like the HttpError branch
+    // above (Laravel renders the framework's errors/500 view - the exact bytes
+    // are a framework asset the build compiles when it can).
+    body:
+      rendered500 != null
+        ? String(rendered500)
+        : `<html><body><h1>500</h1><p>${escapeHtmlText('Server Error')}</p></body></html>`,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1524,28 +1563,75 @@ export async function handleHttp(raw, options = {}) {
       };
     }
     const has405 = config['errors.405_view'] === true;
-    const status = has405 ? 405 : 500;
-    // Laravel renders the error page for this status (the app's errors/405, or
-    // the framework's 500) - a status-only body would differ from Laravel's
-    // HTML page byte for byte.
-    // NOTE: `ctx` is built further down (this branch returns before it), so the
-    // renderer is read from the options directly.
+    // Laravel keeps the exception's OWN status - 405 - whether or not the app
+    // ships an `errors/405` view: `Handler::renderHttpException` renders the
+    // view when it exists and `convertExceptionToResponse` otherwise, and that
+    // one uses `$e->getStatusCode()` (Laravel 13.37, Handler.php:971-984).
+    // Only the BODY follows the view. Probed with the PHP oracle (the fixture
+    // app, no errors/405 view, debug off): a JSON request answers 405 with
+    // `{"message":"The GET method is not supported for route queue-demo.
+    // Supported methods: POST."}`, `Allow: POST` and `cache-control: no-cache,
+    // private`; the HTML answer is the framework's error page, never the app's
+    // 500 view. (The old rule - "else 500" - came from a Symfony HTML render
+    // that could not find its own asset; the status was never 500.)
+    const status = 405;
+    // Symfony's MethodNotAllowedHttpException header: implode(', ', $allow).
+    const allow = allowed.join(', ');
+    // Laravel's message (AbstractRouteCollection::requestMethodNotAllowed,
+    // :130-137): 'The %s method is not supported for route %s. Supported
+    // methods: %s.' - the METHOD as the request sent it, the request's path
+    // (no leading slash) and the verbs the URI accepts, `', '`-joined.
+    const routePath = String((matchReq.path || '').split('?')[0]).replace(/^\/+/, '');
+    const message =
+      `The ${matchReq.method} method is not supported for route ${routePath}. ` +
+      `Supported methods: ${allow}.`;
+    // Laravel renders the error page for this status (the app's errors/405
+    // view when it exists, else the framework's own page - a framework asset
+    // the build compiles only when the app ships a view). NOTE: `ctx` is built
+    // further down (this branch returns before it), so the renderer is read
+    // from the options directly.
     const rendered =
       typeof options.renderErrorView === 'function'
-        ? options.renderErrorView(status, request, null, {
-            status,
-            message: has405 ? 'Method Not Allowed' : 'Server Error',
-          })
+        ? options.renderErrorView(status, request, null, { status, message })
         : null;
+    if (rendered != null) {
+      return {
+        status,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          allow,
+          'cache-control': 'no-cache, private',
+        },
+        setCookie: [],
+        body: String(rendered),
+      };
+    }
+    // No compiled view: Laravel's own answer for an expectsJson request is
+    // `prepareJsonResponse` (the message above, JSON_PRETTY_PRINT - 4 spaces,
+    // no trailing newline), else the framework's HTML page. The edge ships a
+    // minimal HTML page instead of the framework's bytes (the same rule the
+    // HttpError branch below follows).
+    if (requestExpectsJson(request)) {
+      return {
+        status,
+        headers: {
+          'content-type': 'application/json',
+          allow,
+          'cache-control': 'no-cache, private',
+        },
+        setCookie: [],
+        body: phpJsonEncodeWithFlags({ message }, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+      };
+    }
     return {
       status,
       headers: {
         'content-type': 'text/html; charset=utf-8',
-        ...(has405 ? { allow: allowed.join(', ') } : {}),
+        allow,
         'cache-control': 'no-cache, private',
       },
       setCookie: [],
-      body: rendered != null ? String(rendered) : has405 ? 'Method Not Allowed' : 'Server Error',
+      body: '<html><body><h1>405</h1><p>Method Not Allowed</p></body></html>',
     };
   }
   request.setRoute(matched.route, matched.params);

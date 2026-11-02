@@ -2,38 +2,58 @@
 //
 // Every rule here is PHP-exact: the values are verified against the real
 // Laravel (the oracle) in kernel/tests/str.test.mjs. The transliteration
-// (Str::ascii) covers the Latin-1 supplement - the range Str::slug() needs.
+// (Str::ascii) is the generated portable-ascii map (tools/ascii-map.php).
 //
 // Not ported: Str::head (removed in Laravel 11+), the plural inflections
 // (plural/singular/of and the Stringable object), the ulid helpers and the
 // `*Array` variants. A construct outside this surface fails the build (LW002),
 // it never becomes a silent stub.
 
-const ASCII_MAP = {
-  à: 'a', á: 'a', â: 'a', ã: 'a', ä: 'a', å: 'a', ā: 'a', ă: 'a', ą: 'a',
-  ç: 'c', ć: 'c', ĉ: 'c', ċ: 'c', č: 'c',
-  ď: 'd', đ: 'd',
-  è: 'e', é: 'e', ê: 'e', ë: 'e', ē: 'e', ĕ: 'e', ė: 'e', ę: 'e', ě: 'e',
-  ĝ: 'g', ğ: 'g', ġ: 'g', ģ: 'g',
-  ĥ: 'h', ħ: 'h',
-  ì: 'i', í: 'i', î: 'i', ï: 'i', ĩ: 'i', ī: 'i', ĭ: 'i', į: 'i', ı: 'i',
-  ĵ: 'j',
-  ķ: 'k',
-  ĺ: 'l', ļ: 'l', ľ: 'l', ł: 'l',
-  ñ: 'n', ń: 'n', ņ: 'n', ň: 'n', ŋ: 'n',
-  ò: 'o', ó: 'o', ô: 'o', õ: 'o', ö: 'o', ø: 'o', ō: 'o', ŏ: 'o', ő: 'o',
-  ŕ: 'r', ŗ: 'r', ř: 'r',
-  ś: 's', ŝ: 's', ş: 's', š: 's', ș: 's', ß: 'ss',
-  ţ: 't', ť: 't', ŧ: 't', ț: 't',
-  ù: 'u', ú: 'u', û: 'u', ü: 'u', ũ: 'u', ū: 'u', ŭ: 'u', ů: 'u', ű: 'u', Ų: 'u',
-  ŵ: 'w',
-  ý: 'y', ÿ: 'y', ŷ: 'y',
-  ź: 'z', ż: 'z', ž: 'z',
-  æ: 'ae', œ: 'oe', ð: 'd', þ: 'th',
-  '·': '', '×': 'x', '©': '(c)', '®': '(r)', '™': 'tm',
-  '\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl', '\ufb03': 'ffi',
-  '\ufb04': 'ffl', '\ufb05': 'st', '\ufb06': 'st',
-};
+// Laravel's `Str::ascii()` mapping, generated from the framework itself
+// (tools/ascii-map.php -> kernel/ascii-map.data.mjs): the code points whose
+// transliteration portable-ascii defines, keyed by character. A code point the
+// map does not name is DROPPED, which is what portable-ascii does.
+import { LARAVEL_ASCII_REPLACE } from './ascii-map.data.mjs';
+
+// `strtr()` matches the LONGEST key at the current position and never re-scans
+// what it replaced; the table order breaks ties. Sorting by key length (a
+// stable sort, so the table order survives) and walking left to right
+// reproduces it exactly.
+const ASCII_REPLACE = LARAVEL_ASCII_REPLACE.map(([from, to]) => [String(from), String(to)]);
+ASCII_REPLACE.sort((a, b) => b[0].length - a[0].length);
+const ASCII_REPLACE_BY_FIRST = new Map();
+for (const pair of ASCII_REPLACE) {
+  const first = pair[0][0];
+  const bucket = ASCII_REPLACE_BY_FIRST.get(first);
+  if (bucket) bucket.push(pair);
+  else ASCII_REPLACE_BY_FIRST.set(first, [pair]);
+}
+
+// PHP's `strtr($str, $map)` over the replacement table.
+function strtrReplace(value) {
+  let out = '';
+  let i = 0;
+  while (i < value.length) {
+    const candidates = ASCII_REPLACE_BY_FIRST.get(value[i]);
+    let matched = null;
+    if (candidates) {
+      for (const [from, to] of candidates) {
+        if (value.startsWith(from, i)) {
+          matched = [from, to];
+          break;
+        }
+      }
+    }
+    if (matched) {
+      out += matched[1];
+      i += matched[0].length;
+    } else {
+      out += value[i];
+      i += 1;
+    }
+  }
+  return out;
+}
 
 function phpLower(value) {
   return String(value == null ? '' : value).toLowerCase();
@@ -147,30 +167,17 @@ function stripTags(value) {
   return String(value).replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>?/g, '');
 }
 
-/** Str::ascii() - the Latin-1 transliteration (the part Str::slug needs). */
+/** Str::ascii() - Laravel's transliteration (voku/portable-ascii). */
 export function ascii(value) {
-  let out = '';
-  for (const ch of String(value == null ? '' : value)) {
-    // The Turkish dotted capital I: PHP's transliteration maps it to 'I'
-    // (the JS lowercase would be 'i' + a combining dot).
-    if (ch === '\u0130') {
-      out += 'I';
-      continue;
-    }
-    const lower = ch.toLowerCase();
-    if (ASCII_MAP[lower] !== undefined) {
-      // The uppercase form maps to the uppercase letter (Str::ascii('É') = 'E').
-      const mapped = ASCII_MAP[lower];
-      out += ch === lower ? mapped : mapped.toUpperCase();
-      continue;
-    }
-    if (ch.charCodeAt(0) < 128) {
-      out += ch;
-      continue;
-    }
-    // Everything else is dropped (portable-ascii does the same).
-  }
-  return out;
+  if (value == null) return '';
+  // Pass 1: the replacement table. It merged every language's table, which is
+  // where the transliteration comes from: `Ελληνικά` -> 'ellinika',
+  // `žluťoučký` -> 'zlutoucky', `ß` -> 'ss'.
+  let out = strtrReplace(String(value));
+  // Pass 2 (`remove_unsupported_chars`): PHP turns the line breaks into spaces
+  // and then drops everything outside [\x09\x10\x13\x0A\x0D\x20-\x7E].
+  out = out.replace(/\r\n|[\n\r\t]/g, ' ');
+  return out.replace(/[^\x09\x10\x13\x0A\x0D\x20-\x7E]/g, '');
 }
 
 /** Str::slug() */

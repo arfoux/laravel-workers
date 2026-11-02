@@ -15,6 +15,11 @@
   shadow harness). No test → no claim → no README row.
 - **Fail loud**: outside the compiled subset = build error with a "write a port" hint.
   Silent divergence is the only real failure.
+- **No unauthenticated faces**: the build's own HTTP surfaces are closed by default. The cron
+  face (`POST /__lw/cron`, which mirrors the `scheduled()` trigger — schedule *and* queue drain)
+  answers **404** unless `LW_CRON_SECRET` is set, and then only to a caller presenting the same
+  value in `X-LW-Cron` (compared in constant time). Unset secret = the path is
+  indistinguishable from a non-existent route.
 - **PHP pin**: oracle = PHP 8.3.30. 8.4/8.5 behavior differences are declared, not guessed.
 - **Per-request model**: fresh execution per request (same shape as php-fpm). An isolate may be
   reused, but compiled code must not *depend* on it.
@@ -35,9 +40,26 @@ bcrypt requests (≈4 s cumulative CPU over one connection) all passed. Design s
 stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for rare heavy paths
 (login/bcrypt), and a >10 ms CPU path is never put on a per-page hot path.
 
+**Reproduced and automated** (2026-11-02, `npm run gate:cpu` → `tools/cpu-gate.mjs`, probe
+`lw-cpu-probe`; same `wrangler tail` read path, and the tail events report
+`executionModel: "stateless"`). The gate deploys a probe worker that runs the real kernel hot
+paths, drives the load, reads the platform's numbers and *asserts* them:
+- **`page-like`** — the 5 kernel hot paths (router / validator / `Str` / `Collection` / PHP json)
+  at 50 iterations each per request, 200 requests over 4 concurrent connections: all `ok`,
+  **cpu p50 5 ms / p95 41 ms / max 62 ms**, wall p95 44 ms. The p50 fits the 10 ms budget; the
+  p95 tail is 4× over it, which is the same shape the real-app measurements show (9–11 ms p50,
+  41–71 ms p95) — the budget is a *per-request* number, and a heavy tail is a design smell.
+- **`enforcement-control`** — one request burning 2.5–3 s of CPU: 10/10, 46/46 and 23/23 in three
+  runs came back **`exceededCpu`**, killed at ~2.02–2.31 s CPU (the 2020 ms kill point above,
+  reproduced three times). The gate *requires* this: if a control burn is not caught, the gate
+  cannot see the budget at all and exits 1 (`--no-enforcement-check` turns it off for Paid).
+- **`sustained`** — 1.2 s of burn per request, back to back: **25/25 `exceededCpu`**. So the bank
+  absorbs *modest* overruns (the bcrypt-class burst above), **not** multi-second-per-request load;
+  never read the burst tolerance as a per-page allowance.
+
 | Resource | Free limit | Compiled-rung response |
 |---|---|---|
-| CPU per request | 10 ms (docs) — measured: single request ok to ≈2 s, kill at cpu=2020 ms, wall unlimited | handler measured 1–6 ms → normal pages fit; heavy compute gets a route-level **CPU budget check** (tooling 1.5) |
+| CPU per request | 10 ms (docs) — measured: single request ok to ≈2 s, kill at cpu=2020 ms, wall unlimited | handler measured 1–6 ms → normal pages fit; `npm run gate:cpu` reads the platform's own `cpuTime`/`outcome` back and asserts a page-like load (p50 ≤ 10 ms / p95 ≤ 50 ms) *and* that a burn is caught |
 | password hashing | bcrypt cost 10 ≈ 100 ms CPU (native PHP) | **measured in workerd**: bcryptjs cost6=22 / cost8=43 / cost10=93–104 / cost12=679 ms CPU → all pass on Free; `$2y$`⇄`$2b$` parity **verified both ways** vs PHP 8.3; WASM bcrypt blocked (`WebAssembly.compile` disallowed). Policy: keep bcrypt (bcryptjs) on the login-only path; native PBKDF2 (≤100k iters, measured 22 ms) = strict-10 ms fallback pair |
 | D1 queries / invocation | 50 | eager-load flattening is the defense; `report` flags routes trending over budget |
 | D1 rows written | 100k/day (hard-enforced since 2026-09-01) | cookie session driver = **zero** session writes; throttle only sensitive routes (Fortify-style), never blanket |
@@ -119,7 +141,11 @@ stay ≤10 ms (measured 1–6 ms), the bank is treated as *burst* headroom for r
   `app.debug=false` (whoops prints the debug error page and exits, which would
   destroy the result), and a step whose error page fails still gets a response
   instead of losing the run. The harness mirrors the worker exactly: an
-  uncaught error is not caught there either, so the platform answers the 500.
+  uncaught error is rendered the way Laravel renders it (the exception branch of
+  `kernel/http.mjs` - the app's `errors/500` page, or the status-only stub when
+  the build compiled no view; a JSON request gets `{"message":"Server Error"}`),
+  and only a render that *itself* fails escapes the worker, where the platform
+  answers the plain-text 500.
 - A step may use the cookie jar (`jar: true`) or not (a separate visitor). A
   *snapshot* is a static asset, so its fair comparison is a guest request. The scenario file is picked up by the app's directory name
   (`shadow/scenarios/<app>.mjs`) or passed with `--scenarios`.
@@ -362,8 +388,11 @@ Everything else in Laravel's web surface: **compilable** — this document is th
    incl. the raw `cache` rows); named `throttle:name` needs its `AppServiceProvider` definition
    and fails the build loud, as does `cache.driver !== 'database'`. Error views: every
    `resources/views/errors/{code}.blade.php` is compiled at build time and rendered through
-   `renderErrorView` for `abort()`/HTTP errors when present; otherwise 419/429/500 bodies
-   remain status-only stubs. Multi-verb routes still need a port — `--strict` fails the build
+   `renderErrorView` for `abort()`/HTTP errors **and for an unhandled exception** (Laravel's
+   `Handler::render()` prepares every non-HTTP Throwable into a 500) when present, and an
+   `expectsJson` request gets `prepareJsonResponse()`'s body (`{"message":"Server Error"}`
+   outside debug); otherwise 419/429/500 bodies remain status-only stubs. Multi-verb routes
+   still need a port — `--strict` fails the build
    when a route advertises an extra non-POST verb that was not compiled.
    `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `request()`
    and `Request $request` injection in compiled controllers shipped in M16; single-method `POST`
@@ -457,6 +486,32 @@ instant the trigger was scheduled for), not the arrival time, and the queue drai
 scheduled job is a **silent** no-op. `kernel/tests/worker-entry.test.mjs` drives the built
 entry with the runtime's real argument order and fails if the real env is not read.
 
+The due event is *delivered* through the app's `QUEUE` producer binding — the worker pushes
+`{name, expression, command, timezone}` onto the `laravel-schedule` queue, and the app runtime
+that consumes it lives outside this Worker (the edge triggers, it does not run artisan). With
+no producer binding the kernel falls back to an **in-memory** queue that is discarded when the
+invocation ends, so the event is dropped; the worker now names it (`console.warn` for
+`wrangler tail`, and the `/__lw/cron` answer carries `dropped: [...]` instead of claiming
+`queued`), and the build reports the missing binding as a declared gap next to the schedule
+dump. The cron trigger's own job drain (`env.DB` → `lw_jobs`) needs no queue binding, so an
+app whose triggers only drain jobs is unaffected.
+
+The trigger's HTTP face (`POST /__lw/cron`) is **closed by default**: without
+`LW_CRON_SECRET` in the Worker's environment the path answers `404` — the same answer a
+non-existent route gives, so nothing reveals it. To fire the schedule by hand (a `wrangler dev`
+session, a smoke test, an external scheduler), set the secret as a Worker secret and send it
+back in the header:
+
+```sh
+npx wrangler secret put LW_CRON_SECRET     # the secret lives in Cloudflare, not the repo
+curl -X POST https://<worker>/__lw/cron -H "X-LW-Cron: $LW_CRON_SECRET"
+# → {"ok":true,"due":[...],"queued":[...],"jobs":{"ran":0,"failed":0}}
+```
+
+The comparison is constant-time, and the face mirrors the trigger exactly: the schedule fires
+*and* the D1 job queue drains (a hand-fired cron that skipped the drain would leave `lw_jobs`
+rows waiting for the next real trigger).
+
 ### The integrations (M68) — one verdict per page
 
 Generated from `tools/integrations.json`; `tools/docs-check.mjs` fails when a page loses its verdict, its refusal or its port.
@@ -509,7 +564,7 @@ behind a build rule.
 | `redirect()->withErrors()` | ✅ compiles | Flashes the error bag in the `ViewErrorBag` shape (the M19 validation flow writes the same shape). | M36 |
 | `redirect()->away()` | ✅ compiles | An absolute external URL (the compiled redirect keeps it absolute). | M37 |
 | `back()` | ✅ compiles | The Referer, or the session's `url.previous`, or `/`. | M37 |
-| `Str::slug()` | ✅ compiles | The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii/is/finish/start/random/isUrl) - every value is verified against the real Laravel. | M38 |
+| `Str::slug()` | ✅ compiles | The PHP-exact subset (slug/limit/upper/lower/studly/camel/snake/kebab/title/contains/startsWith/endsWith/after/before/length/replace*/squish/ucfirst/ucwords/ascii/is/finish/start/random/isUrl) - every value is verified against the real Laravel. The transliteration is portable-ascii's own table (`kernel/ascii-map.data.mjs`, generated by `tools/ascii-map.php`; `tools/ascii-map-check.mjs` keeps it honest), so `Str::ascii`/`Str::slug` are byte-identical to PHP 8.3 over the whole BMP. | M38 |
 | `env()` | ✅ compiles | The build-time config dump is the padanan (the edge has no .env); only the app.* keys are mapped. | M37 |
 | `data_get()` | ✅ compiles | Dot/array access on an array or an object (the `*` wildcard is not ported). | M37 |
 | `tap()` | ✅ compiles | Passes the value through a closure (the closure support exists). | M37 |
@@ -526,8 +581,8 @@ behind a build rule.
 | `Gate::before()` | ⛔ fails loud (`LW002`) | The global Gate callbacks are not compiled (the policies are). | M39 |
 | `Mail::to()->send()` | ✅ compiles | A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The byte-for-byte proof is the shadow: the PHP oracle captures Laravel's `MessageSent` event (the from/to/cc/bcc/replyTo/subject/html/text) and the harness compares those fields with the kernel mailer's outbox - all 8 fields are identical, the log line is not compared. The methods the kernel mailer does not implement (raw, html, queue, later) fail loud. | M60 |
 | `Mail::send()` (a view name) | ⛔ fails loud (`LW002`) | Laravel's Mailer::send() has two shapes: a Mailable INSTANCE (it is sent as it is) and a VIEW NAME (Laravel renders the view with the data and sends THAT - the route answers 200 and the mail goes out). The edge has only the first shape: the compiled mailer carries a payload (a compiled Mailable, or an object with to/subject/html), so a view name throws at request time ("mail(): the message is not a payload") and the route answers 500 - the build refuses the view shape instead of shipping a route that 500s where Laravel sends the mail. A mailable still compiles (`Mail::send(new OrderMail())` and `Mail::to($user)->send(new OrderMail())`); a dynamic first argument is NOT refused (it can hold a mailable and the build cannot prove which it is - refusing it would refuse a legal send). | M60 |
-| `Queue::push()` | ⛔ fails loud (`LW002`) | The job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads (a port handler writes the row - the edge has no producer for it). The job class is not compiled either: the class compiler compiles the events, the listeners and the injected services - a job is none of them. In Laravel the job is queued (or run inline by the sync driver) and the route answers 200. | M39 |
-| `Job::dispatch()` on a compiled job class | ✅ compiles | A job class the build compiles (app/Jobs): `dispatch()` writes a row into the D1 `lw_jobs` table and the CRON TRIGGER drains it, so the job runs after the response (Laravel's `database` driver). The build refuses the push when the worker has no cron trigger - the job would never run. The `Queue` FACADE (`Queue::push`) stays refused: it takes a class-name string the edge cannot resolve to a compiled class. | M63 |
+| `Queue::push()` | ⛔ fails loud (`LW002`) | The FACADE is what stays refused here: `Queue::push()` takes a class-name string the edge cannot resolve to a compiled class, so nothing would consume the row - `Job::dispatch()` on a compiled job class is the supported form (M63). Without a consumer the job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads (a compiled job class writes the row through `Job::dispatch()` - M63 - or a port handler does). In Laravel the job is queued (or run inline by the sync driver) and the route answers 200. | M39 |
+| `Job::dispatch()` on a compiled job class | ✅ compiles | A job class the build compiles (app/Jobs): `dispatch()` writes a row into the D1 `lw_jobs` table and the CRON TRIGGER drains it, so the job runs after the response (Laravel's `database` driver). The build refuses the push when the worker has no cron trigger - the job would never run - and it also refuses a push whose job class did NOT compile: the drain builds its handler map from the compiled classes, so a job the class compiler refused has no `handle()` for the drain and the row would be dropped unseen. Laravel's own job traits (`Dispatchable`, `Queueable`, `InteractsWithQueue`, `SerializesModels`) are allowed - their members are answered at the call site or are PHP-serializer-only - but a body that CALLS one of their members (`$this->release(3)`) is refused. The `Queue` FACADE (`Queue::push`) stays refused: it takes a class-name string the edge cannot resolve to a compiled class. | M63 |
 | `Storage::disk()` (the default disk) | ✅ compiles | The default disk is the compiled object store (the D1 blob store, or R2 when bound). | M39 |
 | `Storage::disk()` (a named disk) | ⛔ fails loud (`LW002`) | A named disk needs a bucket of its own (R2 asks for a credit card); the compiled rung has one store. | M39 |
 | `Cache::tags()` | ⛔ fails loud (`LW002`) | The compiled cache store is the D1 `database` store, which has no tags: in Laravel this route 500s with BadMethodCallException("This cache store does not support tagging."); the build refuses the route before it ships (stricter than Laravel, not a parity), and a taggable store (redis/memcached) is not compiled. | M39 |
@@ -555,10 +610,10 @@ behind a build rule.
 | A FormRequest that overrides `after()` / `validationData()` / `passedValidation()` | — documented (build level) | All three hooks run in the compiled lifecycle, in Laravel's order: `validationData()` is the data source, `after()` registers its RETURN VALUE as a validator callback, and `passedValidation()` runs after the rules pass. Proven by the shadow (`POST /hooked-request-demo` 422/422 for the `after()` refusal and 200/200 carrying the `passedValidation` marker). | M62f |
 | A FormRequest that overrides `withValidator()` | — documented (build level) | Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled class carries the hook and the lifecycle calls it with the kernel's validator, in Laravel's order. Proven by the shadow (`POST /hooked-request-demo` 422/422 byte-identical when `withValidator()` refuses the flag) and by the compiled handler's `hooks: [...]` list. | M62f |
 | A listener that injects a service | ⛔ fails loud (`LW002`) | A service the build does not compile: the edge has no container and no file for it, so the constructor dependency is a build error (the build names the class). A service the build DOES compile is injected (the edge builds it) and a framework service is adapted (the worker hands the live one down). | M43 |
-| A queued listener (`ShouldQueue`) | ⛔ fails loud (`LW002`) | Laravel pushes a queued listener to the queue (it runs later); the edge has no queue consumer, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason. | M43 |
+| A queued listener (`ShouldQueue`) | ⛔ fails loud (`LW002`) | Laravel pushes a queued listener to the queue (it runs later); the edge's queue path runs a JOB class (`app/Jobs`) through the cron drain, and a queued listener is not compiled as one, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason. | M43 |
 | A listener that injects an app service the build compiles | ✅ compiles | The edge builds the service itself: the build compiles it (the class + the services it injects) and the runtime hands it to the listener. The dependency is recorded in the compiled class, so the edge never guesses. | M44 |
 | A listener that injects a framework service (the mailer) | ✅ compiles | The edge has no container: the worker hands the live service down (the mailer) and the compiled listener gets it. Its async methods are awaited in the compiled body (a promise must never leak into the response). | M44 |
-| A listener that pushes to the queue | ⛔ fails loud (`LW002`) | The refusal holds in a compiled class too: the job would never run at the edge (the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job). | M45 |
+| A listener that pushes to the queue | ⛔ fails loud (`LW002`) | The refusal holds in a compiled class too: `Queue::push()` names the job as a class-name string, which the edge cannot resolve to a compiled class, so nothing would consume the row (the compiled path is `Job::dispatch()`, M63). | M45 |
 | A listener that uses a tagged cache | ⛔ fails loud (`LW002`) | The D1 `database` store has no tags: in Laravel this route 500s with BadMethodCallException("This cache store does not support tagging."); the build refuses the route before it ships (stricter than Laravel, not a parity). | M45 |
 | A broadcast listener (`ShouldBroadcast`) | ⛔ fails loud (`LW002`) | Laravel broadcasts the event to the channels after the response (the broadcast itself is queued). The edge has no broadcast driver, so the notification would never be sent - a silent no-op, so the build stops and the route that dispatches the event names the reason. | M49 |
 | A listener dispatched after the commit (`ShouldDispatchAfterCommit`) | ⛔ fails loud (`LW002`) | Laravel defers the listener until the database transaction is committed. The edge has no transaction, so the timing would differ - the build stops and the route that dispatches the event names the reason. | M49 |
@@ -595,7 +650,7 @@ behind a build rule.
 | The `Password` facade | ⛔ fails loud (`LW002`) | The Password facade is not compiled at the edge (Laravel 13 lists 11 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Pipeline` facade | ⛔ fails loud (`LW002`) | The Pipeline facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Process` facade | ⛔ fails loud (`LW002`) | The Process facade is not compiled at the edge (Laravel 13 lists 39 methods): the build refuses it with that reason - a port handler answers it. | M49 |
-| The `Queue` facade | ⛔ fails loud (`LW002`) | The Queue facade is not compiled at the edge (Laravel 13 lists 85 methods): the build refuses every method with its own reason - the queue would never run at the edge (the worker has no queue handler; the binding carries a JSON body, not a PHP job). A port handler (or a Cloudflare Queues binding) answers it. | M49 |
+| The `Queue` facade | ⛔ fails loud (`LW002`) | The Queue facade is not compiled at the edge (Laravel 13 lists 85 methods): the build refuses every method with its own reason - the queue would never run at the edge (the worker exports no consumer for a Cloudflare Queues binding, and the binding carries a JSON body, not a PHP job; the compiled path is the D1 `lw_jobs` table the cron trigger drains, M63). A port handler (or a Cloudflare Queues binding) answers it. | M49 |
 | The `RateLimiter` facade | ⛔ fails loud (`LW002`) | The RateLimiter facade is not compiled at the edge (Laravel 13 lists 18 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Redirect` facade | ⛔ fails loud (`LW002`) | The Redirect facade is not compiled at the edge (Laravel 13 lists 19 methods): the build refuses it with that reason - a port handler answers it. | M49 |
 | The `Redis` facade | ⛔ fails loud (`LW002`) | The Redis facade is not compiled at the edge (Laravel 13 lists 302 methods): the build refuses it with that reason - a port handler answers it. | M49 |
@@ -651,7 +706,9 @@ behind a build rule.
   the model from the segment; a missing model is a 404), the **method handling**
   is Laravel's (an `OPTIONS` request gets the automatic OPTIONS response — 200,
   an empty body, the `Allow` header; a method that does not match answers 405
-  with an `errors/405` view, else 500), the **paginator** compiles
+  with the `Allow` header and the app's `errors/405` view when it ships one,
+  else the framework's error page — the status is the exception's own), the
+  **paginator** compiles
   (`Post::paginate(10)` → the LengthAwarePaginator) **with its pagination
   links** (the framework's `pagination::tailwind` view is compiled at build
   time — the same markup as Laravel) and the **translation helper** (`__()`)
@@ -692,10 +749,20 @@ behind a build rule.
       (`implode(',', …)`, in Laravel's verb order). The shadow harness proves
       the bytes.
     - any **other** method that does not match raises
-      `MethodNotAllowedHttpException`: the app answers **405** when it has an
-      `errors/405` view (the build dumps the flag) and the framework's error
-      renderer answers **500** without one — the compiled side answers the
-      same status (the error page itself is a Laravel framework asset).
+      `MethodNotAllowedHttpException`, and its status is the exception's OWN —
+      **405** — whether or not the app ships an `errors/405` view:
+      `Handler::renderHttpException` renders the view when it exists and
+      `convertExceptionToResponse` otherwise, and that one uses
+      `$e->getStatusCode()`. Only the BODY follows the view (the app's
+      `errors/405`, else the framework's error page — a framework asset the
+      build compiles when the app ships one, else the edge's minimal page).
+      The answer carries `Allow` (Symfony's `implode(', ', $allow)`); a JSON
+      request gets Laravel's `prepareJsonResponse` body —
+      `{"message": "The <METHOD> method is not supported for route <path>.
+      Supported methods: <verbs>."}` (`AbstractRouteCollection::
+      requestMethodNotAllowed`). Probed with the PHP oracle (Laravel 13.37,
+      PHP 8.3, debug off, no `errors/405` view): 405, `Allow: POST`,
+      `cache-control: no-cache, private`, and that JSON body.
     - the **CORS** config (`config/cors.php`) is *not* compiled: the build
       **skips** the routes under a CORS path (the `Access-Control-*` headers
       would be missing, and a browser's CORS would break) and says what to do.
@@ -770,13 +837,14 @@ behind a build rule.
     the rendered view (the mailable's data goes into the view). The methods the
     kernel mailer does not implement (`raw`, `html`, `queue`, `later`) fail
     loud — a mail that silently lost its `cc` would be a wrong answer.
-  - `Queue::push(SomeJob::class)` fails loud for a different reason: the job
-    would never run at the edge — the worker has no queue handler, so nothing
-    consumes the queue binding, and the binding carries a JSON body, not a PHP
-    job (the runtime throws the same). The paths that work: a Cloudflare
-    Queues binding with a consumer you write, or a D1 table the cron
-    trigger reads (a port handler writes the row — the edge has no producer for
-    it). The job class is not compiled either.
+  - `Queue::push(SomeJob::class)` fails loud for a different reason: the
+    FACADE takes a class-name string the edge cannot resolve to a compiled
+    class, so nothing would consume the row — while `Job::dispatch()` on a
+    compiled job class **compiles** (M63: the row goes into the D1 `lw_jobs`
+    table and the cron trigger drains it). The paths that work: a Cloudflare
+    Queues binding with a consumer you write, or the D1 table the cron trigger
+    reads (a compiled job class writes the row through `Job::dispatch()`, or a
+    port handler does). The runtime throws the same for the facade.
   - The **file upload** (`$request->file()`) fails loud with the instructions:
     the edge has no multipart parser, so the upload needs an object store
     (R2 — credit card; the free path is the D1 blob store) or the upload has to

@@ -20,6 +20,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildRt } from '../runtime/rt-from-context.mjs';
+import { phpJsonEncode } from '../../kernel/php-json.mjs';
+import { phpJsonDecodeOrdered } from '../../kernel/php-json-ordered.mjs';
 
 // A tiny D1 stub over an array of rows: the statements the queue issues.
 function makeDb() {
@@ -188,4 +190,32 @@ test('the drain runs a COMPILED job: rt.newClass resolves the ctor deps and hand
   assert.equal(typeof seen[0].logger.info, 'function', 'the injected adapter was resolved');
   assert.deepEqual(logged, [['info', 'job ran: hello']], 'the injected log adapter is live');
   assert.equal(db.rows.length, 0, 'the row is deleted once it ran');
+});
+
+test('the payload keeps PHP key order for an argument array (a job re-encoding it must match PHP)', async () => {
+  const db = makeDb();
+  const rt = buildRt(null, { strict: false, runtime: true, db });
+  // What a compiled `$this->dispatch(['a' => 1, 3 => 'x'])` hands the producer:
+  // a PHP array whose string key comes BEFORE an integer-like one - the one
+  // shape `JSON.stringify` reorders (`{"3":"x","a":1}` where PHP writes
+  // `{"a":1,"3":"x"}`). Laravel's `DatabaseQueue` gives the job
+  // `json_decode($payload, true)`, so the constructor must see PHP's order.
+  const phpArray = phpJsonDecodeOrdered('{"a":1,"3":"x"}', { text: true });
+  let received = null;
+  const handlers = {
+    'App\\Jobs\\Reorder': {
+      build: async (runtime, args) => {
+        const instance = { arg: args[0] };
+        instance.handle = async function () {
+          received = this.arg;
+        };
+        return instance;
+      },
+    },
+  };
+
+  await rt.queuePush('App\\Jobs\\Reorder', [phpArray]);
+  assert.equal(db.rows[0].payload, '[{"a":1,"3":"x"}]', 'the stored payload is the PHP answer');
+  assert.deepEqual(await rt.queueDrain(db, handlers), { ran: 1, failed: 0 });
+  assert.equal(phpJsonEncode(received), '{"a":1,"3":"x"}', 'the job got the argument in PHP order');
 });

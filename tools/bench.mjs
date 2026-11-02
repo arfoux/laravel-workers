@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 // tools/bench.mjs — Micro-bench (p95 gate)
 // Hot paths: router, db.toSql, validator, scheduler, cache/memory, storage/memory, encrypter.
+//
+// WHAT THESE NUMBERS ARE (audit #430): a NODE-side proxy, measured on whatever
+// machine runs the gate. They are a REGRESSION detector - a hot path that jumps
+// from microseconds to milliseconds fails here - NOT the Cloudflare CPU budget:
+// workerd's per-request cost, its bundling, and the KV/D1 round trips are not in
+// this measurement. The deployed measurement is the probe worker recorded in
+// COMPILED.md ("Empirically measured"), and `kernel/tests/budget.test.mjs` owns
+// the CPU-time model. The budgets below are deliberately loose (2ms/5ms) so the
+// gate does not turn a busy CI box into a false alarm.
 import { performance } from 'node:perf_hooks';
 
 const N = Number(process.env.BENCH_N || 5000);
@@ -125,5 +134,5 @@ for (const [name, fn, avgBudget, p95Budget] of ops) {
   console.log(JSON.stringify(row));
 }
 
-if (allPass) console.log('bench PASS: all ops within budget (hot p95 <= 5ms, encrypter p95 <= 30ms)');
+if (allPass) console.log('bench PASS: all ops within budget (hot p95 <= 5ms, encrypter p95 <= 30ms) - Node proxy, not the workerd CPU budget');
 else { console.error('bench FAIL: one or more ops exceeded budget'); process.exit(1); }

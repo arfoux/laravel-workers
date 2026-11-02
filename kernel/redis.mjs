@@ -34,6 +34,9 @@
 //   type Laravel's serializer would. Bare numeric text is still accepted by
 //   incr/decr so a row written by a real INCR remains readable.
 
+import { phpJsonEncode } from './php-json.mjs';
+import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
+
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** DDL for the table this store expects. */
@@ -58,10 +61,10 @@ function encodeValue(value) {
       throw new TypeError(`lw_redis cannot store non-finite number ${String(value)}`);
     }
     if (Number.isInteger(value)) return `i:${value}`;
-    return `j:${JSON.stringify(value)}`;
+    return `j:${phpJsonEncode(value)}`;
   }
   if (typeof value === 'string') return `s:${value}`;
-  return `j:${JSON.stringify(value === undefined ? null : value)}`;
+  return `j:${phpJsonEncode(value === undefined ? null : value)}`;
 }
 
 function decodeValue(raw) {
@@ -73,7 +76,9 @@ function decodeValue(raw) {
     case 's:':
       return text.slice(2);
     case 'j:':
-      return JSON.parse(text.slice(2));
+      // #449: the PHP codec, so a stored PHP array keeps its key order; the
+      // reader also accepts the plain JSON a previous build wrote under `j:`.
+      return phpJsonDecodeOrdered(text.slice(2), { text: true });
     default:
       // Untagged row (e.g. written by a real Redis INCRBY): Redis semantics
       // say GET returns the string.

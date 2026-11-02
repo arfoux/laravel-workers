@@ -15,7 +15,6 @@
 //   - translations from lang/*/<locale>/<group>.php and the framework's
 //     src/Illuminate/Translation/lang (array-replace-recursive merged)
 //   - AbstractPaginator::$defaultView (pagination.view)
-//   - the errors/405.blade.php existence check (errors.405_view)
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -143,17 +142,6 @@ for (const langPath of langPaths) {
   }
 }
 $put('translations', translations);
-
-// ---------- errors (405) ----------
-let has405 = false;
-{
-  const viewPaths = c('view.paths');
-  const list = Array.isArray(viewPaths) ? viewPaths : [join(appDir, 'resources', 'views')];
-  for (const vp of list) {
-    if (existsSync(join(String(vp), 'errors', '405.blade.php'))) { has405 = true; break; }
-  }
-}
-$put('errors.405_view', has405);
 
 // ---------- cors ----------
 const corsPaths = c('cors.paths');

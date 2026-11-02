@@ -90,20 +90,39 @@ async function runSchedule(env, now = new Date()) {
   // no explicit timezone fire at the WRONG local time - and with the UTC trigger
   // conversion in the build, never at all.
   const due = dueEvents(scheduleEvents, now, config['app.timezone'] || undefined);
-  if (due.length === 0) return { due: [], queued: [] };
+  if (due.length === 0) return { due: [], queued: [], dropped: [] };
   const queue = makeQueue(env);
-  const queued = [];
-  for (const ev of due) {
-    const job = {
-      name: ev.name,
-      expression: ev.expression,
-      command: ev.command,
-      timezone: ev.timezone || null,
-    };
-    await queue.push('laravel-schedule', job);
-    queued.push(job.name);
+  // The due event is queued for the app runtime that still exists (the edge
+  // triggers, it does not run artisan) - and the app reaches that runtime
+  // through the `QUEUE` binding. The kernel's fallback without one is an
+  // IN-MEMORY queue that dies with the invocation, so the payload is dropped
+  // and the schedule silently never reaches anything. That is exactly the
+  // silent no-op the build's queue gate exists to prevent, so it is named
+  // here (the answer of `/__lw/cron` carries `dropped`, and the log carries the
+  // event names for `wrangler tail`).
+  const delivered = queue.hasBinding !== false;
+  const names = due.map((e) => e.name);
+  if (!delivered) {
+    console.warn(
+      '[laravel-workers] the schedule event(s) ' +
+        names.join(', ') +
+        ' fired, but the app binds no QUEUE producer - the payload was written to the in-memory queue and is discarded when this invocation ends (the schedule does not reach the app runtime). Bind it: {"queues":{"producers":[{"binding":"QUEUE","queue":"<name>"}]}}.'
+    );
   }
-  return { due: due.map((e) => e.name), queued };
+  const queued = [];
+  if (delivered) {
+    for (const ev of due) {
+      const job = {
+        name: ev.name,
+        expression: ev.expression,
+        command: ev.command,
+        timezone: ev.timezone || null,
+      };
+      await queue.push('laravel-schedule', job);
+      queued.push(job.name);
+    }
+  }
+  return { due: names, queued, dropped: delivered ? [] : names };
 }
 
 // The queue consumer (COMPILED.md M63): `Job::dispatch()` writes a row into
@@ -166,6 +185,10 @@ export default {
     // is set: the caller must then present the same value in `X-LW-Cron`.
     // Without the secret the path answers 404, so the endpoint is
     // indistinguishable from a non-existent route (no unauthenticated trigger).
+    // The face mirrors the TRIGGER exactly: the schedule fires AND the queued
+    // jobs drain. A hand-fired cron that skipped the drain would leave the
+    // `lw_jobs` rows to the next scheduled trigger - the same silent gap the
+    // trigger's own drain exists to close.
     if (url.pathname === '/__lw/cron' && request.method === 'POST') {
       const secret = env && env.LW_CRON_SECRET;
       const provided = request.headers.get('x-lw-cron') || '';
@@ -173,7 +196,8 @@ export default {
         return new Response('Not Found', { status: 404 });
       }
       const out = await runSchedule(env, new Date());
-      return Response.json({ ok: true, ...out });
+      const jobs = await drainQueue(env);
+      return Response.json({ ok: true, ...out, jobs });
     }
 
     if (DISPATCH_METHODS.has(request.method)) {

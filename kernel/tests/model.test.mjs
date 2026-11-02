@@ -33,6 +33,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import model from '../model.mjs';
+import { makeDateValue } from '../model.mjs';
 
 const { Model } = model;
 
@@ -619,4 +620,48 @@ test('a fresh model reads a missing attribute as NULL, like Laravel\'s container
   const row = new FreshPost({ id: '7', published: 1 });
   assert.equal(row.get('id'), 7);
   assert.equal(row.get('published'), true);
+});
+
+test('a date that PHP cannot read fails loud instead of answering the raw text (#273)', () => {
+  // HasAttributes::asDateTime() (:1576-1622) NEVER answers a string: it either
+  // builds a Carbon or raises `Carbon\Exceptions\InvalidFormatException`. It
+  // first tries `createFromFormat(getDateFormat(), $v)` ('Y-m-d H:i:s', or the
+  // `Y-m-d` fast path at :1605) and then `Date::parse($v)`, which reaches
+  // Carbon's RELATIVE parser. Every expectation below is a probe against PHP
+  // 8.3 + framework 13.37 in the Asia/Jakarta timezone, run through the real
+  // method; the TZ is pinned here so the wall clock is the same.
+  const read = (raw) => {
+    try {
+      return makeDateValue(raw, 'Asia/Jakarta').format('Y-m-d H:i:s');
+    } catch (e) {
+      assert.equal(e.name, 'InvalidFormatException', `${raw} should raise InvalidFormatException`);
+      assert.match(e.message, /^Could not parse '/);
+      return 'THROW';
+    }
+  };
+  // The shape a database actually returns.
+  assert.equal(read('2024-01-02 03:04:05'), '2024-01-02 03:04:05');
+  assert.equal(read('2024-01-02'), '2024-01-02 00:00:00');
+  // The components are 1-2 digits and the seconds part is optional.
+  assert.equal(read('2024-1-2 3:4:5'), '2024-01-02 03:04:05');
+  assert.equal(read('2024-01-02 03:04'), '2024-01-02 03:04:00');
+  // Day/month/hour/minute/second ROLL over exactly like PHP's parser.
+  assert.equal(read('2024-02-30'), '2024-03-01 00:00:00');
+  assert.equal(read('2024-01-00'), '2023-12-31 00:00:00');
+  assert.equal(read('2024-12-32'), '2025-01-01 00:00:00');
+  assert.equal(read('2024-13-45'), '2025-02-14 00:00:00');
+  assert.equal(read('2024-01-02 25:00:00'), '2024-01-03 01:00:00');
+  assert.equal(read('2024-01-02 03:60:00'), '2024-01-02 04:00:00');
+  // `is_numeric()` is a UNIX timestamp, NOT a year (asDateTime :1591-1594).
+  assert.equal(read('1700000000'), '2023-11-15 05:13:20');
+  assert.equal(read('20240202'), '1970-08-23 13:16:42');
+  // NOT ported: a US date and an offset suffix need Carbon's relative parser,
+  // which depends on the clock and the app's locale. Failing loud beats
+  // answering a different wall clock in silence.
+  assert.equal(read('02/01/2024'), 'THROW');
+  assert.equal(read('2024-01-02T03:04:05Z'), 'THROW');
+  assert.equal(read('next monday'), 'THROW');
+  assert.equal(read('garbage'), 'THROW');
+  // The kernel used to answer this raw text, so `.format()` was a TypeError.
+  assert.equal(read('12-31-2024'), 'THROW');
 });

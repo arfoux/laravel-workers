@@ -39,7 +39,7 @@
 // and re-encoding an int64 goes through BigInt (kernel/php-json-ordered.mjs
 // answers BigInt or LW006 for exactly that reason).
 
-import { phpFloat } from './php-serialize.mjs';
+import { phpFloat, orderedKeysOf } from './php-serialize.mjs';
 import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 
 export class PhpJsonError extends Error {
@@ -228,8 +228,9 @@ function writeValue(value, out, opts) {
   if (isPlainObject(value)) {
     // PHP's json_encode preserves the array's INSERTION order. A JS object
     // enumerates an integer-like key first, so a literal that mixes both
-    // kinds carries the PHP order in a non-enumerable marker (rt.assoc).
-    const keys = Array.isArray(value.__lwOrder) ? value.__lwOrder : Object.keys(value);
+    // kinds carries the PHP order in a non-enumerable marker (rt.assoc); a key
+    // written after the marker was set still lands at the end (PHP appends).
+    const keys = orderedKeysOf(value);
     const norm = [];
     let isList = true;
     for (let i = 0; i < keys.length; i++) {

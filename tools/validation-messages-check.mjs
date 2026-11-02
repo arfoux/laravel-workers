@@ -25,11 +25,24 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MODULE = join(ROOT, 'kernel', 'validation-messages.data.mjs');
 const GENERATOR = join(ROOT, 'tools', 'validation-messages.php');
 
+// `--require` (or LW_VALIDATION_REQUIRE=1) turns the no-app case from a skip
+// into a FAILURE: the CI job that owns a Laravel app passes it, so the module
+// cannot go green unaudited just because the app is not wired up (#429).
+const requireApp = process.argv.includes('--require') || process.env.LW_VALIDATION_REQUIRE === '1';
 const appRoot = process.env.LW_APP_ROOT || '';
 const php = process.env.PHP_BIN || 'php';
 
 if (!appRoot || !existsSync(join(appRoot, 'artisan'))) {
-  console.log('validation-messages: skipped (set LW_APP_ROOT to a Laravel app to audit the module)');
+  if (requireApp) {
+    console.error(
+      'validation-messages: FAIL - no Laravel app (LW_APP_ROOT unset or without artisan), ' +
+        'but this run REQUIRES the oracle (--require / LW_VALIDATION_REQUIRE=1). ' +
+        'kernel/validation-messages.data.mjs was NOT audited.',
+    );
+    process.exit(1);
+  }
+  // Loud on purpose: a silent skip is what let the gate look green (#429).
+  console.log('validation-messages: SKIP - the module was NOT audited (set LW_APP_ROOT to a Laravel app); pass --require to make this fatal');
   process.exit(0);
 }
 

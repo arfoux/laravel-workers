@@ -830,13 +830,14 @@ function phpParse(source) {
 }
 
 const { routes, errors } = parse();
-// Two DIFFERENT URIs can slugify to the same controller module file
-// (tools/route-slug.mjs: `/a/b` and `/a-b` and `/{a}-{b}` all answer `a-b`),
-// and the build writes `dist/src/controllers/<slug>.mjs` per route - so one
-// route's handler would overwrite the other's and the handler table would point
-// BOTH uris at whichever was written last. A collision is a build-level defect
-// the operator must resolve, not a silent wrong answer: refuse the dump. The
-// remediation names both ways out, because the first one (editing routes) is
+// The controller module name is ONE function of the URI (`tools/route-slug.mjs`)
+// and it is CASE-FOLDED (#366), so two DIFFERENT URIs that answer the same name
+// are one build defect: `/a/b`, `/a-b`, `/{a}-{b}`, `/Posts` and `/posts` all
+// collapse, and the build writes `dist/src/controllers/<slug>.mjs` per route -
+// one route's handler would overwrite the other's and the handler table would
+// point BOTH uris at whichever was written last. A collision is a build-level
+// defect the operator must resolve, not a silent wrong answer: refuse the dump.
+// The remediation names both ways out, because the first one (editing routes) is
 // not available inside a third-party app.
 {
   const owner = new Map();

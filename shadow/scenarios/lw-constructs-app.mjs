@@ -8,6 +8,14 @@
 // The `expect: 'diverges'` steps are *known* divergences: a bcrypt digest has a
 // random salt, so the build-time snapshot and the live render can never be
 // byte-identical.
+//
+// REPRODUCIBILITY (audit #428/#432): this scenario runs against a LOCALLY
+// prepared constructs app. That fixture is deliberately not in the repo - it
+// carries vendor packages a fresh skeleton does not (and its trimmed vendor
+// cannot be rebuilt from composer.lock), so the `shadow:` proof recorded for
+// these steps is reproducible only on the machine that holds it. The RELEASE
+// gate replays `fresh-app.mjs` instead, whose fixture `shadow/fixture-app.mjs`
+// scaffolds on top of the app `composer create-project` just made.
 
 const EMAIL = 'u@example.com';
 const PASSWORD = 'secret';
@@ -189,13 +197,20 @@ export default {
     },
     {
       // The method is not allowed: Laravel raises
-      // MethodNotAllowedHttpException. The app has no errors/405 view, so the
-      // framework's error renderer answers 500 (the Symfony error page) — the
-      // compiled side answers the same status.
+      // MethodNotAllowedHttpException, whose status is the exception's OWN -
+      // 405 - with or without an `errors/405` view (Handler::
+      // renderHttpException renders the view when it exists,
+      // convertExceptionToResponse otherwise - `$e->getStatusCode()`), plus
+      // Symfony's `Allow` header (`implode(', ', $allow)`). The app has no
+      // errors/405 view, so only the BODY differs (the framework's error page
+      // is a Laravel asset the compiled side replaces with its minimal page).
       label: 'POST /posts/1 (the method is not allowed)',
       method: 'POST',
-      uri: '/posts/1',      expectStatus: 500,
-      why: 'the 500 error page is a Laravel framework asset; the compiled side answers a status-only page (the status is the same)',
+      uri: '/posts/1',
+      expect: 'diverges',
+      expectStatus: 405,
+      expectHeader: { allow: 'GET, HEAD, PUT, DELETE' },
+      why: 'the 405 error page is a Laravel framework asset; the compiled side answers the minimal page (the status and the Allow header are Laravel\'s)',
     },
     {
       // The paginator (LengthAwarePaginator): the same total, the same pages,

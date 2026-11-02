@@ -98,20 +98,6 @@ foreach ($langPaths as $langPath) {
 }
 $put('translations', $translations);
 
-// ---------- errors ----------
-// The method-not-allowed answer: Laravel renders the errors/405 view when the
-// app has one (resources/views/errors/405.blade.php); without it the
-// framework's error renderer answers 500 (the Symfony error page). The
-// compiled side answers the same status.
-$has405 = false;
-foreach ((array) $config->get('view.paths') as $viewPath) {
-    if (is_file($viewPath . '/errors/405.blade.php')) {
-        $has405 = true;
-        break;
-    }
-}
-$put('errors.405_view', $has405);
-
 // ---------- cors ----------
 // The CORS paths (HandleCors): the compiled worker does not add the CORS
 // headers, so the build skips the routes under those paths (the build tells

@@ -1267,8 +1267,8 @@ const queueRefusal = (m) =>
   'Queue::' + m + '() is not supported — the job would never run at the edge: the worker has no queue handler, so ' +
   'nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job. The paths that work: a ' +
   'Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid ' +
-  'plan charges per operation), or a D1 table the cron trigger reads (a port handler ' +
-  'writes the row — the edge has no producer for it) — ' + PORT_HINT;
+  'plan charges per operation), or a D1 table the cron trigger reads (a compiled ' +
+  'job class writes the row through `Job::dispatch()` — M63 — or a port handler does) — ' + PORT_HINT;
 // The facades whose work the edge cannot do with the same result. The message
 // says WHY (the structural reason), not "unknown class".
 const UNSUPPORTED_FACADES = {
