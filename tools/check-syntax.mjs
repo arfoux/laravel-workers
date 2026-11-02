@@ -34,6 +34,24 @@ function collect(target, out = []) {
   return out;
 }
 
+/** Every `tools/**` PHP helper, for the `php -l` pass below. */
+function collectPhp(target, out = []) {
+  const info = statSync(target, { throwIfNoEntry: false });
+  if (!info) return out;
+  if (info.isDirectory()) {
+    for (const entry of readdirSync(target, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) collectPhp(path.join(target, entry.name), out);
+      } else if (entry.name.endsWith('.php')) {
+        out.push(path.join(target, entry.name));
+      }
+    }
+  } else if (target.endsWith('.php')) {
+    out.push(target);
+  }
+  return out;
+}
+
 // Blank out comments so a header comment quoting an import line cannot fail the
 // gate. A tiny state machine (code / line comment / block comment / string) is
 // enough for this repo's sources and avoids a parser dependency in a gate.
@@ -144,11 +162,35 @@ for (const file of files) {
   }
 }
 
+// The PHP side of the same idea: the build-time helpers in `tools/*.php` are
+// executed by the build, but nothing parsed them on a machine without a PHP
+// binary — the syntax error would surface mid-build instead of at the gate.
+// `php -l` is a parse-only check, so it needs no app; where no PHP is on PATH
+// the pass is SKIPPED with a note (the `test` CI job has PHP, the dev machine
+// usually does too). The file list is read from the tree, not typed.
+const phpFiles = collectPhp(path.join(repoRoot, 'tools'));
+const phpBin = process.env.PHP_BIN || 'php';
+let phpNote = '';
+if (phpFiles.length) {
+  const probe = spawnSync(phpBin, ['-v'], { encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) {
+    phpNote = ` (php lint skipped: no "${phpBin}" on PATH)`;
+  } else {
+    for (const file of phpFiles) {
+      const run = spawnSync(phpBin, ['-l', file], { encoding: 'utf8' });
+      if (run.status !== 0) {
+        failures.push(`${path.relative(repoRoot, file)}\n${(run.stdout || run.stderr || '').trim()}`);
+      }
+    }
+  }
+}
+
 if (failures.length) {
   console.error(`check-syntax FAIL: ${failures.length} of ${files.length} files do not parse/resolve`);
   for (const failure of failures) console.error(failure);
   process.exit(1);
 }
 console.log(
-  `check-syntax PASS: ${files.length} shipped ESM files parse and their relative imports resolve`
+  `check-syntax PASS: ${files.length} shipped ESM files parse and their relative imports resolve` +
+    (phpFiles.length ? ` (+ ${phpFiles.length} PHP helpers linted${phpNote})` : '')
 );
