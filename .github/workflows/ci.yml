@@ -98,6 +98,28 @@ jobs:
         env:
           LW_APP_ROOT: ${{ github.workspace }}/e2e-app
         run: node tools/ascii-map-check.mjs --require
+      - name: The facade census matches the vendored Facades directory
+        # meta.facade_total in tools/constructs.json is a number in a file; this
+        # job owns an app, so it can count the directory Laravel actually ships
+        # and fail when the two disagree (a new facade would otherwise keep the
+        # audit at "47 of 47" while going unclassified).
+        env:
+          LW_APP_ROOT: ${{ github.workspace }}/e2e-app
+        run: node tools/facade-count-check.mjs --require
+      - name: The route scan is total — its set equals route:list
+        # The scan's own unit tests pin the Router helpers one by one; this run
+        # pins the property that matters: run the scan AND the real
+        # `route:list --json` oracle on the same app and assert the two route
+        # SETS are equal (minus the framework-only routes, named in the test).
+        # A route silently dropped from the scan does not exist for the edge —
+        # that is how `GET /up` shipped a 404 where PHP answers 200.
+        # LW_LARAVEL_APP is the oracle's own variable (kernel/tests/oracle-app.mjs),
+        # not LW_APP_ROOT: the two framework checks above use the former, this test
+        # the latter. The app is `e2e-app` at the workspace root, which the
+        # oracle's default-directory lookup also finds.
+        env:
+          LW_LARAVEL_APP: ${{ github.workspace }}/e2e-app
+        run: node --test tools/tests/routes-oracle-parity.test.mjs
       - name: Pack the published artifact
         run: npm pack --pack-destination "$GITHUB_WORKSPACE"
       - name: Gate — the tarball ships every file the build needs
