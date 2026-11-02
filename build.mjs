@@ -650,6 +650,44 @@ try {
     fail(cause);
   }
 }
+// The scanner also refuses a Router helper it cannot EXPAND (Route::singleton()/
+// apiSingleton(), or a resources() with a dynamic list): those routes would be
+// absent from the table, so the edge would 404 what PHP answers — a silent
+// wrong-serve, which is exactly what the scanner exists to prevent.
+{
+  const unexpanded = scannerStderr
+    .split(/\r?\n/)
+    .find((l) => l.includes('is not expanded by the static scanner'));
+  if (unexpanded) {
+    const cause = unexpanded.replace(/^\s*routes: parse issue\s*/, '');
+    note({
+      severity: BLOCK,
+      area: 'route',
+      cause,
+      fix: 'declare those routes with the singular helpers (Route::resource()/get()/post()...) so the scanner can read them',
+    });
+    fail(cause);
+  }
+}
+// A resource option that guards a SINGLE method (`middleware_for` /
+// `excluded_middleware_for`, or the ->middlewareFor() chain) is not modelled:
+// ignoring it would serve that method WITHOUT the middleware the app attaches,
+// so the scanner refuses and the build must refuse with it.
+{
+  const guarded = scannerStderr
+    .split(/\r?\n/)
+    .find((l) => l.includes('uses a per-method middleware option'));
+  if (guarded) {
+    const cause = guarded.replace(/^\s*routes: parse issue\s*/, '');
+    note({
+      severity: BLOCK,
+      area: 'route',
+      cause,
+      fix: 'declare the resource routes explicitly (or move the middleware to the whole resource/group) so the scanner can read them',
+    });
+    fail(cause);
+  }
+}
 // Laravel only reports `path` for closure routes — controller-action routes
 // (Route::get('/x', [XController::class, 'm']), Route::resource, invokable
 // controllers) come back with path === null even though they live in routes/.

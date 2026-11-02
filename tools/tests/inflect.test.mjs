@@ -40,6 +40,11 @@ test('inflect: the resource-wildcard cases and the count guard', () => {
   // `plural($v, 1)` answers the word unchanged (Pluralizer::plural()).
   assert.equal(plural('post', 1), 'post');
   assert.equal(plural('post', 0), 'posts');
+  // A non-integer count in (1, 2) truncates toward zero, so Laravel answers the
+  // SINGULAR word: `(int) abs(1.5) === 1`. (PHP 8.3 oracle: 'post'/'post'/'posts'.)
+  assert.equal(plural('post', 1.5), 'post');
+  assert.equal(plural('post', '1.9'), 'post');
+  assert.equal(plural('post', 0.5), 'posts');
   // An uncountable word stays put.
   assert.equal(plural('related'), 'related');
   assert.equal(singular('series'), 'series');

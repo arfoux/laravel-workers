@@ -656,7 +656,11 @@ export function plural(value, count = 2) {
   const v = String(value);
   let c = count;
   if (c && typeof c === 'object' && typeof c.length === 'number' && typeof c !== 'string') c = c.length;
-  if (Math.abs(Number(c)) === 1) return v;
+  // Pluralizer::plural() guards with `(int) abs($count) === 1`, so a
+  // non-integer count in (1, 2) — 1.5, "1.9" — takes the SINGULAR branch
+  // (PHP truncates toward zero). `tools/model-dump.mjs` already carries this
+  // rule (#152); this second port of the same function had drifted (#609).
+  if (Math.trunc(Math.abs(Number(c))) === 1) return v;
   if (UNCOUNTABLE.includes(v.toLowerCase())) return v;
   if (!/^(.*)[A-Za-z0-9\u0080-\uFFFF]$/u.test(v)) return v;
   return matchCase(inflectPlural(v), v);
