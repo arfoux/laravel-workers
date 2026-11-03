@@ -245,3 +245,27 @@ test('handleHttp: global middleware the kernel does not run fails loud', async (
     }
   );
 });
+
+test('transformers: an arrow-function withMiddleware callback is read, not skipped', () => {
+  // `->withMiddleware(fn (Middleware $m) => ...)` is legal PHP and carries NO
+  // statement block: php-parser gives it `kind: 'arrowfunc'` with the expression
+  // as `body`. A reader that only knows `closure` skips the whole
+  // configuration, so the app's `->remove()`/`->use()` edits never reach the
+  // compiled request (the edge then runs the framework default stack while PHP
+  // runs the app's).
+  const dir = scaffold(`<?php
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')
+    ->withMiddleware(fn (Middleware $middleware) => $middleware->remove(\\Illuminate\\Foundation\\Http\\Middleware\\TrimStrings::class))
+    ->create();
+`);
+  try {
+    const report = {};
+    const state = appMiddlewareState(dir, report);
+    assert.equal(report.failure, undefined, 'no refusal expected');
+    assert.equal(state.transformers.trim, false, 'the removed transformer is off');
+    assert.equal(state.transformers.emptyToNull, true, 'the rest of the stack is intact');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

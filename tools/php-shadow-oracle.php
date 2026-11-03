@@ -199,7 +199,7 @@ DB::connection('lw_http')->table('lw_users')->insert([[
 // The compiled worker authenticates against the *app's* own user model (table
 // `users`), the oracle against `lw_users` — so the same user row must exist in
 // both, or the two sides would authenticate different accounts.
-if ($schema->hasTable('users') && $userInput['id'] !== null) {
+if ($schema->hasTable('users') && ($userInput['id'] ?? null) !== null) {
     try {
         DB::connection('lw_http')->table('users')->insert([[
             'id' => $userInput['id'] ?? 1,

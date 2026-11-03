@@ -48,52 +48,109 @@ function lw_mailable_views(string $source): array
         return $views;
     }
 
-    // The three shapes, one pattern each. The name is a LITERAL string (the
-    // quote that opens it closes it), so a dynamic name (`->view($name)`)
-    // matches nothing.
+    // The source is TOKENIZED, never regex-scanned: `token_get_all()` already
+    // knows that a `->view('x')` inside a `//` comment or inside a string
+    // literal is NOT a call, which a bare regex cannot. A commented-out
+    // mailable (`// ->view('mail.ghost')`) used to register `mail.ghost` as a
+    // real view, and the build then refused the route that renders it ("the
+    // view ... did not compile") - a FALSE fail-loud, not a real gap. A view
+    // name spelled inside a string (`$doc = "->view('ghost')"`) leaked the
+    // same way.
     //
     //   the fluent call:  ->view('x')  ->textView('x')  ->markdown('x')
     //   the declaration:  public $view = 'x';  public $textView = 'x';
     //   the assignment:   $this->view = 'x';  $this->textView = 'x';
     //
-    // The declaration needs the `public` keyword on purpose: a bare
+    // The declaration keeps the `public` keyword on purpose: a bare
     // `$view = 'x';` is a LOCAL variable, not the mailable's view, and
     // Laravel's Mailable declares the field `public` (a subclass cannot
     // narrow it - PHP refuses the redeclaration).
-    $patterns = [
-        // The fluent call.
-        '/->(?:view|textView|markdown)\(\s*(["\'])([^"\']+)\1/',
-        // The PUBLIC property (the declaration).
-        '/\bpublic\s+\$(?:view|textView)\s*=\s*(["\'])([^"\']+)\1/',
-        // The assignment to the property (`$this->view = 'x';`).
-        '/\$this->(?:view|textView)\s*=\s*(["\'])([^"\']+)\1/',
-    ];
-
-    // Every match, with the place it was found: the names come out in the
-    // order the mailable declares them (the first one wins).
-    $found = [];
-    $order = 0;
-    foreach ($patterns as $pattern) {
-        if (!preg_match_all($pattern, $source, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
-            continue;
-        }
-        foreach ($matches as $set) {
-            // $set[0] is the whole match (with its offset), $set[2] is the
-            // view name (the group that holds it).
-            $found[] = ['at' => $set[0][1], 'name' => $set[2][0], 'order' => $order++];
+    $tokens = [];
+    foreach (token_get_all($source) as $token) {
+        if (is_array($token)) {
+            // Comments and whitespace carry no code. A string literal stays
+            // ONE token (quotes and all) - nothing can be matched inside it.
+            if ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT || $token[0] === T_WHITESPACE) {
+                continue;
+            }
+            $tokens[] = ['id' => $token[0], 'text' => (string) $token[1]];
+        } else {
+            $tokens[] = ['id' => null, 'text' => (string) $token];
         }
     }
-    usort($found, static function (array $a, array $b): int {
-        return $a['at'] <=> $b['at'] ?: $a['order'] <=> $b['order'];
-    });
 
-    foreach ($found as $match) {
-        if (!in_array($match['name'], $views, true)) {
-            $views[] = $match['name'];
+    $count = count($tokens);
+    for ($i = 0; $i < $count; $i++) {
+        $id = $tokens[$i]['id'];
+        $name = null;
+
+        if (($id === T_OBJECT_OPERATOR || $id === T_NULLSAFE_OBJECT_OPERATOR)
+            && isset($tokens[$i + 3])
+            && $tokens[$i + 1]['id'] === T_STRING
+            && ($tokens[$i + 1]['text'] === 'view' || $tokens[$i + 1]['text'] === 'textView' || $tokens[$i + 1]['text'] === 'markdown')
+            && $tokens[$i + 2]['text'] === '(') {
+            // The fluent call: `->view(` then a literal argument.
+            $name = lw_mailable_literal($tokens[$i + 3]);
+        } elseif ($id === T_PUBLIC) {
+            // The declaration: `public [type] $view = 'x';`. The `public` is
+            // the discriminator - a bare `$view = 'x';` is a local variable.
+            for ($j = $i + 1; $j < $count && $j <= $i + 4; $j++) {
+                if ($tokens[$j]['id'] === T_VARIABLE) {
+                    if (($tokens[$j]['text'] === '$view' || $tokens[$j]['text'] === '$textView')
+                        && isset($tokens[$j + 2]) && $tokens[$j + 1]['text'] === '=') {
+                        $name = lw_mailable_literal($tokens[$j + 2]);
+                    }
+                    break;
+                }
+            }
+        } elseif ($id === T_VARIABLE && $tokens[$i]['text'] === '$this'
+            && isset($tokens[$i + 4])
+            && $tokens[$i + 1]['id'] === T_OBJECT_OPERATOR
+            && $tokens[$i + 2]['id'] === T_STRING
+            && ($tokens[$i + 2]['text'] === 'view' || $tokens[$i + 2]['text'] === 'textView')
+            && $tokens[$i + 3]['text'] === '=') {
+            // The assignment: `$this->view = 'x';` (the constructor).
+            $name = lw_mailable_literal($tokens[$i + 4]);
+        }
+
+        if ($name !== null && !in_array($name, $views, true)) {
+            $views[] = $name;
         }
     }
 
     return $views;
+}
+
+/**
+ * The view name a literal token holds, or null when the token is not a plain
+ * (non-interpolated) string literal - `->view($x)` and `->view("a{$b}")` are
+ * dynamic, and the build cannot know which view to compile.
+ *
+ * @param  array{id: mixed, text: string}|null  $token
+ */
+function lw_mailable_literal(?array $token): ?string
+{
+    if ($token === null || $token['id'] !== T_CONSTANT_ENCAPSED_STRING) {
+        return null;
+    }
+    $raw = $token['text'];
+    $len = strlen($raw);
+    if ($len < 2) {
+        return null;
+    }
+    $quote = $raw[0];
+    if (($quote !== "'" && $quote !== '"') || $raw[$len - 1] !== $quote) {
+        return null;
+    }
+    $inner = substr($raw, 1, -1);
+    if ($inner === '') {
+        return null;
+    }
+    // Undo the two escapes a view name can carry. A view name is a dotted
+    // path; the exotic double-quote escapes (`\n`, `\x41`, `\u{..}`) are not
+    // expanded - they cannot appear in a real name, and expanding them would
+    // only make the two mirrors harder to keep in step.
+    return str_replace(['\\\\', '\\' . $quote], ['\\', $quote], $inner);
 }
 
 // The CLI: the tool prints the names of a source (the operator and the test

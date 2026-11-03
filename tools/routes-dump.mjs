@@ -44,6 +44,8 @@ import {
   callMethodName,
   callArgs,
   argValue,
+  isClosureFn,
+  closureStatements,
   classFile,
   appPsr4Dirs,
   readEnvFile,
@@ -141,6 +143,33 @@ const fqcnOf = (node, parsed) => {
   if (parsed && parsed.namespace && !raw.includes('\\')) return parsed.namespace + '\\' + raw;
   return raw;
 };
+
+/**
+ * `Router::prependGroupController()` (Router.php:664-684): inside a group that
+ * declares `controller`, an action string that is neither already `Class@method`
+ * nor a class name of its own becomes `Group\Controller@method`. PHP decides the
+ * second case with `class_exists($class)`; a source scan cannot autoload, so a
+ * resolved FQCN (it holds a namespace separator) stands in for it - a
+ * GLOBAL-namespace controller written as a bare string is the one shape where the
+ * two can disagree.
+ */
+const withGroupController = (action, controller) =>
+  action && controller && !action.includes('@') && !action.includes('\\')
+    ? controller + '@' + action
+    : action;
+
+/**
+ * `Router::prependGroupNamespace()` (Router.php:653-661), applied AFTER the group
+ * controller: a `uses` string that neither starts with a backslash nor already
+ * starts with the group's namespace is prefixed with it. `Router::view()` /
+ * `redirect()` register their framework controller with a LEADING BACKSLASH
+ * (Router.php:301) - which is exactly what exempts them - so they never pass
+ * through here.
+ */
+const withGroupNamespace = (action, namespace) =>
+  action && namespace && !action.startsWith('\\') && !action.startsWith(namespace)
+    ? namespace + '\\' + action
+    : action;
 
 /** The method sequence of a route chain, OUTER call -> INNER call. */
 const chainSteps = (callNode) => {
@@ -438,10 +467,10 @@ function parse() {
       'declare the ones the edge must serve in registry.json (static/ports/ignore)'
   );
 
-  const groupStack = []; // { prefix, namePrefix, middleware[], group, domain, excluded[] }
+  const groupStack = []; // { prefix, namePrefix, middleware[], group, domain, excluded[], controller, namespace }
   const now = () => {
     const prefixes = [];
-    const cur = { prefix: '', namePrefix: '', middleware: [], group: null, domain: null, excluded: [] };
+    const cur = { prefix: '', namePrefix: '', middleware: [], group: null, domain: null, excluded: [], controller: null, namespace: null };
     for (const g of groupStack) {
       if (g.prefix) prefixes.push(g.prefix);
       cur.namePrefix += g.namePrefix || '';
@@ -449,6 +478,19 @@ function parse() {
       cur.excluded = cur.excluded.concat(g.excluded || []);
       if (g.domain) cur.domain = g.domain; // the innermost non-empty domain wins
       if (!cur.group && g.group) cur.group = g.group;
+      // `Router::prependGroupController()` reads the LAST group on the stack, and
+      // `RouteGroup::merge()` (:23-25) UNSETS the outer 'controller' the moment an
+      // inner group declares one - so the innermost declaration wins and an inner
+      // group that declares none inherits the outer's.
+      if (g.controller) cur.controller = g.controller;
+      // Namespaces are NOT last-write-wins: `RouteGroup::formatNamespace()`
+      // (:105-114) CONCATENATES an inner namespace onto the outer one, and a
+      // leading backslash makes the inner one absolute (`\App\X` replaces).
+      if (g.namespace) {
+        const raw = String(g.namespace);
+        const part = raw.replace(/^\\+/, '').replace(/\\+$/, '');
+        cur.namespace = /^\\/.test(raw) || !cur.namespace ? part : cur.namespace + '\\' + part;
+      }
     }
     // Nested prefixes JOIN with '/' (`RouteGroup::formatPrefix`): `prefix('a')`
     // inside `prefix('b')` answers `b/a`, not `ba`.
@@ -625,17 +667,23 @@ function parse() {
 
     let action = 'Closure';
     let path = null;
+    // A non-Closure action the ROUTE FILE declares is a controller action as far
+    // as the Router is concerned (`Router::actionReferencesController()`), and
+    // that is what makes the two group attributes apply - controller first, then
+    // namespace (`Router::convertToControllerAction()`, Router.php:621-641).
+    let fromRouteFile = false;
     // Route::view($uri, $view, ...) / Route::redirect($uri, $dest, ...) register
     // a framework controller — NOT the app action the generic branch below would
     // read out of argument #1 (that one is the view NAME / the destination).
     if (vm === 'view') action = 'Illuminate\\Routing\\ViewController';
     else if (vm === 'redirect' || vm === 'permanentredirect') action = 'Illuminate\\Routing\\RedirectController';
     else if (actionArg) {
-      if (actionArg.kind === 'closure') {
+      if (isClosureFn(actionArg)) {
         const line = verbStep.node.loc && verbStep.node.loc.start ? verbStep.node.loc.start.line : null;
         const rel = file.replace(/\\/g, '/').replace(appDir.replace(/\\/g, '/') + '/', '');
         path = line ? rel + ':' + line : null;
       } else if (actionArg.kind === 'array') {
+        fromRouteFile = true;
         const items = (actionArg.items || []).filter((i) => i && i.kind === 'entry');
         if (items.length >= 2) {
           const cls = fqcnOf(items[0].value, parsedOf(file));
@@ -646,9 +694,15 @@ function parse() {
           if (cls) action = cls;
         }
       } else if (actionArg.kind === 'string') {
-        // 'Controller@method' route action
+        // 'Controller@method' route action - or a BARE method name resolved
+        // against the enclosing controller group (`Route::controller(X)->group`).
+        fromRouteFile = true;
         action = actionArg.value;
       }
+    }
+    if (fromRouteFile) {
+      action = withGroupController(action, g.controller);
+      action = withGroupNamespace(action, g.namespace);
     }
 
     // Controller-level `$this->middleware('auth', ['except'=>...])` never appears
@@ -694,7 +748,11 @@ function parse() {
     //  A) Route::prefix('x')->middleware([...])->group(fn)   steps=[group, prefix, ...]
     //  B) Route::group(['prefix' => 'x', 'middleware' => [...]], fn)
     const groupStep = steps[0];
-    const closureArg = groupStep.args.map(argValue).find((a) => a && a.kind === 'closure');
+    // A group callback may be a closure OR an arrow function: an arrow-function
+    // group the scan does not recognise drops EVERY route inside it, with no
+    // note (measured on Laravel 13.37: `Route::prefix('g')->group(fn () =>
+    // Route::get('/x', ...))` vanished from the dump entirely).
+    const closureArg = groupStep.args.map(argValue).find(isClosureFn);
     if (!closureArg) return;
 
     // `Route::prefix('x')->middleware([...])->group(fn)` builds a
@@ -707,7 +765,7 @@ function parse() {
     // ->middleware('m2')` answers `[web, m2]`), but `withoutMiddleware` is a
     // real Router method whose `->middleware()` APPENDS, so it accumulates.
     // A PHP literal array keeps only the LAST duplicate key.
-    const attrs = { prefix: '', namePrefix: '', middleware: [], domain: null, excluded: [] };
+    const attrs = { prefix: '', namePrefix: '', middleware: [], domain: null, excluded: [], controller: null, namespace: null };
     const chainLast = (method) => {
       // `steps` is OUTERMOST-first = REVERSE execution order (index 0 is the
       // LAST call in source, `Route::prefix('a')->prefix('b')->group()` parses
@@ -730,6 +788,26 @@ function parse() {
     if (domainStep) { const v = strArg(domainStep.args[0]); if (v != null) attrs.domain = v; }
     const mwStep = chainLast('middleware');
     if (mwStep) { const m = middlewareList(mwStep.args[0]); if (m) attrs.middleware = m.slice(); }
+    // `Route::controller(X::class)->group(fn () => Route::get('/x', 'index'))`:
+    // Router::prependGroupController() (Router.php:664-684) turns the bare method
+    // name into `X@index` when the route is registered. Without this, the dump
+    // answered `action: "index"`, the build tried to resolve a CLASS named
+    // `index` ("cannot resolve index via composer autoload") and a --strict build
+    // refused the app - a route shape Laravel 11+ apps use as a matter of course.
+    const ctlStep = chainLast('controller');
+    if (ctlStep) {
+      const c = fqcnOf(ctlStep.args[0], parsedOf(file));
+      if (c) attrs.controller = c;
+    }
+    // `Route::namespace('App\Http\Controllers')->group(fn)` (the Laravel 5/6
+    // spelling, still honoured by Router::prependGroupNamespace()) - a registrar
+    // attribute, so it is last-write-wins like `prefix`, and the merge across
+    // NESTED groups is handled in now().
+    const nsStep = chainLast('namespace');
+    if (nsStep) {
+      const v = strArg(nsStep.args[0]) ?? fqcnOf(nsStep.args[0], parsedOf(file));
+      if (v != null) attrs.namespace = v;
+    }
     for (const st of steps) {
       if (String(st.method == null ? '' : st.method).toLowerCase() !== 'withoutmiddleware') continue;
       const m = middlewareList(st.args[0]);
@@ -752,6 +830,8 @@ function parse() {
       const asName = raw.name !== undefined ? raw.name : raw.as;
       if (asName !== undefined) attrs.namePrefix = strArg(asName) || '';
       if (raw.domain !== undefined) attrs.domain = strArg(raw.domain) ?? null;
+      if (raw.controller !== undefined) attrs.controller = fqcnOf(raw.controller, parsedOf(file));
+      if (raw.namespace !== undefined) attrs.namespace = strArg(raw.namespace) ?? fqcnOf(raw.namespace, parsedOf(file));
       if (raw.middleware !== undefined) attrs.middleware = pickMiddleware(raw.middleware);
       const exAttr = pickMiddleware(raw.withoutMiddleware)
         .concat(pickMiddleware(raw.without_middleware))
@@ -759,8 +839,7 @@ function parse() {
       if (exAttr.length) attrs.excluded = attrs.excluded.concat(exAttr);
     }
     groupStack.push(attrs);
-    const body = closureArg.body && closureArg.body.children;
-    walkStatements(body, file);
+    walkStatements(closureStatements(closureArg), file);
     groupStack.pop();
   };
 
@@ -976,7 +1055,16 @@ function parse() {
 
   const registerResource = (verbStep, modifiers, file) => {
     const isApi = verbStep.method === 'apiResource';
-    const resourceName = strArg(verbStep.args[0]);
+    const rawName = strArg(verbStep.args[0]);
+    // `ResourceRegistrar::register()` (:85-92): a name CONTAINING a slash never
+    // reaches the resource expansion - it goes to `prefixedResource()`, where the
+    // segments before the last slash become the URI PREFIX and only the last
+    // segment names the resource (`getResourcePrefix()`, :251-261). Missing that
+    // put the slash into the parameter wildcard (`admin/slugs/{admin/slug}` where
+    // PHP answers `{slug}`) and into the route names.
+    const slashAt = rawName ? rawName.lastIndexOf('/') : -1;
+    const uriPrefix = slashAt >= 0 ? rawName.slice(0, slashAt) : '';
+    const resourceName = slashAt >= 0 ? rawName.slice(slashAt + 1) : rawName;
     if (!resourceName) { note(`Route::${verbStep.method} with a dynamic name at ${relOf(file)} — not expanded`); return; }
     const controllerArg = verbStep.args[1] || null;
     const fqcn = controllerArg ? fqcnOf(controllerArg, parsedOf(file)) : null;
@@ -1070,9 +1158,9 @@ function parse() {
         // URI (probed vs route:list --json). A CHAIN-form `Route::prefix('v2')`
         // before `->resource()` is a registrar attribute and is deliberately NOT
         // applied: PHP drops it too (see collectModifiers).
-        uri: normalizeUri(joinUri(g.prefix, uriRaw)),
+        uri: normalizeUri(joinUri(g.prefix, uriPrefix, uriRaw)),
         name,
-        action: `${fqcn}@${action}`,
+        action: withGroupNamespace(`${fqcn}@${action}`, g.namespace),
         middleware,
         path: null,
       });

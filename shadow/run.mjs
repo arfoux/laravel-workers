@@ -11,13 +11,31 @@
 //   --app         the Laravel app to compare (must have vendor/ installed)
 //   --scenarios   the scenario file (default: shadow/scenarios/<app-name>.mjs)
 //   --build       run `build.mjs --strict` in the app first (fail loud)
-//   --json        print the machine-readable report
+//   --json        print the machine-readable report (to stderr — see below)
+//
+// Environment:
+//   PHP_BIN                 the PHP binary (default: `php`)
+//   LW_SHADOW_MIN_COVERAGE  the byte-identical floor, 0..1 (default: 1). A
+//                           non-numeric value is refused rather than silently
+//                           disabling the gate; `0` disables it on purpose.
+//   LW_DBG / LW_DBG_BODY    debug dumps to stderr
 //
 // A scenario file exports { name, steps, fixtures?, user? }:
 //   steps[]    { label, method, uri, jar?, headers?, form?, json?, query?,
-//                multipart?, expect?: 'match' | 'diverges', why? }
+//                multipart?, expect?: 'match' | 'diverges', why?,
+//                shape?, expectStatus?, expectHeader?, expectBody? }
 //   fixtures[] { sql } — rows inserted before the steps (both sides see them)
 //   user       { id, email, password, password_hash? } — the seeded auth user
+//
+// A step may carry:
+//   shape        true — compare the JSON STRUCTURE (key sets), not the bytes
+//   expectStatus the status the step must answer (both sides)
+//   expectHeader { name: value } headers the step must answer
+//   expectBody   a substring the body must contain
+//
+// Machine-readable output goes to STDERR: the harness's own progress lines and
+// the child `build.mjs` share stdout, so `--json` on stdout could never be
+// concatenated into a single JSON document (#655).
 //
 // A step may carry a multipart body:
 //   multipart  { fields?: { name: value }, files?: [{ name, filename?, type?, content?, contentBase64? }] }
@@ -565,8 +583,13 @@ async function main() {
   }
   const scenario = (await import(pathToFileURL(scenarioFile).href)).default;
 
+  // Progress lines go to STDERR and are SILENCED under `--json`: the report is
+  // then the only thing on either stream, so `node shadow/run.mjs --json 2>&1 | jq .`
+  // parses (#655). The child build shares stdout, which is why the report is
+  // not on stdout to begin with.
+  const progress = (line) => { if (!args.json) process.stderr.write(line + '\n'); };
   if (args.build) {
-    console.log(`• building ${appRoot} (--strict)`);
+    progress(`• building ${appRoot} (--strict)`);
     const res = spawnSync(process.execPath, [path.join(ROOT, 'build.mjs'), '--strict'], {
       cwd: appRoot,
       encoding: 'utf8',
@@ -583,13 +606,13 @@ async function main() {
   const seedDb = path.join(work, 'seed.sqlite');
   const jsDb = path.join(work, 'js.sqlite');
   try {
-    console.log(`• php oracle  (${path.basename(scenarioFile)})`);
+    progress(`• php oracle  (${path.basename(scenarioFile)})`);
     const php = runOracle(appRoot, scenario, phpDb, seedDb);
     // The compiled side starts from the *seed* state (schema + fixtures, before
     // any step ran) — the same rows the oracle saw.
     copyFileSync(seedDb, jsDb);
 
-    console.log('• compiled worker');
+    progress('• compiled worker');
     const loaded = await loadDist(appRoot);
     const js = await runCompiled(loaded, appRoot, scenario, jsDb);
 
@@ -735,7 +758,8 @@ async function main() {
     };
 
     if (args.json) {
-      console.log(JSON.stringify(report, null, 2));
+      // stderr keeps the report separate from the child build's stdout.
+      process.stderr.write(JSON.stringify(report, null, 2) + '\n');
     } else {
       for (const r of results) {
         const mark = r.verdict === 'MISMATCH' ? 'x' : r.verdict.startsWith('diverges') ? '~' : '+';
@@ -788,8 +812,22 @@ async function main() {
     // floor below 1 is only reachable when steps are shaped/structural or
     // documented divergences; the release gate keeps byte-identical at 100%
     // unless a scenario declares otherwise. LW_SHADOW_MIN_COVERAGE overrides.
-    const minCoverage = Number(process.env.LW_SHADOW_MIN_COVERAGE ?? 1);
-    const coverageOk = !Number.isFinite(minCoverage) || report.coverage >= minCoverage;
+    // `Number('typo')` is NaN, and `!Number.isFinite(NaN)` used to DISABLE the
+    // floor in silence — a mistyped variable turned the release gate off (#653).
+    // An unset variable keeps the default (1); anything else must be a finite
+    // number in 0..1.
+    const rawFloor = process.env.LW_SHADOW_MIN_COVERAGE;
+    let minCoverage = 1;
+    if (rawFloor !== undefined && rawFloor !== '') {
+      minCoverage = Number(rawFloor);
+      if (!Number.isFinite(minCoverage) || minCoverage < 0 || minCoverage > 1) {
+        process.stderr.write(
+          `shadow FAILED: LW_SHADOW_MIN_COVERAGE must be a number in 0..1 (got ${JSON.stringify(rawFloor)})\n`
+        );
+        process.exit(2);
+      }
+    }
+    const coverageOk = report.coverage >= minCoverage;
     if (!coverageOk) {
       process.stderr.write(
         `shadow FAILED: byte-identical coverage ${(report.coverage * 100).toFixed(0)}% is below the floor ` +

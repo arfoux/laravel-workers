@@ -245,24 +245,131 @@ const ctorDump = (fqcn) => {
   return out;
 };
 
-// The mailable view names, mirroring lw_mailable_views().
+// The mailable view names, mirroring lw_mailable_views(). The PHP tool is
+// the oracle; this mirror must answer the SAME names for the same source.
+//
+// The source is scanned, never regexed: a `->view('x')` inside a `//`
+// comment or inside a string literal is NOT a call, and a pattern scan
+// cannot know that. `phpTokens()` is the subset of PHP's lexer this needs:
+// comments and whitespace vanish, a string literal stays ONE token (quotes
+// and all), `->` is one token and `$var` / `public` / an identifier are
+// their own tokens - the same three shapes the PHP tool walks.
+const phpTokens = (src) => {
+  const toks = [];
+  const n = src.length;
+  const identStart = (c) => /[A-Za-z_\u0080-\uffff]/.test(c);
+  const ident = (c) => /[A-Za-z0-9_\u0080-\uffff]/.test(c);
+  let i = 0;
+  while (i < n) {
+    const c = src[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i += 1; continue; }
+    if (c === '/' && src[i + 1] === '/') { i += 2; while (i < n && src[i] !== '\n') i += 1; continue; }
+    // `#` opens a line comment - except `#[`, which is PHP 8's T_ATTRIBUTE:
+    // the attribute's own tokens are CODE (a string inside it is a string).
+    if (c === '#' && src[i + 1] !== '[') { i += 1; while (i < n && src[i] !== '\n') i += 1; continue; }
+    if (c === '/' && src[i + 1] === '*') { const e = src.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; continue; }
+    // Heredoc / nowdoc: the body is opaque to PHP's lexer (T_ENCAPSED_AND_
+    // WHITESPACE between T_START_HEREDOC and T_END_HEREDOC), so it must be
+    // opaque here too - a `->view('x')` written inside one is not a call.
+    if (c === '<' && src[i + 1] === '<' && src[i + 2] === '<') {
+      const head = /^<<<[ \t]*(?:'([A-Za-z_]\w*)'|"([A-Za-z_]\w*)"|([A-Za-z_]\w*))\r?\n/.exec(src.slice(i));
+      if (head) {
+        const label = head[1] || head[2] || head[3];
+        const close = new RegExp('^(?:' + label + ')\\b');
+        let j = i + head[0].length;
+        while (j < n) {
+          const nl = src.indexOf('\n', j);
+          const lineEnd = nl < 0 ? n : nl;
+          if (close.test(src.slice(j, lineEnd).replace(/^\s+/, ''))) { j = lineEnd; break; }
+          if (nl < 0) { j = n; break; }
+          j = nl + 1;
+        }
+        toks.push({ id: 'STRING', text: src.slice(i, j) });
+        i = j; continue;
+      }
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      let interp = false;
+      while (j < n) {
+        const d = src[j];
+        if (d === '\\') { j += 2; continue; }
+        if (c === '"' && d === '$' && j + 1 < n && (identStart(src[j + 1]) || src[j + 1] === '{')) interp = true;
+        if (d === c) break;
+        j += 1;
+      }
+      const end = Math.min(j + 1, n);
+      // An interpolated double-quoted string is not a literal name: PHP's
+      // lexer splits it too, and the PHP tool's T_CONSTANT_ENCAPSED_STRING
+      // check rejects it.
+      toks.push({ id: interp ? 'INTERP' : 'STRING', text: src.slice(i, end) });
+      i = end; continue;
+    }
+    if (c === '-' && src[i + 1] === '>') { toks.push({ id: 'OBJECT_OPERATOR', text: '->' }); i += 2; continue; }
+    if (c === '?' && src[i + 1] === '-' && src[i + 2] === '>') { toks.push({ id: 'NULLSAFE_OBJECT_OPERATOR', text: '?->' }); i += 3; continue; }
+    if (c === '$') {
+      let j = i + 1;
+      while (j < n && ident(src[j])) j += 1;
+      toks.push({ id: 'VARIABLE', text: src.slice(i, j) });
+      i = j; continue;
+    }
+    if (identStart(c)) {
+      let j = i;
+      while (j < n && ident(src[j])) j += 1;
+      const w = src.slice(i, j);
+      toks.push({ id: w === 'public' ? 'PUBLIC' : 'METHOD', text: w });
+      i = j; continue;
+    }
+    toks.push({ id: null, text: c });
+    i += 1;
+  }
+  return toks;
+};
+
+// The view name a literal token holds, or null when the token is not a plain
+// (non-interpolated) string literal. Mirrors lw_mailable_literal().
+const mailableLiteral = (t) => {
+  if (!t || t.id !== 'STRING') return null;
+  const raw = t.text;
+  const q = raw[0];
+  if ((q !== '"' && q !== "'") || raw.length < 2 || raw[raw.length - 1] !== q) return null;
+  const inner = raw.slice(1, -1);
+  if (!inner) return null;
+  return inner.split('\\\\').join('\\').split('\\' + q).join(q);
+};
+
 const mailableViews = (source) => {
   const views = [];
   if (!source) return views;
-  const patterns = [
-    /->(?:view|textView|markdown)\(\s*(["'])([^"']+)\1/,
-    /\bpublic\s+\$(?:view|textView)\s*=\s*(["'])([^"']+)\1/,
-    /\$this->(?:view|textView)\s*=\s*(["'])([^"']+)\1/,
-  ];
-  const found = [];
-  let order = 0;
-  for (const pattern of patterns) {
-    let m;
-    const re = new RegExp(pattern.source, 'g');
-    while ((m = re.exec(source)) !== null) found.push({ at: m.index, name: m[2], order: order++ });
+  const toks = phpTokens(source);
+  const has = (k, ...names) => toks[k] && toks[k].id === 'METHOD' && names.includes(toks[k].text);
+  for (let i = 0; i < toks.length; i += 1) {
+    const t = toks[i];
+    let name = null;
+    if ((t.id === 'OBJECT_OPERATOR' || t.id === 'NULLSAFE_OBJECT_OPERATOR')
+      && has(i + 1, 'view', 'textView', 'markdown')
+      && toks[i + 2] && toks[i + 2].text === '(') {
+      // The fluent call: `->view(` then a literal argument.
+      name = mailableLiteral(toks[i + 3]);
+    } else if (t.id === 'PUBLIC') {
+      // The declaration: `public [type] $view = 'x';`.
+      for (let j = i + 1; j <= i + 4 && j < toks.length; j += 1) {
+        if (toks[j].id === 'VARIABLE') {
+          if ((toks[j].text === '$view' || toks[j].text === '$textView')
+            && toks[j + 1] && toks[j + 1].text === '=') {
+            name = mailableLiteral(toks[j + 2]);
+          }
+          break;
+        }
+      }
+    } else if (t.id === 'VARIABLE' && t.text === '$this'
+      && toks[i + 1] && toks[i + 1].id === 'OBJECT_OPERATOR'
+      && has(i + 2, 'view', 'textView') && toks[i + 3] && toks[i + 3].text === '=') {
+      // The assignment: `$this->view = 'x';` (the constructor).
+      name = mailableLiteral(toks[i + 4]);
+    }
+    if (name !== null && !views.includes(name)) views.push(name);
   }
-  found.sort((a, b) => (a.at - b.at) || (a.order - b.order));
-  for (const m of found) if (!views.includes(m.name)) views.push(m.name);
   return views;
 };
 

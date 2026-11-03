@@ -170,7 +170,17 @@ export function classFile(appDir, fqcn) {
   if (best && existsSync(best)) return resolve(best);
   // 2) vendor/composer/autoload_psr4.php (the exact map PHP's autoloader uses).
   // Covers Illuminate\ + Symfony\ + Carbon\ + Psr\... — any vendor namespace.
-  const vendorDir = join(appDir, 'vendor');
+  // The vendor tree is NOT always `<app>/vendor`: an app with no vendor/ of its
+  // own reaches the framework through LW_VENDOR_DIR (vendor-lite's cache, or a
+  // vendor mounted elsewhere), and hard-coding `<app>/vendor` here left every
+  // vendor FQCN unresolved for those apps (#647). The variable names either the
+  // vendor dir itself or a project root holding one — resolve both, the same
+  // two layouts the config defaults accept (see the frameworkConfigDir block).
+  const vendorDir = [
+    process.env.LW_VENDOR_DIR ? resolve(process.env.LW_VENDOR_DIR) : null,
+    process.env.LW_VENDOR_DIR ? join(resolve(process.env.LW_VENDOR_DIR), 'vendor') : null,
+    join(appDir, 'vendor'),
+  ].find((d) => d && existsSync(join(d, 'composer', 'autoload_psr4.php'))) || join(appDir, 'vendor');
   const psr4File = join(vendorDir, 'composer', 'autoload_psr4.php');
   if (existsSync(psr4File)) {
     const map = psr4Map(psr4File, vendorDir, appDir);
@@ -615,6 +625,33 @@ export const argValue = (a) => {
 };
 
 /**
+ * A closure OR an arrow function. `php-parser` gives them different kinds
+ * (`closure` / `arrowfunc`) and a different body shape, and both are legal
+ * everywhere Laravel takes a callback: a route handler
+ * (`Route::get('/x', fn () => view('x'))`), a route group
+ * (`Route::prefix('x')->group(fn () => ...)`) and the boot callbacks in
+ * bootstrap/app.php (`->withMiddleware(fn (Middleware $m) => ...)`). Reading
+ * only `closure` silently DROPS every arrow-function route from the edge build
+ * (measured on Laravel 13.37: the route answered 404 on the edge where PHP
+ * answered 200, and the build reported it as "defined outside routes/").
+ */
+export const isClosureFn = (v) =>
+  !!v && (v.kind === 'closure' || v.kind === 'arrowfunc' || v.kind === 'arrowfunction');
+
+/**
+ * The STATEMENT LIST of a closure/arrow-function body. A `function () {...}`
+ * has a block (`body.children`); a `fn () => $expr` has the expression itself,
+ * so it becomes ONE synthetic expression statement - the shape the statement
+ * walkers already consume.
+ */
+export const closureStatements = (fn) => {
+  const body = fn && fn.body;
+  if (!body) return null;
+  if (Array.isArray(body.children)) return body.children;
+  return [{ kind: 'expressionstatement', expression: body }];
+};
+
+/**
  * Extract the middleware configurator state from bootstrap/app.php (Laravel
  * 11+ `->withMiddleware(...)` shape). Returns:
  *   { cookiesExcept, csrfExcept, allowSameSite, originOnly, globalMiddleware,
@@ -663,11 +700,10 @@ export function appMiddlewareState(appDir, report = {}) {
     if (Array.isArray(n)) { n.forEach(walker); return; }
     if (!n || typeof n !== 'object') return;
     if (callMethodName(n) === 'withMiddleware') {
-      const closure = callArgs(n)
-        .map(argValue)
-        .find((v) => v && v.kind === 'closure');
-      if (closure && closure.body && closure.body.children) {
-        for (const st of closure.body.children) {
+      const closure = callArgs(n).map(argValue).find(isClosureFn);
+      const statements = closureStatements(closure);
+      if (statements) {
+        for (const st of statements) {
           if (st && st.kind === 'expressionstatement' && st.expression) {
             const verdict = applyConfigCall(st.expression, state);
             if (verdict) {
@@ -925,9 +961,10 @@ function transformerSpec(ast, state, phpParser) {
     if (Array.isArray(n)) { n.forEach(walk); return; }
     if (!n || typeof n !== 'object') return;
     if (callMethodName(n) === 'withMiddleware') {
-      const closure = callArgs(n).map(argValue).find((v) => v && v.kind === 'closure');
-      if (closure && closure.body && closure.body.children) {
-        for (const st of closure.body.children) {
+      const closure = callArgs(n).map(argValue).find(isClosureFn);
+      const statements = closureStatements(closure);
+      if (statements) {
+        for (const st of statements) {
           if (!st || st.kind !== 'expressionstatement' || !st.expression) continue;
           const name = callMethodName(st.expression);
           if (!name) continue;

@@ -19,7 +19,7 @@
 // convention as the PHP oracle tests).
 
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -82,6 +82,20 @@ try {
   });
   const pkg = join(work, 'node_modules', 'laravel-workers');
 
+  // 3a. the Vite dev markers a running `npm run dev` leaves behind. Planted
+  //     BEFORE the build on purpose: `public/hot` decides dev-vs-build for
+  //     `@vite`, so a build that does not set it aside bakes the dev-server
+  //     fonts/asset URLs into the compiled contexts (measured: 10 error view
+  //     contexts carried `http://[::1]:5173/__laravel_vite_plugin__/fonts/...`)
+  //     and copies the marker into the document root.
+  step('the Vite dev markers are planted before the build', () => {
+    writeFileSync(join(appRoot, 'public', 'hot'), 'http://localhost:5173\n');
+    const buildFonts = join(appRoot, 'public', 'build', 'fonts-manifest.json');
+    if (existsSync(buildFonts)) {
+      copyFileSync(buildFonts, join(appRoot, 'public', 'fonts-manifest.dev.json'));
+    }
+  });
+
   // 3. the installed CLI builds the app (the real thing a user does)
   step('the installed CLI: laravel-workers build --strict', () => {
     const out = execFileSync(process.execPath, [join(pkg, 'bin', 'laravel-workers.mjs'), 'build', '--strict'], {
@@ -92,6 +106,36 @@ try {
     });
     const line = out.split('\n').find((l) => l.includes('controllers transpiled')) || '';
     console.log('  ' + line.trim());
+  });
+
+  // 3b. and they must not survive it: `hot` is set aside for the WHOLE build
+  //     (the compile phase reads `@vite` long after the prerender) and restored
+  //     at the end, while neither it nor the dev font map is copied into the
+  //     document root. What a consumer sees when this breaks is a 404 on the
+  //     marker and an error page that pulls its fonts from a localhost that is
+  //     not there.
+  step('the Vite dev markers stay out of dist/ (and public/hot comes back)', () => {
+    const shipped = ['hot', 'hot.edge-build-aside', 'fonts-manifest.dev.json'].filter((name) =>
+      existsSync(join(appRoot, 'dist', 'public', name))
+    );
+    if (shipped.length) throw new Error(`dist/public shipped a dev marker: ${shipped.join(', ')}`);
+    if (!existsSync(join(appRoot, 'public', 'hot'))) throw new Error('the build did not put public/hot back');
+    const baked = [];
+    const walk = (dir) => {
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, ent.name);
+        if (ent.isDirectory()) walk(p);
+        else if (/\.mjs$/.test(ent.name)) {
+          const src = readFileSync(p, 'utf8');
+          if (src.includes(':5173') || src.includes('__laravel_vite_plugin__')) baked.push(p.slice(ROOT.length + 1));
+        }
+      }
+    };
+    walk(join(appRoot, 'dist', 'src'));
+    if (baked.length) throw new Error(`a dev-server URL was baked into the compiled output: ${baked.join(', ')}`);
+    console.log('  no dev marker in dist/public, no dev URL in dist/src, public/hot restored');
+    rmSync(join(appRoot, 'public', 'hot'), { force: true });
+    rmSync(join(appRoot, 'public', 'fonts-manifest.dev.json'), { force: true });
   });
 
   // 4. the cron gate on the BUILT worker. `POST /__lw/cron` is the schedule's

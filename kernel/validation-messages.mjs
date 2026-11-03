@@ -65,6 +65,9 @@ export function defaultValidationMessage(messages, rule, type) {
  *   params     the rule's parameters (the strings after the colon)
  *   displayOf  (attribute) => the display name of another attribute
  *   valueOf    (attribute) => the value of another attribute
+ *   displayValueOf (attribute, value) => the displayable value of a value
+ *   sizeOf     (attribute, value) => the value's size in the attribute's
+ *              type (`ValidatesAttributes::getSize()`), for gt/gte/lt/lte
  *   data       the validated data
  * @returns {string}
  */
@@ -76,6 +79,8 @@ export function renderValidationMessage(raw, ctx) {
     params = [],
     displayOf = () => '',
     valueOf = () => undefined,
+    displayValueOf = (_attribute, value) => (value === null || value === undefined ? 'empty' : String(value)),
+    sizeOf = (_attribute, value) => (value === null || value === undefined ? '' : String(value)),
     data = {},
   } = ctx;
   let message = String(raw == null ? '' : raw);
@@ -105,7 +110,10 @@ export function renderValidationMessage(raw, ctx) {
     case 'missing_if':
     case 'present_if':
     case 'prohibited_if':
-      message = replaceKeepingCase(message, { other: other(), value: String(otherValue() ?? '') });
+      // ReplacesAttributes::replaceAcceptedIf() (:19-26): `:value` is the
+      // getDisplayableValue() of the OTHER field's value (not the raw value:
+      // a null PHP value renders as 'empty').
+      message = replaceKeepingCase(message, { other: other(), value: String(displayValueOf(params[0], otherValue())) });
       break;
     case 'required_if_accepted':
     case 'required_if_declined':
@@ -114,8 +122,6 @@ export function renderValidationMessage(raw, ctx) {
       message = replaceKeepingCase(message, { other: other() });
       break;
     case 'required_unless':
-    case 'missing_unless':
-    case 'present_unless':
     case 'prohibited_unless': {
       const list = params.slice(1).map((v) => String(v));
       message = replaceKeepingCase(message, { other: other() });
@@ -123,6 +129,16 @@ export function renderValidationMessage(raw, ctx) {
         .split(':values').join(list.join(', '))
         .split(':VALUES').join(list.join(', ').toUpperCase())
         .split(':Values').join(list.map(ucfirst).join(', '));
+      break;
+    }
+    // ReplacesAttributes::replaceMissingUnless() (:239-245) backs BOTH
+    // `missing_unless` and `present_unless` (:459-462): a PLAIN
+    // str_replace([':other', ':value']) where `:value` is the
+    // getDisplayableValue() of the SECOND parameter - not the `:values` list.
+    case 'missing_unless':
+    case 'present_unless': {
+      message = message.split(':other').join(other());
+      message = message.split(':value').join(String(displayValueOf(params[0], params[1])));
       break;
     }
     case 'required_with':
@@ -226,8 +242,16 @@ export function renderValidationMessage(raw, ctx) {
     case 'gte':
     case 'lt':
     case 'lte': {
+      // ReplacesAttributes::replaceGt() (:587-596), reused by gte/lt/lte
+      // (:605-636): a parameter that names no field shows that parameter's
+      // displayable name; a real field shows the SIZE of its value in this
+      // attribute's type (`ValidatesAttributes::getSize()`: the number itself
+      // for a numeric attribute, `mb_strlen` for a string one - so
+      // `{a:'ab', b:2}` with `gt:b` reads "greater than 1 characters").
       const value = valueOf(params[0]);
-      message = message.split(':value').join(value === null || value === undefined ? other() : String(value));
+      message = message
+        .split(':value')
+        .join(value === null || value === undefined ? other() : String(sizeOf(attribute, value)));
       break;
     }
     case 'dimensions': {
