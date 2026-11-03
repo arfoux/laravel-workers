@@ -445,6 +445,29 @@ test('a date attribute READS as a Carbon: format/toDateString/(string)/json_enco
   assert.equal(JSON.stringify(m3.get('d')), 'null');
 });
 
+test('a timestamps=false model does NOT read created_at as a date (#644)', () => {
+  // Oracle (PHP 8.3 + 13.37), `setRawAttributes(['created_at' => '2024-01-02
+  // 03:04:05'])`:
+  //   `public $timestamps = false` -> get_debug_type($m->created_at) = 'string',
+  //     $m->toArray() = {"created_at":"2024-01-02 03:04:05"}
+  // because getDates() is [] while usesTimestamps() is false
+  // (HasAttributes.php:1675-1680). A timestamps=true model still answers a
+  // Carbon, so reading created_at on one is unchanged.
+  class NoTs extends Model {
+    static table = 'x';
+    static timestamps = false;
+  }
+  class WithTs extends Model {
+    static table = 'x';
+  }
+  const off = new NoTs({ created_at: '2024-01-02 03:04:05' });
+  assert.equal(off.get('created_at'), '2024-01-02 03:04:05');
+  assert.deepEqual(off.toJSON(), { created_at: '2024-01-02 03:04:05' });
+  const on = new WithTs({ created_at: '2024-01-02 03:04:05' });
+  assert.equal(typeof on.get('created_at'), 'object');
+  assert.equal(String(on.get('created_at')), '2024-01-02 03:04:05');
+});
+
 test('a Carbon value is compared, concatenated and json_encoded like PHP', async () => {
   const { buildRt } = await import('../../compiler/runtime/rt-from-context.mjs');
   const { phpJsonEncode } = await import('../php-json.mjs');

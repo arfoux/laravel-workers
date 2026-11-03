@@ -211,7 +211,11 @@ export function castDateSpec(cast) {
   return null;
 }
 function isDateAttribute(ctor, key) {
-  if (key === 'created_at' || key === 'updated_at') return true;
+  // `HasAttributes::getDates()` (13.37, :1675-1680) merges the timestamp
+  // columns into the date set ONLY while `usesTimestamps()` is true: a
+  // `public $timestamps = false` model answers the RAW column (no Carbon, no
+  // ISO8601 in toArray()), where the kernel used to wrap it anyway.
+  if (ctor.timestamps !== false && (key === 'created_at' || key === 'updated_at')) return true;
   // Laravel's SoftDeletes trait declares the cast
   // (`SoftDeletes::initializeSoftDeletes()` -> casts[deleted_at] = 'datetime'),
   // so a soft-deleting model's `deleted_at` reads as a Carbon too.
@@ -1119,11 +1123,7 @@ export class Model {
       // keeps its fillable-when-declared baseline for unmodified models and
       // additionally persists every attribute touched through set()/forceFill()
       // (e.g. remember_token written by the auth guard, which is not fillable).
-      const columns = ctor.fillable.length
-        ? [...ctor.fillable]
-        : Array.isArray(ctor.guarded) && ctor.guarded.length === 1 && ctor.guarded[0] === '*'
-          ? Object.keys(this.attributes)
-          : Object.keys(this.attributes);
+      const columns = ctor.fillable.length ? [...ctor.fillable] : Object.keys(this.attributes);
       for (const key of this._dirty) {
         if (!columns.includes(key)) columns.push(key);
       }
