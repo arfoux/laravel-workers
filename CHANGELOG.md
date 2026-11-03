@@ -2,6 +2,15 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## v0.4.7 — the deployed scheduled handler, PHP-faithful json, and the strict-engine fixes (2026-11-02)
 
+### Fix — a `timestamps = false` model no longer reads its timestamp columns as dates (2026-11-03, audit #644/#646)
+Re-sweeping `kernel/model.mjs` line by line against the vendored 13.37 turned up two narrow divergences and one no-op.
+
+- **`#644` — `created_at`/`updated_at` were treated as date attributes unconditionally.** `HasAttributes::getDates()` (`13.37, :1675-1680`) merges the timestamp columns only while `usesTimestamps()` is true, so a `public $timestamps = false` model answers the RAW column: probed on PHP 8.3 + 13.37, `get_debug_type($m->created_at)` = `string` and `$m->toArray()` = `{"created_at":"2024-01-02 03:04:05"}`. The kernel wrapped it in a Carbon / ISO8601 value anyway. `isDateAttribute()` now gates the two columns on `ctor.timestamps !== false`; a SoftDeletes `deleted_at` keeps its date behaviour (the trait declares a `datetime` cast, independent of timestamps).
+  - Test: `kernel/tests/model.test.mjs` gained the `timestamps=false` / `timestamps=true` pair (raw string vs Carbon).
+- **`#646` — a no-op ternary in `save()`'s insert column list.** `guarded == ['*'] ? Object.keys(attributes) : Object.keys(attributes)` collapsed to `Object.keys(attributes)`.
+- **`#645` (documented, unchanged):** `save()` on an existing model raises `model update affected 0 rows` when the UPDATE matches nothing, where Laravel's `performUpdate()` (`Model.php:1521-1546`) returns `true` silently. Kept as a deliberate fail-loud concurrent-delete detector.
+  - Verified: `node --check kernel/model.mjs`; `npm test` in the isolated copy **1099 tests / 1056 pass / 0 fail / 43 skipped** (one new test); shadow harness over the fixture app **12/12 byte-identical, coverage 100%**.
+
 ### Fix — `eachSpread`/`mapSpread` did not run PHP's `$chunk[] = $key` (2026-11-03, audit #640–#643)
 `EnumeratesValues.php:292-296` (`eachSpread`) and `:430-437` (`mapSpread`) are the same two lines — `$chunk[] = $key; $callback(...$chunk)` — and the kernel answered something else for every item that is not an array. `toList()` was the only conversion, so a non-array spread as *nothing*: `eachSpread` called the callback **without the spread at all** and `mapSpread(false)` threw where PHP answers.
 
@@ -11,6 +20,13 @@ The change-by-change record of laravel-workers (M1–M70 and the A-series audit 
 - **One documented LIMITATION (`#643`):** an item keyed `PHP_INT_MAX` answers `Cannot add element to the array as the next element is already occupied` in PHP; the kernel holds that key as a string and reports the named-argument Error instead.
   - Proof: a differential probe against PHP 8.3 + vendored 13 runs, per method, an array / `stdClass` / string / int / float / `true` / `false` / `null` / Collection item and the keyed (assoc, mix, trailing-int) shapes — 32 rows, 0 mismatches; plus a HEAD-vs-now run that shows the old answers above.
   - Test: `kernel/tests/collections-methods.test.mjs` gained the `eachSpread()/mapSpread()` block (23 assertions, every expectation probed against the vendored 13). Full suite green in the isolated copy (`npm test`: 1055 pass / 0 fail / 43 skipped).
+
+### Fix — an error view that cannot compile now names the VIEW, not a route (2026-11-03, audit #312/#313)
+Closing the last three open audit rows against the source: `#310` (the build-environment database message) had already landed and is changelogged in the vendor-lite entry above; `#312`/`#313` had landed but were never recorded.
+
+- **`#312` — an app that overrides Blade's compilation no longer stops the build at an error view.** A custom compiler that rewrites `@include`/`$__env->make()` into its own helper (BookStack's theming does exactly this) makes blade2php diverge for every view that passes through it. For a **route** view that stays `BLOCK` — shipping a body that differs from Laravel is a silent divergence — but for an **error** view the status-only page is a faithful fallback, so the divergence is `DECLARED` and the view is skipped from the registry (`~ skipping error view <name> (diverged; status-only page will be served)`) instead of failing the whole build.
+- **`#313` — every error-view failure now carries a `view`-area finding.** The transpile refusal already pushed one; the two paths that reach `fail()` before it did not, so the READINESS banner showed whatever `BLOCK` finding happened to be pushed earlier — often a **route** — for a failure entirely inside the error view. Both now push `area: 'view'` first: a missing/rejected dump (naming the view and echoing the `view <name>: ...` stderr line) and a dump that carries no `compiled` string.
+- Verified: `node --check build.mjs`; the change is severity/message-only (no `dist/` bytes change), so the existing build/shadow byte-parity coverage is unaffected.
 
 ### Fix — three audit gates that were assertion-shaped but not enforced (2026-11-02, audit #628–#630)
 Found while asking the repo the question "can the audit claim 100% without reading every line?" — in each case the *check* existed and the *enforcement* did not, which is the same silent-pass shape as the two scanner drops above.
