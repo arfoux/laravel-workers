@@ -1658,13 +1658,24 @@ if (errorViewCodes.length) {
       note({
         severity: BLOCK,
         area: 'view',
-        cause: `error view ${viewName} failed to compile`,
+        cause: `error view ${viewName} failed to compile: ${detail.slice(0, 300)}`,
         fix: `check the view source compiles; ensure compile-view.php can write its cache output (${relPath(dumpPath)})`,
       });
       fail('compile-view failed for ' + code + ': ' + detail.slice(0, 800));
     }
     const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-    if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + viewName);
+    if (!dump || typeof dump.compiled !== 'string') {
+      // #313: without a `view`-area finding the READINESS banner shows whatever
+      // BLOCK happened to be pushed earlier — often a ROUTE — for a failure that
+      // is entirely in the error view.
+      note({
+        severity: BLOCK,
+        area: 'view',
+        cause: `compile-view produced no compiled PHP for the error view ${viewName}`,
+        fix: `re-run the build; if it persists, compile the view standalone: node compiler/bin/transpile.mjs ${relPath(dumpPath)} --json`,
+      });
+      fail('compile-view produced no compiled PHP for ' + viewName);
+    }
 
     const bladeVerdict = bladeCompile(dump, viewName, { soft: true });
     if (bladeVerdict === 'failed' || bladeVerdict === 'diverged') {
