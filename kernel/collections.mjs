@@ -534,6 +534,71 @@ const phpDebugType = (v) => {
 };
 
 /**
+ * The arguments a SPREAD callback receives for one item — PHP's own line, in
+ * both call sites:
+ *
+ *   `eachSpread`  `foreach ($this->items as $key => $chunk) { $chunk[] = $key;
+ *                 ... }` (EnumeratesValues.php:292-296)
+ *   `mapSpread`   the same `$chunk[] = $key`, then `callback(...$chunk)`
+ *                 (:430-437)
+ *
+ * A non-array item never spreads to nothing: `$chunk[] = $key` raises PHP's own
+ * `Error` — except `false` and `null`, which the append COERCES to an array
+ * holding only the key. Probed on 8.3: `collect([false])->mapSpread(fn (...$a)
+ * => $a)` answers `[[0]]` and `[null]` the same, while `0`, `true`, `''` and an
+ * object all raise (`Cannot use a scalar value as an array`, `[] operator not
+ * supported for strings`, `Cannot use object of type stdClass as array`). The
+ * old shape spread `[]` for every non-array, so `eachSpread` called the
+ * callback with no spread at all and `mapSpread(false)` threw where PHP
+ * answers.
+ *
+ * Two more PHP 8 unpack rules were probed (both methods): an item that carries
+ * a STRING key spreads as NAMED arguments, and the appended key is positional
+ * and always last, so PHP raises `Cannot use positional argument after named
+ * argument during unpacking` before the callback binds — `collect([['a' => 1]])
+ * ->mapSpread(fn (...$a) => $a)` answers that Error, NOT `[1, 0]`.
+ * LIMITATION: an item keyed `PHP_INT_MAX` answers `Cannot add element to the
+ * array as the next element is already occupied` in PHP; the kernel cannot hold
+ * that key as an integer and reports the named-argument Error instead.
+ */
+const spreadArgs = (item, key) => {
+  if (item instanceof Collection) {
+    // A Collection is ArrayAccess, so `$chunk[] = $key` calls
+    // `offsetSet(null, $key)` - the ITEM itself GAINS the key (probed on 8.3:
+    // `$inner = collect([1]); collect([$inner])->eachSpread(...)` leaves
+    // `$inner` as `[1, 0]`) and then spreads as its own elements, in that
+    // order: `[[1, 0]]`, not an Error.
+    item.push(key);
+    return toList(item);
+  }
+  const arrayish = Array.isArray(item) || isArrayLike(item);
+  if (!arrayish && item !== false && item !== null && item !== undefined) {
+    const err = new Error(
+      typeof item === 'string'
+        ? '[] operator not supported for strings'
+        : typeof item === 'object'
+          ? 'Cannot use object of type ' + phpDebugType(item) + ' as array'
+          : 'Cannot use a scalar value as an array'
+    );
+    err.name = 'Error';
+    err.phpClass = 'Error';
+    throw err;
+  }
+  if (arrayish) {
+    const keys = Array.isArray(item) ? [] : Object.keys(item);
+    if (keys.some((k) => typeof arrayKey(k) === 'string')) {
+      const err = new Error('Cannot use positional argument after named argument during unpacking');
+      err.name = 'Error';
+      err.phpClass = 'Error';
+      throw err;
+    }
+    return [...toList(item), key];
+  }
+  // false / null (and undefined) appended the key to an empty array.
+  return [key];
+};
+
+/**
  * `data_has($target, $key)` = `Arr::has()` (a dot path; an ArrayAccess/model
  * target asks `offsetExists`, which for a Model means "the attribute is not
  * null"). A JS array/plain object asks `array_key_exists` (a null VALUE still
@@ -2926,12 +2991,12 @@ export class Collection {
 
   // ---- spread callbacks & keyed maps ------------------------------------
   /**
-   * `eachSpread(callable $callback)` (:291-298): each item (an array) spreads
-   * into the callback with the item's KEY appended. Answers the receiver
-   * (`each()`).
+   * `eachSpread(callable $callback)` (:291-298): `each()` whose callback
+   * receives the item's elements spread, with the item's KEY appended.
+   * Answers the receiver (`each()`).
    */
   eachSpread(callback) {
-    return this.each((item, key) => callback(...toList(item), key));
+    return this.each((item, key) => callback(...spreadArgs(item, key)));
   }
 
   /**
@@ -2939,28 +3004,9 @@ export class Collection {
    * the item's elements spread, with the item's KEY appended.
    */
   mapSpread(callback) {
-    // `$chunk[] = $key;` (EnumeratesValues::mapSpread(), :430-437) needs an
-    // ARRAY item: a scalar raises PHP's own Error (probed: "Cannot use a scalar
-    // value as an array" for an int/bool/null, "[] operator not supported for
-    // strings" for a string, "Cannot use object of type stdClass as array" for
-    // an object). The kernel spread the item silently.
-    return this.map((item, key) => {
-      const arrayish = Array.isArray(item) || item instanceof Collection;
-      if (!arrayish) {
-        let message;
-        if (typeof item === 'string') message = '[] operator not supported for strings';
-        else if (item !== null && item !== undefined && typeof item === 'object') {
-          message = 'Cannot use object of type ' + phpDebugType(item) + ' as array';
-        } else {
-          message = 'Cannot use a scalar value as an array';
-        }
-        const err = new Error(message);
-        err.name = 'Error';
-        err.phpClass = 'Error';
-        throw err;
-      }
-      return callback(...toList(item), key);
-    });
+    // `$chunk[] = $key;` (:430-437) needs an ARRAY item - a non-array raises
+    // PHP's own Error unless it is `false`/`null` (see `spreadArgs`).
+    return this.map((item, key) => callback(...spreadArgs(item, key)));
   }
 
   /**
