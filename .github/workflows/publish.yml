@@ -31,7 +31,12 @@ jobs:
           php-version: '8.3'
           extensions: pdo_sqlite, sqlite3
       - name: Create a fresh Laravel app (the oracle's app)
-        run: composer create-project laravel/laravel shadow-app --no-interaction --prefer-dist
+        # The skeleton is PINNED: an unpinned `create-project` installs whatever
+        # laravel/laravel ships that day, so a change upstream could break the gate
+        # (or silently change what it proves) without a commit here. Bump it
+        # deliberately when the new skeleton is verified.
+        
+        run: composer create-project "laravel/laravel:13.11.0" shadow-app --no-interaction --prefer-dist
       - name: Scaffold the fixture app the scenario replays
         # `shadow/scenarios/fresh-app.mjs` walks the login flow, the guarded
         # dashboard and the post list/detail, and its fixtures INSERT into a

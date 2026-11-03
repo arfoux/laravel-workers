@@ -623,6 +623,46 @@ test('a json/collection cast decodes with PHP key order (json_decode, not JSON.p
   assert.equal(bad.get('meta'), null);
 });
 
+test('a json cast compares the DECODED arrays with PHP\'s === (isDirty)', () => {
+  const { Model } = model;
+  class DirtyJson extends Model {
+    static casts = { meta: 'array', o: 'object' };
+  }
+  // A row that already exists (its key is present) with `raw` as the stored
+  // text, then the attribute set through the cast. Every expectation below is
+  // a probe against PHP 8.3 + framework 13.37 running the real
+  // `originalIsEquivalent()` (`setRawAttributes($attrs, true)` + a set + a
+  // read of `isDirty($key)`).
+  const dirty = (key, raw, set) => {
+    const m = new DirtyJson({ id: 1, [key]: raw });
+    m.set(key, set);
+    return m.isDirty(key);
+  };
+  // `originalIsEquivalent()` calls `fromJson()` WITHOUT `$asObject`, so the
+  // `object` cast decodes to an assoc array too - no stdClass identity compare:
+  // the same values are NOT dirty.
+  assert.equal(dirty('o', '{"a":1}', { a: 1 }), false);
+  // PHP's `===` on arrays is order-SENSITIVE: a reordered document is dirty.
+  assert.equal(dirty('meta', '{"a":1,"b":2}', { b: 2, a: 1 }), true);
+  assert.equal(dirty('meta', '{"a":1,"b":2}', { a: 1, b: 2 }), false);
+  // `{}` and `[]` are both the empty PHP array (probed: not dirty). A
+  // JSON.stringify compare saw two different containers and wrote an UPDATE.
+  assert.equal(dirty('meta', '{}', []), false);
+  // PHP coerces a canonical decimal key to the int, so `{"0":"x"}` IS `["x"]`;
+  // a leading zero is not a canonical integer, so `{"01":"x"}` is keyed and
+  // dirty against a list.
+  assert.equal(dirty('meta', '{"0":"x"}', ['x']), false);
+  assert.equal(dirty('meta', '{"01":"x"}', ['x']), true);
+  // Values compare with `===`: no coercion across types.
+  assert.equal(dirty('meta', '{"a":"1"}', { a: 1 }), true);
+  assert.equal(dirty('meta', '{"a":true}', { a: 1 }), true);
+  // `''` and `'null'` decode to null (fromJson), but a raw '' against a SET
+  // null is dirty: `is_null($attribute)` answers false before the cast branch.
+  assert.equal(dirty('meta', '', null), true);
+  assert.equal(dirty('meta', 'null', null), true);
+  assert.equal(dirty('meta', null, null), false);
+});
+
 test('a fresh model reads a missing attribute as NULL, like Laravel\'s container->make', () => {
   const { Model } = model;
   class FreshPost extends Model {
@@ -687,4 +727,143 @@ test('a date that PHP cannot read fails loud instead of answering the raw text (
   assert.equal(read('garbage'), 'THROW');
   // The kernel used to answer this raw text, so `.format()` was a TypeError.
   assert.equal(read('12-31-2024'), 'THROW');
+});
+
+// --- Eloquent parity on a REAL SQLite row (differential vs PHP 8.3 + 13.37) ---
+//
+// Every expectation below is a probe of the same table through Laravel itself
+// (in-memory SQLite, the framework's own query builder), so the port is pinned
+// to the framework's behaviour instead of to a second reading of the source.
+// The harness is D1-shaped exactly like sqlite-integration.test.mjs.
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = await import('node:sqlite'));
+} catch {
+  // Older Node: the block below is skipped.
+}
+const sqliteSkip = DatabaseSync ? false : 'node:sqlite unavailable (needs Node >= 22)';
+
+function d1(sqlite) {
+  return {
+    prepare(sql) {
+      let params = [];
+      return {
+        bind(...p) {
+          params = p;
+          return this;
+        },
+        async all() {
+          const st = sqlite.prepare(sql);
+          return { results: (params.length ? st.all(...params) : st.all()).map((r) => ({ ...r })) };
+        },
+        async first() {
+          const st = sqlite.prepare(sql);
+          const row = params.length ? st.get(...params) : st.get();
+          return row ? { ...row } : null;
+        },
+        async run() {
+          const st = sqlite.prepare(sql);
+          const info = params.length ? st.run(...params) : st.run();
+          return {
+            success: true,
+            meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid ?? 0) },
+          };
+        },
+      };
+    },
+  };
+}
+
+class DiffPost extends Model {
+  static table = 'posts';
+  static fillable = ['title'];
+  static casts = { meta: 'object', t: 'timestamp' };
+  static softDeletes = true;
+}
+
+function diffFixture() {
+  const sqlite = new DatabaseSync(':memory:');
+  sqlite.exec(`
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, meta TEXT, t TEXT,
+      created_at TEXT, updated_at TEXT, deleted_at TEXT);
+    INSERT INTO posts (id, title) VALUES (1, 'a'), (2, 'b'), (3, 'c');
+  `);
+  return { sqlite, db: d1(sqlite) };
+}
+
+test('sqlite: the timestamp cast is numeric-aware and timezone-stable', { skip: sqliteSkip }, async () => {
+  const applyCast = model.applyCast;
+  const { setModelTimezone } = await import('../model.mjs');
+  // PHP: asTimestamp() -> asDateTime('1700000000') is a UNIX TIMESTAMP; the old
+  // port answered null and read '2024-1-2 3:4:5' through JS Date.parse.
+  try {
+    setModelTimezone('Asia/Jakarta');
+    assert.equal(applyCast('1700000000', 'timestamp'), 1700000000);
+    assert.equal(applyCast('1700000000.5', 'timestamp'), 1700000000);
+    assert.equal(applyCast('2024-01-02 03:04:05', 'timestamp'), 1704139445);
+    assert.equal(applyCast('2024-1-2 3:4:5', 'timestamp'), 1704139445);
+    assert.throws(() => applyCast('garbage', 'timestamp'), (e) => e.name === 'InvalidFormatException');
+  } finally {
+    setModelTimezone('UTC');
+  }
+});
+
+test('sqlite: a date attribute write is normalised through fromDateTime', { skip: sqliteSkip }, async () => {
+  const { setModelTimezone } = await import('../model.mjs');
+  try {
+    setModelTimezone('UTC');
+    const m = new DiffPost();
+    m.set('created_at', '2024-1-2 3:4:5');
+    assert.equal(m.attributes.created_at, '2024-01-02 03:04:05');
+    const n = new DiffPost();
+    n.set('created_at', '');
+    assert.equal(n.attributes.created_at, '');
+    const o = new DiffPost();
+    o.set('created_at', null);
+    assert.equal(o.attributes.created_at, null);
+  } finally {
+    setModelTimezone('UTC');
+  }
+});
+
+test('sqlite: findOrFail(array) matches ids by value, like findOrFail does', { skip: sqliteSkip }, async () => {
+  const { db } = diffFixture();
+  // PHP (real SQLite row) answers both models for ['1','2']: the count compare
+  // is not identity-based, so a string route parameter matches an INTEGER key.
+  const rows = await DiffPost.findOrFail(db, ['1', '2']);
+  assert.equal(rows.length, 2);
+  await assert.rejects(() => DiffPost.findOrFail(db, ['1', '99']), /not found: 99/);
+});
+
+test('sqlite: a soft delete keeps a pending change dirty, and save() writes it', { skip: sqliteSkip }, async () => {
+  const { sqlite, db } = diffFixture();
+  const post = await DiffPost.find(db, 1);
+  post.set('title', 'zzz');
+  await post.delete(db);
+  // runSoftDelete() syncs ONLY the columns it wrote (SoftDeletes.php:155).
+  assert.equal(post.isDirty('title'), true);
+  assert.equal(post.isDirty('deleted_at'), false);
+  await post.save(db);
+  // `$this->save()` after a soft delete updates the trashed row itself.
+  const row = sqlite.prepare('SELECT title, deleted_at FROM posts WHERE id = 1').get();
+  assert.equal(row.title, 'zzz');
+  assert.notEqual(row.deleted_at, null);
+});
+
+test('sqlite: delete()/forceDelete() answer true, and NULL for a new model', { skip: sqliteSkip }, async () => {
+  const { db } = diffFixture();
+  assert.equal(await (await DiffPost.find(db, 2)).delete(db), true);
+  assert.equal(await new DiffPost().delete(db), null);
+  assert.equal(await new DiffPost().forceDelete(db), null);
+});
+
+test('sqlite: restore() persists through save(), like the trait does', { skip: sqliteSkip }, async () => {
+  const { sqlite, db } = diffFixture();
+  const post = await DiffPost.find(db, 3);
+  await post.delete(db);
+  post.set('title', 'restored-title');
+  assert.equal(await post.restore(db), true);
+  const row = sqlite.prepare('SELECT title, deleted_at FROM posts WHERE id = 3').get();
+  assert.equal(row.title, 'restored-title');
+  assert.equal(row.deleted_at, null);
 });

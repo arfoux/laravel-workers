@@ -174,6 +174,94 @@ class OrderMail extends Mailable
   assert.deepEqual(views(source), ['mail.order', 'mail.text']);
 });
 
+test('mail-views: a view name in a COMMENT is not a view (a regex scan leaked it)', { skip }, () => {
+  // Before the fix the extractor was three regexes over the raw source: a
+  // commented-out `->view('mail.ghost')` registered `mail.ghost` as a real
+  // view, and the build then refused the route that renders it ("the view
+  // did not compile") - a FALSE fail-loud. The source is tokenized now.
+  const source = `<?php
+
+class OrderMail extends Mailable
+{
+    public function build()
+    {
+        // ->view('mail.ghost')
+        /* $this->view = 'mail.blockGhost'; */
+        # $this->view = 'mail.hashGhost';
+        return $this->view('mail.order');
+    }
+
+    public function notes()
+    {
+        /** public $view = 'mail.docGhost'; */
+        return 'ok';
+    }
+}
+`;
+  assert.deepEqual(views(source), ['mail.order']);
+});
+
+test('mail-views: a view name inside a STRING literal is not a view', { skip }, () => {
+  const source = `<?php
+
+class OrderMail extends Mailable
+{
+    public function build()
+    {
+        $doc = "->view('mail.ghostA')";
+        $doc2 = '$this->view = "mail.ghostB";';
+        $doc3 = "public \\$view = 'mail.ghostC';";
+        return $this->view('mail.order');
+    }
+}
+`;
+  assert.deepEqual(views(source), ['mail.order']);
+});
+
+test('mail-views: a view name inside a heredoc / nowdoc is not a view', { skip }, () => {
+  const source = `<?php
+
+class OrderMail extends Mailable
+{
+    public function build()
+    {
+        $doc = <<<TXT
+        ->view('mail.heredocGhost')
+        TXT;
+        $doc2 = <<<'TXT'
+        $this->view = 'mail.nowdocGhost';
+        TXT;
+        return $this->view('mail.order');
+    }
+}
+`;
+  assert.deepEqual(views(source), ['mail.order']);
+});
+
+test('mail-views: an interpolated name is DYNAMIC (no literal, no view)', { skip }, () => {
+  // PHP's own lexer splits `"a{$b}"`, so the token is not a constant string:
+  // the build cannot know the name.
+  const source = `<?php
+$suffix = 'order';
+return $this->view("mail.{$suffix}")->textView("mail.$suffix");
+`;
+  assert.deepEqual(views(source), []);
+});
+
+test('mail-views: the nullsafe call learns the view too', { skip }, () => {
+  const source = `<?php
+return $this?->view('mail.order');
+`;
+  assert.deepEqual(views(source), ['mail.order']);
+});
+
+test('mail-views: an escaped quote inside the name survives', { skip }, () => {
+  const source = `<?php
+return $this->view('mail.ord\\'er');
+`;
+  assert.deepEqual(views(source), ["mail.ord'er"]);
+});
+
 test('mail-views: the tool reads a file too (the CLI it documents)', { skip }, () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'lw-mail-views-'));
   const file = path.join(dir, 'OrderMail.php');

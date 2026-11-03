@@ -28,6 +28,12 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const DEFAULT_FILES = ['auth', 'cache', 'csrf', 'session', 'ratelimit'].map((name) =>
   path.join('kernel', 'tests', `${name}.test.mjs`),
 );
+// The vendor-dir resolver (#647) is an app-dependent oracle too: without an app
+// it self-skips, so a plain `node --test` is green while proving nothing. The
+// parity job has an app with `vendor/` (the framework's lang files), so the
+// gate runs it for real - and its own skipped!==0 check keeps it from silently
+// dropping out again (it shipped wired nowhere).
+DEFAULT_FILES.push(path.join('tools', 'tests', 'vendor-dir.test.mjs'));
 const files = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES;
 
 const app = oracleAppRoot();

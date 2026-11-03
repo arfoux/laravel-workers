@@ -556,3 +556,182 @@ Route::prefix('mid')->group(function () {
   assert.equal(by.get('case2').middleware.join(','), 'web,auth');
   assert.equal(by.get('mid/case3').middleware.length, 0);
 });
+
+test('an arrow-function handler is a closure route, not a dropped one', () => {
+  // `fn () => ...` is a DIFFERENT php-parser node from `function () {...}`
+  // (`kind: 'arrowfunc'`, and the body is the expression, not a statement
+  // block). The scan must read both, because the entry it does not recognize
+  // does not exist for the edge: measured on Laravel 13.37, a
+  // `Route::get('/x', fn () => 'x')` served 404 on the edge where PHP answered
+  // 200, and the build blamed "route(s) defined outside routes/" - the `path`
+  // below is what build.mjs:isAppRoute() keys on.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get('/arrow', fn () => view('welcome'));
+Route::get('/block', function () { return view('welcome'); });
+Route::prefix('g')->middleware('auth')->group(fn () => Route::get('/inner', fn () => 'inner'));
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  assert.equal(by.get('arrow').action, 'Closure');
+  assert.match(by.get('arrow').path, /^routes\/web\.php:\d+$/, 'the arrow handler carries its file:line');
+  assert.match(by.get('block').path, /^routes\/web\.php:\d+$/, 'the closure handler keeps its file:line');
+  // an arrow-function GROUP: every route inside it is dumped, with the group
+  // attributes applied (a group the scan cannot read drops its routes with no
+  // note at all).
+  assert.ok(by.get('g/inner'), `expected g/inner, got: ${[...by.keys()].join(', ')}`);
+  assert.equal(by.get('g/inner').action, 'Closure');
+  assert.deepEqual([...by.get('g/inner').middleware].sort(), ['auth', 'web']);
+  assert.match(by.get('g/inner').path, /^routes\/web\.php:\d+$/);
+});
+
+test('a controller group resolves bare method actions (Router::prependGroupController)', () => {
+  // `Route::controller(X::class)->group(fn () => Route::get('/x', 'index'))` is
+  // the Laravel 11+ idiom. PHP resolves a bare method name against the group -
+  // `Router::prependGroupController()` (Router.php:664-684) answers `X@index` -
+  // and `route:list --json` prints that FQCN. The scan used to print `index`, so
+  // the build tried to resolve a CLASS named `index` ("cannot resolve index via
+  // composer autoload") and a --strict build REFUSED THE WHOLE APP.
+  //
+  // Every expectation below is what `route:list --json` answers for the same
+  // route file (PHP 8.3.30 + Laravel 13.37, probed on the e2e app; all eight
+  // shapes byte-identical to the scan after the fix).
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use App\\Http\\Controllers\\HomeController;
+use App\\Http\\Controllers\\SecondController;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::controller(HomeController::class)->group(function () {
+    Route::get('/cg1', 'index');
+    Route::get('/cg2', 'show')->name('cg.two');
+    Route::get('/cg3', [HomeController::class, 'show']);
+    Route::get('/cg4', 'App\\\\Http\\\\Controllers\\\\HomeController@show');
+    Route::group(['controller' => HomeController::class], function () {
+        Route::get('/cg5', 'index');
+    });
+    Route::controller(SecondController::class)->group(function () {
+        Route::get('/cg6', 'index');
+    });
+    Route::get('/cg7', 'index');
+});
+Route::controller(SecondController::class)->group(fn () => Route::get('/cg8', 'index'));
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  const action = (uri) => (by.get(uri) || {}).action;
+  // the bare method becomes Group\Controller@method
+  assert.equal(action('cg1'), 'App\\Http\\Controllers\\HomeController@index');
+  assert.equal(action('cg2'), 'App\\Http\\Controllers\\HomeController@show');
+  assert.equal(by.get('cg2').name, 'cg.two');
+  // an array action and an already-`@` string are left alone (they carry '@')
+  assert.equal(action('cg3'), 'App\\Http\\Controllers\\HomeController@show');
+  assert.equal(action('cg4'), 'App\\Http\\Controllers\\HomeController@show');
+  // the group attributes ARRAY carries `controller` too (Router::group() reads it)
+  assert.equal(action('cg5'), 'App\\Http\\Controllers\\HomeController@index');
+  // RouteGroup::merge() (:23-25) unsets the outer controller as soon as an inner
+  // group declares one, and the routes AFTER the inner group get the outer one back
+  assert.equal(action('cg6'), 'App\\Http\\Controllers\\SecondController@index');
+  assert.equal(action('cg7'), 'App\\Http\\Controllers\\HomeController@index');
+  // an arrow-function group reads the same way
+  assert.equal(action('cg8'), 'App\\Http\\Controllers\\SecondController@index');
+});
+
+test('a namespace group prefixes the controller action (Router::prependGroupNamespace)', () => {
+  // `Route::namespace('App\\Http\\Controllers')->group(fn)` still works in
+  // Laravel 13: `Router::convertToControllerAction()` (Router.php:621-641) runs
+  // the controller prepend FIRST and the namespace prepend SECOND
+  // (`prependGroupNamespace()`, :653-661), which skips a `uses` with a leading
+  // backslash or one that already starts with the namespace;
+  // `RouteGroup::formatNamespace()` (:105-114) CONCATENATES nested namespaces and
+  // treats a leading backslash as absolute (replacing the outer one).
+  //
+  // The scan answered the bare string, so the build looked for a class named
+  // `HomeController` ("cannot resolve ... via composer autoload") and a --strict
+  // build refused the app. Every expectation is what `route:list --json` printed
+  // for the same routes (PHP 8.3.30 + Laravel 13.37, e2e app; 7/7 identical).
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use App\\Http\\Controllers\\HomeController;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::namespace('App\\\\Http\\\\Controllers')->group(function () {
+    Route::get('/ns1', 'HomeController@index');
+    Route::get('/ns2', [HomeController::class, 'index']);
+    Route::get('/ns3', 'App\\\\Http\\\\Controllers\\\\HomeController@index');
+    Route::view('/ns4', 'about');
+});
+Route::namespace('App')->group(function () {
+    Route::namespace('Http\\\\Controllers')->group(function () {
+        Route::get('/ns5', 'HomeController@index');
+    });
+});
+Route::namespace('\\\\App\\\\Http\\\\Controllers')->group(function () {
+    Route::get('/ns6', 'HomeController@index');
+});
+Route::namespace('App\\\\Http\\\\Controllers')->group(fn () => Route::get('/ns7', 'HomeController@index'));
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  const action = (uri) => (by.get(uri) || {}).action;
+  const FQ = 'App\\Http\\Controllers\\HomeController@index';
+  assert.equal(action('ns1'), FQ, 'a bare string is prefixed with the group namespace');
+  assert.equal(action('ns2'), FQ, 'an array action already carries the namespace');
+  assert.equal(action('ns3'), FQ, 'a string that already starts with the namespace is left alone');
+  // `Router::view()` registers `\\Illuminate\\Routing\\ViewController` WITH a
+  // leading backslash (Router.php:301), which is what exempts it.
+  assert.equal(action('ns4'), 'Illuminate\\Routing\\ViewController');
+  assert.equal(action('ns5'), FQ, 'nested namespaces concatenate (App + Http\\Controllers)');
+  assert.equal(action('ns6'), FQ, 'a leading backslash makes the inner namespace absolute');
+  assert.equal(action('ns7'), FQ, 'an arrow-function group reads the same way');
+});
+
+test('a resource name containing a slash is a PREFIXED resource, not a wildcard', () => {
+  // `ResourceRegistrar::register()` (:85-92) sends any name containing a slash to
+  // `prefixedResource()`: everything before the LAST slash is a URI prefix
+  // (`getResourcePrefix()`, :251-261) and only the last segment names the
+  // resource. The scan used the whole string, so the show route answered
+  // `admin/slugs/{admin/slug}` where PHP answers `admin/slugs/{slug}` - a
+  // wildcard the app's controller (and Laravel's implicit binding) cannot match.
+  //
+  // Expectations are `route:list --json`'s own output for the same routes (PHP
+  // 8.3.30 + Laravel 13.37 on the e2e app: uri, name and action all identical).
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::resource('admin/slugs', 'App\\\\Http\\\\Controllers\\\\SlugController')->only(['index', 'show']);
+Route::resource('/lead', 'App\\\\Http\\\\Controllers\\\\SlugController')->only(['show']);
+Route::resource('deep/a/b/nested', 'App\\\\Http\\\\Controllers\\\\SlugController')->only(['show']);
+// a namespace group + a controller name the file does NOT import
+Route::namespace('App\\\\Http\\\\Controllers')->group(fn () => Route::resource('res', 'SlugController')->only(['index']));
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  const FQ = 'App\\Http\\Controllers\\SlugController';
+  // the prefix lands in the URI, the WILDCARD is the last segment only
+  assert.ok(by.get('admin/slugs'), `expected admin/slugs, got: ${[...by.keys()].join(', ')}`);
+  assert.ok(by.get('admin/slugs/{slug}'), `expected admin/slugs/{slug}, got: ${[...by.keys()].join(', ')}`);
+  assert.equal(by.get('admin/slugs/{slug}').name, 'slugs.show');
+  assert.equal(by.get('admin/slugs').name, 'slugs.index');
+  assert.equal(by.get('admin/slugs/{slug}').action, FQ + '@show');
+  // a LEADING slash leaves an EMPTY prefix (`explode('/')` keeps the empty first
+  // segment), so the URI has no leading slash either
+  assert.ok(by.get('lead/{lead}'), `expected lead/{lead}, got: ${[...by.keys()].join(', ')}`);
+  assert.equal(by.get('lead/{lead}').name, 'lead.show');
+  // every slash segment is a prefix, not part of the wildcard
+  assert.ok(by.get('deep/a/b/nested/{nested}'), `expected deep/a/b/nested/{nested}, got: ${[...by.keys()].join(', ')}`);
+  // the group namespace applies to a resource action too
+  assert.equal(by.get('res').action, FQ + '@index');
+  assert.equal(by.get('res').name, 'res.index');
+});

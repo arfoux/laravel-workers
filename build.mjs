@@ -894,6 +894,21 @@ const prerenderBatch = (uris) => {
 // ---------- 3. dist skeleton + prerendered pages ----------
 const hotFile = join(appDir, 'public/hot');
 const hotAside = join(appDir, 'public/hot.edge-build-aside');
+// `public/hot` must stay aside for the WHOLE build, not just the prerender:
+// `@vite` reads that marker to decide dev-vs-build, and the COMPILE phase (error
+// view contexts, view compilation) and the `public/` copy both run AFTER step 3.
+// A marker in place at that moment bakes `http://[::1]:5173/__laravel_vite_plugin__/...`
+// into the compiled contexts (measured: build.mjs restored it too early and 10
+// error contexts carried the dev URLs). The restore is therefore deferred to the
+// end of the build, and to process exit so a failed build leaves no aside behind.
+const restoreHot = () => {
+  try {
+    if (existsSync(hotAside)) renameSync(hotAside, hotFile);
+  } catch {
+    /* locked by a running dev server - the next build discards the aside */
+  }
+};
+process.on('exit', restoreHot);
 if (existsSync(hotFile)) {
   renameSync(hotFile, hotAside);
   console.log('  (moved public/hot aside for the build)');
@@ -987,48 +1002,44 @@ const prerender = (route) => {
   return res;
 };
 
-try {
-  // 3a. manual static pages (registry.json → "static")
-  for (const [route, file] of staticMap) {
-    const res = prerender(route);
-    if (res.status < 200 || res.status >= 300) {
-      const rawDetail = res.error ? String(res.error) : (res.body ? String(res.body) : '');
-      const detail = res.error ? `: ${res.error}` : (res.body ? `: ${String(res.body).slice(0, 150).replace(/\n/g, ' ')}` : '');
-      note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: rawDetail.includes('key:generate') ? 'run `npx laravel-workers init` to write .env + APP_KEY' : isRuntimeBindingError(rawDetail) ? 'this static entry reads a D1 binding, or a database, that the build cannot reach -- a static entry must prerender clean, so give the app a local sqlite fallback for the build (config/database.php) or make the route dynamic' : rawDetail.includes('database') ? 'prerender renders this route for real, so it needs live data: prepare a local DB with data (touch database/database.sqlite && php artisan migrate --seed). Note: the D1 schema itself does NOT need this — schema-compile derives it from migrations in memory' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
-      fail(`static route ${route} returned HTTP ${res.status}${detail}`);
-    }
-    const { bytes, fixed } = writePage(file, res.body);
-    console.log(`• static ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
-    if (otherMethods(route).length) partials.push({ route, methods: otherMethods(route) });
+// 3a. manual static pages (registry.json → "static")
+for (const [route, file] of staticMap) {
+  const res = prerender(route);
+  if (res.status < 200 || res.status >= 300) {
+    const rawDetail = res.error ? String(res.error) : (res.body ? String(res.body) : '');
+    const detail = res.error ? `: ${res.error}` : (res.body ? `: ${String(res.body).slice(0, 150).replace(/\n/g, ' ')}` : '');
+    note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: rawDetail.includes('key:generate') ? 'run `npx laravel-workers init` to write .env + APP_KEY' : isRuntimeBindingError(rawDetail) ? 'this static entry reads a D1 binding, or a database, that the build cannot reach -- a static entry must prerender clean, so give the app a local sqlite fallback for the build (config/database.php) or make the route dynamic' : rawDetail.includes('database') ? 'prerender renders this route for real, so it needs live data: prepare a local DB with data (touch database/database.sqlite && php artisan migrate --seed). Note: the D1 schema itself does NOT need this — schema-compile derives it from migrations in memory' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
+    fail(`static route ${route} returned HTTP ${res.status}${detail}`);
   }
+  const { bytes, fixed } = writePage(file, res.body);
+  console.log(`• static ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
+  if (otherMethods(route).length) partials.push({ route, methods: otherMethods(route) });
+}
 
-  // 3b. auto-snapshot: clean GET routes appear on the edge on the next deploy
-  for (const route of routes) {
-    if (handled.has(route)) continue;
-    const skip = snapshotSkip(route);
-    if (skip) {
-      needsPort.push({ route, reason: skip });
-      continue;
-    }
-    const others = otherMethods(route);
-    const res = prerender(route);
-    const isHtml = String(res.content_type || '').includes('text/html');
-    if (res.status >= 200 && res.status < 300 && isHtml) {
-      const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
-      const { bytes, fixed } = writePage(file, res.body);
-      snapshots.push(route);
-      console.log(`• snapshot ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
-      if (others.length) partials.push({ route, methods: others });
-    } else if (res.status >= 200 && res.status < 300) {
-      needsPort.push({ route, reason: `HTTP ${res.status} non-HTML (${res.content_type || '?'})` });
-    } else {
-      const to = res.location ? ` -> ${res.location}` : '';
-      const why = res.error ? `: ${res.error}` : '';
-      needsPort.push({ route, reason: `HTTP ${res.status}${to}${why}` });
-    }
+// 3b. auto-snapshot: clean GET routes appear on the edge on the next deploy
+for (const route of routes) {
+  if (handled.has(route)) continue;
+  const skip = snapshotSkip(route);
+  if (skip) {
+    needsPort.push({ route, reason: skip });
+    continue;
   }
-} finally {
-  if (existsSync(hotAside)) renameSync(hotAside, hotFile);
+  const others = otherMethods(route);
+  const res = prerender(route);
+  const isHtml = String(res.content_type || '').includes('text/html');
+  if (res.status >= 200 && res.status < 300 && isHtml) {
+    const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
+    const { bytes, fixed } = writePage(file, res.body);
+    snapshots.push(route);
+    console.log(`• snapshot ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
+    if (others.length) partials.push({ route, methods: others });
+  } else if (res.status >= 200 && res.status < 300) {
+    needsPort.push({ route, reason: `HTTP ${res.status} non-HTML (${res.content_type || '?'})` });
+  } else {
+    const to = res.location ? ` -> ${res.location}` : '';
+    const why = res.error ? `: ${res.error}` : '';
+    needsPort.push({ route, reason: `HTTP ${res.status}${to}${why}` });
+  }
 }
 
 // ---------- 2b. runtime config (compiled HTTP kernel) ----------
@@ -2275,6 +2286,14 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           const viewModulePath = join(dist, 'src', 'views', viewFileName(view) + '.mjs');
           const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
           if (!existsSync(dumpPath)) {
+            // A view that fails to compile is recorded here, not turned into a
+            // per-view `note()`. That is deliberate and symmetric with the
+            // error-view path (which DOES note): every route that renders this
+            // view is already reported through its own BLOCK entry ("the view
+            // for <route> did not compile"), so a second per-view note would
+            // just duplicate the finding and inflate the `--strict` count. The
+            // skipped views are also excluded from `viewsFor()` above, so a
+            // parent whose dependency is missing cannot silently compile.
             failedViews.add(view);
             console.log(`  view ${view}: skipped — ${viewJobError(waveStderr, view).slice(0, 300)}`);
             continue;
@@ -3094,6 +3113,18 @@ console.log('  -> dist/schema.json');
 for (const ent of readdirSync(join(appDir, 'public'), { withFileTypes: true })) {
   if (ent.name === 'index.php' || ent.name === '.htaccess') continue;
   if (ent.name.startsWith('.')) continue;
+  // Vite's dev markers describe the DEV server, never the build: `hot` is the
+  // marker `@vite` reads (a copy of it in the document root would also make a
+  // later reader think the app is in dev mode), `hot.edge-build-aside` is that
+  // same marker while step 3 holds it aside, and `fonts-manifest.dev.json` is
+  // the dev-side font map. None of them may reach the document root.
+  if (
+    ent.name === 'hot' ||
+    ent.name === 'hot.edge-build-aside' ||
+    ent.name === 'fonts-manifest.dev.json'
+  ) {
+    continue;
+  }
   const src = join(appDir, 'public', ent.name);
   if (lstatSync(src).isSymbolicLink()) {
     console.log(`  ! public/${ent.name} is a symlink — skipped (Storage files arrive through the R2/blob binding)`);
@@ -3642,3 +3673,7 @@ console.log(
     '  manual: npx wrangler deploy               (after the D1 schema exists)\n' +
     '  local:  npx wrangler dev                  (preview without deploying)'
 );
+// The marker set aside at step 3 comes back only now: everything the build reads
+// through `@vite` (prerender, the compiled contexts, the view compilation) has
+// already been written.
+restoreHot();

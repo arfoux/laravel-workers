@@ -4,6 +4,7 @@ import { isHashedDigest, makeSync, verifyConfiguration } from './hash.mjs';
 import { Collection } from './collections.mjs';
 import { phpJsonEncode, tagPhpObjectDeep } from './php-json.mjs';
 import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
+import { entriesOf } from './php-loose-eq.mjs';
 import { phpStringCast } from './str.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
@@ -162,16 +163,22 @@ function phpDecimalRound(decimal, places) {
   return intPart + (places ? '.' + text.slice(text.length - places) : '');
 }
 
-// Laravel's `asTimestamp()`: the date's Unix timestamp (the model's date
-// format is 'Y-m-d H:i:s' in UTC).
+// Laravel's `asTimestamp()` (HasAttributes::asTimestamp() -> `asDateTime($value)
+// ->getTimestamp()`, :1220): a NUMERIC value is a Unix timestamp
+// (`Date::createFromTimestamp`), anything else is parsed with the model's date
+// format in the APP timezone. The old port matched only a 2-digit ISO shape and
+// otherwise fell back to JS `Date.parse`, which read the string in the
+// RUNTIME's timezone: probed against PHP 8.3 + 13.37, '1700000000' answered
+// 1700000000 in PHP and NULL here, '1700000000.5' 1700000000 / NULL, and
+// '2024-1-2 3:4:5' 1704164645 / 1704139445 (a different instant - the runtime
+// was Asia/Jakarta). Unparseable input raises InvalidFormatException here,
+// exactly as `asDateTime()` does in PHP (`asTimestamp('garbage')` is a 500).
 function phpTimestampCast(value) {
   if (value === null || value === undefined) return null;
   if (typeof value === 'number') return Math.trunc(value);
   const str = String(value);
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(str);
-  if (m) return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000);
-  const t = Date.parse(str);
-  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+  if (NUMERIC_TEXT.test(str)) return Math.trunc(Number(str));
+  return makeDateValue(str).timestamp;
 }
 
 // Laravel's Carbon::toJSON() (Carbon/Converter.php:442-455): `toISOString()`
@@ -222,6 +229,20 @@ function isDateAttribute(ctor, key) {
   if (ctor.softDeletes && key === ctor.deletedAtColumn) return true;
   const cast = ctor.casts && ctor.casts[key];
   return castDateSpec(cast) !== null;
+}
+
+// PHP's `empty()` for the values `HasAttributes::fromDateTime()` (:1866)
+// short-circuits on ('' , '0', 0, false, null, []): those are stored verbatim
+// instead of being parsed as a date.
+function isEmptyDateInput(value) {
+  return (
+    value == null ||
+    value === '' ||
+    value === '0' ||
+    value === 0 ||
+    value === false ||
+    (Array.isArray(value) && value.length === 0)
+  );
 }
 
 // Laravel's snapshot of a date cast with a custom format
@@ -505,21 +526,61 @@ function phpIsNumeric(value) {
   return /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(value.trim());
 }
 
-// Laravel's json-cast branch of `originalIsEquivalent()`:
-// `$this->fromJson($attribute) === $this->fromJson($original)` - the decoded
-// values must match (key for key and in order, `===` on the arrays). The
-// decode goes through the same `fromJson()` as the read path, so '' and 'null'
-// both read as null (they are equivalent, exactly as in PHP).
+// Eloquent's `originalIsEquivalent()` branch for the json-ish casts
+// (HasAttributes.php:2406-2408) is
+// `$this->fromJson($attribute) === $this->fromJson($original)`. Note that
+// `fromJson()` is called WITHOUT `$asObject`, so it answers an ASSOC ARRAY for
+// every json-ish cast - including `object` and `collection` (probed on PHP
+// 8.3: raw `{"a":1}` + `$m->o = ['a'=>1]` on an `object` cast is NOT dirty,
+// because both sides decode to `['a'=>1]` and compare equal). There is no
+// stdClass/Collection identity compare anywhere in this branch. What PHP's
+// `===` on those arrays means:
+//
+//   - same key set, in the same ORDER (`['a'=>1,'b'=>2] === ['b'=>2,'a'=>1]`
+//     is false - probed as dirty) - the ordered reader records the document
+//     order in `__lwOrder`, and `entriesOf()` walks it.
+//   - keys compared under PHP's key coercion: a canonical decimal string IS
+//     the int, and an empty `{}` and an empty `[]` are both the empty array
+//     (probed: raw `{}` + a set `[]` is NOT dirty). The old `JSON.stringify`
+//     compare saw two different containers and reported dirty.
+//   - values pairwise `===`: no coercion across types (`'1' !== 1`).
+//
+// The decode goes through the same `fromJson()` as the read path, so `''` and
+// `'null'` both read as null (they are equivalent; a raw `''` against a SET
+// null is DIRTY because `is_null($attribute)` answers false first - probed).
+//
+// Residual: `1` and `1.0` are the same JS number, so a literal float in an
+// EXTERNALLY written JSON column (`{"a":1.0}`) against a set int still reads
+// clean where PHP reads dirty (LW-audit #669). Only an UPDATE/`updated_at`
+// bump differs - PHP's own `json_encode(1.0)` is `1`, so the stored bytes are
+// the same either way, and the value can only have been written by hand.
+// A number the reader decided was a lossy integer never reaches here: that is
+// a build-time failure (LW006) on the read path.
+function phpStrictValueEqual(a, b, depth = 0) {
+  if (a === b) return true;
+  // `===` never coerces across types: '1' !== 1, null !== false. A whole
+  // container against a scalar is a false too (`entriesOf` answers null).
+  if (typeof a !== typeof b) return false;
+  if (depth > 512) return false;
+  if (a === null || typeof a !== 'object') return false;
+  // `entriesOf()` normalizes both an array and a PHP-array-shaped object to
+  // `{key, value}` entries with the coerced key and the insertion order.
+  const ea = entriesOf(a);
+  const eb = entriesOf(b);
+  if (!ea || !eb || ea.length !== eb.length) return false;
+  for (let i = 0; i < ea.length; i++) {
+    // PHP compares the keys in position, so a reordered array is a false.
+    if (String(ea[i].key) !== String(eb[i].key)) return false;
+    if (!phpStrictValueEqual(ea[i].value, eb[i].value, depth + 1)) return false;
+  }
+  return true;
+}
+
 function jsonEquivalent(cast, a, b) {
   const spec = jsonCastSpec(cast) || { unicode: false, collection: false, stdObject: false };
   const da = decodeJsonCast(a, spec);
   const db = decodeJsonCast(b, spec);
-  if (da === db) return true;
-  try {
-    return JSON.stringify(da) === JSON.stringify(db);
-  } catch {
-    return false;
-  }
+  return phpStrictValueEqual(da, db);
 }
 
 // The app's timezone (config('app.timezone')): Laravel sets PHP's default from
@@ -820,6 +881,22 @@ export class Model {
       // A READ answers a Carbon value; writing it back stores its TEXT, which
       // is what `fromDateTime()` writes (the model's own date format).
       if (isDateValue(value)) value = value._raw;
+      // Eloquent's `setAttribute()` (:1080-1090) runs `fromDateTime()` on every
+      // DATE attribute before the cast branches: `$post->created_at =
+      // '2024-1-2 3:4:5'` stores the model's own date format ('2024-01-02
+      // 03:04:05') in the column, where the port wrote the app's text to D1
+      // verbatim (probed on PHP 8.3 + 13.37: the attribute reads back as
+      // '2024-01-02 03:04:05'). `empty($value)` skips the conversion
+      // (fromDateTime() returns '' as it stands), and a value the strict
+      // parser rejects keeps the raw text so the READ path raises the same
+      // InvalidFormatException PHP does.
+      else if (isDateAttribute(this.constructor, key) && !isEmptyDateInput(value)) {
+        try {
+          value = makeDateValue(value)._raw;
+        } catch {
+          // Kept verbatim: the write still succeeds, the read fails loud.
+        }
+      }
       next = value;
       const cast = this.constructor.casts[key];
       if (cast != null) {
@@ -1072,10 +1149,19 @@ export class Model {
   static async findOrFail(db, id) {
     if (Array.isArray(id)) {
       const found = await this.find(db, id);
-      // Every id must exist (Laravel names the missing ones).
-      const ids = (found || []).map((m) => m.get(this.primaryKey));
-      const missing = id.filter((i) => !ids.includes(i));
-      if (missing.length) throw new Error(this.name + ' not found: ' + missing.join(', '));
+      // Laravel's findOrFail() (Model.php:655-660) compares the COUNTS:
+      // `count($result) === count(array_unique($ids))` - the ids compare by
+      // VALUE, not identity, so a string route parameter ('1') matches an
+      // INTEGER primary key. The old `ids.includes(i)` compared a number
+      // against a string and reported every id as missing (probed against
+      // PHP 8.3 + 13.37 on a real SQLite row: `Post::findOrFail(['1','2'])`
+      // answers both models, the port threw "not found: 1, 2").
+      const wanted = new Set(id.map((i) => String(i)));
+      if ((found || []).length !== wanted.size) {
+        const have = new Set((found || []).map((m) => String(m.get(this.primaryKey))));
+        const missing = [...wanted].filter((i) => !have.has(i));
+        throw new Error(this.name + ' not found: ' + missing.join(', '));
+      }
       return found;
     }
     const found = await this.find(db, id);
@@ -1179,7 +1265,10 @@ export class Model {
   }
 
   async delete(db) {
-    if (!this.exists) return { changes: 0 };
+    // Model::delete() (:1798) answers NULL for a model that was never
+    // persisted, and `true` (:1814-1818) for a successful delete - never the
+    // driver's result object.
+    if (!this.exists) return null;
     const ctor = this.constructor;
     const pk = ctor.primaryKey;
     if (ctor.softDeletes) {
@@ -1191,43 +1280,48 @@ export class Model {
         data.updated_at = now;
         this.attributes.updated_at = now;
       }
-      const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).update(data);
+      await ctor.withTrashed(db).where(pk, this.attributes[pk]).update(data);
       this.attributes[ctor.deletedAtColumn] = now;
-      // Eloquent's `runSoftDelete()` syncs the original after the write
-      // (`SoftDeletes.php:155`), so the model is clean again.
-      this.syncOriginal();
-      return res;
+      // Eloquent's `runSoftDelete()` syncs ONLY the columns it wrote
+      // (SoftDeletes.php:155 - `syncOriginalAttributes(array_keys($columns))`),
+      // so any other pending change stays dirty: `$p->title = 'x';
+      // $p->delete(); $p->save();` persists the title in PHP. Syncing the WHOLE
+      // attribute set silently dropped that write (probed on PHP 8.3 + 13.37
+      // with a real SQLite row: the column ends 'x' in PHP, and stayed
+      // unchanged here).
+      this.syncOriginalAttributes(Object.keys(data));
+      return true;
     }
-    const res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).delete();
+    await ctor.withTrashed(db).where(pk, this.attributes[pk]).delete();
     this.exists = false;
-    return res;
+    return true;
   }
 
   async forceDelete(db) {
-    if (!this.exists) return { changes: 0 };
+    // SoftDeletes::forceDelete() (:190-205) funnels through `delete()`, so a
+    // model that was never persisted answers NULL and a successful hard delete
+    // `true`.
+    if (!this.exists) return null;
     const ctor = this.constructor;
-    const res = await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).delete();
+    await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).delete();
     this.exists = false;
-    return res;
+    return true;
   }
 
   async restore(db) {
-    if (!this.exists) return { changes: 0 };
     const ctor = this.constructor;
+    // Without the SoftDeletes trait PHP has no `restore()` at all; the port
+    // keeps a falsy no-op instead of a "call to undefined method" fatal.
     if (!ctor.softDeletes) return { changes: 0 };
-    // Laravel's restore() (SoftDeletes.php:159-167) writes through save(), so
-    // the timestamp is bumped too.
-    const data = { [ctor.deletedAtColumn]: null };
-    if (ctor.timestamps && this.timestamps !== false) {
-      data.updated_at = this.constructor.now();
-      this.attributes.updated_at = data.updated_at;
-    }
-    const res = await ctor.withTrashed(db).where(ctor.primaryKey, this.attributes[ctor.primaryKey]).update(data);
-    this.attributes[ctor.deletedAtColumn] = null;
-    // Eloquent's `restore()` writes through `save()` (`SoftDeletes.php:165`),
-    // so the original is synced and the model is clean again.
-    this.syncOriginal();
-    return res;
+    // SoftDeletes::restore() (:165-188) clears the column, sets `exists = true`
+    // and writes through `save()`: ONE update carrying the cleared `deleted_at`
+    // AND every other pending change, answering the save result (`true`). The
+    // port hand-rolled the update with only `deleted_at`/`updated_at` and then
+    // synced the whole attribute set, so a pending `$p->title` was never
+    // persisted and its dirty flag was cleared (a silent lost write).
+    this.set(ctor.deletedAtColumn, null);
+    this.exists = true;
+    return this.save(db);
   }
 
   // ---- declared relations: eager (`with`) + lazy (`related`) ----

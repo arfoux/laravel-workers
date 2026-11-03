@@ -1922,7 +1922,11 @@ export class Validator {
       }
 
       if (hasPresent && isAbsent) {
-        this._addError(field, 'required', null);
+        // `present` itself fails the message: ValidatesAttributes::validatePresent()
+        // (:2038-2041) is `Arr::has($this->data, $attribute)`, so an absent
+        // attribute reports `validation.present` ("must be present"), not the
+        // `required` sentence.
+        this._addError(field, 'present', null);
         continue;
       }
 
@@ -1969,10 +1973,10 @@ export class Validator {
         // rules (ValidatesAttributes.php:1321/1368/1415/1462), so `gt/gte/lt/lte`
         // reconstruct the length from `getSize()` when the value is numeric. The
         // size rules (min/max/size/between) do NOT claim numeric - `min:3` on
-        // `'70'` stays `validation.min.string` (length 2).
-        const claimsNumeric = COMPARISON_RULES.has(r.name) && numericValue;
-        if (claimsNumeric) this.numericRulesClaimed = true;
-        const ok = this._checkRule(field, value, r, hasNumeric || claimsNumeric);
+        // `'70'` stays `validation.min.string` (length 2). The SAME claim also
+        // decides the failure message's type (see `_attributeType`), because
+        // `shouldBeNumeric()` mutates `$numericRules` for that one rule.
+        const ok = this._checkRule(field, value, r, hasNumeric || this._claimsNumeric(r.name, numericValue));
         if (!ok) {
           this._addError(field, r.name, r.param);
           if (bail) break;
@@ -2838,12 +2842,55 @@ export class Validator {
     return null;
   }
 
+  // The default validation messages: the app's own lang file (dumped at build
+  // time) else the framework's copy.
+  _messageTable() {
+    return this.opts.defaultMessages && typeof this.opts.defaultMessages === 'object'
+      ? this.opts.defaultMessages
+      : LARAVEL_VALIDATION_MESSAGES;
+  }
+
+  // FormatsMessages::getDisplayableValue() (:506-529): the app's own
+  // `validation.values.{attribute}.{value}` line wins, then a PHP array is the
+  // literal 'array', a bool is 'true'/'false', null is 'empty', else the
+  // `(string)` cast. Laravel interpolates the value into the lookup key with
+  // PHP's own cast (`true` -> '1', `false`/null -> '').
+  _displayableValue(attribute, value) {
+    const values = this._messageTable().values;
+    const byAttribute = values && typeof values === 'object'
+      ? values[String(attribute)]
+      : null;
+    if (byAttribute && typeof byAttribute === 'object') {
+      const line = byAttribute[phpStringOf(value)];
+      if (typeof line === 'string') return line;
+    }
+    if (isPhpArrayValue(value)) return 'array';
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (value === null || value === undefined) return 'empty';
+    return phpStringOf(value);
+  }
+
+  // `ValidatesAttributes::shouldBeNumeric()` (:2926-2931): when the VALUE is
+  // PHP-numeric, the four comparison rules append themselves to
+  // `$this->numericRules` - and `Validator::validateAttribute()` resets that
+  // list at the start of EVERY rule (:764), so the append lasts exactly for the
+  // current rule. It feeds two readers: the comparison branch of gt/gte/lt/lte
+  // (`hasRule($attribute, $numericRules)` at :1335/1382/1429/1476) and the
+  // FAILURE message's type (`getAttributeType()` at :232).
+  _claimsNumeric(ruleName, valueIsNumeric) {
+    return COMPARISON_RULES.has(ruleName) && valueIsNumeric;
+  }
+
   // Illuminate\Validation\Concerns\FormatsMessages::getAttributeType(): the
   // numeric rules win over array/list; an uploaded file is a file; everything
-  // else is a string.
-  _attributeType(field) {
+  // else is a string. `rule` is the rule whose failure is being rendered - the
+  // comparison rules count as numeric for a numeric value, which is what
+  // `shouldBeNumeric()` just did to `$numericRules` (`min:3` on `'70'` stays
+  // `validation.min.string`, `gt:1` on `'70'` does not).
+  _attributeType(field, rule) {
     const rules = this.parsed[field] || [];
     if (rules.some((r) => NUMERIC_RULES.has(r.name))) return 'numeric';
+    if (rule != null && this._claimsNumeric(phpSnake(rule), isNumericValue(this.get(field)))) return 'numeric';
     if (rules.some((r) => ARRAY_RULES.has(r.name))) return 'array';
     const value = this.get(field);
     if (isUploadedFileValue(value)) return 'file';
@@ -2874,7 +2921,7 @@ export class Validator {
         ? [String(param)]
         : strGetcsv(String(param)));
     let msg = this._customMessage(field, rule);
-    const type = this._attributeType(field);
+    const type = this._attributeType(field, rule);
     const lowerRule = phpSnake(rule);
     // getInlineMessage(): a size rule's array message is keyed by attribute type.
     if (isPhpArray(msg) && SIZE_RULES.has(lowerRule)) {
@@ -2883,12 +2930,7 @@ export class Validator {
     // Laravel checks `is_null($inlineMessage)`, so an empty custom message is
     // kept (it becomes an empty error string), unlike a JS truthiness check.
     if (msg == null) {
-      // The default message: the app's own lang file (dumped at build time)
-      // else the framework's copy.
-      const table = this.opts.defaultMessages && typeof this.opts.defaultMessages === 'object'
-        ? this.opts.defaultMessages
-        : LARAVEL_VALIDATION_MESSAGES;
-      msg = ruleMessage(table, lowerRule, type);
+      msg = ruleMessage(this._messageTable(), lowerRule, type);
     }
     // makeReplacements(): the placeholders (':attribute', ':max', ':values', ...).
     msg = renderValidationMessage(msg, {
@@ -2898,6 +2940,11 @@ export class Validator {
       params: parsedParams,
       displayOf: (other) => this._displayName(other),
       valueOf: (other) => this.get(other),
+      displayValueOf: (other, value) => this._displayableValue(other, value),
+      // ReplacesAttributes::replaceGt() calls `getSize($attribute, $value)` at
+      // message time, when `$numericRules` still holds this rule's own
+      // `shouldBeNumeric()` claim - exactly what `type` above resolved.
+      sizeOf: (attribute, value) => this._size(value, type === 'numeric'),
       data: this.data,
     });
     // The field's list: an own property (a field named like an inherited

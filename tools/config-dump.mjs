@@ -105,8 +105,24 @@ $put('pagination.view', String(c('view.pagination') || 'pagination::tailwind'));
 const translations = {};
 const langPaths = [];
 {
-  const frameworkLang = join(appDir, 'vendor', 'laravel', 'framework', 'src', 'Illuminate', 'Translation', 'lang');
-  if (existsSync(frameworkLang)) langPaths.push(frameworkLang);
+  // The framework's translation files live under the VENDOR dir — which is not
+  // always `<app>/vendor`. An app with no `vendor/` of its own reaches the
+  // framework through LW_VENDOR_DIR (vendor-lite's cache, or a vendor mounted
+  // elsewhere); hard-coding `<app>/vendor` here silently dropped EVERY
+  // framework translation, so validation messages fell back to the key and
+  // `__('auth.failed')` answered the key itself (#647). Resolve the same two
+  // layouts the config defaults already accept (tools/static.mjs:1593-1600)
+  // and the PHP path uses (`lw_vendor_autoload_for()`).
+  const frameworkLang = [
+    process.env.LW_VENDOR_DIR
+      ? join(process.env.LW_VENDOR_DIR, 'laravel', 'framework', 'src', 'Illuminate', 'Translation', 'lang')
+      : null,
+    process.env.LW_VENDOR_DIR
+      ? join(process.env.LW_VENDOR_DIR, 'vendor', 'laravel', 'framework', 'src', 'Illuminate', 'Translation', 'lang')
+      : null,
+    join(appDir, 'vendor', 'laravel', 'framework', 'src', 'Illuminate', 'Translation', 'lang'),
+  ].find((p) => p && existsSync(p)) || null;
+  if (frameworkLang) langPaths.push(frameworkLang);
   // Laravel's lang_path(): `resources/lang` WINS when that directory exists,
   // otherwise `<base>/lang` (Application::useLangPath(), :440-443). An app that
   // kept the L9/L10 layout would otherwise lose every translation the worker

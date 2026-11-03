@@ -1061,14 +1061,25 @@ test('a Date is bound with the grammar date format (Laravel: Y-m-d H:i:s)', asyn
 test('find() with an array of ids returns the rows (Laravel: findMany)', async () => {
   // Laravel's find() (Eloquent/Builder.php:607-616): an array of ids returns a
   // COLLECTION of the found models; the edge bound the array as ONE value (a
-  // query that matched nothing).
-  const db = mockDb({ all: () => ({ results: [{ id: 1 }, { id: 3 }] }) });
+  // query that matched nothing). The mock answers what a real WHERE "id" IN (…)
+  // can: only the rows whose id is among the BOUND values.
+  const db = mockDb({
+    all: (sql, params) => {
+      const wanted = new Set(params.map((p) => String(p)));
+      return { results: [{ id: 1 }, { id: 3 }].filter((r) => wanted.has(String(r.id))) };
+    },
+  });
   class M extends Model {}
   M.table = 'posts';
   M.primaryKey = 'id';
   const found = await M.find(db, [1, 3]);
   assert.equal(Array.isArray(found), true, 'an array of ids returns a list');
   assert.deepEqual(found.map((m) => m.get('id')), [1, 3]);
-  // findOrFail with an array names the missing ids.
+  // findOrFail(array) is Builder.php:658-672: the THROW condition is the COUNT
+  // compare (`count($result) !== count(array_unique($id))` - ids by VALUE, so a
+  // string route parameter matches an INTEGER pk) and the message names the
+  // missing keys from `array_diff($id, $result->modelKeys())`.
   await assert.rejects(() => M.findOrFail(db, [1, 9]), /not found: 9/);
+  await assert.rejects(() => M.findOrFail(db, ['1', '2']), /not found: 2/);
+  await assert.doesNotReject(() => M.findOrFail(db, ['1', '3']));
 });

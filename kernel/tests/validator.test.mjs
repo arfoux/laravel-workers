@@ -1475,3 +1475,56 @@ test('unique/exists match Laravel over SQLite: extras, id exception, array value
     assert.equal(got, PINNED[i], `${rule} with ${JSON.stringify(data)} (pinned)`);
   }
 });
+
+// Audit #670/#672/#673/#674 and the sibling #675 this sweep turned up: the
+// rendered FAILURE LINE, byte for byte against PHP 8.3.30 + laravel/framework
+// 13.37 (the probe loads `Illuminate/Translation/lang/en/validation.php` into an
+// ArrayLoader, so it prints the interpolated sentence rather than the key).
+// Every expectation below is that probe's output; the value inside the
+// sentence is the interesting half.
+test('failure messages: comparison sizes, present/missing and the displayable value', async () => {
+  const cases = [
+    // #670 - `shouldBeNumeric()` (:2926-2931) appends the rule to
+    // `$numericRules` when the VALUE is numeric, and the size message is picked
+    // by that type (`getAttributeType()` :226-238) - so the integer form reads
+    // "greater than 2", not "greater than 2 characters".
+    ['#670 gt:int', { a: 1, b: 2 }, { a: 'gt:b' }, 'The a field must be greater than 2.'],
+    ['#670 lt:int', { a: 5, b: 2 }, { a: 'lt:b' }, 'The a field must be less than 2.'],
+    ['#670 gte:numeric string', { a: '1', b: 2 }, { a: 'gte:b' }, 'The a field must be greater than or equal to 2.'],
+    ['#670 lte:int', { a: 9, b: 2 }, { a: 'lte:b' }, 'The a field must be less than or equal to 2.'],
+    // The control: `min` is NOT a comparison rule, so a numeric-looking string
+    // keeps the string variant.
+    ['#670 min:string', { a: 'ab' }, { a: 'min:5' }, 'The a field must be at least 5 characters.'],
+    // #675 - `ReplacesAttributes::replaceGt()` (:587-596, reused by gte/lt/lte
+    // at :605-636) puts `getSize($attribute, $comparedToValue)` in `:value`, so
+    // a non-numeric a against the field b=2 reads "> 1 characters" (mb_strlen
+    // of the string '2'), and a string field shows its LENGTH.
+    ['#675 gt:field, non-numeric a', { a: 'ab', b: 2 }, { a: 'gt:b' }, 'The a field must be greater than 1 characters.'],
+    ['#675 gte:field, string pair', { a: 'ab', b: 'abc' }, { a: 'gte:b' }, 'The a field must be greater than or equal to 3 characters.'],
+    ['#675 lte:field, string pair', { a: 'abc', b: 'ab' }, { a: 'lte:b' }, 'The a field must be less than or equal to 2 characters.'],
+    // A parameter that names no field keeps its own display name.
+    ['#675 gt:literal', { a: 'ab' }, { a: 'gt:5' }, 'The a field must be greater than 5 characters.'],
+    // #672 - `present` is implicit and has its own line: an absent attribute
+    // reports "must be present", not the `required` sentence.
+    ['#672 present:absent', { b: 1 }, { a: 'present' }, 'The a field must be present.'],
+    // #673 - `present_unless`/`missing_unless` go through
+    // `replaceMissingUnless()` (:239-245, `present_unless` at :459-462):
+    // `:value` is the displayable value of the SECOND parameter, while
+    // `required_unless` keeps the `:values` list.
+    ['#673 present_unless', { b: 1 }, { a: 'present_unless:b,2' }, 'The a field must be present unless b is 2.'],
+    ['#673 missing_unless', { a: 1 }, { a: 'missing_unless:b,2' }, 'The a field must be missing unless b is 2.'],
+    ['#673 required_unless (control)', {}, { a: 'required_unless:b,2' }, 'The a field is required unless b is in 2.'],
+    // #674 - `getDisplayableValue()` (:506-529): null reads 'empty', a bool
+    // reads 'true'/'false', everything else is the PHP string cast.
+    ['#674 present_if:null', { b: null }, { a: 'present_if:b,null' }, 'The a field must be present when b is empty.'],
+    ['#674 present_if:bool', { b: true }, { a: 'present_if:b,true' }, 'The a field must be present when b is true.'],
+    ['#674 present_if:string', { b: '2' }, { a: 'present_if:b,2' }, 'The a field must be present when b is 2.'],
+  ];
+
+  for (const [label, data, rules, expected] of cases) {
+    const v = new Validator(data, rules);
+    await v.fails();
+    const field = Object.keys(rules)[0];
+    assert.deepEqual(v.errors()[field], [expected], label);
+  }
+});
