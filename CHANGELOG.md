@@ -462,6 +462,15 @@ Re-sweeping `kernel/model.mjs` line by line against the vendored 13.37 turned up
 - **`#645` (documented, unchanged):** `save()` on an existing model raises `model update affected 0 rows` when the UPDATE matches nothing, where Laravel's `performUpdate()` (`Model.php:1521-1546`) returns `true` silently. Kept as a deliberate fail-loud concurrent-delete detector.
   - Verified: `node --check kernel/model.mjs`; `npm test` in the isolated copy **1099 tests / 1056 pass / 0 fail / 43 skipped** (one new test); shadow harness over the fixture app **12/12 byte-identical, coverage 100%**.
 
+### Fix — a `timestamps = false` model no longer reads its timestamp columns as dates (2026-11-03, audit #644/#646)
+Re-sweeping `kernel/model.mjs` line by line against the vendored 13.37 turned up two narrow divergences and one no-op.
+
+- **`#644` — `created_at`/`updated_at` were treated as date attributes unconditionally.** `HasAttributes::getDates()` (`13.37, :1675-1680`) merges the timestamp columns only while `usesTimestamps()` is true, so a `public $timestamps = false` model answers the RAW column: probed on PHP 8.3 + 13.37, `get_debug_type($m->created_at)` = `string` and `$m->toArray()` = `{"created_at":"2024-01-02 03:04:05"}`. The kernel wrapped it in a Carbon / ISO8601 value anyway. `isDateAttribute()` now gates the two columns on `ctor.timestamps !== false`; a SoftDeletes `deleted_at` keeps its date behaviour (the trait declares a `datetime` cast, independent of timestamps).
+  - Test: `kernel/tests/model.test.mjs` gained the `timestamps=false` / `timestamps=true` pair (raw string vs Carbon).
+- **`#646` — a no-op ternary in `save()`'s insert column list.** `guarded == ['*'] ? Object.keys(attributes) : Object.keys(attributes)` collapsed to `Object.keys(attributes)`.
+- **`#645` (documented, unchanged):** `save()` on an existing model raises `model update affected 0 rows` when the UPDATE matches nothing, where Laravel's `performUpdate()` (`Model.php:1521-1546`) returns `true` silently. Kept as a deliberate fail-loud concurrent-delete detector.
+  - Verified: `node --check kernel/model.mjs`; `npm test` in the isolated copy **1099 tests / 1056 pass / 0 fail / 43 skipped** (one new test); shadow harness over the fixture app **12/12 byte-identical, coverage 100%**.
+
 ### Fix — `eachSpread`/`mapSpread` did not run PHP's `$chunk[] = $key` (2026-11-03, audit #640–#643)
 `EnumeratesValues.php:292-296` (`eachSpread`) and `:430-437` (`mapSpread`) are the same two lines — `$chunk[] = $key; $callback(...$chunk)` — and the kernel answered something else for every item that is not an array. `toList()` was the only conversion, so a non-array spread as *nothing*: `eachSpread` called the callback **without the spread at all** and `mapSpread(false)` threw where PHP answers.
 
