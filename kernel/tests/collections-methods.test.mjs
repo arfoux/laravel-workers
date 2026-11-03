@@ -1388,6 +1388,60 @@ test("collection methods: PHP's own answer, case by case", () => {
   }
 });
 
+test('eachSpread()/mapSpread(): `$chunk[] = $key` throws exactly where PHP throws', () => {
+  // EnumeratesValues.php:292-296 / :430-437 - BOTH methods are the same two
+  // lines, `$chunk[] = $key; $callback(...$chunk)`. Every expectation below is
+  // PHP 8.3 + vendored 13, probed method by method (the message of an Error is
+  // PHP's own, not a paraphrase).
+  const stdClass = (o) => Object.defineProperty(o, '__lwObject', { value: true, enumerable: false });
+  const spread = (c, cb) => c.mapSpread(cb);
+  const each = (c, cb) => { c.eachSpread(cb); return 'no-error'; };
+
+  // `false`/`null` APPEND to an empty array: the callback receives the KEY alone.
+  assert.deepEqual(make([false, null]).mapSpread((...a) => a).all(), [[0], [1]]);
+  assert.deepEqual(make([false]).mapSpread((...a) => a).all(), [[0]]);
+  const seen = [];
+  new Collection([false], ['x']).eachSpread((...a) => { seen.push(a); });
+  assert.deepEqual(seen, [['x']]);
+
+  // Keyed arrays: the item's elements, then the item's KEY.
+  assert.deepEqual(make([[1, 2], [3, 4]]).mapSpread((...a) => a).all(), [[1, 2, 0], [3, 4, 1]]);
+  assert.deepEqual(make([assoc([5, 2])]).mapSpread((...a) => a).all(), [[2, 0]]);
+  assert.deepEqual(make([assoc([0, 'a'], [5, 'b'])]).mapSpread((...a) => a).all(), [['a', 'b', 0]]);
+  assert.deepEqual(new Collection([[]], ['x']).mapSpread((...a) => a).all(), { x: ['x'] });
+
+  // A non-array item raises PHP's Error; the callback never runs.
+  const raises = (fn, name, message) =>
+    assert.throws(fn, (err) => err.name === name && err.message === message, name + ': ' + message);
+  for (const [item, message] of [
+    ['ab', '[] operator not supported for strings'],
+    [5, 'Cannot use a scalar value as an array'],
+    [5.5, 'Cannot use a scalar value as an array'],
+    [true, 'Cannot use a scalar value as an array'],
+    [stdClass({ a: 1 }), 'Cannot use object of type stdClass as array'],
+  ]) {
+    raises(() => spread(make([item]), (...a) => a), 'Error', message);
+    raises(() => each(make([item]), () => 1), 'Error', message);
+  }
+
+  // A Collection item IS ArrayAccess: `$chunk[] = $key` calls
+  // `offsetSet(null, $key)`, so the ITEM gains the key and then spreads -
+  // probed: `$inner = collect([1])` ends up `[1, 0]` and the map answers
+  // `[[1, 0]]` (it does NOT raise).
+  const inner = new Collection([1]);
+  assert.deepEqual(make([inner]).mapSpread((...a) => a).all(), [[1, 0]]);
+  assert.deepEqual(inner.all(), [1, 0]);
+
+  // `...$chunk` with a STRING key is a NAMED argument and the appended key is
+  // positional, so PHP raises before binding them: `collect([['a' => 1]])
+  // ->mapSpread(fn (...$a) => $a)` answers this Error, not `[1, 0]`.
+  const unpackError = 'Cannot use positional argument after named argument during unpacking';
+  raises(() => spread(make([assoc(['a', 1])]), (...a) => a), 'Error', unpackError);
+  raises(() => each(make([assoc(['a', 1])]), () => 1), 'Error', unpackError);
+  raises(() => spread(make([assoc(['a', 1], [0, 2])]), (...a) => a), 'Error', unpackError);
+  raises(() => spread(make([assoc([1, 'a'], ['z', 'b'], [2, 'c'])]), (...a) => a), 'Error', unpackError);
+});
+
 test('value()/ensure(): the shapes PHP answers', () => {
   // A null VALUE counts as present (data_has), so the default is NOT used.
   assert.equal(make([{ a: null }]).value('a', 'D'), null);
