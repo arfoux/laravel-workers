@@ -261,6 +261,27 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   (`preg_match() === false` → `false < 1`). Coverage: 1107 regex cases and 241 rule-value cases, 1 remaining
   divergence (PCRE's byte semantics without `/u`, §6) and 1 pathological date string (`'02026-02-28'`).
 - ✅ Rule objects compiled via 1.2; nested + wildcards (kernel + `$attributes` display names above).
+- ✅ Failure messages, interpolated (batch #670–#675, 2026-11-03): the rendered LINE, probed against
+  PHP 8.3 + 13.37 with the framework's own `lang/en/validation.php` loaded into an ArrayLoader
+  (22 cases, 13 differed before). `getAttributeType()` reads `$numericRules` AFTER
+  `shouldBeNumeric()` appended the current rule, so `{a:1,b:2}` with `gt:b` is
+  `validation.gt.numeric` — "greater than 2", not "greater than 2 characters" (a numeric-looking
+  STRING value counts too: `{a:'1',b:2}` `gte:b` is the numeric line); `present` on an absent field
+  reports `validation.present` ("must be present"), not the `required` sentence;
+  `present_unless`/`missing_unless` go through `replaceMissingUnless()`'s `:value` — the displayable
+  value of the second parameter, null → `empty`, bool → `true`/`false` — while `required_unless`
+  keeps `:values`; and `gt`/`gte`/`lt`/`lte` put `getSize($attribute, $comparedToValue)` in `:value`
+  (`replaceGt()`), so a non-numeric `a` against the field `b=2` reads "greater than 1 characters"
+  (mb_strlen of `'2'`), not "greater than 2 characters".
+- A date comparison PARAMETER is not Carbon's parser: `before`/`after`/`before_or_equal`/
+  `after_or_equal`/`date_equals` read it through `getDateTimestamp()` → `Carbon::parse()`, and the
+  kernel covers `now`/`today`/`tomorrow`/`yesterday`, `HH:MM[:SS]`, `@<timestamp>`, the compact digit
+  runs and the absolute shapes. Probed 27 `before:<token>` tokens on PHP 8.3 + 13.37: **23 diverge** —
+  `noon`, `midnight`, `2pm`, `2 pm`, `monday`, `next monday`, `+1 day`, `-1 day`, `1 week ago`,
+  `last week`, `june`, `noon tomorrow` and the single-letter military zones (`b`, `a`, `z`, `m`, `s`,
+  `n`, `d`, `h`, `o`, `t`, `y` — `strtotime('b')` is *now* in UTC+2) all PASS in PHP while the kernel
+  reads the token as a FIELD name (missing → timestamp 0). Declared gap
+  *(escape: write the parameter as a literal date, or as a field name — both are faithful)*.
 - Failure flow parity: redirect back + errors bag + old input ✅ (M19); API path: 422 JSON
   shape parity ✅ (M19)
 
@@ -370,6 +391,26 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
     probed on 8.3, `'😀' > '＀'` (strcmp 1) while JS answers `'😀' < '＀'`. ASCII and
     all-BMP sorts are byte-identical; only such a pair is a declared gap
     *(escape: sort on a code-point/collation key of your own)*.
+13. **The collection sort under a comparator that is not a total order** — when
+    the items mix types (bool / string / float, say), PHP's comparison is not
+    transitive, and the PERMUTATION is then an artifact of the sorting algorithm:
+    `asort`/`sort` use an insertion sort for `n < 16` (zend_sort) and a hybrid
+    merge sort above it, while JS `Array#sort` is TimSort, so two byte-identical
+    comparators can land the same input in different orders. The comparison
+    itself matches (see 12); only the tie-breaking of a NON-transitive comparator
+    differs, and only for mixed-type input. A well-typed collection (all strings,
+    or all numbers) sorts identically *(escape: sort on a single-typed key)*.
+14. **The macro / `__call` surface** — Laravel's `Collection` and `Model` answer
+    an undefined method through `__call` (a registered macro runs, otherwise
+    `BadMethodCallException`), and `Str`/`Stringable` likewise. The edge has no
+    runtime `__call`: an app that registers `Collection::macro('explode', ...)`
+    at boot cannot carry it across the rung, and a call to an unknown method
+    answers JS's own `TypeError: ... is not a function` where PHP answers
+    `BadMethodCallException`. Compiled macros (ones the build can see) work; a
+    runtime call to a method that does not exist is the declared gap
+    *(escape: compile the call / port a handler)*. `eachSpread`/`mapSpread` on a
+    non-array item correctly raises PHP's own `Error` (`false`/`null` are
+    coerced to a one-element array first) — that part is faithful.
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
 ## 7. Order of attack (dependency-driven)
@@ -925,4 +966,9 @@ hoist, a shared cache): without it the helper exits 3 (`the framework's
 validation.php is missing`) or the build reports a vendor it cannot read.
 `tools/validation-messages.php` and the rest of the `*-dump` helpers all take the
 same path; an app whose `App\` namespace maps to a non-default directory is a
-different axis (see the composer-free note in MAP.md).
+different axis (see the composer-free note in MAP.md). The JS tools that reach
+into vendor resolve the same two layouts — `<LW_VENDOR_DIR>/…` and
+`<LW_VENDOR_DIR>/vendor/…` — so a vendor-less app keeps the framework's
+translation files (`tools/config-dump.mjs`) and its PSR-4 map
+(`classFile()` in `tools/static.mjs`); `tools/tests/vendor-dir.test.mjs` pins
+both against an app with no `vendor/` of its own.
