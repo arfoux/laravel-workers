@@ -168,3 +168,53 @@ test('a cache hit that predates installed.json is healed instead of served empty
     rmSync(cacheRoot, { recursive: true, force: true });
   }
 });
+
+// --- the PROVISIONING path (a cache miss) -------------------------------
+// The README's "no vendor/, no composer install" build lands here: the entry is
+// created, the autoloader and the composer manifest are written. The test seeds
+// the package directory as already extracted, so the loop skips the download and
+// the whole provisioning path runs offline.
+//
+// `installedJson` was computed in `ensureVendorLite`'s scope only while
+// `provision()` - a separate function - wrote it: every fresh provision died with
+// `ReferenceError: installedJson is not defined` (measured on a real app with no
+// vendor/: "BUILD FAILED: vendor provisioning failed: installedJson is not
+// defined"). The suite missed it because every CI app comes from
+// `composer create-project`, which always leaves a vendor/ behind.
+test('a cache miss provisions the entry: the manifest and the autoloader are written', async () => {
+  const appDir = mkdtempSync(join(tmpdir(), 'lw-prov-'));
+  const cacheRoot = mkdtempSync(join(tmpdir(), 'lw-cache-'));
+  const lock = {
+    packages: [
+      {
+        name: 'vendor/pkg',
+        version: '1.0.0',
+        type: 'library',
+        dist: { url: 'https://example.invalid/pkg.zip', type: 'zip' },
+        extra: { laravel: { providers: ['Vendor\\Pkg\\Provider'] } },
+      },
+    ],
+    'packages-dev': [],
+  };
+  writeFileSync(join(appDir, 'composer.json'), JSON.stringify({ require: {} }));
+  writeFileSync(join(appDir, 'composer.lock'), JSON.stringify(lock));
+  const prev = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cacheRoot;
+  try {
+    const dir = vendorLiteDir(hashFor(appDir));
+    // "already extracted": an existing package dir skips the download entirely
+    mkdirSync(join(dir, 'vendor', 'vendor', 'pkg'), { recursive: true });
+    const res = await ensureVendorLite(appDir, { silent: true });
+    assert.equal(res.hit, false, 'a cache miss provisions instead of answering a hit');
+    assert.equal(res.dir, dir);
+    const doc = JSON.parse(readFileSync(join(dir, 'vendor', 'composer', 'installed.json'), 'utf8'));
+    assert.deepEqual(doc.packages.map((p) => p.name), ['vendor/pkg'], 'the manifest lists the locked package');
+    assert.deepEqual(doc.packages[0].extra.laravel.providers, ['Vendor\\Pkg\\Provider'], 'providers survive a fresh provision');
+    assert.ok(readFileSync(res.autoload, 'utf8').includes('<?php'), 'the generated autoloader is written');
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prev;
+    rmSync(appDir, { recursive: true, force: true });
+    rmSync(cacheRoot, { recursive: true, force: true });
+  }
+});
