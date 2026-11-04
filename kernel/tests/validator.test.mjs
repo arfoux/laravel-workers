@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Validator, validate, strGetcsv, splitRuleString } from '../validator.mjs';
+import { Validator, validate, strGetcsv, splitRuleString, phpRelativeTimestamp } from '../validator.mjs';
 import { buildRequest } from '../http.mjs';
 import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
 
@@ -286,6 +286,32 @@ test('unique/exists via injected resolvers', async () => {
   const exists = async ({ value }) => taken.has(value);
   assert.equal(await new Validator({ email: 'ada@example.com' }, { email: 'exists:users,email' }, {}, { exists }).passes(), true);
   assert.equal(await new Validator({ email: 'no@example.com' }, { email: 'exists:users,email' }, {}, { exists }).passes(), false);
+});
+
+test('unique RUNS against a present null unless the field is nullable (audit V2)', async () => {
+  // Validator::isNotNullIfMarkedAsNullable() only skips a null when the field
+  // carries a `Nullable` rule; presentOrRuleIsImplicit() only blanks a STRING
+  // that trims to ''. Laravel thus queries with the null and the rule fails.
+  let called = 'unset';
+  const unique = async (p) => { called = p.value; return false; };
+  assert.equal(await new Validator({ email: null }, { email: 'unique:users,email' }, {}, { unique }).passes(), false);
+  assert.equal(called, null, 'the null reached the query');
+  called = 'unset';
+  assert.equal(await new Validator({ email: null }, { email: 'nullable|unique:users,email' }, {}, { unique }).passes(), true);
+  assert.equal(called, 'unset', 'a nullable null is not queried');
+  called = 'unset';
+  assert.equal(await new Validator({ email: '   ' }, { email: 'unique:users,email' }, {}, { unique }).passes(), true);
+  assert.equal(called, 'unset', 'a blank string is not queried');
+});
+
+test('required_array_keys accepts a PHP list (audit V1)', async () => {
+  // ValidatesAttributes::validateRequiredArrayKeys() is `is_array($value)` +
+  // `Arr::exists()` per parameter; a PHP list is an array and its keys are the
+  // numeric indices.
+  assert.equal(await new Validator({ items: [1, 2] }, { items: 'required_array_keys:0' }).passes(), true);
+  assert.equal(await new Validator({ items: [1, 2] }, { items: 'required_array_keys:1' }).passes(), true);
+  assert.equal(await new Validator({ items: [1, 2] }, { items: 'required_array_keys:2' }).passes(), false);
+  assert.equal(await new Validator({ items: { a: 1 } }, { items: 'required_array_keys:a,b' }).passes(), false);
 });
 
 test('unique/exists via D1-style db binding', async () => {
@@ -1235,6 +1261,63 @@ test('before/after follow compareDates(): an unreadable value is timestamp 0', a
   // A non-string, non-numeric value never reaches the comparison.
   assert.equal(await pass(null, 'before:2026-01-01'), false);
   assert.equal(await pass(true, 'before:2026-01-01'), false);
+});
+test('before/after read the relative shapes PHP\'s parser accepts', async () => {
+  // `Date::parse()` is `strtotime`: a weekday, a month name, `noon`, `3pm`,
+  // `+3 days`, `2 weeks ago`, `next week`. Before the relative grammar these
+  // answered null (timestamp 0), so `before:monday` REJECTED every value PHP
+  // accepts. The verdicts below are clock-independent: the field sits far
+  // before or after any relative token.
+  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
+  assert.equal(await pass('2000-01-01', 'before:monday'), true);
+  assert.equal(await pass('2000-01-01', 'before:june'), true);
+  assert.equal(await pass('2000-01-01', 'before:noon'), true);
+  assert.equal(await pass('2000-01-01', 'before:3pm'), true);
+  assert.equal(await pass('2000-01-01', 'before:next week'), true);
+  assert.equal(await pass('2000-01-01', 'before:+3 days'), true);
+  assert.equal(await pass('2000-01-01', 'before:2 weeks ago'), true);
+  // `-18 years` is "18 years before now": a 2000 date is before it, a 2020
+  // date after it (the common "must be at least 18" idiom).
+  assert.equal(await pass('2000-01-01', 'before:-18 years'), true);
+  assert.equal(await pass('2020-01-01', 'after:-18 years'), true);
+  // A far-future field is after every relative token PHP answers for.
+  assert.equal(await pass('2999-01-01', 'before:monday'), false);
+  assert.equal(await pass('2999-01-01', 'before:noon'), false);
+  assert.equal(await pass('2999-01-01', 'after:-18 years'), true);
+  // An unknown word stays unreadable in PHP too: Carbon refuses it, so the
+  // timestamp is 0 - a 2000 date is AFTER 0 (it never precedes it).
+  assert.equal(await pass('2000-01-01', 'before:tonight'), false);
+  assert.equal(await pass('2000-01-01', 'after:tonight'), true);
+});
+test('phpRelativeTimestamp follows PHP\'s field-setter grammar', async () => {
+  // Pinned against PHP 8.3 with `Carbon::setTestNow(2026-11-04 10:20:30 UTC)`
+  // (a Wednesday): every epoch below is the timestamp PHP answered for that
+  // token. The grammar applies field setters left to right, which is why
+  // `noon tomorrow` is TOMORROW 00:00 ("tomorrow" resets the clock) while
+  // `tomorrow noon` is tomorrow 12:00.
+  const NOW = Date.UTC(2026, 10, 4, 10, 20, 30);
+  const at = (raw) => phpRelativeTimestamp(raw, NOW);
+  const cases = {
+    now: 1793787630, today: 1793750400, tomorrow: 1793836800, yesterday: 1793664000,
+    b: 1793787630, z: 1793787630, noon: 1793793600, midnight: 1793750400,
+    '2pm': 1793800800, '12am': 1793750400, '12pm': 1793793600, '10:30pm': 1793831400,
+    monday: 1794182400, sun: 1794096000, tue: 1794268800, thu: 1793836800,
+    'next monday': 1794182400, 'last monday': 1793577600,
+    'next week': 1794219630, 'last week': 1793010030, 'this week': 1793614830,
+    june: 1780568430, '5 june': 1780654830, 'june 5': 1780654830, december: 1796379630,
+    'noon tomorrow': 1793836800, 'tomorrow noon': 1793880000, 'midnight tomorrow': 1793836800,
+    '+1 day': 1793874030, 'next day': 1793874030, 'last day': 1793701230,
+    '1 week': 1794392430, '+2 weeks': 1794997230, '-3 months': 1785838830, '+1 year': 1825323630,
+    '2 weeks ago': 1792578030, '5 days ago': 1793355630, '90 minutes': 1793793030,
+    '1 month': 1796379630, 'last month': 1791109230, 'next month': 1796379630,
+    'first day of january': 1767262830, 'last day of this month': 1796034030,
+    'monday 9am': 1794214800, 'yesterday noon': 1793707200,
+    // PHP refuses these (an unknown word), so the timestamp stays unreadable.
+    tonight: null, 'new year': null, 'in 2 days': null, tues: null, thurs: null, junk: null,
+  };
+  for (const [raw, want] of Object.entries(cases)) {
+    assert.equal(at(raw), want, `${JSON.stringify(raw)} should answer ${want}`);
+  }
 });
 test('array/list/json match is_array()/array_is_list()/json_validate()', async () => {
   const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();

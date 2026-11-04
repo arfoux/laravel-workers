@@ -6,6 +6,7 @@ import { phpJsonEncode, tagPhpObjectDeep } from './php-json.mjs';
 import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 import { entriesOf } from './php-loose-eq.mjs';
 import { phpStringCast } from './str.mjs';
+import { TRANSLATED_NAMES } from './date-names.mjs';
 
 const JSON_CASTS = new Set(['json', 'array', 'object', 'collection']);
 /**
@@ -403,6 +404,9 @@ export function makeDateValue(raw, tz = modelTimezone.value) {
     ms = wallClockToUtcMs(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0), tz);
   }
   const base = () => phpDateString(new Date(ms), tz);
+  // Carbon::locale() is per instance: `->copy()->locale('id')` must not change
+  // the language of the model's own value.
+  let apiLocale = '';
   const shifted = (deltaMs) => makeDateValue(phpDateString(new Date(ms + deltaMs), tz), tz);
   const api = {
     [DATE_VALUE]: true,
@@ -463,6 +467,35 @@ export function makeDateValue(raw, tz = modelTimezone.value) {
     },
     clone() {
       return makeDateValue(base(), tz);
+    },
+    // Carbon::locale($locale) — sets the locale of the NEXT translatedFormat()
+    // call and answers the instance (the fluent `->locale('id')` chain).
+    locale(next) {
+      const l = String(next ?? '').toLowerCase().split(/[_-]/)[0];
+      if (l) apiLocale = l;
+      return api;
+    },
+    // Carbon::translatedFormat() — `format()` with the LOCALIZED month/day
+    // names (M/F/D/l). The same token logic as the runtime's Carbon wrapper.
+    translatedFormat(fmt) {
+      const loc = String(apiLocale || 'en').toLowerCase().split(/[_-]/)[0];
+      const t = TRANSLATED_NAMES[loc] || TRANSLATED_NAMES.en;
+      const p = zonePartsIn(new Date(ms), tz);
+      const w = new Date(Date.UTC(p.Y, p.m - 1, p.d)).getUTCDay();
+      const pad = (n) => String(n).padStart(2, '0');
+      return String(fmt).replace(/\\?.|M{1,4}|F|D|l/g, (token) => {
+        if (token.length > 1 && token[0] === '\\') return token.slice(1);
+        switch (token) {
+          case 'M': return t.monthsShort[p.m - 1];
+          case 'F': return t.months[p.m - 1];
+          case 'D': return t.daysShort[w];
+          case 'l': return t.days[w];
+          case 'MM': return pad(p.m);
+          case 'MMM': return t.monthsShort[p.m - 1];
+          case 'MMMM': return t.months[p.m - 1];
+          default: return api.format(token);
+        }
+      });
     },
   };
   return api;

@@ -3959,16 +3959,25 @@ export class Collection {
   }
 
   // ---- control flow -----------------------------------------------------
+  // `Conditionable::when()` (Illuminate\Support\Traits\Conditionable): a
+  // Closure condition is resolved against the collection, the callback receives
+  // `($this, $value)`, and a null return falls back to `$this`
+  // (`$callback($this, $value) ?? $this`). The old code called the callback with
+  // ONE argument and returned whatever it returned - a mutating callback that
+  // returns nothing answered `undefined` where Laravel answers the collection
+  // (auditor note C1). The zero/one-argument HigherOrderWhenProxy forms are not
+  // modelled; the compiled caller passes the condition explicitly.
   when(condition, callback, fallback = null) {
     const test = typeof condition === 'function' ? condition(this) : condition;
-    if (test) return typeof callback === 'function' ? callback(this) : callback;
-    return typeof fallback === 'function' ? fallback(this) : this;
+    if (test) return typeof callback === 'function' ? (callback(this, test) ?? this) : this;
+    return typeof fallback === 'function' ? (fallback(this, test) ?? this) : this;
   }
 
+  // `Conditionable::unless()`: the callback runs when the value is FALSY.
   unless(condition, callback, fallback = null) {
     const test = typeof condition === 'function' ? condition(this) : condition;
-    if (!test) return typeof callback === 'function' ? callback(this) : callback;
-    return typeof fallback === 'function' ? fallback(this) : this;
+    if (!test) return typeof callback === 'function' ? (callback(this, test) ?? this) : this;
+    return typeof fallback === 'function' ? (fallback(this, test) ?? this) : this;
   }
 
   whenEmpty(callback, fallback = null) {

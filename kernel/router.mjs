@@ -230,8 +230,17 @@ export async function dispatch(req, table, handlers, env, options = {}) {
   }
   if (typeof handler !== 'function') return null;
 
+  // `method` and `db` are additive and exist for the ROUTE PORTS (an
+  // app-authored handler in ports/<slug>.mjs). A compiled controller reads the
+  // verb through `ctx.request.method()` (a function on the kernel request) and
+  // the binding through `env.DB`, neither of which a hand-written port can
+  // reach without re-deriving them: `ctx.request.method` would hand a port the
+  // FUNCTION, so `ctx.method` carries the resolved string. `ctx.db` is the same
+  // binding the compiled rung already uses for route-model binding.
   const ctx = {
     params: m.params,
+    method: resolveMethod(req),
+    db: (options && options.db) || null,
     request: options.ctxRequest ?? {
       method: resolveMethod(req),
       path: (req && req.path) || '/',

@@ -867,3 +867,23 @@ test('sqlite: restore() persists through save(), like the trait does', { skip: s
   assert.equal(row.title, 'restored-title');
   assert.equal(row.deleted_at, null);
 });
+
+test('a model date value answers Carbon\'s locale()/translatedFormat() (probed on PHP 8.3)', () => {
+  // `$profile->created_at->copy()->locale('id')->translatedFormat('j M Y')` is
+  // the shape every Blade date cell uses. The model's date value used to carry
+  // only format()/toDateString(), so `->locale()` was `undefined is not a
+  // function` inside the compiled view while PHP answered the Indonesian form.
+  //
+  // php -r "echo Carbon::parse('2026-10-20 08:00:00')->locale('id')
+  //   ->translatedFormat('j M Y');"           -> 20 Okt 2026
+  // translatedFormat('l, j F Y')              -> Selasa, 20 Oktober 2026
+  // translatedFormat('D')                     -> Sel
+  // translatedFormat('j M Y')  (no locale)    -> 20 Oct 2026
+  const d = makeDateValue('2026-10-20 08:00:00', 'Asia/Jakarta');
+  assert.equal(d.copy().locale('id').translatedFormat('j M Y'), '20 Okt 2026');
+  assert.equal(d.copy().locale('id').translatedFormat('l, j F Y'), 'Selasa, 20 Oktober 2026');
+  assert.equal(d.copy().locale('id').translatedFormat('D'), 'Sel');
+  assert.equal(d.copy().translatedFormat('j M Y'), '20 Oct 2026');
+  // locale() is per instance: the model's own value is still English.
+  assert.equal(d.translatedFormat('j M Y'), '20 Oct 2026');
+});

@@ -194,6 +194,12 @@ test('when/unless/whenEmpty/tap/pipe answer the callback\'s value', () => {
   assert.deepEqual(collect([1]).when(true, (c) => c.push(2)).all(), [1, 2]);
   assert.deepEqual(collect([1]).when(false, (c) => c.push(2)).all(), [1]);
   assert.deepEqual(collect([1]).unless(false, (c) => c.push(2)).all(), [1, 2]);
+  // Conditionable passes the resolved value as the callback's SECOND argument,
+  // and a callback that returns nothing answers the collection (`?? $this`),
+  // not `undefined` (audit C1).
+  assert.equal(collect([1]).when('x', (c, v) => v), 'x');
+  assert.deepEqual(collect([1]).when(true, () => { /* returns undefined */ }).all(), [1]);
+  assert.deepEqual(collect([1]).unless(false, () => { /* undefined */ }).all(), [1]);
   assert.deepEqual(collect([1]).tap((c) => c.push(9)).all(), [1, 9]);
   assert.equal(collect([1, 2]).pipe((c) => c.count()), 2);
 });

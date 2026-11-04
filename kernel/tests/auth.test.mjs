@@ -31,6 +31,7 @@ import {
   BcryptHasher,
   createAuthManager,
   getAcceptableContentTypes,
+  PortedGuard,
   Recaller,
   RedirectIfAuthenticated,
   requestAjax,
@@ -1071,4 +1072,340 @@ test('auth: SessionGuard + middleware end-to-end parity', { skip: noSqlite || no
       );
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Guard ports (registry.json → "guards"): a driver the APP implements in JS
+// (`Auth::extend('seal', fn)` — a closure the compiled rung cannot execute).
+// Pure unit tests: no oracle, no app, because the port IS the app's own code.
+// What is pinned here is the compiled rung's half — the port runs at most once
+// per guard per request, the delegated methods go where Laravel's go, the bag
+// the port receives is the one the worker threads down, and every path the port
+// does not implement fails LOUD instead of answering "no user".
+// ---------------------------------------------------------------------------
+
+const portedGuard = (port, ctx = {}) => new PortedGuard('seal', 'seal', { driver: 'seal' }, port, ctx);
+
+test('auth: a guard port resolves the user once per guard (memoized)', async () => {
+  let calls = 0;
+  const guard = portedGuard({
+    async user() {
+      calls += 1;
+      return { id: 7, name: 'sealed' };
+    },
+  });
+
+  assert.deepEqual(await guard.user(), { id: 7, name: 'sealed' });
+  assert.deepEqual(await guard.user(), { id: 7, name: 'sealed' });
+  assert.equal(await guard.check(), true);
+  assert.equal(await guard.guest(), false);
+  assert.equal(await guard.id(), 7);
+  assert.equal(guard.getUser().name, 'sealed');
+  assert.equal(calls, 1, 'the port ran once, not once per question');
+});
+
+test('auth: a guard port without user(ctx) is refused, not read as a guest', async () => {
+  const guard = portedGuard({});
+  await assert.rejects(
+    () => guard.user(),
+    (e) => {
+      assert.equal(e.name, 'AuthError');
+      assert.equal(e.phpClass, 'UnsupportedError');
+      assert.match(e.message, /driver 'seal'/);
+      assert.match(e.message, /does not export user\(ctx\)/);
+      return true;
+    }
+  );
+});
+
+test('auth: a port that answers null is a guest, and authenticate() is a 401', async () => {
+  const guard = portedGuard({
+    async user() {
+      return null;
+    },
+  });
+  assert.equal(await guard.user(), null);
+  assert.equal(await guard.check(), false);
+  assert.equal(await guard.guest(), true);
+  assert.equal(await guard.id(), null);
+  assert.equal(guard.hasUser(), false);
+  assert.equal(guard.getUser(), null);
+  assert.equal(guard.viaRemember(), false);
+  await assert.rejects(
+    () => guard.authenticate(),
+    (e) => e instanceof AuthenticationException
+  );
+});
+
+test('auth: id() follows getAuthIdentifier() when the port answers a model', async () => {
+  const guard = portedGuard({
+    async user() {
+      return { id: 3, getAuthIdentifier: () => 'user-3' };
+    },
+  });
+  assert.equal(await guard.id(), 'user-3');
+});
+
+test('auth: a failing port keeps failing, and the failure never becomes "no user"', async () => {
+  let calls = 0;
+  const guard = portedGuard({
+    async user() {
+      calls += 1;
+      throw new Error('D1 read failed');
+    },
+  });
+
+  await assert.rejects(() => guard.user(), /D1 read failed/);
+  await assert.rejects(() => guard.guest(), /D1 read failed/);
+  assert.equal(guard.userResolved, false, 'a failed read is not a resolved guest');
+  assert.equal(guard.hasUser(), false);
+  assert.equal(calls, 1, 'the in-flight promise is shared, not re-run per question');
+});
+
+test('auth: validate() answers false unless the port says otherwise', async () => {
+  const bare = portedGuard({
+    async user() {
+      return { id: 1 };
+    },
+  });
+  assert.equal(await bare.validate({ token: 'x' }), false, 'no validate() → false, never a silent pass');
+
+  let seen = null;
+  const truthy = portedGuard({
+    async user() {
+      return null;
+    },
+    async validate(credentials) {
+      seen = credentials;
+      return 'ok';
+    },
+  });
+  assert.equal(await truthy.validate({ token: 'abc' }), true, 'a truthy answer is coerced to true');
+  assert.deepEqual(seen, { token: 'abc' });
+
+  const falsy = portedGuard({
+    async user() {
+      return null;
+    },
+    async validate() {
+      return 0;
+    },
+  });
+  assert.equal(await falsy.validate({}), false, 'a falsy answer is coerced to false');
+});
+
+test('auth: attempt() validates first, then lets the port establish the session', async () => {
+  const calls = [];
+  const port = {
+    async user() {
+      return { id: 9 };
+    },
+    async validate(credentials) {
+      calls.push(['validate', credentials.email]);
+      return credentials.email === 'ok@example.test';
+    },
+    async login(user, remember) {
+      calls.push(['login', user.id, remember]);
+    },
+  };
+  const guard = portedGuard(port);
+
+  assert.equal(await guard.attempt({ email: 'no@example.test' }, true), false);
+  assert.deepEqual(calls, [['validate', 'no@example.test']], 'a failed validate never logs in');
+  assert.equal(await guard.attempt({ email: 'ok@example.test' }, true), true);
+  assert.deepEqual(calls.slice(1), [
+    ['validate', 'ok@example.test'],
+    ['login', 9, true],
+  ]);
+  assert.deepEqual(guard.getUser(), { id: 9 }, 'attempt() sets the user the port answered');
+
+  const fresh = portedGuard({
+    async user() {
+      return { id: 11 };
+    },
+    async validate() {
+      return true;
+    },
+  });
+  assert.equal(await fresh.once({ token: 't' }), true);
+  assert.deepEqual(fresh.getUser(), { id: 11 });
+});
+
+test('auth: login()/logout()/onceUsingId() without the port method fail loud', async () => {
+  const bare = portedGuard({
+    async user() {
+      return { id: 1 };
+    },
+  });
+  const cases = [
+    ['login(user, remember, ctx)', () => bare.login({ id: 1 })],
+    ['logout(ctx)', () => bare.logout()],
+    ['userById(id, ctx)', () => bare.onceUsingId(1)],
+  ];
+  for (const [signature, call] of cases) {
+    await assert.rejects(
+      () => call(),
+      (e) => {
+        assert.equal(e.phpClass, 'UnsupportedError', `${signature}: phpClass`);
+        assert.ok(e.message.includes(signature), `${signature}: the message names the method`);
+        return true;
+      }
+    );
+  }
+});
+
+test('auth: logout() delegates to the port, onceUsingId() asks it for the user', async () => {
+  const seen = [];
+  const guard = portedGuard(
+    {
+      async user() {
+        return { id: 5 };
+      },
+      async logout(ctx) {
+        seen.push(ctx.request.url);
+      },
+      async userById(id, ctx) {
+        seen.push(['byId', id, ctx.driver]);
+        return id === 5 ? { id: 5 } : null;
+      },
+    },
+    { request: { url: '/sealed' } }
+  );
+
+  assert.equal((await guard.user()).id, 5);
+  assert.equal(await guard.onceUsingId(6), null, 'an unknown id is not a user (and not an error)');
+  assert.deepEqual(seen, [['byId', 6, 'seal']]);
+  assert.deepEqual(await guard.onceUsingId(5), { id: 5 });
+  assert.equal(guard.hasUser(), true);
+  assert.equal(await guard.logout(), true);
+  assert.equal(guard.hasUser(), false, 'logout() forgets the user');
+  assert.deepEqual(seen[1], ['byId', 5, 'seal']);
+  assert.equal(seen[2], '/sealed', 'the port saw the request the guard was bound to');
+});
+
+test('auth: setRequest() drops the resolved user (the manager reuses a guard)', async () => {
+  let calls = 0;
+  const guard = portedGuard(
+    {
+      async user(ctx) {
+        calls += 1;
+        return { id: calls, url: ctx.request === null ? null : ctx.request.url };
+      },
+    },
+    { request: { url: '/one' } }
+  );
+
+  assert.deepEqual(await guard.user(), { id: 1, url: '/one' });
+  guard.setRequest({ url: '/two' });
+  assert.equal(guard.hasUser(), false, 'a new request starts unresolved');
+  assert.deepEqual(await guard.user(), { id: 2, url: '/two' });
+});
+
+test('auth: the guard port receives the same building blocks the session guard does', async () => {
+  const db = { name: 'D1' };
+  const env = { SEAL_KEY: 'k' };
+  const models = { User: {} };
+  const session = { id: 's1' };
+  const cookieJar = { queue: () => {} };
+  const request = { url: '/sealed' };
+  const config = { 'auth.defaults.guard': 'seal', 'auth.guards.seal': { driver: 'seal' } };
+  let seen = null;
+
+  const manager = createAuthManager({
+    config,
+    db,
+    session,
+    request,
+    cookieJar,
+    env,
+    models,
+    guardPorts: {
+      seal: {
+        async user(ctx) {
+          seen = ctx;
+          return { id: 1 };
+        },
+      },
+    },
+  });
+
+  const guard = manager.guard('seal');
+  assert.ok(guard instanceof PortedGuard);
+  assert.equal(guard.getName(), 'auth.guards.seal');
+  assert.equal(manager.guard('seal'), guard, 'the manager caches the resolved guard');
+  assert.deepEqual(await manager.userResolver(), { id: 1 }, 'the default guard answers the request user');
+  assert.deepEqual(seen, {
+    request,
+    guard: 'seal',
+    driver: 'seal',
+    config: { driver: 'seal' },
+    app: { config, db, models, env, session, cookieJar },
+  });
+});
+
+test('auth: the auth middleware passes a ported user and refuses a guest', async () => {
+  const config = { 'auth.defaults.guard': 'seal', 'auth.guards.seal': { driver: 'seal' } };
+  const manager = createAuthManager({
+    config,
+    guardPorts: {
+      seal: {
+        async user() {
+          return { id: 1 };
+        },
+      },
+    },
+  });
+
+  let reached = false;
+  await new Authenticate(manager).handle({}, () => {
+    reached = true;
+  });
+  assert.equal(reached, true, 'a resolved user reaches the handler');
+  assert.equal(config['auth.defaults.guard'], 'seal', 'the guard that answered becomes the default');
+
+  const guestConfig = { 'auth.defaults.guard': 'seal', 'auth.guards.seal': { driver: 'seal' } };
+  const guestManager = createAuthManager({
+    config: guestConfig,
+    guardPorts: {
+      seal: {
+        async user() {
+          return null;
+        },
+      },
+    },
+  });
+  const savedRedirect = AuthenticationException.redirectToCallback;
+  AuthenticationException.redirectToCallback = null;
+  try {
+    await assert.rejects(
+      () => new Authenticate(guestManager).handle({}, () => {}, 'seal'),
+      (e) => {
+        assert.ok(e instanceof AuthenticationException);
+        assert.equal(e.message, 'Unauthenticated.');
+        assert.deepEqual(e.guards(), ['seal'], 'the guard the middleware was asked for');
+        assert.equal(e.redirectTo({ header: () => null }), null, 'no callback wired → no redirect');
+        return true;
+      }
+    );
+  } finally {
+    AuthenticationException.redirectToCallback = savedRedirect;
+  }
+});
+
+test('auth: an unported driver fails loud and names the registry key', () => {
+  const manager = createAuthManager({ config: { 'auth.guards.ldap': { driver: 'ldap' } } });
+  assert.throws(
+    () => manager.guard('ldap'),
+    (e) => {
+      assert.equal(e.name, 'AuthError');
+      assert.equal(e.phpClass, 'UnsupportedError');
+      assert.match(e.message, /Auth driver \[ldap\] is not supported by the compiled rung \(session only\)/);
+      assert.match(e.message, /registry\.json \{"guards": \{"ldap": "<slug>"\}\}/);
+      return true;
+    }
+  );
+  assert.throws(
+    () => manager.guard('nope'),
+    (e) => e.phpClass === 'InvalidArgumentException'
+  );
 });

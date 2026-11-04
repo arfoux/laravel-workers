@@ -44,6 +44,51 @@ function uploadRequest(parts, options = {}) {
   );
 }
 
+// A 1x1 PNG header (signature + IHDR): the `image`/`mimes` rules are a header
+// read, so the bytes must go through the multipart body unchanged.
+const PNG_BYTES = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+]);
+
+function multipartBytes(parts) {
+  const chunks = [];
+  const enc = new TextEncoder();
+  for (const part of parts) {
+    let head = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="${part.name}"`;
+    if (part.filename !== undefined) head += `; filename="${part.filename}"`;
+    head += '\r\n';
+    if (part.type) head += `Content-Type: ${part.type}\r\n`;
+    head += '\r\n';
+    chunks.push(enc.encode(head));
+    chunks.push(part.bytes !== undefined ? part.bytes : enc.encode(part.content));
+    chunks.push(enc.encode('\r\n'));
+  }
+  chunks.push(enc.encode(`--${BOUNDARY}--\r\n`));
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+function uploadRequestBinary(parts, options = {}) {
+  return buildRequest(
+    {
+      method: 'POST',
+      url: 'http://localhost/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${BOUNDARY}` },
+      body: multipartBytes(parts),
+    },
+    options
+  );
+}
+
 test('upload: the file metadata is Laravel\'s (the basename, the type, the size)', () => {
   const req = uploadRequest([
     { name: 'title', content: 'Shadow upload' },
@@ -145,13 +190,38 @@ test('validation: the size rules of a file are in kilobytes (Laravel 13)', async
   assert.deepEqual(failed.errors().avatar, ['The avatar field must not be greater than 0 kilobytes.']);
 });
 
-test('validation: `mimes` fails loud, `image`/`dimensions` compile (a header read)', async () => {
-  // `mimes` compares the type finfo SNIFFS the content for, and the edge has
-  // only the type the browser declared - so the build refuses it.
-  assert.throws(
-    () => new Validator({}, { avatar: 'mimes:png' }),
-    /mimes validation rule is not compiled.*finfo/s
+test('validation: `mimes`/`mimetypes` answer for sniffable image formats (a header read)', async () => {
+  // PHP asks finfo for the file's CONTENT type; the edge sniffs the image
+  // HEADER (kernel/image.mjs), so the rule answers for the formats that read
+  // can name and fails loud for every other parameter.
+  const png = uploadRequestBinary([
+    { name: 'avatar', filename: 'a.png', type: 'image/png', bytes: PNG_BYTES },
+  ]).file('avatar');
+  const txt = uploadRequest([
+    { name: 'avatar', filename: 'a.txt', type: 'text/plain', content: 'hello file' },
+  ]).file('avatar');
+
+  assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:png' }).passes(), true);
+  assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:jpg,png' }).passes(), true);
+  assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:jpg' }).passes(), false);
+  // Symfony's guessExtension() answers "jpg" for image/jpeg - never "jpeg" -
+  // so `mimes:jpeg` rejects a real JPEG in Laravel too.
+  assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:jpeg' }).passes(), false);
+  assert.equal(
+    await new Validator({ avatar: png }, { avatar: 'mimetypes:image/png' }).passes(),
+    true
   );
+  assert.equal(
+    await new Validator({ avatar: png }, { avatar: 'mimetypes:image/jpeg' }).passes(),
+    false
+  );
+  // finfo would answer text/plain for this one: not in the list.
+  assert.equal(await new Validator({ avatar: txt }, { avatar: 'mimes:png,jpg' }).passes(), false);
+  // A parameter the edge cannot answer stays loud (pdf content is not a header
+  // the edge can recognise).
+  assert.throws(() => new Validator({}, { avatar: 'mimes:pdf' }), /not compiled for "pdf"/);
+  assert.throws(() => new Validator({}, { avatar: 'mimetypes:application/pdf' }), /not compiled for "application\/pdf"/);
+
   // `image` and `dimensions` are getimagesize(), a HEADER read the edge
   // reproduces (kernel/image.mjs) - they compile. An ABSENT field skips them
   // (Laravel only runs a non-required rule on a present value - a probe:

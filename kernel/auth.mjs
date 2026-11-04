@@ -1166,6 +1166,228 @@ export class AuthenticationException extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// A guard whose driver the APP implements in JS (registry.json → "guards").
+//
+// `Auth::extend('seal', fn)` is PHP app code: the compiled rung cannot execute
+// that closure, and it must not pretend to (a guard that answers "no user" for
+// every request is an auth bypass, not a degradation). A guard port is the same
+// seam the route ports use — the app supplies the JS that answers the driver's
+// questions, and the compiled rung keeps everything around it: the `auth:seal`
+// middleware, `auth()->user()` in a compiled controller or view, the 401/redirect
+// answer, the session guard and the rest of the auth stack untouched.
+//
+// Contract (`ports/<slug>.mjs`):
+//   export default {
+//     async user(ctx)  { return { id, ...attributes } | null },  // required
+//     async validate(credentials, ctx) { return bool },          // optional
+//     async login(user, remember, ctx) { ... },                  // optional
+//     async logout(ctx) { ... },                                 // optional
+//   }
+//   ctx = { request, guard, driver, config, app: { config, db, models, env, session, cookieJar } }
+//
+// Every method the rung calls is awaited (the `auth` middleware awaits
+// `guard.check()`; compiler/src/transpiler.mjs awaits `auth()->*` / `Auth::*` /
+// `$request->user()`), so a port may read D1, WebCrypto-unseal a cookie or call
+// `fetch`. `user()` is MEMOIZED: the port runs at most once per guard per
+// request, so a port backed by a one-time token / replay store does not consume
+// its token twice when the middleware and the view both ask for the user.
+// ---------------------------------------------------------------------------
+export class PortedGuard {
+  constructor(name, driver, config, port, ctx = {}) {
+    this.name = name;
+    this.driver = driver;
+    this.config = config;
+    this.port = port;
+    this.provider = null;
+    this.userValue = null;
+    this.userResolved = false;
+    this.userPromise = null;
+    this.portCtx = {
+      request: ctx.request ?? null,
+      guard: name,
+      driver,
+      config,
+      app: {
+        config: ctx.appConfig ?? null,
+        db: ctx.db ?? null,
+        models: ctx.models ?? null,
+        env: ctx.env ?? null,
+        session: ctx.session ?? null,
+        cookieJar: ctx.cookieJar ?? null,
+      },
+    };
+  }
+
+  getName() {
+    return 'auth.guards.' + this.name;
+  }
+
+  /** Sets the request the port sees (Guard::setRequest — clears the resolved user). */
+  setRequest(request) {
+    this.portCtx.request = request ?? null;
+    this.userValue = null;
+    this.userResolved = false;
+    this.userPromise = null;
+    return this;
+  }
+
+  /**
+   * The user the port answers, resolved AT MOST ONCE per request.
+   * `auth()->user()` is awaited by the compiled caller, so this may be async —
+   * the port's own `user(ctx)` may hold a DB read or a crypto unseal.
+   */
+  async user() {
+    if (this.userResolved) return this.userValue;
+    if (!this.userPromise) {
+      if (!this.port || typeof this.port.user !== 'function') {
+        throw new AuthError(
+          `the guard port for driver '${this.driver}' does not export user(ctx) — ` +
+            'a guard port must `export default { async user(ctx) { return user | null } }`',
+          'UnsupportedError',
+        );
+      }
+      this.userPromise = Promise.resolve(this.port.user(this.portCtx)).then((user) => {
+        this.userValue = user ?? null;
+        this.userResolved = true;
+        return this.userValue;
+      });
+    }
+    return this.userPromise;
+  }
+
+  async check() {
+    return (await this.user()) !== null;
+  }
+
+  async guest() {
+    return !(await this.check());
+  }
+
+  /** GuardHelpers::id() — `$user->getAuthIdentifier()`, or the port's `id` field. */
+  async id() {
+    const user = await this.user();
+    if (user === null || user === undefined) return null;
+    if (typeof user.getAuthIdentifier === 'function') return user.getAuthIdentifier();
+    return user.id ?? null;
+  }
+
+  hasUser() {
+    return this.userResolved && this.userValue !== null;
+  }
+
+  getUser() {
+    return this.userResolved ? this.userValue : null;
+  }
+
+  setUser(user) {
+    this.userValue = user ?? null;
+    this.userResolved = true;
+    this.userPromise = Promise.resolve(this.userValue);
+    return this;
+  }
+
+  forgetUser() {
+    return this.setUser(null);
+  }
+
+  setProvider(provider) {
+    this.provider = provider;
+    return this;
+  }
+
+  getProvider() {
+    return this.provider;
+  }
+
+  /**
+   * Guard::validate(). A stateless driver has no credential path of its own —
+   * the app's `SealGuard::validate()` answers false — so a port that does not
+   * export `validate` answers false too, never a silent "valid".
+   */
+  async validate(credentials = {}) {
+    if (!this.port || typeof this.port.validate !== 'function') return false;
+    return (await this.port.validate(credentials, this.portCtx)) ? true : false;
+  }
+
+  /** GuardHelpers::once() — validate, then take the user the port answers. */
+  async once(credentials = {}) {
+    if (!(await this.validate(credentials))) return false;
+    const user = await this.user();
+    if (!user) return false;
+    this.setUser(user);
+    return true;
+  }
+
+  /**
+   * Guard::attempt(). Laravel's session guard validates and then PERSISTS the
+   * session; only the port knows what persisting means for its driver (queue a
+   * sealed cookie through `ctx.app.cookieJar`, write a D1 row, ...), so it is
+   * the port's `login()` that does it — and its absence is a loud error, not a
+   * silent no-op login.
+   */
+  async attempt(credentials = {}, remember = false) {
+    if (!(await this.validate(credentials))) return false;
+    const user = await this.user();
+    if (!user) return false;
+    return this.login(user, remember);
+  }
+
+  async login(user, remember = false) {
+    if (!this.port || typeof this.port.login !== 'function') {
+      throw new AuthError(
+        `Auth::guard('${this.name}')->login() needs the guard port for driver '${this.driver}' to export ` +
+          'login(user, remember, ctx) — a guard the compiled rung delegates must establish its own session ' +
+          '(e.g. ctx.app.cookieJar.queue(...))',
+        'UnsupportedError',
+      );
+    }
+    await this.port.login(user, remember, this.portCtx);
+    this.setUser(user);
+    return true;
+  }
+
+  async logout() {
+    if (!this.port || typeof this.port.logout !== 'function') {
+      throw new AuthError(
+        `Auth::guard('${this.name}')->logout() needs the guard port for driver '${this.driver}' to export ` +
+          'logout(ctx) — a guard the compiled rung delegates must clear its own session',
+        'UnsupportedError',
+      );
+    }
+    await this.port.logout(this.portCtx);
+    this.forgetUser();
+    return true;
+  }
+
+  async onceUsingId(id) {
+    if (!this.port || typeof this.port.userById !== 'function') {
+      throw new AuthError(
+        `Auth::guard('${this.name}')->onceUsingId() needs the guard port for driver '${this.driver}' to export ` +
+          'userById(id, ctx)',
+        'UnsupportedError',
+      );
+    }
+    const user = (await this.port.userById(id, this.portCtx)) ?? null;
+    if (user) this.setUser(user);
+    return user;
+  }
+
+  async authenticate() {
+    const user = await this.user();
+    if (!user) throw new AuthenticationException('Unauthenticated.');
+    return user;
+  }
+
+  getLastAttempted() {
+    return this.lastAttempted ?? null;
+  }
+
+  viaRemember() {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Illuminate\Auth\AuthManager (session-driver subset) + createAuthManager.
 // ---------------------------------------------------------------------------
 
@@ -1183,6 +1405,12 @@ export class AuthManager {
     rehashOnLogin = null,
     hashKey = null,
     redirect = null,
+    // registry.json → "guards": { driver: portModule }. A driver listed here is
+    // answered by the app's own JS (PortedGuard) instead of the unsupported-driver
+    // error; see the PortedGuard contract above.
+    guardPorts = null,
+    env = null,
+    models = null,
   } = {}) {
     if (!config) throw new AuthError('createAuthManager requires the compiled config object.');
     this.config = config;
@@ -1197,6 +1425,9 @@ export class AuthManager {
     this.rehashOnLogin = rehashOnLogin;
     this.hashKey = hashKey;
     this.redirect = redirect;
+    this.guardPorts = guardPorts;
+    this.env = env;
+    this.models = models;
     this.guards = new Map();
     this.userResolver = (name = null) => this.guard(name).user();
   }
@@ -1228,15 +1459,39 @@ export class AuthManager {
   resolve(name) {
     const config = this.config['auth.guards.' + name];
     if (!config) throw new AuthError(`Auth guard [${name}] is not defined.`, 'InvalidArgumentException');
+    // A driver the app ports (registry.json → "guards") answers through
+    // PortedGuard; the session driver stays the compiled rung's own.
+    const port = this.guardPorts && typeof this.guardPorts === 'object' ? this.guardPorts[config.driver] : null;
+    if (port) return this.createPortDriver(name, config, port);
     switch (config.driver) {
       case 'session':
         return this.createSessionDriver(name, config);
       default:
         throw new AuthError(
-          `Auth driver [${config.driver}] is not supported by the compiled rung (session only).`,
+          `Auth driver [${config.driver}] is not supported by the compiled rung (session only). ` +
+            `Port it: registry.json {"guards": {"${config.driver}": "<slug>"}} → ports/<slug>.mjs exporting ` +
+            '`export default { async user(ctx) { … } }`, or drop the guard.',
           'UnsupportedError',
         );
     }
+  }
+
+  /**
+   * A guard whose driver the app implements in JS. The port receives the same
+   * building blocks the session guard does (the request, the session, the cookie
+   * jar, the D1 binding, the compiled models, the Worker env), so an unseal-the-
+   * cookie guard is a dozen lines — see the PortedGuard contract above.
+   */
+  createPortDriver(name, config, port) {
+    return new PortedGuard(name, config.driver, config, port, {
+      request: this.request,
+      appConfig: this.config,
+      db: this.db,
+      models: this.models,
+      env: this.env,
+      session: this.session,
+      cookieJar: this.cookieJar,
+    });
   }
 
   createSessionDriver(name, config) {

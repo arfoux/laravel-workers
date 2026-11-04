@@ -361,6 +361,39 @@ const PARAMETER_COUNTS = {
 // header read recognises.
 const IMAGE_RULE_FORMATS = new Set(['png', 'jpeg', 'gif', 'bmp', 'webp', 'avif', 'heic', 'heif']);
 
+// `mimes`/`mimetypes` (ValidatesAttributes::validateMimes()/validateMimetypes()):
+// PHP asks finfo for the file's CONTENT type; the edge reads the image HEADER
+// (kernel/image.mjs) and answers exactly for the formats that read can name.
+// SNIFFED_MIME_EXTENSIONS is Symfony's MimeTypes::getExtensions() list for each
+// sniffable MIME (the extensions a `mimes` parameter may name) and
+// `guessExtension()` answers the FIRST entry - image/jpeg answers "jpg", never
+// "jpeg", so `mimes:jpeg` is a valid parameter that never matches a real JPEG
+// in PHP either (a documented Laravel sharp edge the edge must not "fix").
+// bmp stays out on purpose: finfo names it image/x-ms-bmp, so `mimetypes`
+// semantics for it are not the image/bmp the header read sees.
+const SNIFFED_MIME_EXTENSIONS = Object.freeze({
+  png: ['png'],
+  jpeg: ['jpg', 'jpeg', 'jpe', 'jif', 'jfif', 'jfi'],
+  gif: ['gif'],
+  webp: ['webp'],
+  avif: ['avif'],
+  heic: ['heic'],
+  heif: ['heif'],
+});
+const SNIFFED_EXTENSION = Object.freeze(
+  Object.fromEntries(Object.entries(SNIFFED_MIME_EXTENSIONS).map(([format, extensions]) => [format, extensions[0]]))
+);
+export const SNIFFED_EXTENSIONS = new Set(Object.values(SNIFFED_MIME_EXTENSIONS).flat());
+export const SNIFFED_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/heic',
+  'image/heif',
+]);
+
 // `$value->getMimeType()` is image/svg+xml: an SVG is XML text, so the edge
 // looks for the root element instead of a binary header.
 function looksLikeSvg(bytes) {
@@ -1064,14 +1097,14 @@ const KNOWN_RULES = new Set([
   'doesnt_start_with', 'doesnt_end_with', 'list', 'required_array_keys', 'array_keys',
   'in_array', 'decimal', 'timezone',
   'file', 'image', 'dimensions',
+  // `mimes`/`mimetypes` answer for the sniffable image formats only; a
+  // parameter outside that set throws (see the parse loop below and the
+  // compiler's own gate).
+  'mimes', 'mimetypes',
   // Implemented with the vendor semantics in _checkRule():
   'base64', 'ulid', 'contains', 'doesnt_contain', 'in_array_keys',
   'max_digits', 'min_digits', 'prohibits', 'extensions',
 ]);
-// The validation rules that need the file's *content* type (finfo): the edge
-// cannot sniff the content like PHP does, so they are not compiled (the build
-// stops with LW002 and names the rule).
-const CONTENT_MIME_RULES = new Set(['mimes', 'mimetypes']);
 // `is_array()`, named for the call sites that read a VALUE (`contains`,
 // `in_array_keys`, the message maps). Same predicate as `isPhpArrayValue()`
 // below - `is_array()` is FALSE for any object with a class (a model, an
@@ -1307,6 +1340,227 @@ function matchDateFormat(value, format) {
   return out === input;
 }
 
+// ---- PHP's relative date grammar (the subset the edge reads) ----------------
+// `Date::parse()` (Carbon -> `strtotime`) accepts far more than the absolute
+// shapes: a weekday, a month name, `noon`, `3pm`, `+3 days`, `2 weeks ago`,
+// `next week`, `first day of january`. The grammar below is a sequence of FIELD
+// SETTERS and offsets applied left to right to `now` (UTC) - exactly how PHP's
+// parser behaves: `noon tomorrow` is TOMORROW 00:00 ("tomorrow" resets the
+// clock) while `tomorrow noon` is tomorrow 12:00. Every value here was pinned
+// against PHP 8.3 with a frozen `now` (Carbon::setTestNow). An unrecognised
+// token makes the whole value unreadable -> null (PHP refuses a value with an
+// unknown word too, e.g. `tonight`, `new year`, `in 2 days`), and the caller
+// then compares against 0 exactly as it did before.
+const REL_WEEKDAY = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+};
+const REL_MONTH = {
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7,
+  september: 8, october: 9, november: 10, december: 11,
+  jan: 0, feb: 1, mar: 2, apr: 3, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11,
+};
+const REL_FIXED_UNIT = { second: 1, sec: 1, minute: 60, min: 60, hour: 3600, day: 86400, week: 604800 };
+const REL_CAL_UNIT = { month: true, year: true };
+
+export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
+  const text = String(raw).trim().replace(/\s+/g, ' ');
+  if (text === '') return null;
+  // A lone military-zone letter is `now` (`strtotime('z')` === now).
+  if (/^[A-Za-z]$/.test(text)) return Math.floor(nowMs / 1000);
+  const d0 = new Date(nowMs);
+  const st = {
+    y: d0.getUTCFullYear(),
+    mo: d0.getUTCMonth(),
+    day: d0.getUTCDate(),
+    h: d0.getUTCHours(),
+    mi: d0.getUTCMinutes(),
+    s: d0.getUTCSeconds(),
+  };
+  const weekdayOfToday = () => new Date(Date.UTC(st.y, st.mo, st.day)).getUTCDay();
+  const shiftDays = (n) => {
+    const t = new Date(Date.UTC(st.y, st.mo, st.day) + n * 86400000);
+    st.y = t.getUTCFullYear();
+    st.mo = t.getUTCMonth();
+    st.day = t.getUTCDate();
+  };
+  const zeroClock = () => { st.h = 0; st.mi = 0; st.s = 0; };
+  const setHour12 = (h12, pm) => { st.h = (h12 % 12) + (pm ? 12 : 0); st.mi = 0; st.s = 0; };
+  const daysIn = (y, mo) => new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+  const monthName = (w) => REL_MONTH[w];
+  const relUnit = (w) => {
+    const base = REL_FIXED_UNIT[w] !== undefined || REL_CAL_UNIT[w] !== undefined
+      ? w
+      : (w.endsWith('s') ? w.slice(0, -1) : w);
+    if (REL_FIXED_UNIT[base] !== undefined) return { fixed: REL_FIXED_UNIT[base] };
+    if (REL_CAL_UNIT[base] !== undefined) return { cal: base };
+    return null;
+  };
+  let hit = false;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === ' ') { i += 1; continue; }
+    const rest = text.slice(i);
+    let m;
+    // `first day of january` / `last day of this month` (day field setter).
+    if ((m = /^(first|last) day of (this month|[a-z]+)/i.exec(rest))) {
+      const which = m[1].toLowerCase();
+      let mo = st.mo;
+      let y = st.y;
+      if (m[2].toLowerCase() !== 'this month') {
+        const idx = monthName(m[2].toLowerCase());
+        if (idx === undefined) return null;
+        mo = idx;
+      }
+      st.mo = mo;
+      st.y = y;
+      st.day = which === 'first' ? 1 : daysIn(y, mo);
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `10:30 pm` / `12:00pm` (a clock with a meridian).
+    if ((m = /^(\d{1,2}):(\d{2})(?::(\d{2}))? ?(am|pm)\b/i.exec(rest))) {
+      const h12 = Number(m[1]);
+      if (h12 > 12) return null;
+      st.h = (h12 % 12) + (m[4].toLowerCase() === 'pm' ? 12 : 0);
+      st.mi = Number(m[2]);
+      st.s = Number(m[3] || 0);
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // A bare clock time in a phrase (`tomorrow 00:00`, `monday 17:00`).
+    if ((m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\b/.exec(rest))) {
+      st.h = Number(m[1]);
+      st.mi = Number(m[2]);
+      st.s = Number(m[3] || 0);
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `2pm` / `12 am` (an hour with a meridian).
+    if ((m = /^(\d{1,2}) ?(am|pm)\b/i.exec(rest))) {
+      const h12 = Number(m[1]);
+      if (h12 > 12) return null;
+      setHour12(h12, m[2].toLowerCase() === 'pm');
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `noon` / `midnight`.
+    if ((m = /^(noon|midnight)\b/i.exec(rest))) {
+      if (m[1].toLowerCase() === 'noon') { st.h = 12; } else { st.h = 0; }
+      st.mi = 0;
+      st.s = 0;
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `now` / `today` / `tomorrow` / `yesterday` (the day words reset the clock).
+    if ((m = /^(now|today|tomorrow|yesterday)\b/i.exec(rest))) {
+      const w = m[1].toLowerCase();
+      if (w === 'today') zeroClock();
+      else if (w === 'tomorrow') { shiftDays(1); zeroClock(); }
+      else if (w === 'yesterday') { shiftDays(-1); zeroClock(); }
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `next|last|this <weekday|week|month|year|hour|minute|second>`.
+    if ((m = /^(next|last|this) ([a-z]+)\b/i.exec(rest))) {
+      const mod = m[1].toLowerCase();
+      const w = m[2].toLowerCase();
+      if (REL_WEEKDAY[w] !== undefined) {
+        let delta = (REL_WEEKDAY[w] - weekdayOfToday() + 7) % 7;
+        if (mod === 'next') delta = delta === 0 ? 7 : delta;
+        else if (mod === 'last') delta = delta === 0 ? -7 : delta - 7;
+        shiftDays(delta);
+        zeroClock();
+      } else if (w === 'week') {
+        let delta = -((weekdayOfToday() + 6) % 7); // the Monday of this week
+        if (mod === 'next') delta += 7;
+        else if (mod === 'last') delta -= 7;
+        shiftDays(delta);
+      } else if (w === 'month') {
+        if (mod === 'next') st.mo += 1;
+        else if (mod === 'last') st.mo -= 1;
+      } else if (w === 'year') {
+        if (mod === 'next') st.y += 1;
+        else if (mod === 'last') st.y -= 1;
+      } else if ((w === 'day' || REL_FIXED_UNIT[w] !== undefined) && mod !== 'this') {
+        // `next day`/`last day` are ±1 day KEEPING the clock (`tomorrow` resets
+        // it instead - PHP's two different shorthands).
+        const secs = (mod === 'last' ? -1 : 1) * (w === 'day' ? 86400 : REL_FIXED_UNIT[w]);
+        const t = new Date(Date.UTC(st.y, st.mo, st.day, st.h, st.mi, st.s) + secs * 1000);
+        st.y = t.getUTCFullYear(); st.mo = t.getUTCMonth(); st.day = t.getUTCDate();
+        st.h = t.getUTCHours(); st.mi = t.getUTCMinutes(); st.s = t.getUTCSeconds();
+      } else {
+        return null;
+      }
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // A bare weekday (`monday`): the next occurrence, clock reset to 00:00.
+    if ((m = /^([a-z]+)\b/i.exec(rest)) && REL_WEEKDAY[m[1].toLowerCase()] !== undefined) {
+      shiftDays((REL_WEEKDAY[m[1].toLowerCase()] - weekdayOfToday() + 7) % 7);
+      zeroClock();
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `5 june` (a day number before a month name) — before the offset rule,
+    // which would otherwise read `5 jun(e)` as "5 of an unknown unit".
+    if ((m = /^(\d{1,2}) ([a-z]+)\b/i.exec(rest)) && monthName(m[2].toLowerCase()) !== undefined) {
+      st.day = Number(m[1]);
+      st.mo = monthName(m[2].toLowerCase());
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `+3 days` / `2 weeks` / `1 month` / `-3 months` / `5 days ago` (an offset).
+    if ((m = /^([+-]?\d{1,4}) ?([a-z]+)( ago)?\b/i.exec(rest))) {
+      const n = Number(m[1]);
+      const unit = relUnit(m[2].toLowerCase());
+      const ago = Boolean(m[3]);
+      if (unit === null) return null;
+      const dir = n < 0 || ago ? -Math.abs(n) : n;
+      if (unit.fixed !== undefined) {
+        const secs = dir * unit.fixed;
+        const t = new Date(Date.UTC(st.y, st.mo, st.day, st.h, st.mi, st.s) + secs * 1000);
+        st.y = t.getUTCFullYear(); st.mo = t.getUTCMonth(); st.day = t.getUTCDate();
+        st.h = t.getUTCHours(); st.mi = t.getUTCMinutes(); st.s = t.getUTCSeconds();
+      } else if (unit.cal === 'month') {
+        st.mo += dir;
+      } else {
+        st.y += dir;
+      }
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // `june 5` (a month name before a day number).
+    if ((m = /^([a-z]+) (\d{1,2})\b/i.exec(rest)) && monthName(m[1].toLowerCase()) !== undefined) {
+      st.mo = monthName(m[1].toLowerCase());
+      st.day = Number(m[2]);
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // A bare month name (`june`): the month field, day and clock preserved.
+    if ((m = /^([a-z]+)\b/i.exec(rest)) && monthName(m[1].toLowerCase()) !== undefined) {
+      st.mo = monthName(m[1].toLowerCase());
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    return null; // an unknown word: PHP refuses the whole value too
+  }
+  if (!hit) return null;
+  return Math.floor(Date.UTC(st.y, st.mo, st.day, st.h, st.mi, st.s) / 1000);
+}
+
 // `getDateTime($value)` (ValidatesAttributes.php:366-373) = `Date::parse()`
 // (Carbon) or null; the caller then reads `?->getTimestamp()`. A `null` here
 // means "Carbon rejected it", which `compareDates()` turns into `compare(0, ..)`
@@ -1398,6 +1652,13 @@ function carbonTimestamp(value) {
     if (ymd !== null) return Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) / 1000;
     return null;
   }
+  // The relative/named shapes PHP's parser also reads (`monday`, `noon`,
+  // `3pm`, `+3 days`, `2 weeks ago`, `next week`, `june`, `5 june`). Before
+  // this the token was unreadable, so the timestamp was 0 and `before:monday`
+  // REJECTED a value PHP accepts - a false rejection of valid input. PHP's
+  // grammar is a sequence of field setters; see `phpRelativeTimestamp`.
+  const relTs = phpRelativeTimestamp(raw, Date.now());
+  if (relTs !== null) return relTs;
   const verdict = phpDateVerdict(raw);
   if (verdict === false) {
     // PHP's parser OVERFLOWS an impossible calendar day (`'2026-02-30'` becomes
@@ -1630,15 +1891,22 @@ export class Validator {
       else arr = [];
       const parsed = arr.map(parseRuleToken);
       for (const r of parsed) {
-        // The rules that read the file's *content* type (finfo): the edge has
-        // only the type the browser declared, so the verdict would differ from
-        // PHP's. They fail loud instead of answering differently.
-        if (CONTENT_MIME_RULES.has(r.name)) {
-          throw new Error(
-            'the ' + r.name + ' validation rule is not compiled: it reads the file\'s *content* type (finfo) and the edge ' +
-              'cannot sniff the content like PHP does - use the file rule with max (the size in kilobytes) instead, ' +
-              'or check the extension in the controller'
-          );
+        // `mimes`/`mimetypes`: PHP asks finfo for the content type; the edge
+        // sniffs the image HEADER (kernel/image.mjs). The rule is compiled for
+        // the formats that read can name - an extension/mime outside that set
+        // (pdf, svg, docx, bmp, ...) would make the verdict a guess, so it
+        // fails loud, exactly like the build does (compiler/src/transpiler.mjs
+        // refuses the same list before a worker is written).
+        if (r.name === 'mimes' || r.name === 'mimetypes') {
+          const answerable = r.name === 'mimetypes' ? SNIFFED_MIME_TYPES : SNIFFED_EXTENSIONS;
+          const unknown = r.params.find((param) => !answerable.has(String(param).trim().toLowerCase()));
+          if (unknown !== undefined) {
+            throw new Error(
+              'the ' + r.name + ' validation rule is not compiled for "' + String(unknown).trim() + '": it reads the ' +
+                "file's *content* type through finfo, and the edge sniffs image headers only (" +
+                Array.from(answerable).join(', ') + ') - use the image rule with max, or check the extension in the controller'
+            );
+          }
         }
         if (!KNOWN_RULES.has(r.name)) {
           // Laravel answers an unknown rule with
@@ -2163,11 +2431,14 @@ export class Validator {
       const bail = fieldRules.some((r) => r.name === 'bail');
       const value = this.get(field);
       if (!this._isPresent(field)) continue;
-      // presentOrRuleIsImplicit(): a null value or a string that trims to ''
-      // skips the non-implicit unique/exists (Laravel never queries for a
-      // blank string).
-      if (value === null || value === undefined) continue;
+      // presentOrRuleIsImplicit() (Validator.php:877-885): a STRING that trims
+      // to '' skips the non-implicit unique/exists (Laravel never queries for a
+      // blank string). A NULL is different: isNotNullIfMarkedAsNullable()
+      // (:924-931) skips it only when the field carries a `Nullable` rule -
+      // otherwise unique/exists RUN against the null. The old code skipped every
+      // null, a false accept (audit V2).
       if (typeof value === 'string' && phpTrim(value) === '') continue;
+      if ((value === null || value === undefined) && fieldRules.some((r) => r.name === 'nullable')) continue;
       // only run async checks when the field already has no error (or is not bailing)
       for (const r of fieldRules) {
         if (!ASYNC_RULES.has(r.name)) continue;
@@ -2211,6 +2482,25 @@ export class Validator {
         if (info === null) return looksLikeSvg(value.bytes);
         if (info.width === null || info.height === null) return false;
         return !failsDimensionChecks(rule.params, info.width, info.height);
+      }
+      // ValidatesAttributes::validateMimes() (:1680-1696) compares
+      // `guessExtension()` (finfo -> Symfony's FIRST extension for the MIME)
+      // against the parameters; validateMimetypes() compares the MIME itself.
+      // The edge substitutes the header read for finfo, so only the formats in
+      // SNIFFED_EXTENSION are answerable (the constructor refuses anything
+      // else before a request runs). Both comparisons are exact: PHP's
+      // `in_array` is case-sensitive, so `mimes:PNG` rejects in Laravel too.
+      case 'mimes': {
+        if (!isUploadedFileValue(value) || !value.isValid()) return false;
+        const info = imageInfo(value.bytes);
+        if (info === null) return false;
+        const guessed = SNIFFED_EXTENSION[info.format];
+        return guessed !== undefined && rule.params.includes(guessed);
+      }
+      case 'mimetypes': {
+        if (!isUploadedFileValue(value) || !value.isValid()) return false;
+        const info = imageInfo(value.bytes);
+        return info !== null && rule.params.includes(info.mime);
       }
       case 'integer': {
         // ValidatesAttributes::validateInteger() (:1625-1632): `integer:strict`
@@ -2650,7 +2940,13 @@ export class Validator {
       case 'list':
         return isPhpListValue(value);
       case 'required_array_keys': {
-        if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+        // ValidatesAttributes::validateRequiredArrayKeys() (:498-505):
+        // `if (! is_array($value)) return false;` then
+        // `array_all($parameters, fn ($p) => Arr::exists($value, $p))`. A PHP
+        // LIST is an array too, and its keys are the numeric indices, so
+        // `required_array_keys:0` PASSES for `[1, 2]`; the old guard refused
+        // every JS array (a false negative - audit V1).
+        if (!isPhpArrayValue(value)) return false;
         const keys = rule.params;
         return keys.every((k) => Object.prototype.hasOwnProperty.call(value, k));
       }

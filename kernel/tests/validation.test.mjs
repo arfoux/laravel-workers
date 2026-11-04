@@ -295,6 +295,54 @@ test('pipeline: failed validation redirects back and flashes errors + old input'
   assert.ok(payload._flash.old.includes('_old_input'));
 });
 
+test('pipeline: a multipart file field is absent from _old_input (audit H1)', { skip: noSqlite }, async () => {
+  // Illuminate\Foundation\Exceptions\Handler::invalid() flashes
+  // `Arr::except($request->input(), $this->dontFlash)`. `Request::input()` does
+  // NOT include the files bag, so a nested `foto[]` field is ABSENT - the old
+  // code flashed `all()` and kept `foto` as an array of empty file objects.
+  const boundary = '----lwH1Boundary';
+  const partText = (name, value) =>
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+  const partFile = (name, filename, value) =>
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\n` +
+    `Content-Type: text/plain\r\n\r\n${value}\r\n`;
+  const body =
+    partText('email', 'not-an-email') +
+    partFile('foto[]', 'a.txt', 'a') +
+    partFile('foto[]', 'b.txt', 'bb') +
+    `--${boundary}--\r\n`;
+  const { sqlite, db } = makeDb();
+  const res = await handleHttp(
+    {
+      method: 'POST',
+      url: 'http://localhost/probe/validate',
+      headers: {
+        host: 'localhost',
+        accept: 'text/html',
+        referer: 'http://localhost/form',
+        'user-agent': 'Symfony',
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body: new TextEncoder().encode(body),
+    },
+    {
+      table: normalizeTable(ROUTES),
+      handlers: HANDLERS,
+      config: baseConfig(),
+      env: { DB: db },
+      db,
+      models: MODELS,
+      clock: () => 1792336827,
+      randomString: (n) => 'A'.repeat(n),
+      clientIp: '127.0.0.1',
+    }
+  );
+  assert.equal(res.status, 302);
+  const payload = payloadOf(sqlite.prepare('SELECT * FROM sessions').all().map((r) => ({ ...r })));
+  assert.ok(!('foto' in payload._old_input), 'a file field must not be flashed');
+  assert.equal(payload._old_input.email, 'not-an-email');
+});
+
 test('pipeline: failed validation falls back to the session previous URL when no Referer', { skip: noSqlite }, async () => {
   const { res } = await post(baseConfig(), { referer: '', form: { email: '', _token: 'x' } });
   assert.equal(res.status, 302);
