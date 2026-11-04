@@ -348,9 +348,31 @@ export function length(value) {
   return Array.from(String(value == null ? '' : value)).length;
 }
 
-/** Str::replace() */
-export function replace(search, replace, subject) {
-  return String(subject == null ? '' : subject).split(String(search)).join(String(replace));
+/**
+ * `Str::replace($search, $replace, $subject, $caseSensitive = true)`
+ * (Str.php:1701-1706): `str_replace()` / `str_ireplace()` - BOTH take arrays,
+ * a shorter `$replace` array fills the rest with `''`, and an empty search is
+ * a no-op (probed on PHP 8.3).
+ */
+export function replace(search, replace, subject, caseSensitive = true) {
+  const s = String(subject == null ? '' : subject);
+  const searches = Array.isArray(search) ? search : [search];
+  const replaceIsArray = Array.isArray(replace);
+  const replacements = replaceIsArray ? replace : [replace];
+  let out = s;
+  searches.forEach((raw, index) => {
+    const needle = String(raw == null ? '' : raw);
+    if (needle === '') return;
+    const rawValue = replaceIsArray ? replacements[index] : replacements[0];
+    const value = String(rawValue == null ? '' : rawValue);
+    if (caseSensitive) {
+      out = out.split(needle).join(value);
+    } else {
+      const pattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      out = out.replace(pattern, () => value);
+    }
+  });
+  return out;
 }
 
 /** Str::replaceFirst() */

@@ -26,7 +26,20 @@ export function snapshotOriginRe(appUrlOrigin = '') {
   const origins = appUrlOrigin ? `${DEV_ORIGIN}|${escapeRe(appUrlOrigin)}` : DEV_ORIGIN;
   // `/` consumes the path separator (replacement keeps exactly one slash);
   // the lookahead covers a bare origin followed by a quote/space/tag/end.
-  return new RegExp(`(?:${origins})(?:/|(?=["'\\s<>]|$))`, 'g');
+  // `i`: an origin authored in caps (`HTTP://LOCALHOST`) resolves the same way
+  // in a browser, so it must not survive as a dead link either.
+  return new RegExp(`(?:${origins})(?:/|(?=["'\\s<>]|$))`, 'gi');
+}
+
+/**
+ * The JSON-escaped form: `json_encode()` (Laravel's `@json`/`Js::from`)
+ * writes slashes as `\/`, so a URL inside a JSON blob is
+ * `http:\/\/localhost\/masuk` and the plain pattern never sees it. The
+ * replacement keeps the escape (`\/`) so the blob stays valid JSON.
+ */
+export function snapshotEscapedOriginRe(appUrlOrigin = '') {
+  const origins = (appUrlOrigin ? `${DEV_ORIGIN}|${escapeRe(appUrlOrigin)}` : DEV_ORIGIN).replace(/\//g, '\\\\/');
+  return new RegExp(`(?:${origins})(?:\\\\/|(?=["'\\s<>]|$))`, 'gi');
 }
 
 /**
@@ -37,5 +50,9 @@ export function snapshotOriginRe(appUrlOrigin = '') {
 export function relativizeSnapshotUrls(html, appUrlOrigin = '') {
   const re = snapshotOriginRe(appUrlOrigin);
   const fixed = (html.match(re) || []).length;
-  return { html: html.replace(re, '/'), fixed };
+  let out = html.replace(re, '/');
+  const escaped = snapshotEscapedOriginRe(appUrlOrigin);
+  const escapedFixed = (out.match(escaped) || []).length;
+  out = out.replace(escaped, '\\/');
+  return { html: out, fixed: fixed + escapedFixed };
 }

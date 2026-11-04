@@ -235,9 +235,11 @@ const sortBySpec = (items, keys, spec, descending) => {
   });
   return {
     items: decorated.map((entry) => entry.item),
-    // A LIST stays a list (no keys to carry): only a keyed collection keeps
-    // its keys, exactly like PHP's array.
-    keys: keys ? decorated.map((entry) => source[entry.index]) : null,
+    // PHP's array ALWAYS carries keys, and `sortBy()` keys `$results` by the
+    // ORIGINAL key (Collection.php:1601-1625) - so a list that reorders stops
+    // being a list: `collect([3, 1])->sortBy(fn ($v) => $v)->all()` answers
+    // `[1 => 1, 0 => 3]` (probed on Laravel 13), not `[1, 3]`.
+    keys: decorated.map((entry) => source[entry.index]),
   };
 };
 
@@ -2066,7 +2068,14 @@ export class Collection {
    */
   nth(step, offset = 0) {
     const stride = Number(step);
-    if (!(stride >= 1)) throw new Error('Step value must be at least 1.');
+    if (!(stride >= 1)) {
+      // PHP: `InvalidArgumentException` (Collection::nth(), :961-980) - the
+      // class reaches the app's catch and the runtime's error page.
+      const err = new Error('Step value must be at least 1.');
+      err.name = 'InvalidArgumentException';
+      err.phpClass = 'InvalidArgumentException';
+      throw err;
+    }
     const source = phpSlice(this.items, offset, undefined);
     const out = [];
     source.forEach((item, position) => {
