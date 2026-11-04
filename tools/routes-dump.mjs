@@ -698,6 +698,18 @@ function parse() {
         // against the enclosing controller group (`Route::controller(X)->group`).
         fromRouteFile = true;
         action = actionArg.value;
+      } else if (actionArg.kind === 'staticlookup' && actionArg.offset && actionArg.offset.name === 'class') {
+        // An INVOKABLE controller: `Route::get('/x', XController::class)` — the
+        // class itself is the action and Laravel runs `__invoke()`
+        // (`Router::actionReferencesController()` accepts the class-constant
+        // form). The scan read it as no action at all, so the route fell through
+        // as a "Closure defined outside routes/" and the edge answered 404 for a
+        // page PHP serves.
+        const cls = fqcnOf(actionArg, parsedOf(file));
+        if (cls) {
+          fromRouteFile = true;
+          action = cls + '@__invoke';
+        }
       }
     }
     if (fromRouteFile) {

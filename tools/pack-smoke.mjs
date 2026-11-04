@@ -44,6 +44,42 @@ if (!existsSync(join(appRoot, 'vendor', 'autoload.php'))) {
 const work = mkdtempSync(join(tmpdir(), 'lw-pack-smoke-'));
 const results = [];
 
+// The markers this gate plants belong to the APP, not to the gate: a run that
+// dies before step 3b must not leave `public/hot` behind - a stale marker makes
+// Laravel hand out dev-server asset URLs (404 fonts on the error page), and
+// planting over a running `npm run dev` would also have eaten its marker.
+// Snapshot the app's own bytes first and put them back in `finally`, whatever
+// happened, instead of relying on the one step that removes them on success.
+const hotPath = join(appRoot, 'public', 'hot');
+const fontsDevPath = join(appRoot, 'public', 'fonts-manifest.dev.json');
+const plantedMarkers = new Map([
+  [hotPath, existsSync(hotPath) ? readFileSync(hotPath) : null],
+  [fontsDevPath, existsSync(fontsDevPath) ? readFileSync(fontsDevPath) : null],
+]);
+
+function unplantMarkers() {
+  for (const [path, bytes] of plantedMarkers) {
+    try {
+      if (bytes === null) rmSync(path, { force: true });
+      else writeFileSync(path, bytes);
+    } catch {
+      /* best effort on Windows */
+    }
+  }
+}
+
+// `process.exit()` does NOT unwind the stack (`try { process.exit() } finally
+// {}` never runs the finally), so the report path must clean up explicitly;
+// the `finally` below only covers a throw that escapes the steps.
+function cleanup() {
+  unplantMarkers();
+  try {
+    rmSync(work, { recursive: true, force: true });
+  } catch {
+    /* best effort on Windows */
+  }
+}
+
 function step(label, fn) {
   process.stdout.write(`\n• ${label}\n`);
   try {
@@ -89,10 +125,10 @@ try {
   //     contexts carried `http://[::1]:5173/__laravel_vite_plugin__/fonts/...`)
   //     and copies the marker into the document root.
   step('the Vite dev markers are planted before the build', () => {
-    writeFileSync(join(appRoot, 'public', 'hot'), 'http://localhost:5173\n');
+    writeFileSync(hotPath, 'http://localhost:5173\n');
     const buildFonts = join(appRoot, 'public', 'build', 'fonts-manifest.json');
     if (existsSync(buildFonts)) {
-      copyFileSync(buildFonts, join(appRoot, 'public', 'fonts-manifest.dev.json'));
+      copyFileSync(buildFonts, fontsDevPath);
     }
   });
 
@@ -134,8 +170,6 @@ try {
     walk(join(appRoot, 'dist', 'src'));
     if (baked.length) throw new Error(`a dev-server URL was baked into the compiled output: ${baked.join(', ')}`);
     console.log('  no dev marker in dist/public, no dev URL in dist/src, public/hot restored');
-    rmSync(join(appRoot, 'public', 'hot'), { force: true });
-    rmSync(join(appRoot, 'public', 'fonts-manifest.dev.json'), { force: true });
   });
 
   // 4. the cron gate on the BUILT worker. `POST /__lw/cron` is the schedule's
@@ -206,11 +240,8 @@ console.log('  no secret 404, wrong secret 404, right secret -> ' + opened);
   console.log('\n=== pack-smoke ===');
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.label}`);
   console.log(failed.length ? 'pack-smoke FAILED' : 'pack-smoke PASSED (the published tarball works)');
+  cleanup();
   process.exit(failed.length ? 1 : 0);
 } finally {
-  try {
-    rmSync(work, { recursive: true, force: true });
-  } catch {
-    /* best effort on Windows */
-  }
+  cleanup();
 }

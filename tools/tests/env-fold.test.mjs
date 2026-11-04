@@ -5,10 +5,10 @@
 // environment wins over the file, and Env::getOption() types the raw string.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readEnvFile, evalConfigExpr, coerceEnvValue } from '../static.mjs';
+import { readEnvFile, evalConfigExpr, coerceEnvValue, loadConfig } from '../static.mjs';
 
 function appWith(dotenv) {
   const dir = mkdtempSync(join(tmpdir(), 'lw-env-'));
@@ -141,4 +141,32 @@ test('`?:` / ternary follow PHP truthiness: "0" and [] are falsy', () => {
   assert.equal(ternary({ X: '1' }), 'a');
   assert.equal(ternary({ X: '' }), 'b');
   assert.equal(ternary({}), 'b');
+});
+
+test('a ternary in a REAL config/*.php is evaluated (parser kind `retif`)', () => {
+  // php-parser 3.x tags both `$a ? $b : $c` and the elvis `$a ?: $c` with kind
+  // `retif`; the evaluator used to match only `ternary`, so a real file's
+  // ternaries were dropped without a trace (auditor note #50). This test exists
+  // so the parser's real AST shape is pinned, not a hand-built one.
+  const dir = mkdtempSync(join(tmpdir(), 'lw-cfg-'));
+  mkdirSync(join(dir, 'config'), { recursive: true });
+  writeFileSync(join(dir, '.env'), 'APP_DEBUG=false\nAPP_NAME=Laravel\n');
+  writeFileSync(
+    join(dir, 'config', 'demo.php'),
+    '<?php\nreturn [\n'
+      + "    'full'  => env('APP_DEBUG') ? 'debug' : 'release',\n"
+      + "    'elvis' => env('APP_DEBUG') ?: 'fallback',\n"
+      + "    'name'  => env('APP_NAME') ?: 'Laravel',\n"
+      + "    'miss'  => env('NOT_SET') ? 'set' : 'unset',\n"
+      + '];\n'
+  );
+  const { config, error } = loadConfig(dir, readEnvFile(dir));
+  assert.equal(error, null);
+  // `false` (coerced from the .env) picks the else arm; `Laravel` is truthy so
+  // the elvis answers the test itself; an unset key is null -> falsy.
+  assert.equal(config.demo.full, 'release');
+  assert.equal(config.demo.elvis, 'fallback');
+  assert.equal(config.demo.name, 'Laravel');
+  assert.equal(config.demo.miss, 'unset');
+  rmSync(dir, { recursive: true, force: true });
 });

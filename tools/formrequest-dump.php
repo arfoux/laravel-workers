@@ -35,18 +35,50 @@ $hooks = [
         'custom validator needs a port handler',
 ];
 
+// The body of a reflected method, comments stripped (null when the source is
+// not readable). Used to recognise a hook that is Laravel's own default written
+// out by hand.
+$methodBody = static function (ReflectionMethod $m): ?string {
+    $file = $m->getFileName();
+    if (!$file || !is_readable($file)) {
+        return null;
+    }
+    $src = implode('', array_slice(file($file), $m->getStartLine() - 1, $m->getEndLine() - $m->getStartLine() + 1));
+    $open = strpos($src, '{');
+    $close = strrpos($src, '}');
+    if ($open === false || $close === false || $close < $open) {
+        return null;
+    }
+    $body = substr($src, $open + 1, $close - $open - 1);
+    $body = preg_replace('~/\*.*?\*/~s', '', $body);
+    $body = preg_replace('~//[^
+]*~', '', $body);
+    return preg_replace('/\s+/', '', (string) $body);
+};
+
 // Is the hook the app's own? The framework declares validationData() and the
 // trait's passedValidation() in Illuminate/Foundation/Http/FormRequest itself
 // (a trait method belongs to the class that uses it), so a method declared
 // anywhere else is the app's hook - an app base class counts too: Laravel
 // would run that hook.
-$isHook = static function (ReflectionClass $rc, string $method): bool {
+//
+// One exception: `authorize() { return true; }` is exactly what the parent
+// answers (FormRequest::authorize() returns true), so a declaration that only
+// returns the literal changes nothing. Refusing it would force every app that
+// wrote the boilerplate out by hand to delete it (and the scaffolder's
+// `return false;` variant is a real deny - it stays a hook).
+$isHook = static function (ReflectionClass $rc, string $method) use ($methodBody): bool {
     if (!$rc->hasMethod($method)) {
         return false;
     }
-
-    return $rc->getMethod($method)->getDeclaringClass()->getName()
-        !== Illuminate\Foundation\Http\FormRequest::class;
+    $m = $rc->getMethod($method);
+    if ($m->getDeclaringClass()->getName() === Illuminate\Foundation\Http\FormRequest::class) {
+        return false;
+    }
+    if ($method === 'authorize' && $methodBody($m) === 'returntrue;') {
+        return false;
+    }
+    return true;
 };
 
     foreach ($fqcns as $fqcn) {
@@ -119,6 +151,26 @@ $isHook = static function (ReflectionClass $rc, string $method): bool {
         // so the compiled lifecycle calls the hook and answers the 403 - the
         // build must not decide it.
         $entry['authorize'] = null;
+
+        // `rules()` may read the REQUEST (the common
+        // `Rule::unique(...)->ignore($this->user()->id)`): evaluating it here,
+        // with no request, bakes the build-time value into the rule string
+        // (`ignore(NULL)` then matches the row itself and rejects a valid
+        // update, silently). Refuse instead — the edge cannot evaluate it.
+        $rm = $rc->getMethod('rules');
+        $rulesSrc = implode('', array_slice(
+            file($rc->getFileName()),
+            $rm->getStartLine() - 1,
+            $rm->getEndLine() - $rm->getStartLine() + 1
+        ));
+        if (preg_match('/\$this->|\$request\b|\bauth\(|\buser\(|\brequest\(/', $rulesSrc)) {
+            $entry['error'] =
+                'rules() reads request state — the build would evaluate it with NO request (a ' .
+                'unique()->ignore($this->user()->id) becomes ignore(NULL) and rejects the row itself). ' .
+                'Use static rules, check in the controller, or write a port handler for this route';
+            $out[] = $entry;
+            continue;
+        }
 
         $entry['rules'] = $fr->rules();
         $entry['messages'] = $fr->messages();
@@ -309,23 +361,44 @@ $isHook = static function (ReflectionClass $rc, string $method): bool {
             if ($tableError !== null) {
                 $entry['error'] = 'LW003 the rules use a unique/exists table the compiled rung cannot resolve: ' . $tableError;
             } else {
-                // The rules that read the file's CONTENT type (finfo): the edge
-                // cannot sniff the content like PHP does - the build stops.
-                $mimeRule = null;
-                $walkNames = function ($rules) use (&$walkNames, &$mimeRule) {
+                // `mimes`/`mimetypes` read the file's CONTENT type (finfo). The
+                // edge sniffs the image HEADER instead (kernel/image.mjs), so the
+                // rule compiles for the image formats that read can name and is
+                // refused for anything else - the compiler applies the same list
+                // (compiler/src/transpiler.mjs), so the two can never disagree.
+                $mimeExt = ['png', 'jpg', 'jpeg', 'jpe', 'jif', 'jfif', 'jfi', 'gif', 'webp', 'avif', 'heic', 'heif'];
+                $mimeTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/heic', 'image/heif'];
+                $mimeError = null;
+                $walkNames = function ($rules) use (&$walkNames, &$mimeError, $mimeExt, $mimeTypes) {
                     foreach ((array) $rules as $rule) {
                         if (is_array($rule)) {
                             $walkNames($rule);
-                        } elseif (is_string($rule) && in_array(explode(':', $rule)[0], ['mimes', 'mimetypes'], true)) {
-                            $mimeRule = explode(':', $rule)[0];
-                            return;
+                            if ($mimeError !== null) {
+                                return;
+                            }
+                        } elseif (is_string($rule)) {
+                            $parts = explode(':', $rule, 2);
+                            $name = $parts[0];
+                            if (! in_array($name, ['mimes', 'mimetypes'], true)) {
+                                continue;
+                            }
+                            $allowed = $name === 'mimetypes' ? $mimeTypes : $mimeExt;
+                            $params = isset($parts[1]) ? array_values(array_filter(array_map('trim', explode(',', $parts[1])), 'strlen')) : [];
+                            foreach ($params as $param) {
+                                if (! in_array(strtolower($param), $allowed, true)) {
+                                    $mimeError = 'LW003 the rules use the ' . $name . ' rule with "' . $param
+                                        . '": it reads the file\'s *content* type (finfo) and the edge sniffs image HEADERS only - '
+                                        . implode(', ', $allowed) . ' can be answered';
+
+                                    return;
+                                }
+                            }
                         }
                     }
                 };
                 $walkNames($normalized);
-                if ($mimeRule !== null) {
-                    $entry['error'] = 'LW003 the rules use the ' . $mimeRule
-                        . ' rule: it reads the file\'s *content* type (finfo) and the edge cannot sniff the content like PHP does';
+                if ($mimeError !== null) {
+                    $entry['error'] = $mimeError;
                 } else {
                     $entry['rules'] = $normalized;
                 }
