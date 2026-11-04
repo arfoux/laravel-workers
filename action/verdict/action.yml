@@ -1,0 +1,29 @@
+name: Verdict
+description: Turn the laravel-workers edge build log into a sticky readiness comment and job summary.
+author: laravel-workers
+branding:
+  icon: check-circle
+  color: green
+
+inputs:
+  log:
+    description: Path to the log of `npx laravel-workers build --no-cache`.
+    required: false
+    default: edge-build.log
+  comment:
+    description: '"false" keeps the job summary but skips the pull-request comment.'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Verdict
+      shell: bash
+      env:
+        INPUT_LOG: ${{ inputs.log }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+      run: node "${{ github.action_path }}/main.mjs"

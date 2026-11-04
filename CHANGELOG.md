@@ -1,5 +1,26 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
+## Unreleased
+
+### CI — Verdict, the reporter for `READINESS`, and the official app workflows
+`build --strict` says whether the app compiles; it does not say which routes are
+served and which gaps ship. `action/verdict` turns the build log into one sticky
+PR comment and the job summary (fork-safe, exit 0, gaps never hidden), and
+`docs/CI.md` documents the contract with copy-paste `ci.yml`/`deploy.yml` plus
+the optional `app-check.yml`/`app-deploy.yml` reusable workflows. The traps that
+break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
+`APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
+fail-open.
+
+### Fix — a bare snapshot origin shipped `http://localhost`
+`route('home')` renders against the prerender request host, i.e. `http://localhost`
+with no path. The rewrite that makes snapshot origins relative required a trailing
+slash, so the root URL survived verbatim: on the deployed worker "back to the map"
+opened `http://localhost/` (reproduced on nearFind's `/masuk` and `/` snapshots).
+The pattern now matches a bare origin at a boundary (`/`, quote, space, tag) and
+rewrites it to `/`; paths keep exactly one slash. The pattern moved to
+`tools/snapshot-urls.mjs` and is covered by `tools/tests/snapshot-urls.test.mjs`.
+
 ## v0.4.9 — guard ports, the nearFind audit's eleven gaps, and the live HTTP context in a view's runtime (2026-11-04)
 
 Compiling a real app's profile page (the nearFind audit) surfaced eleven gaps. The
