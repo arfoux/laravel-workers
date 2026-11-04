@@ -1,0 +1,133 @@
+name: app-deploy
+
+# Official ship pipeline for APP repositories. The trigger is the caller's
+# choice — typically `push` to main, never a pull request:
+#
+#   jobs:
+#     ship:
+#       if: github.ref == 'refs/heads/main'
+#       uses: arfoux/laravel-workers/.github/workflows/app-deploy.yml@v1
+#       secrets: inherit        # APP_KEY, CLOUDFLARE_API_TOKEN
+#       with:
+#         app-url: https://my-app.example.workers.dev
+#
+# `deploy --mode 3` is the whole pipeline: build + ensure D1 + schema + deploy.
+# There is deliberately no second D1/schema workflow that could drift from it.
+
+on:
+  workflow_call:
+    inputs:
+      app-url:
+        description: The public URL baked into the build (url(), redirects, signed URLs).
+        type: string
+        required: true
+      mode:
+        description: '3 = build + database + deploy. 2 = build + database, no deploy.'
+        type: string
+        default: '3'
+      php-version:
+        type: string
+        default: '8.3'
+      node-version:
+        type: string
+        default: '22'
+      working-directory:
+        type: string
+        default: '.'
+      build-args:
+        type: string
+        default: '--no-cache'
+      # '' (default) leaves schema handling to the tool's state machine:
+      # empty D1 -> apply, tables present -> skip, schema changed -> refuse.
+      # 'skip' = --skip-schema, 'apply' = --schema=apply (deliberate re-apply).
+      schema:
+        type: string
+        default: ''
+    secrets:
+      APP_KEY:
+        description: One stable `base64:` key. A new key per deploy reads every old cookie/session as garbage.
+        required: true
+      CLOUDFLARE_API_TOKEN:
+        description: Account token with Workers Scripts:Edit, D1:Edit, Account Settings:Read.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  ship:
+    name: Edge ship
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    concurrency:
+      group: app-deploy-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      APP_KEY: ${{ secrets.APP_KEY }}
+      # Env wins over .env for the config dump, so production values live here
+      # and never in a committed file.
+      APP_ENV: production
+      APP_DEBUG: 'false'
+      APP_URL: ${{ inputs.app-url }}
+      CACHE_STORE: ${{ vars.EDGE_CACHE_STORE || 'database' }}
+      LOG_LEVEL: ${{ vars.EDGE_LOG_LEVEL || 'warning' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          extensions: mbstring, xml, ctype, iconv, sqlite3, pdo_sqlite
+          coverage: none
+          tools: composer:v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install Composer dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Install npm dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Build assets
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run build
+
+      - name: Prepare environment
+        working-directory: ${{ inputs.working-directory }}
+        run: cp .env.example .env
+
+      - name: Deploy (build + D1 + schema + deploy)
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          SCHEMA: ${{ inputs.schema }}
+        run: |
+          set -o pipefail
+          case "$SCHEMA" in
+            skip)  SCHEMA_ARG="--skip-schema" ;;
+            apply) SCHEMA_ARG="--schema=apply" ;;
+            '')    SCHEMA_ARG="" ;;
+            *)     echo "schema must be '', 'skip' or 'apply'"; exit 2 ;;
+          esac
+          npx laravel-workers deploy --mode "${{ inputs.mode }}" --yes $SCHEMA_ARG \
+            ${{ inputs.build-args }} 2>&1 | tee deploy.log
+
+      # Same verdict in the job summary; no PR comment on a merge.
+      - name: Verdict (summary)
+        if: always()
+        uses: arfoux/laravel-workers/action/verdict@v1
+        with:
+          log: ${{ inputs.working-directory }}/deploy.log
+          comment: 'false'

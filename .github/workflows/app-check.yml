@@ -1,0 +1,128 @@
+name: app-check
+
+# Official build check for APP repositories. It only compiles and reports.
+# Call it from whatever trigger fits the app — pull_request, push to main,
+# schedule, workflow_dispatch — the check is the same:
+#
+#   jobs:
+#     check:
+#       uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v1
+#       permissions:
+#         contents: read
+#         pull-requests: write   # Verdict comment
+#         issues: write          # issue comments on a PR
+#
+# `build --strict`: green means every route is accounted for — compiled,
+# snapshotted, ported, or a declared gap. Never just "it compiled".
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: PHP version for composer, artisan and the config dump.
+        type: string
+        default: '8.3'
+      node-version:
+        description: Node version for the compiler and the reporter.
+        type: string
+        default: '22'
+      working-directory:
+        description: App root, for monorepos.
+        type: string
+        default: '.'
+      build-args:
+        description: Extra arguments for `laravel-workers build`. Keep --no-cache.
+        type: string
+        default: '--no-cache'
+      lint:
+        description: Run `vendor/bin/pint --test` after the gate.
+        type: boolean
+        default: true
+      tests:
+        description: Run `php artisan test` after the gate.
+        type: boolean
+        default: true
+
+jobs:
+  check:
+    name: Edge check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          extensions: mbstring, xml, ctype, iconv, sqlite3, pdo_sqlite
+          coverage: none
+          tools: composer:v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            composer-${{ runner.os }}-
+
+      - name: Install Composer dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Install npm dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      # The edge build reads the Vite manifest while compiling Blade.
+      - name: Build assets
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run build
+
+      - name: Prepare environment
+        working-directory: ${{ inputs.working-directory }}
+        run: cp .env.example .env
+
+      # A random key per run: a pull request never builds with the production
+      # key. It must stay VALID (base64 + 32 bytes) — compiling error views
+      # boots Laravel and a malformed key fails with
+      # "Unsupported cipher or incorrect key length".
+      - name: Generate random app_key (never production)
+        run: |
+          KEY="$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64"))')"
+          echo "APP_KEY=base64:${KEY}" >> "$GITHUB_ENV"
+
+      # --strict: RUNS ON THE EDGE and RUNS WITH DECLARED GAPS pass; BLOCK fails.
+      # --no-cache is mandatory: a cache hit prints no READINESS block at all.
+      - name: Edge build (--strict)
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -o pipefail
+          npx laravel-workers build ${{ inputs.build-args }} 2>&1 | tee edge-build.log
+
+      # Verdict ships in this repo and is released with these workflows: the
+      # caller pins @v1 and both stay in step.
+      - name: Verdict
+        if: always()
+        uses: arfoux/laravel-workers/action/verdict@v1
+        with:
+          log: ${{ inputs.working-directory }}/edge-build.log
+
+      - name: Check code style
+        if: ${{ inputs.lint }}
+        working-directory: ${{ inputs.working-directory }}
+        run: vendor/bin/pint --test --format agent
+
+      - name: Run tests
+        if: ${{ inputs.tests }}
+        working-directory: ${{ inputs.working-directory }}
+        run: php artisan test --compact

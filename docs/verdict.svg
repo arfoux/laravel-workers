@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none" role="img" aria-label="Verdict">
+  <title>Verdict</title>
+  <path d="M48 6 83 26v40L48 86 13 66V26Z" stroke="currentColor" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M32 49.5 43.5 61 65 38" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
