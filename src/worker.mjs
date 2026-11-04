@@ -13,6 +13,7 @@ import { createQueue } from '../kernel/queue.mjs';
 import { timingSafeEqual } from '../kernel/encrypter.mjs';
 import { dueEvents } from '../kernel/scheduler.mjs';
 import { routeTable, handlers, builtAt } from './routes.generated.mjs';
+import { guardPorts } from './guard-ports.generated.mjs';
 import { events as scheduleEvents } from './schedule.generated.mjs';
 import config from './config.generated.mjs';
 import { models } from './models.generated.mjs';
@@ -234,6 +235,10 @@ export default {
           mail: makeMail(env),
           queue: makeQueue(env),
           models,
+          // registry.json → "guards": a driver the app implements in JS
+          // (Auth::extend) is answered by that port, so `auth:seal` and
+          // `auth()->user()` keep working instead of diverging.
+          guardPorts,
           renderErrorView,
         }
       );

@@ -7,29 +7,11 @@
 // generated modules were not emitted yet.
 //
 // Windows detail: a running `wrangler dev` (or an editor) can hold a handle on
-// `dist/` or a subdirectory, so the rename can fail even though every file is
-// closed. The fallback wipes the contents and keeps the locked directory
-// shells — the build rewrites everything anyway.
-import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-
-/** Remove a directory tree, tolerating a locked entry. */
-function wipe(dir, onLocked) {
-  try {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    return;
-  } catch {
-    /* a handle is held — wipe what can be wiped */
-  }
-  if (!existsSync(dir)) return;
-  for (const entry of readdirSync(dir)) {
-    try {
-      rmSync(join(dir, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    } catch {
-      if (onLocked) onLocked(join(dir, entry));
-    }
-  }
-}
+// a directory inside `dist/`, so the rename can fail even though every file is
+// closed. commitDist never destroys the old build to work around that: a
+// blocked swap fails loud and leaves the finished build under `<dist>.building`
+// (see #734).
+import { existsSync, renameSync, rmSync } from 'node:fs';
 
 /**
  * Move the finished staging directory into place.
@@ -38,15 +20,18 @@ function wipe(dir, onLocked) {
  * one landed: a crash between the two renames leaves the old build recoverable
  * under `<dist>.old-*`, never a mix of both. A FAILED second rename (a handle
  * still open on `dist/`) renames the previous build straight back, so a failed
- * swap never leaves the app without a `dist/` — only the fallback path, where
- * the locked directory had to be wiped in place, can lose the old contents
- * (the build rewrites everything anyway).
+ * swap never leaves the app without a `dist/`.
+ *
+ * When even the rename-aside is blocked, the swap REFUSES: the old `dist/`
+ * cannot be moved and deleting it in place would be the only way to continue —
+ * which is exactly the way to lose a working build (the second rename fails on
+ * the same handle and the app is left with a partial tree). The error names the
+ * staging directory so the finished build is not lost either.
  *
  * @param {string} staging the directory the build wrote
  * @param {string} final the directory the app (and wrangler) reads
- * @param {(path: string) => void} [onLocked] told about each entry it cannot delete
  */
-export function commitDist(staging, final, onLocked) {
+export function commitDist(staging, final) {
   if (!existsSync(staging)) {
     throw new Error('commitDist: the staging directory ' + staging + ' does not exist');
   }
@@ -57,7 +42,17 @@ export function commitDist(staging, final, onLocked) {
       renameSync(final, previous);
       moved = true;
     } catch {
-      wipe(final, onLocked);
+      // The rename-aside itself is blocked (a handle on a directory inside
+      // `dist/`, which Windows refuses even when the files are closed). Wiping
+      // in place can only DELETE the old build — a later rename(staging, final)
+      // still fails while the handle is held, and the app is then left with a
+      // partial tree (the locked entry only). Refuse before the build touches
+      // anything instead: the old `dist/` stays exactly as it was.
+      throw new Error(
+        'commitDist: cannot move ' + final + ' aside (a process still holds a handle on it, ' +
+        'usually `wrangler dev`/an editor) — the build is complete under ' + staging + '; ' +
+        'stop that process and re-run the build. The previous ' + final + ' was left untouched.'
+      );
     }
   }
   try {
@@ -78,6 +73,9 @@ export function commitDist(staging, final, onLocked) {
         throw err;
       }
       err.message += ' (the previous build was restored)';
+    } else {
+      // Nothing was moved aside — the staging tree is complete and valid.
+      err.message += ' (the finished build is at ' + staging + ')';
     }
     throw err;
   }

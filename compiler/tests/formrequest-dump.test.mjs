@@ -92,6 +92,17 @@ const FIXTURE_BODIES = {
         return ['title' => ['required', 'string']];
     }
 `,
+  AuthorizeFalseRequest: `
+    public function authorize(): bool
+    {
+        return false;
+    }
+
+    public function rules(): array
+    {
+        return ['title' => ['required', 'string']];
+    }
+`,
   PrepareRequest: `
     public function authorize(): bool
     {
@@ -396,15 +407,15 @@ function runDump(fqcns) {
 
 const fqcnOf = (cls) => `${NS}LwDumpFixtures\\${cls}`;
 
-test('the dump REPORTS the hooks the compiled lifecycle runs', { skip }, () => {
+test('the dump REPORTS the hooks the build refuses (a literal-true authorize() is not one)', { skip }, () => {
   const entries = runDump(RUN_HOOKS.map((h) => fqcnOf(h.cls)));
 
   for (const h of RUN_HOOKS) {
     const entry = entries.get(fqcnOf(h.cls));
     assert.ok(entry, `the dump answered for ${h.cls}`);
     assert.equal(entry.error, null, `${h.cls}: the hook is compiled, not refused`);
-    // The hook is in the list the runtime runs (Laravel's order lives in
-    // compiler/runtime/rt-from-context.mjs:rt.formRequest).
+    // The hook is in the list the build refuses: a FormRequest hook is PHP the
+    // compiled lifecycle cannot call, so the route needs a port (build.mjs).
     assert.ok(entry.hooks.includes(h.hook), `${h.cls}: the dump reports ${h.hook}() (${h.laravel})`);
     // The rules still reach the compiler: the class validates.
     assert.ok(Object.keys(entry.rules).length > 0, `${h.cls}: the class still carries its rules`);
@@ -429,18 +440,24 @@ test("the dump REFUSES the app's own validator() hook (the edge has one factory)
   assert.deepEqual(entry.rules, [], 'a refused class carries no rules');
 });
 
-test('the dump REPORTS an overridden prepareForValidation() (the hook is compiled now)', { skip }, () => {
-  // The hook is compiled: the build compiles the FormRequest class, so the
-  // compiled handler runs the hook BEFORE the validation (Laravel's order) and
-  // the input the hook prepares is what the rules see.
+test('the dump REPORTS an overridden prepareForValidation() (the build refuses the route)', { skip }, () => {
+  // The class compiler refuses FormRequest subclasses, so a hook is a route the
+  // build cannot compile: the dump reports it and the route needs a port.
   const entries = runDump([fqcnOf('PrepareRequest')]);
   const entry = entries.get(fqcnOf('PrepareRequest'));
   assert.ok(entry, 'the dump answered for PrepareRequest');
-  assert.equal(entry.error, null, 'the hook is compiled, not refused');
-  // The fixture declares authorize() too: the runtime calls it as well
-  // (Laravel's order - ValidatesWhenResolvedTrait::validateResolved), and its
-  // false is the 403.
-  assert.deepEqual(entry.hooks, ['prepareForValidation', 'authorize'], 'the dump reports the hooks');
+  assert.equal(entry.error, null, 'the hook is reported, not refused at dump time');
+  // The fixture's authorize() only returns true - Laravel's own default, so it
+  // is NOT a hook; prepareForValidation() is.
+  assert.deepEqual(entry.hooks, ['prepareForValidation'], 'the dump reports the hooks');
+});
+
+test('the dump treats a literal-true authorize() as the parent default', { skip }, () => {
+  // FormRequest::authorize() answers true; a declaration that only returns the
+  // literal changes nothing (the scaffolder's `return false;` is a real deny).
+  const entries = runDump([fqcnOf('PlainRequest'), fqcnOf('AuthorizeFalseRequest')]);
+  assert.deepEqual(entries.get(fqcnOf('PlainRequest')).hooks, [], 'a boilerplate authorize() is not a hook');
+  assert.deepEqual(entries.get(fqcnOf('AuthorizeFalseRequest')).hooks, ['authorize'], 'a deny stays a hook');
 });
 
 test('the dump normalizes a rule object to Laravel\'s string form', { skip }, () => {

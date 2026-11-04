@@ -19,15 +19,24 @@ const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositio
 const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
 
-// A rule *object* (`Rule::file()->max(2048)`, `File::types([...])`) is a
-// class: the compiled validator evaluates the string rules only, so the rule
-// would be silently ignored and the validation would differ from Laravel's.
-// The build stops and names what it would take to compile it.
+// A rule *object* (`Rule::unique('profiles','username')->ignore($id)`,
+// `File::types([...])`, `Rules\Password::defaults()`) is a class: the compiled
+// validator evaluates the string rules only, so the rule would be silently
+// ignored and the validation would differ from Laravel's. The build stops and
+// names what it would take to compile it.
+//
+// The reason names the ONE remedy that works today, not a todo: the same rule
+// in a FormRequest is already normalized at build time (the dump reads the
+// rules Laravel itself builds - `tools/formrequest-dump.php` - and a rule
+// object becomes its string form, M62a). An inline `$request->validate([...])`
+// cannot be normalized, because its arguments are runtime values the build
+// never sees.
 const RULE_OBJECT_REASON =
-  'a rule object (Rule::file()->max(2048)) is a class — the compiled validator evaluates the string rules only, so ' +
-  'the rule would be silently ignored and the validation would differ from Laravel\'s. To compile it: the kernel ' +
-  'validator must evaluate the rule object, the FormRequest must be compiled and its prepared input merged into ' +
-  'the validated data - ';
+  'is a validation rule object — a class the build cannot evaluate inside an inline ' +
+  "`$request->validate([...])` (its arguments are runtime values), so the compiled validator would ignore the " +
+  "rule and the validation would differ from Laravel's. Move the rules into a FormRequest — the build normalizes " +
+  'a rule object to the string form there (the dump reads the rules Laravel itself builds), which is also what ' +
+  'Laravel hands the validator — or ';
 
 // Is this class a validation rule (the factory or a rule object)?
 function isValidationRuleClass(fqcn) {
@@ -217,6 +226,34 @@ function collectUses(children) {
   return uses;
 }
 
+// The names a body calls on itself (`$this->name(...)`). The helpers the route
+// method reaches are the only ones this handler can compile - the closure of
+// these calls over the class's own methods.
+function collectThisCalls(node, out = new Set()) {
+  if (!node || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const n of node) collectThisCalls(n, out);
+    return out;
+  }
+  if (
+    node.kind === 'call' &&
+    node.what &&
+    node.what.kind === 'propertylookup' &&
+    node.what.what &&
+    node.what.what.kind === 'variable' &&
+    node.what.what.name === 'this'
+  ) {
+    const nm = nodeName(node.what.offset);
+    if (nm) out.add(nm);
+  }
+  for (const key of Object.keys(node)) {
+    if (key === 'loc' || key === 'kind') continue;
+    const v = node[key];
+    if (v && typeof v === 'object') collectThisCalls(v, out);
+  }
+  return out;
+}
+
 function typeName(t) {
   if (!t) return null;
   if (typeof t === 'string') return t;
@@ -272,8 +309,6 @@ function analyzeParams(method, uses = null, nsName = null) {
       defaultOk: true,
       variadic: !!p.variadic,
       byRef: !!p.byref,
-      // `?int $n` accepts null; a bare `int $n` throws PHP 8's TypeError.
-      nullable: !!(p.type && p.type.kind === 'nullabletype'),
     };
     const tn = typeName(p.type);
     if (p.type) {
@@ -431,6 +466,23 @@ export function extractController(source, methodName) {
   const viewDataKinds = {};
   collectViewDataKinds(method.body, paginatorVars, viewDataKinds);
 
+  // The class's OWN methods. Laravel calls a helper through `$this->helper()`,
+  // and the compiled rung has to do the same: a helper that is dropped is a
+  // helper that does not exist at the edge, so the compiled body would call it
+  // and die with a TypeError at request time while the build stays green. The
+  // class compiler already does this for the app's classes
+  // (classes.mjs: every non-static method is compiled); a controller is the
+  // same shape, so the same rule applies here.
+  const classMethods = new Set();
+  const helperMethods = [];
+  for (const m of classNode.body || []) {
+    if (!m || m.kind !== 'method') continue;
+    const nm = nodeName(m.name);
+    if (!nm || nm === '__construct' || nm === '__destruct') continue;
+    classMethods.add(nm);
+    helperMethods.push(m);
+  }
+
   return {
     ok: true,
     fqcn,
@@ -443,6 +495,13 @@ export function extractController(source, methodName) {
     newClasses,
     constants: constantClasses,
     views: [...viewSet].sort(),
+    // `$this->helper()` needs the class's own surface: the helper names, every
+    // helper's node (compiled the same way the route method is), and whether
+    // the class declares a constructor (the edge has no container to resolve
+    // it, so the build refuses rather than answer a degraded object).
+    classMethods,
+    helperMethods,
+    hasConstructor: (classNode.body || []).some((n) => n && n.kind === 'method' && nodeName(n.name) === '__construct'),
     // A paginator in the method (Model::paginate()): the handler then renders
     // the pagination view (the compiled `pagination::tailwind`).
     usesPaginator: bodyHasCall(method.body, 'paginate'),
@@ -762,7 +821,7 @@ export function emitController(source, methodName, meta = {}) {
     // ignored and the validation would differ. The build stops and says what
     // it would take to compile it.
     if (isValidationRuleClass(c.fqcn)) {
-      errors.push(lwErr('LW002', RULE_OBJECT_REASON + PORT_HINT, null, PORT_HINT));
+      errors.push(lwErr('LW002', `${c.fqcn} ${RULE_OBJECT_REASON}${PORT_HINT}`, null, PORT_HINT));
       continue;
     }
     // A JOB class (`App\Jobs\X`): `X::dispatch()` is a queue push, not a
@@ -789,7 +848,10 @@ export function emitController(source, methodName, meta = {}) {
       errors.push(
         lwErr(
           'LW003',
-          `${c.fqcn} is not a registered Eloquent model for this route — only Eloquent models (find/findOrFail/all/where/whereIn/create) and Route::has transpile; ` +
+          `${c.fqcn} is not compiled for this route — the compiled rung implements the Eloquent model queries ` +
+            `(find/findOrFail/all/where/whereIn/create) and Route::has, and this class matches neither. A model the ` +
+            `build did not dump lands here too; everything else (an app service, a helper class) has no edge ` +
+            `surface at all: ` +
             PORT_HINT,
           null,
           PORT_HINT
@@ -835,9 +897,138 @@ export function emitController(source, methodName, meta = {}) {
 
   if (errors.length) return { code: null, errors };
 
+  // `$this->helper()` needs the class's own methods compiled into the instance.
+  // Only the helpers the route method actually REACHES are compiled (directly
+  // or through another helper): compiling every method of the class would
+  // demand the views and the route params of the OTHER routes, which this
+  // handler does not have. The closure is what the entry method can call.
+  const helperByName = new Map();
+  for (const hm of info.helperMethods || []) helperByName.set(nodeName(hm.name), hm);
+  const reachable = new Set();
+  {
+    const queue = [info.methodNode];
+    while (queue.length) {
+      const node = queue.shift();
+      for (const nm of collectThisCalls(node)) {
+        if (nm === methodName || reachable.has(nm)) continue;
+        const hm = helperByName.get(nm);
+        // A method the class does not declare is NOT compiled: `$this->foo()`
+        // then reaches the transpiler's own gate and refuses loudly (PHP would
+        // fail the same call at runtime).
+        if (!hm) continue;
+        reachable.add(nm);
+        queue.push(hm);
+      }
+    }
+  }
+  // A constructor is the container's job (it resolves the parameters): the edge
+  // has no container, and a controller whose helper reads a property the
+  // constructor set would answer a degraded object. Refuse rather than degrade.
+  if (info.hasConstructor && reachable.size) {
+    return {
+      code: null,
+      errors: [
+        lwErr(
+          'LW002',
+          `${info.fqcn} declares a constructor — the edge has no container to resolve it, so every ` +
+            `$this->${[...reachable][0]}() would run on an object the constructor never finished building; move the ` +
+            `constructor's work into the helper (or ` + PORT_HINT + ')',
+          null,
+          PORT_HINT
+        ),
+      ],
+    };
+  }
+  // The views of the helpers the route reaches: the handler has to import them
+  // too (a helper may render its own view), exactly like the route method's.
+  const helperViewSet = new Set();
+  for (const nm of reachable) {
+    scanBody(helperByName.get(nm).body, new Set(), helperViewSet, new Set(), new Set());
+  }
+  const allViews = [...new Set([...(info.views || []), ...helperViewSet])].sort();
+
+  // The helpers: compiled exactly like the route method (same ctx, same gate),
+  // so a helper that leaves the supported subset fails the build instead of
+  // throwing at request time.
+  const helperCode = [];
+  for (const nm of reachable) {
+    const hm = helperByName.get(nm);
+    const hname = nm;
+    // The helper's OWN parameters: the wrapper takes them (after `rt`), they
+    // are the function's arguments (not re-declared), and a class-typed one
+    // that is an Eloquent model is seeded as a model - so a property read or
+    // an instance method on it compiles instead of refusing.
+    const hparams = analyzeParams(hm, info.uses, info.namespace);
+    const hparamTypes = new Map();
+    const hseeds = [];
+    for (const hp of hparams) {
+      if (hp.typeFqcn) hparamTypes.set(vname(hp.name), hp.typeFqcn);
+      const modelSeed =
+        hp.typeFqcn && (modelAliases.has(hp.typeFqcn) || (info.uses && Object.values(info.uses).includes(hp.typeFqcn)));
+      if (modelSeed && modelClassFqcns[hp.typeFqcn]) {
+        hseeds.push({ var: vname(hp.name), kind: 'model', alias: hp.typeFqcn, fqcn: hp.typeFqcn });
+      }
+    }
+    const hEmitted = transpileControllerMethod((hm.body && hm.body.children) || [], {
+      classMethods: reachable,
+      thisVar: '__self',
+      classSurface: true,
+      models: modelAliases,
+      modelNotCompiled,
+      modelRelations,
+      modelClassFqcns,
+      policies: meta.policies && typeof meta.policies === 'object' ? meta.policies : {},
+      classes: (meta.classes && meta.classes.fqcns) || [],
+      jobs: (meta.classes && meta.classes.jobs) || [],
+      classFqcns: (meta.classes && meta.classes.aliases) || {},
+      classBlocked: (meta.classes && meta.classes.blocked) || {},
+      classRegistry: (meta.classes && meta.classes.registry) || {},
+      storage: meta.storage && typeof meta.storage === 'object' ? meta.storage : {},
+      modelVarSeeds: hseeds,
+      views: new Set(allViews),
+      indent: '      ',
+      paramVars: new Set(hparams.map((p) => vname(p.name))),
+      // A helper's `Request $request` (or FormRequest) parameter is a REQUEST
+      // variable: `$request->user()`/`input()` compile only when the gate knows
+      // the receiver is one (the entry method's own requestVars never covered a
+      // helper's parameter, so the helper refused `$request->user()`).
+      requestVars: new Set(
+        hparams
+          .filter(
+            (p) =>
+              p.inject === 'request' ||
+              p.typeFqcn === REQUEST_FQCN ||
+              // A FormRequest IS a Request (Laravel's base extends it), so its
+              // surface (`validated()`, `user()`, `input()`) compiles too.
+              (p.typeFqcn && formRequestMap[p.typeFqcn])
+          )
+          .map((p) => vname(p.name))
+      ),
+      paramTypes: hparamTypes,
+      imports: info.uses,
+      constants: meta.constants && typeof meta.constants === 'object' ? meta.constants : {},
+      formRequests,
+    });
+    if (hEmitted.errors.length) {
+      return {
+        code: null,
+        errors: hEmitted.errors.map((e) => ({
+          ...e,
+          message: `the helper ${hname}() of ${info.fqcn}: ${e.message}`,
+        })),
+      };
+    }
+    helperCode.push({ name: hname, code: hEmitted.code, params: hparams.map((p) => p.name) });
+  }
+
   const paramVars = new Set(params.map((p) => vname(p.name)));
   const requestVars = new Set(params.filter((p) => p.inject === 'request').map((p) => vname(p.name)));
   const emitted = transpileControllerMethod((info.methodNode.body && info.methodNode.body.children) || [], {
+    // The class's own methods: `$this->helper()` compiles to `__self.helper(rt, ...)`.
+    classMethods: reachable,
+    // `$this` in the route method is the controller instance.
+    thisVar: '__self',
+    classSurface: true,
     models: modelAliases,
     modelNotCompiled,
     modelRelations,
@@ -866,7 +1057,7 @@ export function emitController(source, methodName, meta = {}) {
     modelVarSeeds: params
       .filter((p) => p.modelBound)
       .map((p) => ({ var: vname(p.name), kind: 'model', alias: p.modelBound.fqcn, fqcn: p.modelBound.fqcn })),
-    views: new Set(info.views),
+    views: new Set(allViews),
     indent: '    ',
     paramVars,
     requestVars,
@@ -880,7 +1071,9 @@ export function emitController(source, methodName, meta = {}) {
   // The views the handler imports: the ones the method renders + the ones
   // they depend on (a layout: `@extends('layouts.app')`) + the pagination view
   // (when the method uses a paginator: `$paginator->links()` renders it).
-  const viewNames = [...(Array.isArray(meta.views) && meta.views.length ? meta.views : info.views)];
+  // The views the handler imports: the route method's own, every reachable
+  // helper's, plus anything a meta override names.
+  const viewNames = [...new Set([...(Array.isArray(meta.views) && meta.views.length ? meta.views : info.views), ...allViews])];
   if (emitted.usedPaginator && meta.paginationView && !viewNames.includes(meta.paginationView)) {
     viewNames.push(meta.paginationView);
   }
@@ -923,12 +1116,13 @@ export function emitController(source, methodName, meta = {}) {
     const segName = seg < routeParams.length ? routeParams[seg] : p.name;
     seg++;
     const def = p.hasDefault ? JSON.stringify(p.default === undefined ? null : p.default) : 'null';
-    // `?int $n` accepts null; a bare `int $n` throws (PHP 8's TypeError), so
-    // the runtime needs the nullability to answer what Laravel answers.
-    const nullable = !!p.nullable;
+    // A nullable type (`?int $n`) does NOT change argument resolution: Laravel
+    // 13's dispatch has no `allowsNull()` branch and drops null route params, so
+    // a parameter with no segment takes its default or the call has too few
+    // arguments (auditor note #51).
     return (
       `    let ${vname(p.name)} = rt.param(ctx.params, ${JSON.stringify(segName)}, ` +
-      `${JSON.stringify(p.type)}, ${p.hasDefault ? 'true' : 'false'}, ${def}, ${nullable ? 'true' : 'false'});`
+      `${JSON.stringify(p.type)}, ${p.hasDefault ? 'true' : 'false'}, ${def});`
     );
   });
 
@@ -1016,6 +1210,34 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('  try {');
   for (const l of paramLines) lines.push(l);
   for (const l of formRequestLines) lines.push(l);
+  // The controller instance: the route method and its helpers are the class's
+  // own methods, and they call each other through `$this` (`__self`). Every
+  // compiled method has the shape `function (rt, ...args)`, so the instance
+  // binds them and the caller hands the runtime over (the class compiler's
+  // contract — the class registry's methods are `(rt, ...args)`).
+  const helperNames = helperCode.map((h) => h.name);
+  if (helperNames.length) {
+    lines.push('    const __self = {};');
+    // The route method is compiled with the runtime handed over: the entry
+    // point wraps it so `load()`/`related()` and a helper's `(rt, ...)` shape
+    // are the same here and in the class registry.
+    lines.push('    __self[' + JSON.stringify(methodName) + '] = async function (rt, ...args) {');
+    lines.push('      const __args = args || [];');
+    for (const l of (emitted.code || '').split('\n')) {
+      if (l.trim()) lines.push('  ' + l);
+    }
+    lines.push('    };');
+    for (const h of helperCode) {
+      const sig = ['rt', ...h.params.map((p) => vname(p))];
+      lines.push('    __self[' + JSON.stringify(h.name) + '] = async function (' + sig.join(', ') + ') {');
+      for (const l of (h.code || '').split('\n')) {
+        if (l.trim()) lines.push('  ' + l);
+      }
+      lines.push('    };');
+    }
+    lines.push('    const __lwResult = await __self[' + JSON.stringify(methodName) + '](rt);');
+    lines.push('    return rt.toResponse(__lwResult);');
+  } else {
   // The body runs in its own function: the value it returns is converted the
   // way Laravel's Router::toResponse converts it (a string is the body, an
   // array is JSON, null is an empty 200). A method that returns nothing
@@ -1024,6 +1246,7 @@ export function emitController(source, methodName, meta = {}) {
   if (emitted.code) lines.push(emitted.code);
   lines.push('    })();');
   lines.push('    return rt.toResponse(__lwResult);');
+  }
   lines.push('  } catch (e) {');
   lines.push('    if (e && e.lwKernel) throw e;');
   // An expectsJson request gets Laravel's JSON body (Handler::prepareJsonResponse),

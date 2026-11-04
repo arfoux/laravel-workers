@@ -87,3 +87,30 @@ test('dist-swap: a failed swap puts the previous dist back', () => {
     s.done();
   }
 });
+
+test('dist-swap: a locked previous dist is never deleted (#734)', () => {
+  const s = sandbox();
+  const realNow = Date.now;
+  try {
+    write(s.final, 'classes.generated.mjs', 'the last good build');
+    write(s.staging, 'classes.generated.mjs', 'the new build');
+    // Force a genuine move-aside failure: `previous` is the timestamped name
+    // commitDist computes, and renaming a directory ONTO a non-empty directory
+    // fails (EPERM on Windows, ENOTEMPTY elsewhere) - the same shape as the
+    // Windows "a process holds a handle on dist/" case that shipped the bug.
+    Date.now = () => 1700000000000;
+    const previous = s.final + '.old-1700000000000';
+    write(previous, 'leftover.generated.mjs', 'a stale dist.old-* the sweep has not reached yet');
+    // The swap must REFUSE instead of wiping `dist/` in place: deleting it is
+    // the only way to continue, and the landing rename then fails on the same
+    // lock - leaving the app with the locked leftovers and no `worker.mjs`.
+    assert.throws(() => commitDist(s.staging, s.final), /left untouched/);
+    // Neither side is lost: the old build is byte-identical on disk and the
+    // finished build is still there under its staging name.
+    assert.equal(readFileSync(join(s.final, 'src', 'classes.generated.mjs'), 'utf8'), 'the last good build');
+    assert.equal(readFileSync(join(s.staging, 'src', 'classes.generated.mjs'), 'utf8'), 'the new build');
+  } finally {
+    Date.now = realNow;
+    s.done();
+  }
+});

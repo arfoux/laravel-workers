@@ -208,30 +208,99 @@ test('rt.param coerces like PHP 8 and throws where PHP throws', () => {
   assert.equal(rt.param({}, 'n', 'int', true, 5), 5);
 });
 
-test('rt.param accepts null only for a nullable type (PHP 8 TypeError otherwise)', () => {
+test('rt.param treats a null segment as absent (Laravel drops null params)', () => {
   const rt = buildRt({}, { strict: false });
-  // `?int $n` accepts null.
-  assert.equal(rt.param({ n: null }, 'n', 'int', false, null, true), null);
-  // A bare `int $n` throws: PHP's "must be of type int, null given".
-  assert.throws(() => rt.param({ n: null }, 'n', 'int', false, null, false), TypeError);
-  assert.throws(() => rt.param({ n: null }, 'n', 'string', false, null, false), TypeError);
+  // Laravel's dispatch drops null route params first (Route::parametersWithoutNulls()),
+  // so a null value behaves exactly like a missing segment: the default when
+  // there is one, otherwise too few arguments. There is no `allowsNull()` splice
+  // (auditor note #51).
+  assert.equal(rt.param({ n: null }, 'n', 'string', true, 'd'), 'd');
+  assert.throws(() => rt.param({ n: null }, 'n', 'string', false, null), TypeError);
+  assert.throws(() => rt.param({ n: null }, 'n', 'int', false, null), TypeError);
   // A missing segment (not null) still takes the default.
-  assert.equal(rt.param({}, 'n', 'int', true, 7, false), 7);
+  assert.equal(rt.param({}, 'n', 'int', true, 7), 7);
 });
 
-test('rt.param re-splices an absent parameter as PHP does: default, then null, then a loud error', () => {
+test('rt.param re-splices an absent parameter as PHP does: default, then a loud error', () => {
   const rt = buildRt({}, { strict: false });
   // The route carries no value for the parameter: Laravel's parameter binding
-  // (RouteDependencyResolverTrait::resolveMethodDependencies) skips a parameter
-  // that has no default and does not `allowsNull()`, so PHP 8's call has too
-  // few arguments. Probed: `/v/{a}/{b?}` + `req(string $a, string $b)` on
-  // `/v/A` answers 500 (ArgumentCountError) - the compiled rung answered a
-  // 200 with $b = null before this guard (shadow harness, 500-vs-200).
-  assert.throws(() => rt.param({}, 'b', 'string', false, null, false), TypeError);
-  assert.throws(() => rt.param({}, 'b', 'mixed', false, null, false), TypeError);
-  assert.throws(() => rt.param({}, 'b', 'int', false, null, false), TypeError);
-  // A NULLABLE parameter is spliced a null.
-  assert.equal(rt.param({}, 'b', 'string', false, null, true), null);
-  // A default wins over both.
-  assert.equal(rt.param({}, 'b', 'string', true, 'x', false), 'x');
+  // (RouteDependencyResolverTrait::resolveMethodDependencies) splices a default
+  // only when the parameter has one - otherwise the call has too few arguments.
+  // Probed: `/v/{a}/{b?}` + `req(string $a, string $b)` on `/v/A` answers 500
+  // (ArgumentCountError) - the compiled rung answered a 200 with $b = null
+  // before this guard (shadow harness, 500-vs-200).
+  assert.throws(() => rt.param({}, 'b', 'string', false, null), TypeError);
+  assert.throws(() => rt.param({}, 'b', 'mixed', false, null), TypeError);
+  assert.throws(() => rt.param({}, 'b', 'int', false, null), TypeError);
+  // A default wins over the error.
+  assert.equal(rt.param({}, 'b', 'string', true, 'x'), 'x');
+});
+
+test('the `instanceof` refusal names the Blade component gap, not a bare operator', () => {
+  // Laravel's Blade compiler writes this for every `<x-...>` component
+  // (Illuminate\View\Compilers\Concerns\CompilesComponents::compileClassComponentOpening):
+  //   $component = <Class>::resolve(<data> + (isset($attributes) && $attributes
+  //     instanceof Illuminate\View\ComponentAttributeBag ? $attributes->all() : []));
+  // The operator is NOT compiled (the runtime has no general class inheritance),
+  // so the build must refuse - but the message has to name the real cause:
+  // a reader who sees "unsupported operator instanceof" cannot tell that a
+  // component is what failed. COMPILED.md/README list `<x-...>` as port-required.
+  const { errors } = transpile(
+    '<?php $x = isset($attributes) && $attributes instanceof Illuminate\\View\\ComponentAttributeBag;'
+  );
+  assert.equal(errors.length, 1, JSON.stringify(errors));
+  assert.equal(errors[0].code, 'LW002');
+  assert.match(errors[0].message, /`instanceof`/);
+  assert.match(errors[0].message, /<x-\.\.\.>/);
+  assert.match(errors[0].hint, /port/);
+});
+
+test('rt-blade: @method writes the hidden _method input, byte-exact', () => {
+  // Illuminate\View\Compilers\Concerns\CompilesMethods? The Blade compiler turns
+  // `@method('PUT')` into `<?php echo method_field('PUT'); ?>`, and
+  // Illuminate\Foundation\helpers.php:594 concatenates the verb without e().
+  for (const verb of ['PUT', 'PATCH', 'DELETE']) {
+    const php = "<?php echo method_field('" + verb + "'); ?>";
+    const { code, errors } = transpile(php, { view: true });
+    assert.equal(errors.length, 0, JSON.stringify(errors));
+    const inner = code.replace(/^export default function main\(rt\)\s*\{\n?/, '').replace(/\n\}\n?$/, '');
+    const rt = buildRt({}, { strict: false, data: {} });
+    new Function('rt', inner)(rt);
+    assert.equal(rt.__output, '<input type="hidden" name="_method" value="' + verb + '">', verb);
+  }
+});
+
+test('rt-blade: unset($a, $b) clears the variables for isset/??', () => {
+  // The compiled @error block ends with `unset($__errorArgs, $__bag)`
+  // (Illuminate\View\Compilers\Concerns\CompilesErrors.php:52), so a template
+  // with @error reaches the transpiler's unset statement.
+  const php =
+    "<?php $a = 1; $b = 2; unset($a, $b); echo e(isset($a) ? 'yes' : 'no'); echo e($a ?? 'd'); ?>";
+  assert.equal(runViewCtx(php), 'nod');
+});
+
+test('rt-blade: unset() of an array element refuses with LW002', () => {
+  const { code, errors } = transpile('<?php unset($a[0]); ?>', { view: true });
+  assert.equal(code, null);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, 'LW002');
+  assert.match(errors[0].message, /unset\(\) of an array element or a property is not compiled/);
+});
+
+function runViewCtx(php) {
+  const { code, errors } = transpile(php, { view: true });
+  assert.equal(errors.length, 0, JSON.stringify(errors));
+  const inner = code.replace(/^export default function main\(rt\)\s*\{\n?/, '').replace(/\n\}\n?$/, '');
+  const rt = buildRt({}, { strict: false, data: {} });
+  new Function('rt', inner)(rt);
+  return rt.__output;
+}
+
+test('rt-blade: session(key) reads the KEY, not the store object', () => {
+  // Laravel's `session('status')` helper is `session()->get('status')`; a view
+  // that emitted `rt.session("status")` got the store object instead (truthy,
+  // and `{{ }}` printed "Object").
+  const { code, errors } = transpile("<?php echo e(session('status')); ?>", { view: true });
+  assert.equal(errors.length, 0, JSON.stringify(errors));
+  assert.match(code, /rt\.session\(\)\.get\("status"\)/);
 });

@@ -26,6 +26,9 @@
 //                shape?, expectStatus?, expectHeader?, expectBody? }
 //   fixtures[] { sql } — rows inserted before the steps (both sides see them)
 //   user       { id, email, password, password_hash? } — the seeded auth user
+//   env        { NAME: value } — bindings the WORKER sees (a port that reads a
+//              secret, e.g. SEAL_KEY, gets the same value the deployed worker
+//              would; PHP reads its own .env). Never commit a real secret here.
 //
 // A step may carry:
 //   shape        true — compare the JSON STRUCTURE (key sets), not the bytes
@@ -49,7 +52,7 @@
 // uncovered list, it does not fail the run).
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, copyFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, copyFileSync, writeFileSync, mkdirSync, statSync, renameSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -240,20 +243,39 @@ function runOracle(appRoot, scenario, dbPath, seedPath) {
     ...(s.query ? { query: s.query } : {}),
     ...(s.multipart ? { multipart: s.multipart } : {}),
   }));
-  const res = spawnSync(PHP, [ORACLE], {
-    input: JSON.stringify({
-      app_root: appRoot,
-      db_path: dbPath,
-      seed_path: seedPath,
-      freeze_ms: FREEZE_S * 1000,
-      migrate: scenario.migrate !== false,
-      user: scenario.user || {},
-      fixtures: scenario.fixtures || [],
-      steps,
-    }),
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  // The app's own .env is what PHP reads: a dev app leaves APP_ENV=local +
+  // APP_DEBUG=true there, and Laravel Boost then injects its browser-logger
+  // <script> into every web response (dev tooling no production request sees).
+  // The compiled worker boots prod-like, so the oracle runs in production env.
+  // The Vite hot file (public/hot) makes @vite emit dev-server URLs a deployed
+  // worker never carries: hide it for the render.
+  const hotPath = path.join(appRoot, 'public', 'hot');
+  const hotBak = hotPath + '.lw-shadow-bak';
+  let hotMoved = false;
+  if (existsSync(hotPath)) {
+    renameSync(hotPath, hotBak);
+    hotMoved = true;
+  }
+  let res;
+  try {
+    res = spawnSync(PHP, [ORACLE], {
+      input: JSON.stringify({
+        app_root: appRoot,
+        db_path: dbPath,
+        seed_path: seedPath,
+        freeze_ms: FREEZE_S * 1000,
+        migrate: scenario.migrate !== false,
+        user: scenario.user || {},
+        fixtures: scenario.fixtures || [],
+        steps,
+      }),
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, APP_ENV: 'production', APP_DEBUG: 'false' },
+    });
+  } finally {
+    if (hotMoved) renameSync(hotBak, hotPath);
+  }
   if (res.error) {
     throw new Error(`PHP oracle failed to start (${res.error.message}). Install PHP 8.3 or set PHP_BIN.`);
   }
@@ -337,7 +359,38 @@ async function loadDist(appRoot) {
   const { routeTable, handlers } = await import(u('src/routes.generated.mjs'));
   const { default: config } = await import(u('src/config.generated.mjs'));
   const { models } = await import(u('src/models.generated.mjs'));
-  return { handleHttp, renderErrorView, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createMailer, createStorage };
+  // registry.json → "guards": an app driver (Auth::extend) is answered by the
+  // app's guard port, exactly as src/worker.mjs passes it. A build without one
+  // generated no module — an app with no guard port keeps the plain rung.
+  let guardPorts = {};
+  try {
+    ({ guardPorts } = await import(u('src/guard-ports.generated.mjs')));
+  } catch (e) {
+    if (e && e.code !== 'ERR_MODULE_NOT_FOUND') throw e;
+  }
+  return { handleHttp, renderErrorView, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createMailer, createStorage, guardPorts };
+}
+
+// The deploy-time ASSETS binding: `dist/public` served by path. A port that
+// renders a prerendered page (`serveStatic(env, '/masuk/index.html')`) reads it
+// through `env.ASSETS.fetch(...)`, exactly like the deployed worker.
+function assetsBinding(appRoot) {
+  const root = path.join(appRoot, 'dist', 'public');
+  return {
+    async fetch(request) {
+      let rel;
+      try {
+        rel = decodeURIComponent(new URL(request.url).pathname);
+      } catch {
+        return new Response('Not Found', { status: 404 });
+      }
+      const file = path.join(root, rel);
+      if (!file.startsWith(root) || !existsSync(file) || statSync(file).isDirectory()) {
+        return new Response('Not Found', { status: 404 });
+      }
+      return new Response(readFileSync(file), { status: 200 });
+    },
+  };
 }
 
 function decodePayload(b64) {
@@ -372,7 +425,7 @@ function rowToken(row) {
 }
 
 async function runCompiled(loaded, appRoot, scenario, dbPath) {
-  const { handleHttp, renderErrorView, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage, createMailer } =
+  const { handleHttp, renderErrorView, createDatabaseCache, createCookieEncryptor, normalizeTable, routeTable, handlers, config, models, createStorage, createMailer, guardPorts } =
     loaded;
   const { DatabaseSync } = await import('node:sqlite');
   const sqlite = new DatabaseSync(dbPath);
@@ -453,7 +506,7 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         table,
         handlers,
         config,
-        env: { DB: db },
+        env: { DB: db, ASSETS: assetsBinding(appRoot), ...(scenario.env || {}) },
         db,
         cache,
         storage,
@@ -462,9 +515,16 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         mail,
         log: (level, message, context) => {
           logs.push({ level, message, context: context ?? null });
+          // LW_DBG: the kernel's own log (a 500's exception lands here) is
+          // otherwise captured and dropped — the stack is exactly what a
+          // mismatch needs.
+          if (process.env.LW_DBG) {
+            console.error('[dbg] log ' + level + ': ' + message + (context ? ' ' + JSON.stringify(context) : ''));
+          }
           return null;
         },
         models,
+        guardPorts,
         renderErrorView,
         clock: () => FREEZE_S,
         randomString: rand,
@@ -474,7 +534,11 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
       );
     } catch (e) {
       // The worker does not catch an uncaught error either: the platform
-      // answers the 500 (workerd's default response).
+      // answers the 500 (workerd's default response). LW_DBG surfaces it so
+      // the audit can see the real exception instead of a bare 500.
+      if (process.env.LW_DBG) {
+        console.error(`[dbg] ${step.label} threw: ${e && e.stack ? e.stack.split('\n').slice(0, 8).join('\n    ') : e}`);
+      }
       res = {
         status: 500,
         headers: { 'content-type': 'text/plain; charset=utf-8' },
@@ -641,7 +705,46 @@ async function main() {
       // body that is random by construction (a bcrypt digest, a session id).
       // Both sides must match the shape; the verdict is then "shape", not
       // "identical".
+      // CSRF tokens are random per session by construction: two independent
+      // boots can never render the same 40-char token, so a live page with a
+      // form would "mismatch" on the token alone. Normalise the hidden
+      // `_token` field (and the meta tag) on BOTH sides; any other difference
+      // still fails the step. A token-only difference is reported as such and
+      // counted as a match (the token is not app output).
+      const TOKEN_FIELD = /(name="_token"[^>]*?value=")[A-Za-z0-9]{40}(")/g;
+      const TOKEN_META = /(<meta name="csrf-token" content=")[A-Za-z0-9]{40}(")/g;
+      const normToken = (v) =>
+        String(v ?? '')
+          .replace(TOKEN_FIELD, '$1<csrf-token>$2')
+          .replace(TOKEN_META, '$1<csrf-token>$2');
+      const tokenPresent =
+        normToken(phpBody) !== String(phpBody ?? '') || normToken(j.body) !== String(j.body ?? '');
       let body = bodiesEqual(phpBody, j.body);
+      let csrfNormalised = false;
+      let originRelativised = false;
+      // Two deployment artefacts are normalised together, because a prerendered
+      // page served through a PORT carries BOTH:
+      //   - RELATIVE asset URLs (the built file), where a live PHP render builds
+      //     absolute ones from APP_URL;
+      //   - the build-time CSRF token, where PHP mints a live one.
+      // Neither is app output. Compare the fully normalised pair and report
+      // which normalisation was needed; any other byte still fails the step.
+      if (!body.equal && j.source !== 'snapshot') {
+        const phpRel = relativise(phpBody);
+        const normalised = bodiesEqual(normToken(phpRel), normToken(j.body));
+        if (normalised.equal) {
+          body = normalised;
+          originRelativised = phpRel !== String(phpBody ?? '');
+          csrfNormalised = tokenPresent;
+        }
+      }
+      if (!body.equal && tokenPresent) {
+        const normalised = bodiesEqual(normToken(phpBody), normToken(j.body));
+        if (normalised.equal) {
+          body = normalised;
+          csrfNormalised = true;
+        }
+      }
       let shapeOk = false;
       if (!body.equal && step.shape) {
         const re = new RegExp(step.shape);
@@ -718,6 +821,8 @@ async function main() {
       }
       results.push({
         label: step.label,
+        csrfNormalised,
+        originRelativised,
         method: step.method || 'GET',
         uri: step.uri || '/',
         phpStatus: p.status,
@@ -775,6 +880,12 @@ async function main() {
             console.log(`    mail: ${JSON.stringify(m)}`);
           }
           console.log(`    mail (edge): ${JSON.stringify(r.mailsJs[0])}`);
+        }
+        if (r.originRelativised) {
+          console.log(`  ~ ${r.label}: absolute asset URLs relativised (a prerendered page served through a port)`);
+        }
+        if (r.csrfNormalised) {
+          console.log(`  ~ ${r.label}: CSRF token normalised (both sides answer a live 40-char token, everything else byte-identical)`);
         }
         if (r.verdict === 'MISMATCH') {
           for (const h of r.headerDiff) console.log(`    header ${h.name}: php=${h.php} js=${h.js}`);
