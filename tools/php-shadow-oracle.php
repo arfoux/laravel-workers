@@ -571,6 +571,21 @@ foreach (($input['steps'] ?? []) as $step) {
         $store->setId(null);
     }
     app()->forgetInstance('request');
+
+    // A real PHP worker serves ONE request per boot, but this oracle reuses the
+    // container across steps. `Illuminate\Foundation\Vite` carries per-render
+    // state: `fonts()` records every font it preloaded in `$preloadedAssets`
+    // (Illuminate/Foundation/Vite.php:1144) and the dedupe then skips those
+    // `<link rel="preload" as="font">` tags on every LATER render, so the second
+    // step that used a layout with `@fonts` silently lost its font preloads and
+    // the harness reported the compiled worker (which renders each page in a
+    // fresh context) as the mismatch. Drop the singleton so the next step
+    // starts like a fresh request; `ViteFonts` only caches the manifest map,
+    // which is immutable input, so it is left alone.
+    if (class_exists(Illuminate\Foundation\Vite::class)) {
+        $app->forgetInstance(Illuminate\Foundation\Vite::class);
+        Illuminate\Support\Facades\Facade::clearResolvedInstance(Illuminate\Foundation\Vite::class);
+    }
 }
 
 // The temporary files (the uploaded files' content) are not needed anymore.

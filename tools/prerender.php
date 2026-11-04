@@ -42,6 +42,21 @@ $payloads = [];
 foreach ($uris as $uri) {
     $request = Illuminate\Http\Request::create($uri, 'GET');
 
+    // One boot renders every URI (Track E), but a real worker request boots a
+    // FRESH application. The Vite singleton is stateful across renders:
+    // `Vite::fonts()` records each font it preloads in `$preloadedAssets`
+    // (Illuminate/Foundation/Vite.php:1144) and dedupes later calls against it,
+    // so the SECOND page rendered in this process loses every `<link
+    // rel="preload" as="font">` the first one already emitted (measured with
+    // nearFind: `/masuk` kept its 3 font preloads, `/` — rendered after it in
+    // the same batch — kept none, so the edge's snapshot HTML diverged from a
+    // live PHP render). `Vite::__invoke()` also dedupes `<link>` tags through
+    // the same map. Drop the resolved singleton before each request so every
+    // page renders from a clean instance, exactly like a fresh boot.
+    if (class_exists(Illuminate\Foundation\Vite::class)) {
+        $app->forgetInstance(Illuminate\Foundation\Vite::class);
+    }
+
     // The framework's error renderers can echo to stdout directly (they are written
     // for CLI/fatal crashes). Buffer everything so the only thing the build ever sees
     // on stdout is the single JSON payload.

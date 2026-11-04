@@ -18,7 +18,15 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { buildRoutesJson } from './tools/routes-json.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
-import { STUB_MARKER, buildStubSource, findStubPorts } from './tools/ports.mjs';
+import {
+  STUB_MARKER,
+  buildStubSource,
+  findStubPorts,
+  guardPortEntries,
+  evaluateGuardConfig,
+  guardProblemMessage,
+  guardPortsModuleSource,
+} from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import { BLOCK, DECLARED, isBuildEnvDbFailure, renderReadiness, sweepAppSources } from './tools/readiness.mjs';
 import { utcTriggersFor } from './tools/schedule-utc.mjs';
@@ -101,8 +109,20 @@ if (vendorDir) {
 // that boots the app (routes, prerender, config dump) can reach the schema
 // without the operator having a populated database. It is never a cloud resource.
 let dbSandboxPath = null;
+// Every PHP child (prerender, compile-view, dumps) renders what the EDGE will
+// serve, so it must run in the production environment, not the dev one the
+// app's own .env carries on a developer machine (APP_ENV=local, APP_DEBUG=true).
+// Measured on a real app: Laravel Boost's InjectBoost only runs outside
+// production (BoostServiceProvider::shouldRun) and injected a
+// `<script id="browser-logger-active">` into every prerendered snapshot - dev
+// tooling shipped to the edge, and the snapshot byte-diverged from the live
+// production render. A real environment variable always wins over .env in
+// Laravel, so these two override the app's .env; an operator who exported
+// APP_ENV/APP_DEBUG explicitly keeps their value.
 const childEnv = () => ({
   ...process.env,
+  APP_ENV: process.env.APP_ENV || 'production',
+  APP_DEBUG: process.env.APP_DEBUG || 'false',
   LW_APP_ROOT: appDir,
   ...(vendorDir ? { LW_VENDOR_DIR: vendorDir } : {}),
   ...(dbSandboxPath ? { DB_DATABASE: dbSandboxPath } : {}),
@@ -246,6 +266,23 @@ const staticMap = Object.entries(registry.static || {});
 const portEntries = Object.entries(registry.ports || {});
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
+// registry.json → "config": ["needs"] — the app's own config groups the
+// COMPILED code may read. The runtime config dump is a curated set (framework
+// keys + these groups): a group the app forgets to declare stays out of dist,
+// and the post-compile check below refuses a compiled `config('<group>...')`
+// that the dump cannot answer (it would silently read null instead of PHP's
+// value). A group is declared by name because the app's config/ may carry
+// credentials (seal.keys, mail.password) the bundle must not embed.
+const configGroups = Array.isArray(registry.config) ? registry.config.map(String) : [];
+// registry.json → "guards": { "<driver>": "<slug>" }. A guard driver the app
+// registers with Auth::extend() is PHP app code the compiled rung cannot run,
+// so the app supplies the JS that answers it (ports/<slug>.mjs — the same port
+// seam the routes use). The driver is the key, exactly like Auth::extend().
+const { entries: guardEntries, errors: guardEntryErrors } = guardPortEntries(registry);
+if (guardEntryErrors.length) {
+  fail('registry.json "guards" cannot be read:\n  - ' + guardEntryErrors.join('\n  - '));
+}
+const portedDrivers = new Set(guardEntries.map(([guardDriver]) => guardDriver));
 // Ensure the local deploy config before the cache short-circuit: the file is
 // not part of dist/, so a cache hit must still restore a config the operator
 // deleted. The build never provisions the D1 it names.
@@ -265,6 +302,7 @@ const cacheArtifactFiles = [
   'src/worker.mjs',
   'src/routes.generated.mjs',
   'src/config.generated.mjs',
+  'src/guard-ports.generated.mjs',
   'schema.json',
   'public/_routes.json',
 ];
@@ -281,6 +319,7 @@ try {
     php: resolved,
     flags: { strict, scaffold, argv: process.argv.slice(2).filter((a) => a !== '--no-cache') },
     env: process.env,
+    extraDirs: lwPortsDir ? [lwPortsDir] : [],
   });
   buildCacheKey = buildCacheInfo.key;
 } catch (e) {
@@ -914,9 +953,12 @@ if (existsSync(hotFile)) {
   console.log('  (moved public/hot aside for the build)');
 }
 // Clean dist/. On Windows a running `wrangler dev` (or editor) can hold a handle on
-// dist/ or a subdirectory: file deletion still works, so fall back to wiping the
-// contents and keeping the locked directory shells — the build rewrites everything
-// fresh and the watcher picks the changes up.
+// dist/ or a subdirectory: file deletion still works, so wipe the contents and keep
+// the locked directory shells — the build refreshes every artifact and commitDist
+// replaces the tree at the end. A file that can NOT be deleted is fatal here: stage 1
+// reuses the SAME tree, so the file would be served by the dev server while the new
+// build runs, and `dist` would mix two builds. Stop the process and re-run instead
+// (same contract as #734 in commitDist).
 for (const entry of readdirSync(appDir)) {
   if (entry.startsWith('dist.old-')) {
     try {
@@ -926,6 +968,7 @@ for (const entry of readdirSync(appDir)) {
     }
   }
 }
+const undeletable = [];
 try {
   rmSync(dist, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 } catch {
@@ -934,12 +977,19 @@ try {
       try {
         rmSync(join(dist, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       } catch {
-        console.log(
-          `  (warning: ${relative(appDir, join(dist, entry))} is locked by a running process — restart the dev server if build output looks stale)`
-        );
+        undeletable.push(relative(appDir, join(dist, entry)));
       }
     }
   }
+}
+if (undeletable.length > 0) {
+  throw new Error(
+    'the build cannot refresh ' +
+      dist +
+      ': ' +
+      undeletable.join(', ') +
+      ' is locked by a running process (usually `wrangler dev`). Stop it and re-run the build.'
+  );
 }
 mkdirSync(join(dist, 'public'), { recursive: true });
 mkdirSync(join(dist, 'src'), { recursive: true });
@@ -1048,7 +1098,7 @@ for (const route of routes) {
 console.log('• dumping runtime config via `tools/config-dump.mjs`');
 let runtimeConfig;
 try {
-  const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'config-dump.mjs')], {
+  const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'config-dump.mjs'), ...configGroups], {
     cwd: appDir,
     env: childEnv(),
     maxBuffer: 1 << 24,
@@ -1081,6 +1131,13 @@ try {
 {
   const problems = [];
   const problem = (cause, fix) => { problems.push(cause); note({ route: null, area: 'config', severity: BLOCK, cause, fix }); };
+  for (const group of configGroups) {
+    const present = Object.keys(runtimeConfig).some((k) => k === group || k.startsWith(group + '.'));
+    if (!present) problem(
+      `registry.json "config" declares the group '${group}' but config/${group}.php dumped nothing — ` +
+        'the compiled code would read null; fix the group name or the config file'
+    );
+  }
   if (!runtimeConfig['app.key']) problem('app.key is empty', 'build.mjs auto-generates APP_KEY into .env when absent — if you see this, .env has APP_KEY= with no value; set it to the output of `node -e "console.log(\'base64:\',require(\'crypto\').randomBytes(32).toString(\'base64\'))"`');
   const driver = runtimeConfig['session.driver'];
   if (driver !== 'database' && driver !== 'cookie') {
@@ -1095,11 +1152,24 @@ try {
   if ((runtimeConfig['hashing.driver'] || 'bcrypt') !== 'bcrypt') {
     problem(`hashing.driver '${runtimeConfig['hashing.driver']}' is not supported (bcrypt only)`);
   }
-  const thirdPartyGuards = Object.entries(runtimeConfig)
-    .filter(([k, v]) => k.startsWith('auth.guards.') && v && v.driver && v.driver !== 'session')
-    .map(([k, v]) => `${k} (driver '${v.driver}')`);
-  if (thirdPartyGuards.length) {
-    problem(`guard(s) with a non-session driver: ${thirdPartyGuards.join(', ')} (only the session guard is ported)`);
+  const guardVerdict = evaluateGuardConfig(runtimeConfig, portedDrivers);
+  if (guardVerdict.problems.length) problem(guardProblemMessage(guardVerdict.problems));
+  // A driver the app ports: the compiled rung delegates it to app-supplied JS,
+  // so the divergence risk moves to that file — say so, and point at the proof.
+  for (const guard of guardVerdict.notes) {
+    note({
+      route: null,
+      area: 'config',
+      severity: DECLARED,
+      cause: guard.cause,
+      fix: guard.fix,
+    });
+  }
+  // A ported driver no guard uses is a typo, not a protection.
+  for (const guardDriver of guardVerdict.unused) {
+    console.log(
+      `  ! registry.json "guards" ports the driver '${guardDriver}' but no auth.guards entry uses it`
+    );
   }
   if (problems.length) {
     fail('unsupported runtime config (the compiled rung would diverge from PHP):\n  - ' + problems.join('\n  - '));
@@ -1109,6 +1179,14 @@ try {
     '// generated by build.mjs — do not edit\n' + configModuleSource(runtimeConfig)
   );
   console.log(`  -> dist/src/config.generated.mjs (session: ${driver}, guard: ${runtimeConfig['auth.defaults.guard']})`);
+
+  // The guard ports (registry.json → "guards"): static imports, so the bundle
+  // carries exactly the drivers the app declared — and a Worker can have no
+  // dynamic import it cannot see. Empty when the app ports no driver.
+  writeFileSync(join(dist, 'src', 'guard-ports.generated.mjs'), guardPortsModuleSource(guardEntries));
+  if (guardEntries.length) {
+    console.log(`  -> dist/src/guard-ports.generated.mjs (${guardEntries.map(([d]) => d).join(', ')})`);
+  }
 }
 
 // The CORS paths (config/cors.php): HandleCors adds the CORS headers to the
@@ -1396,6 +1474,29 @@ const firstDiff = (a, b) => {
   return a.length === b.length ? -1 : limit;
 };
 
+// The `<x-...>` component tags in a Blade source, in first-seen order and
+// without duplicates. A `<x-slot>` / `</x-slot>` pair is the component SLOT
+// syntax, not a component of its own — only the opening tag of another name
+// counts. The tag name can carry dots (`<x-forms.input>`) and a `::` namespace
+// prefix (`<x-admin::alert>`); both are kept whole so the message names what the
+// author wrote.
+function viewComponentTags(sourcePath) {
+  if (typeof sourcePath !== 'string' || !existsSync(sourcePath)) return [];
+  let source;
+  try {
+    source = readFileSync(sourcePath, 'utf8');
+  } catch {
+    return [];
+  }
+  const seen = new Set();
+  for (const m of source.matchAll(/<\s*x-([A-Za-z0-9][A-Za-z0-9._:-]*)/g)) {
+    const name = m[1];
+    if (name === 'slot') continue;
+    seen.add(name);
+  }
+  return [...seen];
+}
+
 function bladeCompile(dump, label, opts = {}) {
   if (bladeOff || !dump || typeof dump.compiled !== 'string') return 'skipped';
   if (typeof dump.path !== 'string' || !existsSync(dump.path)) return 'skipped';
@@ -1461,7 +1562,7 @@ const transpileToModule = (dumpPath, viewModulePath) => {
     throw new Error(JSON.stringify([{ code: 'LW004', message: 'no .compiled string in JSON', line: 0, column: 0, hint: '' }]));
   }
   const viewDataKinds = data.viewDataKinds && typeof data.viewDataKinds === 'object' ? data.viewDataKinds : null;
-  const { code, errors } = transpile(data.compiled, { viewDataKinds });
+  const { code, errors } = transpile(data.compiled, { viewDataKinds, view: true });
   if (errors && errors.length) throw new Error(JSON.stringify(errors));
   const tmp = viewModulePath + '.tmp-' + process.pid;
   writeFileSync(tmp, code, 'utf8');
@@ -1601,6 +1702,26 @@ for (const [route, view] of viewMap) {
   if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + route);
 
   bladeCompile(dump, route);
+
+  // #721: a `<x-...>` component is documented as a port (README "Blade components
+  // stay a port"). Laravel's own compiled PHP for one carries the framework
+  // plumbing (`$attributes instanceof Illuminate\View\ComponentAttributeBag`),
+  // and the transpiler refuses that operator — the route used to skip with
+  // `LW002 unsupported operator instanceof` pointing at GENERATED bytes, which
+  // sends the reader hunting an `instanceof` they never wrote. Refuse at the
+  // source instead, naming the component.
+  const componentTags = viewComponentTags(dump.path);
+  if (componentTags.length) {
+    const list = componentTags.map((t) => '<x-' + t + '>').join(', ');
+    console.log(`  view ${view}: skipped — Blade component(s) ${list} (components stay a port)`);
+    needsPort.push({
+      route,
+      reason:
+        `the view for ${route} (${view}) uses Blade component(s) ${list} — a component renders through ` +
+        '`$__env->startComponent()`, which the compiled rung does not implement; write a port for this route',
+    });
+    continue;
+  }
 
   // The module NAME goes through viewFileName(): the error views below are
   // written as `errors.<code>.mjs`, and two different view names that sanitize
@@ -1865,12 +1986,16 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
   // Verbs the compiled rung can serve as a controller. OPTIONS is not one of them
   // (the browser/CORS preflight is answered by the platform, not the app).
   for (const route of routes) {
+    // A port owns the URI for every verb (the handler runs at request time), so
+    // there is nothing to transpile here - and no "skipped" line that would read
+    // like a gap the port already covers.
+    if (portEntries.some(([r]) => r === route)) continue;
     for (const verb of extraVerbsFor(route)) {
       const meta = metaForVerb(route, verb);
       const action = meta && meta.action;
       if (!COMPILABLE_METHODS.has(String(verb).toUpperCase())) {
         const alreadyTracked = partials.some((p) => p.route === route && p.methods.includes(verb));
-        const ported = portEntries.some(([r]) => r === route);
+        const ported = false;
         const ignored = ignoreMap.some(([r]) => r === route);
         if (!alreadyTracked && !ported && !ignored) {
           uncompiledExtraNonPost.push({ route, verb });
@@ -2221,6 +2346,10 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       }
       const compiledViews = new Set();
       const failedViews = new Set();
+      // Why a view is skipped, keyed by view name: the route's `controller ...
+      // skipped` line names the view, and this carries the reason next to it
+      // (a component, say) instead of leaving the reader to scroll up.
+      const viewSkipReason = new Map();
       const viewDeps = new Map();
       const scanViewDeps = (view, compiledPhp) => {
         const deps = [];
@@ -2303,6 +2432,27 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
 
             bladeCompile(dump, view);
+
+            // #721: `<x-...>` components stay a port (README). Laravel's own
+            // compiled PHP for one carries `$attributes instanceof
+            // Illuminate\View\ComponentAttributeBag`, and the transpiler refuses
+            // that operator — the route used to skip with `LW002 unsupported
+            // operator instanceof` at GENERATED bytes, sending the reader after
+            // an `instanceof` they never wrote. Refuse at the source instead,
+            // naming the component.
+            const componentTags = viewComponentTags(dump.path);
+            if (componentTags.length) {
+              failedViews.add(view);
+              viewSkipReason.set(
+                view,
+                `it uses the Blade component(s) ${componentTags.map((t) => '<x-' + t + '>').join(', ')} — ` +
+                  'a component renders through `$__env->startComponent()`, which the compiled rung does not implement'
+              );
+              console.log(
+                `  view ${view}: skipped — Blade component(s) ${componentTags.map((t) => '<x-' + t + '>').join(', ')} (components stay a port)`
+              );
+              continue;
+            }
 
             // The kinds of the view data (the pagination view receives a
             // paginator): the transpiler needs them to allow the method calls.
@@ -2698,18 +2848,36 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         // skipped with "not a usable Eloquent model" - a misleading refusal for
         // a construct that compiles.
         const frameworkFqcns = new Set(['Collection', 'Illuminate\\Support\\Collection']);
+        // A class the dump does not know AT ALL is not a model — it is a
+        // service, a facade or a utility (`Sealer::durationToMilliseconds()`,
+        // `Rule::unique()`) and the transpiler has its own, accurate answer for
+        // it ("unknown class ..."). Judging it here reported every such route as
+        // "X is not a usable Eloquent model", which is both wrong and useless:
+        // the route did not fail because of the model dump.
+        //
+        // "not an Eloquent model" is the dump's way of saying "this is not a
+        // model at all" — also not a model problem. Every OTHER error is: the
+        // class looked like a model the dump should have read and it could not
+        // ("class not found", a fatal in the model, ...).
         const badModel = (p.meta.classes || []).find((c) => {
           if (jobFqcns.has(c.fqcn)) return false;
           if (frameworkFqcns.has(c.fqcn)) return false;
           const d = modelDump.get(c.fqcn);
-          return !d || !d.model;
+          if (!d) return false;
+          if (!d.model && d.error === 'not an Eloquent model') return false;
+          return !d.model;
         });
         if (badModel) {
           const d = modelDump.get(badModel.fqcn);
+          // Name what actually happened and what to do: the dump TRIED to read
+          // this class as a model and failed (a model whose boot fatals, a
+          // class that cannot be autoloaded). "is not a usable Eloquent model"
+          // alone reads as "make it a model and it compiles", which is wrong
+          // for a service/facade — the route needs a port either way.
           console.log(
-            `  controller ${p.route}: skipped — ${badModel.fqcn} is not a usable Eloquent model${
-              d && d.error ? ' (' + d.error + ')' : ''
-            }`
+            `  controller ${p.route}: skipped — ${badModel.fqcn} could not be compiled (${
+              d && d.error ? d.error : 'the model dump rejected it'
+            }); write a port for this route`
           );
           continue;
         }
@@ -2735,13 +2903,24 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
                 : `$${param.name} has unsupported type "${param.typeHint}" — only scalar parameters, Illuminate\\Http\\Request and FormRequest are supported here`;
             break;
           }
+          // A hook is the app's own method on a FormRequest subclass, and the
+          // class compiler refuses a FormRequest (its inherited surface is not
+          // compiled) — so the compiled lifecycle cannot call it. Refuse the
+          // route here instead of shipping a handler that answers 500 at request
+          // time. `authorize()` returning true is Laravel's default: drop the
+          // boilerplate and the route compiles.
+          if (Array.isArray(dumped.hooks) && dumped.hooks.length) {
+            formRequestError =
+              `$${param.name} (${param.typeHint}): the FormRequest hook ${dumped.hooks.join(', ')}() is not ` +
+              'compiled (the class compiler refuses FormRequest subclasses) — an authorize() that ' +
+              'returns true is the default and needs no declaration; any other hook needs a port ' +
+              'handler for this route';
+            break;
+          }
           formRequests[param.typeFqcn] = {
             rules: dumped.rules || {},
             messages: dumped.messages || {},
             attributes: dumped.attributes || {},
-            // The hooks Laravel runs on the request (prepareForValidation) -
-            // the compiled handler runs them in Laravel's order.
-            hooks: dumped.hooks || [],
           };
         }
         if (formRequestError) {
@@ -2799,10 +2978,12 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           const mailableOf = Object.keys(mailViewsByClass).find(
             (m) => (mailViewsByClass[m] || []).includes(missingView)
           );
+          const reason = viewSkipReason.get(missingView);
+          const why = reason ? ' — ' + reason : '';
           console.log(
             mailableOf
-              ? `  controller ${p.route}: skipped — the view "${missingView}" of the mailable ${mailableOf} did not compile`
-              : `  controller ${p.route}: skipped — view "${missingView}" did not compile`
+              ? `  controller ${p.route}: skipped — the view "${missingView}" of the mailable ${mailableOf} did not compile${why}`
+              : `  controller ${p.route}: skipped — view "${missingView}" did not compile${why}`
           );
           continue;
         }
@@ -3020,7 +3201,15 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 // Extra verbs that compiled to their own handler no longer need a port; the rest
 // stay as partials so `--strict` still fails on them.
 {
+  // A PORT answers every verb on its route (the worker dispatch keys "METHOD
+  // uri" to the port for each method the route declares), so a route the
+  // registry already answers with a port is resolved for ALL its verbs - not
+  // only the ones a compiled controller happened to pick up.
+  const portRoutes = new Set(portEntries.map(([route]) => route));
   const resolved = new Set(verbControllers.map((v) => v.route + ' ' + v.verb));
+  for (const p of partials) {
+    if (portRoutes.has(p.route)) for (const m of p.methods) resolved.add(p.route + ' ' + m);
+  }
   const remaining = [];
   for (const p of partials) {
     const left = p.methods.filter((m) => !resolved.has(p.route + ' ' + m));
@@ -3160,6 +3349,13 @@ if (missingPortFiles.length)
       missingPortFiles.map(([route, slug]) => `${route} -> ${slug}.mjs`).join(', ') +
       ' — create them, fix the "ports" mapping in registry.json, or point LW_PORTS_DIR at the right directory'
   );
+const missingGuardPorts = guardEntries.filter(([, slug]) => !existsSync(join(portsSrc, slug + '.mjs')));
+if (missingGuardPorts.length)
+  fail(
+    'guard port file(s) missing in ' + portsSrc + ': ' +
+      missingGuardPorts.map(([guardDriver, slug]) => `driver '${guardDriver}' -> ${slug}.mjs`).join(', ') +
+      ' — a guard port exports `default { async user(ctx) { return user | null } }` (see the README section on guard ports)'
+  );
 if (existsSync(portsSrc)) {
   cpSync(portsSrc, join(dist, 'src/ports'), { recursive: true });
 } else {
@@ -3206,13 +3402,27 @@ const baseMethodsFor = (route) => {
   return kept.length ? kept : all;
 };
 const routeTable = routes.map((route) => {
+  // One route, two handlers is a contradiction: `ignore` says "the edge does
+  // not serve this", `ports` says "it does". Picking one silently dropped the
+  // port's verbs (PUT /profil had no handler while the build stayed green), so
+  // the build names the conflict instead of guessing.
+  if (ignoreMap.some(([r]) => r === route) && portEntries.some(([r]) => r === route)) {
+    fail(
+      `registry.json declares ${route} in BOTH "ports" and "ignore" — the port answers the route and the ignore removes it.\n` +
+        '  keep "ports" and let the port answer the verbs it does not implement (405/404), or keep "ignore" and drop the port.'
+    );
+  }
   if (ignoreMap.some(([r]) => r === route)) {
     const entry = ignoreMap.find(([r]) => r === route);
     return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'ignore', reason: entry[1] };
   }
   if (portEntries.some(([r]) => r === route)) {
     const slug = portEntries.find(([r]) => r === route)[1];
-    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'port', controller: slug };
+    // A port is app-authored code, not a compiled method: it answers EVERY verb
+    // the route declares. baseMethodsFor() drops the "extra" verb (POST on a
+    // GET+POST route) because a COMPILED controller gets that verb's own entry,
+    // which does not exist for a port -- the port would then never be reached.
+    return { uri: route, ...metaForRoute(route), methods: [...(methodsFor.get(route) || new Set())], kind: 'port', controller: slug };
   }
   // A view whose compile failed has NO controller (the loop above pushed a
   // needsPort finding and moved on), so it must fall through to `unhandled`
@@ -3330,9 +3540,13 @@ for (const [key, meta] of metaFor) {
   if (meta.name) routeNames[meta.name] = key.slice(key.indexOf(' ') + 1);
 }
 
-const handlersLines = controllerMap.map(({ uri, methods, idx }) => {
+const handlersLines = controllerMap.flatMap(({ uri, methods, idx }) => {
   const m = methods && methods.length ? methods : ['GET'];
-  return `  ${JSON.stringify(m[0] + ' ' + uri)}: handler${idx},`;
+  // ONE KEY PER VERB: a route may declare GET+POST (Breeze's /login) and the
+  // worker dispatch keys on "VERB uri", so an entry registered only under
+  // methods[0] leaves every other verb unrouted (match() returns null -> 404)
+  // even though the port/controller answers it.
+  return m.map((verb) => `  ${JSON.stringify(verb + ' ' + uri)}: handler${idx},`);
 });
 
 writeFileSync(
@@ -3594,16 +3808,49 @@ if (!bladeOff) {
   );
 }
 
+// ---------- every config key the compiled code reads ----------
+// The dump carries the framework keys plus the groups registry.json declares;
+// a compiled `config('x.y')` outside that set would answer null on the edge
+// where PHP answers the value — a silent divergence with no compile error. Read
+// the generated modules (controllers/views/accessors all emit `rt.config(...)`)
+// and refuse any key the dump cannot answer.
+{
+  const referenced = new Set();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.mjs')) {
+        const text = readFileSync(full, 'utf8');
+        for (const m of text.matchAll(/rt\.config\((["'])([^"']+)\1\)/g)) referenced.add(m[2]);
+      }
+    }
+  };
+  walk(join(dist, 'src'));
+  const missing = [...referenced].filter((key) => {
+    const parts = key.split('.');
+    for (let i = 1; i <= parts.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(runtimeConfig, parts.slice(0, i).join('.'))) return false;
+    }
+    return true;
+  }).sort();
+  if (missing.length) {
+    const groups = [...new Set(missing.map((k) => k.split('.')[0]))];
+    fail(
+      'the compiled code reads config key(s) the runtime dump does not carry: ' + missing.join(', ') +
+        ' — the edge would answer null where PHP answers the value\n' +
+        '  fix: add the group to registry.json "config" (e.g. "config": ' +
+        JSON.stringify(groups) + ') if the values are not credentials'
+    );
+  }
+}
+
 // ---------- the swap ----------
 // Every check passed and every artifact landed in the staging directory: move
 // the previous `dist/` aside and put the new one in its place. A build that
 // failed above never reaches this line, so `dist/` still holds the last build
 // that COMPLETED (compiler/src/dist-swap.mjs).
-commitDist(dist, distFinal, (file) =>
-  console.log(
-    `  (warning: ${relative(appDir, file)} is locked by a running process — restart the dev server if build output looks stale)`
-  )
-);
+commitDist(dist, distFinal);
 
 // The cache check ran before APP_KEY generation and vendor provisioning. Those
 // steps mutate inputs (.env, vendor/composer/installed.php), so hash again now:
@@ -3624,6 +3871,7 @@ try {
     php: resolved,
     flags: { strict, scaffold, argv: process.argv.slice(2).filter((a) => a !== '--no-cache') },
     env: process.env,
+    extraDirs: lwPortsDir ? [lwPortsDir] : [],
   });
   mkdirSync(cacheDir, { recursive: true });
   writeFileSync(

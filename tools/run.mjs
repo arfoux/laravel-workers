@@ -31,9 +31,14 @@ function quoteWindowsArg(value) {
   let arg = String(value);
   if (arg === '') return '""';
   // Escape backslash runs that precede a quote, then any trailing backslashes,
-  // so the argument still ends exactly at the closing quote.
+  // so the argument still ends exactly at the closing quote. Both runs are
+  // DOUBLED: the CRT rule is `2n` backslashes before a quote (n literal ones
+  // plus the escaping one), so a run of n must become 2n - inserting a single
+  // extra backslash leaves `trail\` -> 2, `trail\\` -> 3, and an even run at the
+  // end then swallows the closing quote and glues the next argument onto this
+  // one.
   arg = arg.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"');
-  arg = arg.replace(/(?=(\\+?)?)\1$/, '$1$1');
+  arg = arg.replace(/(\\+)$/, (m) => m + m);
   arg = '"' + arg + '"';
   return arg.replace(/([()%!^"<>&|;, *?])/g, '^$1');
 }

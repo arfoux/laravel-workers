@@ -20,6 +20,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { evalConfigExpr, parsePhpFile, configGet, loadConfig, readEnvFile, appMiddlewareState, returnExpr } from './static.mjs';
 import { serializeOrdered } from './order-json.mjs';
+import { deepMerge } from './deep-merge.mjs';
 
 // #401/#417: Git-Bash/MSYS hands over POSIX-style paths ("/c/Users/..."), which
 // `join()`/`existsSync` on Windows read as "<cwd-drive>:\c\Users\..." — the app
@@ -255,20 +256,27 @@ for (const [name, disk] of Object.entries(disksObj)) {
   $put('filesystems.disks.' + name + '.driver', disk && typeof disk === 'object' && 'driver' in disk ? disk.driver : null);
 }
 
+// ---------- the app's own config groups (registry.json "config") ----------
+// The dump above is a curated set: framework keys plus the app values the
+// compiled rung is known to read. An app config group (`config/needs.php` →
+// `needs.*`) is NOT part of it unless declared, and a compiled
+// `config('needs.categories')` would then answer null where PHP answers the
+// value. The build passes the declared groups on argv; the whole group tree is
+// dumped (arrays at their own key too, so `config('needs.categories')` and
+// `config('needs.categories.0.id')` both resolve).
+for (const group of process.argv.slice(2).map((g) => g.trim()).filter(Boolean)) {
+  const tree = configGet(config, group);
+  if (tree === undefined) continue; // the build refuses a declared-but-empty group
+  const putTree = (prefix, value) => {
+    dump[prefix] = value === undefined ? null : value;
+    if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) putTree(prefix + '.' + k, v);
+    }
+  };
+  if (!Object.prototype.hasOwnProperty.call(dump, group)) putTree(group, tree);
+}
+
 // `serializeOrdered` carries each value's PHP key order (`__lwOrder`, #416);
 // a plain JSON.stringify would drop the non-enumerable marker and reorder a
 // `[-1 => 'm', 'n']`-shaped config value.
 process.stdout.write(serializeOrdered(dump) + '\n');
-
-/** Deep merge in the spirit of array_replace_recursive (later wins, both ears). */
-function deepMerge(a, b) {
-  const out = { ...a };
-  for (const [k, v] of Object.entries(b)) {
-    if (v && typeof v === 'object' && !Array.isArray(v) && out[k] && typeof out[k] === 'object' && !Array.isArray(out[k])) {
-      out[k] = deepMerge(out[k], v);
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
-}

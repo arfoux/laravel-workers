@@ -114,9 +114,11 @@ function lw_dump_model_entry(string $fqcn): array
             if (!preg_match('/^get(.+)Attribute$/', $m->getName(), $mm)) {
                 continue;
             }
-            if ($m->getNumberOfParameters() !== 1) {
-                // Eloquent's accessor takes exactly the value; anything else is a
-                // different method that happens to share the name.
+            if ($m->getNumberOfParameters() > 1) {
+                // Eloquent calls the accessor with the stored value; a method
+                // that needs a second argument is not one. A ZERO-argument
+                // accessor IS one (hasGetMutator() only checks the method name,
+                // and PHP accepts the extra argument), so `<= 1` is the shape.
                 continue;
             }
             $accessors[] = [

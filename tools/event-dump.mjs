@@ -9,8 +9,14 @@ import {
   classFile, parsePhpFile, parsePhpSource, nodeName, callMethodName, callArgs, argValue, readEnvFile, appPsr4Dirs,
 } from './static.mjs';
 
-let appDir = process.env.LW_APP_ROOT || '';
-if (!appDir && process.argv.length > 2 && process.argv[2] && existsSync(process.argv[2])) appDir = process.argv[2];
+// The positional app root wins over `LW_APP_ROOT`: the PHP oracle reads
+// `$argv[1]` only, and the build passes the app positionally too — an ambient
+// `LW_APP_ROOT` (the documented way to point the *other* dump tools at an app)
+// must not silently redirect this dump to a different app than the caller named.
+let appDir =
+  process.argv.length > 2 && process.argv[2] && existsSync(process.argv[2])
+    ? process.argv[2]
+    : process.env.LW_APP_ROOT || '';
 if (!appDir) appDir = existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : '';
 if (!appDir) { process.stderr.write('event-dump.mjs: cannot find app root\n'); process.exit(1); }
 

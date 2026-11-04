@@ -1467,9 +1467,22 @@ export function evalConfigExpr(node, ctx, depth = 0) {
       }
       return undefined;
     }
-    case 'ternary': {
+    // php-parser 3.x tags BOTH the full ternary (`$a ? $b : $c`) and the elvis
+    // (`$a ?: $c`) with kind `retif` — `trueExpr` is null for the elvis. The old
+    // code matched only kind `ternary`, which the parser NEVER emits, so every
+    // ternary in a config file fell through to `undefined`: the array branch
+    // then dropped the entry (and a whole top-level ternary dropped the group)
+    // WITHOUT A TRACE, while PHP boots with a value (auditor note #50). The
+    // `ternary` label stays for hand-built ASTs (tools/tests/env-fold.test.mjs).
+    case 'ternary':
+    case 'retif': {
       const c = evalConfigExpr(node.test, ctx, depth + 1);
-      if (phpTruthy(c)) return evalConfigExpr(node.trueExpr, ctx, depth + 1);
+      // A condition the evaluator cannot resolve has no knowable branch - drop
+      // it (an unresolvable expression is the pre-existing convention).
+      if (c === undefined) return undefined;
+      // The elvis answers the test ITSELF when truthy, else the else branch;
+      // the full ternary picks between its two arms.
+      if (phpTruthy(c)) return node.trueExpr ? evalConfigExpr(node.trueExpr, ctx, depth + 1) : c;
       return evalConfigExpr(node.falseExpr, ctx, depth + 1);
     }
     case 'cast': {

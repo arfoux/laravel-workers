@@ -32,6 +32,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { oracleAppRoot } from '../../kernel/tests/oracle-app.mjs';
 
@@ -222,4 +223,26 @@ test('event-dump: the port matches the PHP oracle byte for byte', { skip: skipRe
   } finally {
     removeFixtures();
   }
+});
+
+test('event-dump: the positional app root wins over a stray LW_APP_ROOT', { skip: skipReason }, () => {
+  // The PHP oracle reads `$argv[1]` only. The port used to read `LW_APP_ROOT`
+  // FIRST, so an ambient `LW_APP_ROOT` (the documented way to point the other
+  // dump tools at an app) silently redirected this dump to a different app than
+  // the caller named - and the parity test above then compared two different
+  // apps byte for byte. Point `LW_APP_ROOT` at a directory that is NOT a Laravel
+  // app: with the bug the dump reads the decoy and finds no event, with the fix
+  // the positional argument is honoured.
+  const decoy = os.tmpdir();
+  const out = JSON.parse(
+    execFileSync(process.execPath, [dumpMjs, APP], {
+      encoding: 'utf8',
+      env: { ...process.env, LW_APP_ROOT: decoy },
+    })
+  );
+  const file = String(out.events['App\\Events\\PostPublished']?.file || '').replace(/\\/g, '/');
+  assert.ok(
+    file.startsWith(APP.replace(/\\/g, '/')),
+    `the dump must read the positional app (${APP}), not the LW_APP_ROOT decoy (got ${file || '<no PostPublished event>'})`
+  );
 });

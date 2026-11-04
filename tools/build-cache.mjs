@@ -26,7 +26,10 @@ import { join, relative } from 'node:path';
 // symlinks), so its bytes are an input too. It also contains the snapshots the
 // build writes; those are deterministic for unchanged inputs and the stamp is
 // taken after the build, so they do not make the cache self-invalidating.
-const APP_DIRS = ['app', 'bootstrap', 'config', 'database', 'routes', 'lang', 'resources/views', 'resources/lang', 'public'];
+// `ports/` holds the app's own JS the build imports verbatim (route ports and
+// guard ports): its CONTENT is part of the cache key, so editing a port file
+// rebuilds instead of serving the previous revision's port.
+const APP_DIRS = ['app', 'bootstrap', 'config', 'database', 'routes', 'lang', 'resources/views', 'resources/lang', 'public', 'ports'];
 const APP_FILES = [
   'composer.json',
   'composer.lock',
@@ -182,6 +185,7 @@ export function computeBuildCacheKey({
   php,
   flags,
   env,
+  extraDirs = [],
 }) {
   const h = makeHasher();
 
@@ -208,6 +212,11 @@ export function computeBuildCacheKey({
 
   for (const file of APP_FILES) h.addFile(appDir, file);
   for (const dir of APP_DIRS) h.addTree(appDir, dir);
+  // `LW_PORTS_DIR` may point the ports OUTSIDE the app (the same env the build
+  // reads); those files are still imported verbatim, so hash them too.
+  for (const dir of extraDirs || []) {
+    if (dir && existsSync(dir)) h.addTree(dir, '.');
+  }
   // The app's OWN source tree comes from composer.json's `App\` PSR-4 mapping,
   // not from the literal `app/`: an app that maps `App\` to `src/` (a supported
   // layout) would otherwise never hash its controllers/models, and the fast path
