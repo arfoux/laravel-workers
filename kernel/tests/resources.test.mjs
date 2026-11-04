@@ -296,6 +296,24 @@ test('a paginated collection answers the links and the meta', () => {
   assert.equal(payload.links.next, 'https://example.test/api/users?page=3');
 });
 
+test('a paginated collection honours the app paginationInformation hook (audit R1)', () => {
+  // PaginatedResourceResponse.php:55-62: when the RESOURCE defines
+  // `paginationInformation($request, $paginated, $default)` that method WINS.
+  // A probe shape: the app returns its own `links`/`meta`.
+  class HookedCollection extends ResourceCollection {
+    paginationInformation(request, paginated, fallback) {
+      // `$paginated` is the paginator's toArray(): the app may read it.
+      return { links: fallback.links, meta: { total: paginated.total, custom: 1 } };
+    }
+  }
+  const paginator = new LengthAwarePaginator([user(1, 'Ada')], 5, 2, 2, {
+    path: 'https://example.test/api/users',
+  });
+  const payload = resourcePayload(new HookedCollection(paginator, UserResource));
+  assert.deepEqual(payload.meta, { total: 5, custom: 1 });
+  assert.equal(payload.links.next, 'https://example.test/api/users?page=3');
+});
+
 test('a collection finds the resource class it collects (the class-name convention)', () => {
   // CollectsResources.php:59-88 (`collects()`): a `UserCollection` collects
   // `User` or `UserResource` - a probe: the body is `{"data":[{"id":1}]}`.

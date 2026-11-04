@@ -780,7 +780,7 @@ function attributesOf(model) {
 // The pagination information of a paginated collection
 // (PaginatedResourceResponse::paginationInformation() -
 // PaginatedResourceResponse.php:48-80): the `links` and the `meta`.
-function paginationInformation(paginator) {
+function paginationInformation(resource, request, paginator) {
   const paginated = paginatorToArray(paginator);
   const meta = { ...paginated };
   delete meta.data;
@@ -788,7 +788,7 @@ function paginationInformation(paginator) {
   delete meta.last_page_url;
   delete meta.prev_page_url;
   delete meta.next_page_url;
-  return {
+  const fallback = {
     links: {
       first: paginated.first_page_url ?? null,
       last: paginated.last_page_url ?? null,
@@ -797,6 +797,14 @@ function paginationInformation(paginator) {
     },
     meta,
   };
+  // PaginatedResourceResponse::paginationInformation() (PaginatedResourceResponse.php:48-63):
+  // an app hook `paginationInformation($request, $paginated, $default)` on the
+  // resource WINS over the default links/meta. The edge never called it, so an
+  // app overriding it got the default shape silently (audit R1).
+  if (typeof resource.paginationInformation === 'function') {
+    return resource.paginationInformation(request, paginated, fallback);
+  }
+  return fallback;
 }
 
 // `LengthAwarePaginator::toArray()` (LengthAwarePaginator.php:206-223) - the
@@ -820,7 +828,7 @@ export function resourcePayload(resource, request) {
     // the pagination information is merged with the `with` and the
     // `additional` keys.
     const extra = phpArrayMergeRecursive(
-      paginationInformation(paginator),
+      paginationInformation(resource, request, paginator),
       withKeys || [],
       additional || []
     );

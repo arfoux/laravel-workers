@@ -148,6 +148,9 @@ test('the runtime: the helper surface (back/dataGet/tap/report/env)', async () =
       request: { header: (h) => (h === 'referer' ? '/ref' : null) },
       log: (level, message) => { logged.push({ level, message }); return null; },
       config: { 'app.env': 'local' },
+      // A Worker binding is the edge's environment (a port reads it; compiled
+      // code that needs a deployment secret reads the same value).
+      env: { BOUND_SECRET: 'from-binding' },
     },
   });
   assert.equal(rt.back().headers.location, '/prev');
@@ -159,7 +162,8 @@ test('the runtime: the helper surface (back/dataGet/tap/report/env)', async () =
   rt.report(new Error('boom'));
   assert.deepEqual(logged, [{ level: 'error', message: 'boom' }]);
   assert.equal(rt.env('APP_ENV'), 'local');
-  assert.throws(() => rt.env('NOPE'), /no compiled counterpart/);
+  assert.equal(rt.env('BOUND_SECRET'), 'from-binding', 'a binding wins over the config mapping');
+  assert.throws(() => rt.env('NOPE'), /neither a Worker binding nor a compiled config key/);
 });
 
 // The helper verbs: the request clock (now()/today()) and the log sink.

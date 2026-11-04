@@ -781,6 +781,84 @@ test('fail loud: unknown route middleware is rejected', async () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// A guard PORT through the real pipeline: `handleHttp` → `createAuthManager` →
+// `PortedGuard` (registry.json → "guards"). The driver belongs to the app
+// (`Auth::extend('seal', fn)`), so the app's JS answers `user()` while the
+// `auth:seal` middleware, `Authenticate::shouldUse()`, `auth()->user()` and the
+// unauthenticated answer stay the compiled rung's. No oracle: the port is app
+// code, and what is pinned here is the compiled half + the wiring.
+// ---------------------------------------------------------------------------
+
+test('guard port: auth:<driver> authenticates through the app port, and a guest is refused', { skip: noSqlite }, async () => {
+  const { db } = makeDb();
+  const config = { ...baseConfig(), 'auth.guards.seal': { driver: 'seal' } };
+  const table = normalizeTable([
+    { uri: '/__probe/seal', methods: ['GET', 'HEAD'], middleware: ['web', 'auth:seal'] },
+  ]);
+  let portCalls = 0;
+  const options = {
+    table,
+    handlers: {
+      'GET /__probe/seal': async (ctx) => {
+        const user = await ctx.auth.guard().user();
+        return json({
+          id: user === null ? null : user.id,
+          name: user === null ? null : user.name,
+          defaultGuard: ctx.auth.getDefaultDriver(),
+        });
+      },
+    },
+    config,
+    env: { DB: db },
+    db,
+    models: { LWOracleUser },
+    guardPorts: {
+      seal: {
+        async user(ctx) {
+          portCalls += 1;
+          const header = ctx.request.header('x-seal');
+          return header ? { id: Number(header), name: 'sealed-' + header } : null;
+        },
+      },
+    },
+    clock: () => FREEZE_S,
+    randomString: (n) => 'A'.repeat(n),
+    strRandom: (n) => 'A'.repeat(n),
+    clientIp: CLIENT_IP,
+  };
+
+  const hit = await handleHttp(
+    {
+      method: 'GET',
+      url: BASE + '/__probe/seal',
+      headers: { host: 'localhost', accept: 'application/json', 'x-seal': '7' },
+      body: '',
+    },
+    options
+  );
+  assert.equal(hit.status, 200, 'the port answered a user, so the middleware passed');
+  assert.deepEqual(JSON.parse(hit.body), {
+    id: 7,
+    name: 'sealed-7',
+    defaultGuard: 'seal',
+  });
+  assert.equal(portCalls, 1, 'the port ran once for the request, not once per question');
+
+  const guest = await handleHttp(
+    {
+      method: 'GET',
+      url: BASE + '/__probe/seal',
+      headers: { host: 'localhost', accept: 'application/json' },
+      body: '',
+    },
+    options
+  );
+  assert.equal(guest.status, 401, 'a JSON request answers 401, never a 200 with a null user');
+  assert.equal(JSON.parse(guest.body).message, 'Unauthenticated.');
+  assert.equal(portCalls, 2, 'the second request resolved the user once more');
+});
+
 test('fail loud: throttle middleware without a cache store', async () => {
   await assert.rejects(
     callPipeline((o) => {

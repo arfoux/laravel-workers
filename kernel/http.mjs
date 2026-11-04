@@ -1034,13 +1034,17 @@ export function makeRouteRegistry(table) {
   };
 }
 
-/** UrlGenerator::to() subset — absolute target against the request root. */
+// UrlGenerator::to() subset - absolute target against the request root, with
+// Laravel 13.37's own trimming (measured on PHP 8.3): to('/') and to('')
+// answer the bare root (no trailing slash), and to('masuk/') trims the
+// trailing slash. A redirect Location must carry the same bytes.
 export function absoluteUrl(root, path) {
   const p = String(path ?? '');
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) return p;
   const base = String(root).replace(/\/+$/, '');
-  if (p === '' || p === '/') return base || '/';
-  return base + (p.startsWith('/') ? p : '/' + p);
+  const trimmed = p.replace(/^\/+|\/+$/g, '');
+  if (trimmed === '') return base || '/';
+  return (base || '') + '/' + trimmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1272,15 +1276,15 @@ async function renderException(error, request, ctx) {
         ? absoluteUrl(request.schemeAndHttpHost(), error.redirectTo)
         : previous ?? absoluteUrl(request.schemeAndHttpHost(), '/');
 
-    // RedirectResponse::withInput() — flash everything except Handler::$dontFlash.
-    const input = request.all();
+    // Illuminate\Foundation\Exceptions\Handler::invalid() flashes
+    // `Arr::except($request->input(), $this->dontFlash)` - NOT `all()`: the
+    // uploaded files live in the separate files bag, so `input()` has no file
+    // keys and `_old_input` never carries one (a `foto[]` field is absent, not
+    // `[{}, {}]`). The old code flashed `all()` and deleted only the top-level
+    // file keys, so a NESTED file field survived as an array of empty objects
+    // (audit H1).
+    const input = request.input();
     for (const key of DEFAULT_DONT_FLASH) delete input[key];
-    // RedirectResponse::removeFilesFromInput(): the uploaded files are not
-    // flashed (they cannot be put back into a form).
-    for (const key of Object.keys(input)) {
-      const value = input[key];
-      if (value && typeof value === 'object' && value.__uploadedFile) delete input[key];
-    }
     ctx.store.flashInput(input);
 
     // RedirectResponse::withErrors($errors, $request->input('_error_bag', $bag)).
@@ -1718,6 +1722,12 @@ export async function handleHttp(raw, options = {}) {
     timeboxDuration: config['auth.timebox_duration'] ?? null,
     rehashOnLogin: config['auth.rehash_on_login'] ?? null,
     hashKey: config['auth.hash_key'] ?? null,
+    // registry.json → "guards": a driver the app implements in JS is answered
+    // through PortedGuard (kernel/auth.mjs) — the `auth:seal` middleware and
+    // `auth()->user()` in a compiled controller/view then work unchanged.
+    guardPorts: options.guardPorts ?? null,
+    env,
+    models,
   });
   request.setUserResolver(() => auth.guard().user());
   authRef = auth;
@@ -1783,10 +1793,20 @@ export async function handleHttp(raw, options = {}) {
           user: () => auth.guard().user(),
           route: matched.route,
           routeParams: matched.params,
+          // Named-route resolution (UrlGenerator::route()): the same registry
+          // the kernel's own `guest` middleware and `redirect()->route()` use.
+          // A port that must build a URL (`route('login')`, `intended()`) reads
+          // it here; without it those helpers silently fall back to `/`.
+          routeRegistry,
           // The request clock — the compiled model timestamps follow it.
           clock: nowS,
           // The service adapters (storage/mail/queue) the worker hands down.
           storage: options.storage || null,
+          // Laravel's CookieJar (AddQueuedCookiesToResponse): the ONLY way a
+          // handler sets a cookie that survives this kernel - the response
+          // pipeline emits `finalCookies` from the jar, so a raw `set-cookie`
+          // header on the returned response is dropped.
+          cookieJar: jar,
           log: options.log || null,
           mail: options.mail || null,
           queue: options.queue || null,
