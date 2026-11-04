@@ -541,7 +541,7 @@ test('nth takes every nth item from the offset', () => {
   assert.deepEqual(collect([1, 2, 3, 4, 5]).nth(2).all(), [1, 3, 5]);
   assert.deepEqual(collect([1, 2, 3, 4, 5]).nth(2, 1).all(), [2, 4]);
   assert.deepEqual(collect([1, 2, 3]).nth(2, 3).all(), []);
-  assert.throws(() => collect([1]).nth(0), /at least 1/);
+  assert.throws(() => collect([1]).nth(0), { name: 'InvalidArgumentException', message: /at least 1/ });
 });
 
 test('duplicates keep the later keys', () => {
@@ -616,12 +616,15 @@ test('sort/sortDesc use PHP order and keep the keys', () => {
 // collection stays keyed. Probed with the vendored Laravel 13:
 //   collect(['a' => 3, 'b' => 1, 'c' => 2])->sortBy(fn ($v) => $v)->all()
 //     => {"b":1,"c":2,"a":3}
-// A LIST stays a list (there are no keys to carry).
+// A LIST keeps its keys too - PHP arrays always carry keys, so a reordered
+// list stops being a list: collect([3, 1])->sortBy(fn ($v) => $v)->all()
+//   => [1 => 1, 0 => 3]  (probed on Laravel 13; NOT [1, 3]).
 test('collections: sortBy/sortByDesc keep the original keys', () => {
   const keyed = new Collection({ a: 3, b: 1, c: 2 });
   assert.deepEqual(keyed.sortBy((v) => v).all(), { b: 1, c: 2, a: 3 });
   assert.deepEqual(keyed.sortByDesc((v) => v).all(), { a: 3, c: 2, b: 1 });
-  assert.deepEqual(new Collection([3, 1]).sortBy((v) => v).all(), [1, 3]);
+  assert.deepEqual(new Collection([3, 1]).sortBy((v) => v).all(), { 1: 1, 0: 3 });
+  assert.deepEqual(new Collection([3, 1]).sortBy((v) => v).values().all(), [1, 3]);
 });
 
 // ---------------------------------------------------------------------------

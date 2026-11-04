@@ -40,3 +40,16 @@ test('a bare origin only matches at a boundary, not a prefix', () => {
   const html = '<p>http://localhostfoo</p>';
   assert.equal(relativizeSnapshotUrls(html).html, html);
 });
+
+test('JSON-escaped slashes (json_encode wants \\/) are relativized too', () => {
+  // json_encode()/Js::from() write `http:\/\/localhost\/masuk`; the plain
+  // pattern never saw it, so the blob shipped a localhost URL.
+  const html = '{"u":"http:\\/\\/localhost\\/masuk"}';
+  assert.equal(relativizeSnapshotUrls(html).html, '{"u":"\\/masuk"}');
+  assert.equal(relativizeSnapshotUrls('"http:\\/\\/localhost"').html, '"\\/"');
+});
+
+test('an origin authored in caps still resolves to the same host', () => {
+  assert.equal(relativizeSnapshotUrls('HTTP://LOCALHOST/x').html, '/x');
+  assert.equal(relativizeSnapshotUrls('<a href="HTTP://localhost">x</a>').html, '<a href="/">x</a>');
+});

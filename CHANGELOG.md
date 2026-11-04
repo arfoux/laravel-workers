@@ -14,6 +14,24 @@ break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
 `APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
 fail-open.
 
+### Fix — four divergences the second differential sweep found
+- `Collection::sortBy()`/`sortByDesc()` on a LIST dropped PHP's keys: PHP
+  `collect([3,1])->sortBy(fn ($v) => $v)->all()` is `[1 => 1, 0 => 3]` (a keyed
+  array — PHP arrays always carry keys), the edge answered `[1, 3]`. The old
+  test pinned the wrong shape; both were corrected against the vendor probe.
+- `Collection::nth()` below step 1 threw a bare `Error`; PHP throws
+  `InvalidArgumentException` (the class reaches `catch` and the error page).
+- `Str::replace()` was a plain split/join: `str_replace()` semantics (array
+  search/replace, a short replace list filling `''`, the `$caseSensitive`
+  argument) silently produced a no-op — `replace(['a','b'],['x','y'],'ab')`
+  answered `ab` where PHP answers `xy`.
+- Snapshot rewriting missed JSON-escaped URLs (`json_encode` writes `\/`, so
+  `{"u":"http:\/\/localhost\/masuk"}` shipped a localhost link) and origins
+  authored in caps; both are relativized now (`\/masuk`, `/masuk`).
+
+Probes: 99 collection expressions + 51 validator cases + 20 JSON-flag sets
+against PHP 8.3 and vendor Laravel 13.37 (scripts under the audit workspace).
+
 ### Fix — a stale `bootstrap/cache/packages.php` broke the composer-free boot
 A developer's `composer install` writes `bootstrap/cache/packages.php` naming
 require-dev providers (measured: `Laravel\Boost\BoostServiceProvider`). Building

@@ -33,7 +33,15 @@ test('Str: the values match PHP 8.3 / Laravel 13.37', () => {
   assert.equal(str.before('Hello World', ' World'), 'Hello');
   assert.equal(str.length('Hello World'), 11);
   // replace / replaceFirst / replaceLast
-  assert.equal(str.replace('Hello World', 'World', 'Edge'), 'Edge');
+  assert.equal(str.replace('World', 'Edge', 'Hello World'), 'Hello Edge');
+  // str_replace() semantics (probed on PHP 8.3): arrays, a short replace list
+  // fills the rest with '', a non-array replace pairs with every search, and
+  // the 4th argument is case-insensitive mode.
+  assert.equal(str.replace(['a', 'b'], ['x', 'y'], 'ab'), 'xy');
+  assert.equal(str.replace(['a', 'b'], ['x'], 'ab'), 'x');
+  assert.equal(str.replace(['a', 'b'], 'x', 'ab'), 'xx');
+  assert.equal(str.replace('Ab', 'x', 'aB ab', false), 'x x');
+  assert.equal(str.replace('', 'x', 'ab'), 'ab');
   assert.equal(str.replaceFirst('Hello World', 'World', 'Edge'), 'Edge');
   assert.equal(str.replaceLast('Hello World', 'l', 'L'), 'L');
   // squish / ucfirst / ucwords / ascii
