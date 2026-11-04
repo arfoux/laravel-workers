@@ -19,8 +19,9 @@
 // does not own (the health endpoint, the vendor file server). Those are named in
 // the allowlist below WITH their framework source; anything else the oracle
 // knows and the scan does not is a failure. The allowlist is not a place to
-// hide a gap: `docs/AUDIT-REAL-APPS.md` states the same two, and the build's
-// own output prints the note.
+// hide a gap: the reasoning is in this file and in `CHANGELOG.md` (0.4.7, "#628 —
+// the scan is now proven TOTAL"), and the build's own output prints the note.
+// (`docs/AUDIT-REAL-APPS.md` was cited here until #749; it never stated the two.)
 //
 // Needs a real Laravel app (PHP 8.3 + vendor/): LW_LARAVEL_APP, or the
 // conventional `parity-app` / `e2e-app` directories at the repo root. Without

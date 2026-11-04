@@ -33,7 +33,7 @@ What this is **not:** a Laravel runtime, or PHP-in-Worker. Your Laravel app is t
 
 <!-- readme-counts:start -->
 ```
-constructs   45 compile · 64 fail loud · 7 documented   (116 audited)
+constructs   47 compile · 64 fail loud · 7 documented   (118 audited)
 facades      47/47 classified (100%)
 blade corpus 55/55 byte-identical vs PHP 8.3
 docs         105/105 pages with a verdict
@@ -471,7 +471,7 @@ The honest consequence: a page that reads rows the build has never seen prerende
 | **Router** | `{param}` / `{param?}` / `{param*}`, domain rules, `X-HTTP-Method-Override`, automatic `OPTIONS` | `kernel/tests/router.test.mjs` |
 | **Controllers** | `GET`/`POST`/`PUT`/`PATCH`/`DELETE` with resolvable class methods; `Request`/FormRequest injection; `session()`/`old()`/`csrf_token()`/`csrf_field()`; `auth()`/`Auth::*`; `$request->validate()`/`validateWithBag()`; `response()`/`response()->json()`; `Cache`/`Hash` facades; class constants; `redirect()->intended()` + session rotation; Eloquent writes (`create`/`fill`/`save`/`delete`/`$model->attr = …`) | PHP 8.3 oracle (M15) |
 | **Eloquent** | `find`/`findOrFail`/`all`/`where*`/`orderBy*`/`limit` + `first`/`get`/`count`/`pluck`/`value`; `hasMany`/`hasOne`/`belongsTo`; `create`/`updateOrCreate`/`firstOrCreate`; `fillable` + mutators + casts (`json`, `decimal:N`, `hashed`); `refresh`/`increment`; soft deletes; relations read as properties | `kernel/tests/db.test.mjs` + SQLite integration |
-| **Auth** | `SessionGuard` (attempt/login/logout/remember/recaller), `EloquentUserProvider`, `BcryptHasher` (`$2y$` parity), remember-me rotation, `auth`/`guest` middleware, `auth.basic` | 13 guard runs byte-parity vs PHP 8.3 oracle (M14) |
+| **Auth** | `SessionGuard` (attempt/login/logout/remember/recaller), `EloquentUserProvider`, `BcryptHasher` (`$2y$` parity), remember-me rotation, `auth`/`guest` middleware, `auth.basic`; a **guard driver the app registers itself** (`Auth::extend`) is answered by the app's own JS (`registry.json` `guards` → `ports/<slug>.mjs`) while the middleware / `auth()->user()` / 401 answer around it stay compiled | 13 guard runs byte-parity vs PHP 8.3 oracle (M14) |
 | **Session + CSRF** | Flash data + rotation, `migrate`/`regenerate`/`invalidate`, token plumbing, `PreventRequestForgery` | PHP 8.3 oracle (M11/M13) |
 | **Rate limiting** | `ThrottleRequests` over the D1-backed `database` cache store | PHP 8.3 oracle (M12/M18) |
 | **Validation** | the full rule surface (`KNOWN_RULES` + the conditional/presence sets — measured, not typed) incl. `unique`/`exists` via D1, pipe-safe regex, `nullable`/`sometimes`/`bail`, wildcard display names, Laravel 13 messages | `kernel/tests/validator.test.mjs` + `validation-messages.test.mjs` |
@@ -497,9 +497,67 @@ The honest consequence: a page that reads rows the build has never seen prerende
 | named `Storage::disk('x')` | needs its own bucket; R2 asks for a credit card | bind R2 explicitly, or use the default disk |
 | `Cache::tags()` | the D1 `database` store has no tags | drop tags |
 | CORS config | the `Access-Control-*` headers would be missing | declare the routes in `registry.json` `ignore` |
+| the compiled code reads an app config group (`config('needs.categories')`) | the runtime config dump carries the framework keys plus the groups the app declares; without a declaration the edge would answer `null` where PHP answers the value, and the build refuses the `config('<key>')` it cannot answer | `registry.json` → `{"config": ["needs"]}` — the group tree lands in `dist/src/config.generated.mjs`; declare only public data (an app's `config/` may hold credentials — a guard port reads those as bindings) |
+| a non-session `auth.guards.*` driver the app registers itself (`Auth::extend`) | the registering closure is PHP the rung cannot run, and answering "no user" for every request would let a guarded route through | `registry.json` → `{"guards": {"<driver>": "<slug>"}}` + `ports/<slug>.mjs` exporting `default { async user(ctx) { ... } }`, where `ctx` is `{ request, guard, driver, config, app: { config, db, models, env, session, cookieJar } }` — the app's bindings are `ctx.app.env` / `ctx.app.db` / `ctx.app.models`, never `ctx.env`; the working recipe is on the auth row below |
 
 ---
 
+### A guard port, in practice (the recipe)
+
+The refusal is **config-level**, decided before any route is compiled, so `ignore`
+on the guarded routes does not help — `ignore` answers "who serves this route",
+and the question here is "what does `auth()->user()` mean". Two paths end green:
+
+1. **Declare the port.** `registry.json` at the app root
+   (`{"guards": {"seal": "seal-guard"}}`) plus `ports/seal-guard.mjs`. The build
+   resolves the slug, refuses an unknown slug or a port without `user()`, emits
+   `dist/src/guard-ports.generated.mjs` with a static `import` per declaration
+   (never a dynamic module load — the Workers runtime forbids it) and copies the
+   port file verbatim into `dist/src/ports/`. A bare import inside the port is
+   resolved by Wrangler when it bundles `dist/src/worker.mjs`, so declare that
+   dependency in the app's `package.json`.
+2. **Stop declaring the guard** — move the flow off `auth.guards` (a signed
+   cookie read in your own middleware). The refusal disappears with the
+   declaration; the PHP `Auth::extend()` registration can stay for local dev and
+   the test oracle, which is the path the fixture proves.
+
+The port module is exactly this shape:
+
+```js
+// ports/seal-guard.mjs
+export default {
+  async user(ctx) {
+    const id = await readToken(ctx.request, ctx.app.env.SEAL_KEY);
+    return id === null ? null : ctx.app.models.User.find(ctx.app.db, id);
+  },
+};
+```
+
+`user(ctx)` is required; `validate` / `login` / `logout` / `userById` are
+optional. `ctx` is
+`{ request, guard, driver, config, app: { config, db, models, env, session, cookieJar } }`
+(`kernel/auth.mjs`, `PortedGuard.portCtx`) — the app's bindings live under
+`ctx.app.*`, never at the top level, and the request object is the compiled
+request (its cookies through the same accessor the kernel's own session guard
+uses). Only the driver is yours: `auth:seal` still resolves through the compiled
+`Authenticate`, and `auth()->user()`, the `guest` middleware, 401/redirect and
+`Auth::viaRemember` remain compiled. `PortedGuard` calls the port **at most once
+per guard per request** and drops the memo on `setRequest()`; a port that throws
+keeps throwing (a failure must never degrade into "no user"), a port that answers
+`null` is a guest. `kernel/tests/http.test.mjs` drives that whole pipeline
+against a real port.
+
+`npx laravel-workers build --scaffold` writes a stub port (answering `501`) for
+every route that needs one — a guard port still has to be written by hand.
+
+**Do not hand-roll the token format the port verifies.** Implement the provider's
+`SPEC` and gate it with its official test vectors in both directions (PHP-minted
+token unseals in JS, and the reverse), or use the provider's SDK. For sealed
+`stseal.v1` cookies there is a worked example — keyring from the Worker bindings,
+fail-closed `unsealOrNull`, rotation — in the `stateless-seal` recipe:
+[`docs/recipes/laravel-workers.md`](https://github.com/arfoux/stateless-seal/blob/main/docs/recipes/laravel-workers.md).
+
+---
 
 ## What's inside
 

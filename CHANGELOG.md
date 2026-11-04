@@ -1,5 +1,273 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
+## v0.4.9 — guard ports, the nearFind audit's eleven gaps, and the live HTTP context in a view's runtime (2026-11-04)
+
+Compiling a real app's profile page (the nearFind audit) surfaced eleven gaps. The
+proof is the same app under the shadow harness: `/masuk` (port) + `/profil` (GET and
+PUT, compiled) are now **5/5 byte-identical, 100% coverage** against PHP 8.3.
+
+This is the first release after 0.4.8. The guard-port work (2026-11-03) and the nearFind
+audit wave (2026-11-04) both ship here; their notes are kept as the two `###` waves below
+because they were written as they landed.
+
+### Fix — the framework-only allowlist pointed at a doc that does not state it (#749)
+The comment above `FRAMEWORK_ONLY` (`tools/tests/routes-oracle-parity.test.mjs`) said
+the two rows (`up`, `storage/{path}`) are "named in `docs/AUDIT-REAL-APPS.md`", but that
+file mentions neither the list nor the routes — `grep -ri health docs/` answers nothing.
+The allowlist and its reasoning live in the test and in `CHANGELOG.md` (0.4.7, "#628 —
+the scan is now proven TOTAL"), so the comment points there now. Found while answering
+why a real app's `GET /up` is a declared gap: a reader following the old pointer had to
+re-derive the answer from the framework source.
+
+### Fix — a view's `session('k')` answered the session STORE, not the value (#736)
+The view-mode helper emission was `rt.session("k")`, and `rt.session()` takes no
+argument: every `@if (session('status'))` was truthy and `{{ session('status') }}`
+printed `Object`. The helper is Laravel's `session()->get('k', $default)` — the view
+now compiles to exactly that (the bare `session()` still answers the store).
+
+- **Test.** `compiler/tests/rt-blade.test.mjs`: the emitted shape.
+
+### Feature — `@method` / `method_field()` compiles (#737)
+`@method('PUT')` compiles to `method_field('PUT')`; the helper was unknown (LW001), so
+any form that spoofed a verb failed the build. It now answers Laravel's exact bytes
+(`<input type="hidden" name="_method" value="PUT">`, no `e()` — `Foundation/helpers.php:594`).
+
+- **Test.** `compiler/tests/rt-blade.test.mjs` (bytes, three verbs), `controller.test.mjs` (emission), `ctx-gated-helpers.test.mjs` (the known-helper set).
+
+### Fix — every view with `@error` was uncompilable, then unrenderable (#738)
+Two gaps stacked: the compiled `@error` block ends with `unset($__errorArgs, $__bag)`
+and the transpiler refused the `unset` STATEMENT (so the view did not compile); and
+`$errors` was never shared into the view (so the compiled `$errors->getBag('default')`
+would have crashed at render). `unset($a, $b)` now clears a plain variable (`isset()`/
+`??` follow PHP; an element/property unset stays refused), and `rt.view()` shares the
+session's `ViewErrorBag` exactly like `ShareErrorsFromSession` — new
+`kernel/view-error-bag.mjs` (MessageBag + ViewErrorBag, Laravel's read surface).
+
+- **Test.** `kernel/tests/view-error-bag.test.mjs`, `compiler/tests/rt-blade.test.mjs` (the unset cases).
+
+### Fix — a model date lacked `locale()`/`translatedFormat()` (#739)
+`$model->created_at->copy()->locale('id')->translatedFormat('j M Y')` — the shape every
+Blade date cell uses — died on the compiled side: the model's date value carried
+`format()`/`toDateString()` only, and the runtime's Carbon wrapper had its own month
+tables. One shared table (`kernel/date-names.mjs`), and both date values now answer
+`locale()` (per instance) + `translatedFormat()`. Probed on PHP 8.3:
+`20 Okt 2026`, `Selasa, 20 Oktober 2026`, `Sel`, and English without a locale.
+
+- **Test.** `kernel/tests/model.test.mjs`.
+
+### Fix — a zero-argument accessor was not dumped (#740)
+`getInitialsAttribute()` with no parameters is a legal Eloquent accessor
+(`hasGetMutator()` only checks the name; PHP accepts the extra argument), but the dump
+required exactly one parameter, so the compiled model refused the attribute at request
+time. The dump accepts 0 or 1.
+
+### Feature — `registry.json` `"config"` declares the app groups the edge carries (#741)
+The runtime config dump is a curated set (framework keys), so `config('needs.categories')`
+answered `null` on the edge where PHP answered the value — a silent divergence with no
+compile error. `registry.json` → `{"config": ["needs"]}` dumps the group tree, and after
+compiling the build REFUSES any `config('<key>')` the dump cannot answer (naming the
+group to declare). Only public data belongs there; a credential stays a Worker binding.
+
+- **Test.** the nearFind shadow scenario exercises it (`config('needs.categories')` in a
+  compiled controller); a missing declaration fails the build with the fix named.
+
+### Fix — a request-state `rules()` was evaluated at build time (false 422) (#742)
+`Rule::unique('profiles','username')->ignore($this->user()->id)` was evaluated by the
+FormRequest dump with NO request, so the rule string became `unique:profiles,username,NULL,id`
+— `id <> NULL` matches the row itself and **rejects a valid update**. The dump now
+refuses a `rules()` that reads `$this`/`$request`/`auth()`/`user()`/`request()`: static
+rules (plus a controller-side check) compile, anything else is a port.
+
+### Fix — a FormRequest hook was accepted at build time and answered 500 at runtime (#743)
+The dump listed `authorize()` (and the other hooks) so the compiled lifecycle would call
+them — but the class compiler refuses FormRequest subclasses, so the build shipped a
+handler whose first request died with "the class is not compiled". The route is now
+refused at build time with that reason: `authorize()` returning `true` is Laravel's
+default (drop the boilerplate), a real hook needs a port.
+
+### Fix — `rt.formRequest()` for a rule-only FormRequest (#744)
+Three runtime assumptions broke a FormRequest with no hooks: it instantiated the class
+(unnecessary — the rules arrive inline), and it called `setValidator()`/`failedValidation()`
+on an object that did not have them. A rule-only request now validates the live input and
+answers `validated()`; a failure throws the kernel `ValidationException` (302 + flash, or
+422 for JSON), not a `TypeError`.
+
+- **Test.** `compiler/tests/rt-request.test.mjs`.
+
+### Fix — `env()` reads a Worker BINDING before the config mapping (#745)
+The helper only knew four `APP_*` keys, so a compiled controller reading a deployment
+secret (a FormRequest fallback password hash) threw. Bindings are the edge's environment:
+`rt.env('NAME')` answers `ctx.app.env`/the Worker env first, then the config mapping, and
+refuses a key that is neither (there is no `.env` at the edge).
+
+- **Test.** `compiler/tests/rt-request.test.mjs`.
+
+### Fix — the shadow harness could not compare an app with a guard port, a port secret, or a form (#746)
+Five gaps made a real app unprovable: `registry.json` guard ports were never passed to
+the compiled handler (an `Auth::extend` app crashed), `scenario.env` had no way to give
+the worker its bindings, the ASSETS binding was absent (a port that prerenders a page
+answered 405), the PHP oracle ran with the app's dev `.env` (`public/hot` → Vite dev
+URLs + Laravel Boost's browser-logger script the worker never emits), and a live form's
+40-char CSRF token (plus absolute asset URLs on a prerendered page) made every such page
+"mismatch". All five are closed; `LW_DBG` now prints the worker's exception stack and the
+kernel's own log instead of a bare 500.
+
+- **Proof.** the nearFind scenario: 5 steps, **5/5 byte-identical, 0 unexplained, coverage 100%**.
+
+### Fix — a ported URI was still transpiled, and the skip read like a gap (#747)
+`/masuk` is owned by a port (the app's `seal` guard login is app JS), yet the extra-verb
+pass tried its controller anyway and printed `controller /masuk: skipped — $request
+(LoginRequest): ... write a port handler for this route` — advice the app had already
+followed. A URI a port owns is now skipped entirely: `controllers transpiled: 5/5`, no
+skip line, coverage unchanged.
+
+### Fix — a literal-true `authorize()` forced a port (#748)
+`FormRequest::authorize()` answers `true`; a class that writes the boilerplate out by
+hand changed nothing, but the dump counted it as a hook, so the route was refused at
+build time. A body that is only `return true;` (comments ignored) is now the parent's
+own answer and needs no declaration; `return false;` or a condition is a real hook and
+still refuses the route. The refusal message says exactly that.
+
+- **Test.** `compiler/tests/formrequest-dump.test.mjs` (a boilerplate `authorize()` is
+  not a hook; a deny is).
+
+### Wave — the view's own runtime sees the live HTTP context, a blocked dist swap no longer deletes the build, `$this` compiles in a controller, and two refusals name the truth (2026-11-04)
+
+### Feature — `cookie()` compiles and `withCookie()` queues onto the jar (2026-11-04, audit #722)
+`cookie('name','value',60)` was `LW001: unknown function cookie` — an app whose controller sets a cookie (`redirect(...)->withCookie(cookie(...))`) could not be built, though the kernel's `CookieJar` and `HttpResponse::withCookie()` already existed. Now the helper compiles to `rt.cookie(...)`, which calls the request's own `CookieJar::make()` (the exact signature: name/value/minutes/path/domain/secure/httpOnly/raw/sameSite), and `redirect()->withCookie(...)` queues the cookie on the jar — the response pipeline already emits the jar as `set-cookie`.
+
+- **The factory form refuses.** `cookie()` with no name answers Laravel's `CookieFactory` (`Foundation/helpers.php:372-381`); there is no container at the edge, so it stays `LW002` rather than shipping an `undefined`.
+- **Parity.** Probed against the booted fixture app + PHP 8.3: `cookie('theme','dark',60)` is path `/`, `sameSite` `lax`, `httpOnly` true, expires `now + 3600`; a `minutes = 0` cookie is a SESSION cookie that still carries its value.
+- **Test.** `compiler/tests/controller.test.mjs`: the emitted shape (`rt.cookie(...).withCookie(...)`), the factory-form refusal, and a runtime case that queues onto a real `CookieJar` and reads the cookie back.
+
+### Fix — `_old_input` no longer keeps a multi-file field (2026-11-04, audit H1)
+A failed validation flashed `$request->all()` (the input UNION the files bag) and deleted only the TOP-LEVEL file keys, so a `foto[]` upload survived in `_old_input` as an array of empty objects. Laravel flashes `Arr::except($request->input(), $dontFlash)` — and `Request::input()` has no file keys at all (the files live in their own bag). The kernel now flashes `request.input()`, so a file field is absent from `_old_input` entirely.
+
+- **Test.** `kernel/tests/validation.test.mjs`: a multipart POST with `foto[]` (two files) that fails validation answers 302 with no `foto` key in `_old_input` (fails against the previous kernel).
+
+### Fix — a resource's `paginationInformation()` hook was never called (2026-11-04, audit R1)
+`PaginatedResourceResponse::paginationInformation()` calls the app's own `paginationInformation($request, $paginated, $default)` when the collection defines it (`PaginatedResourceResponse.php:55-62`). The kernel always answered the default `links`/`meta`, so an app overriding the hook silently got the wrong shape. Now the hook wins when it exists.
+
+- **Test.** `kernel/tests/resources.test.mjs`: a collection with the hook answers its own `links`/`meta`.
+
+### Fix — `Collection::when()`/`unless()` answer like `Conditionable` (2026-11-04, audit C1)
+The callback received ONE argument and its return was passed through, so a callback that only mutates answered `undefined`. Laravel's `Conditionable::when()` is `$callback($this, $value) ?? $this`. The kernel now passes the condition as the second argument and falls back to the collection.
+
+- **Test.** `kernel/tests/collections.test.mjs`: the condition reaches the callback, and a mutating callback with no return answers the collection.
+
+### Fix — a present `null` no longer skips `unique`/`exists`, and `required_array_keys` accepts a list (2026-11-04, audits V2/V1)
+`unique`/`exists` skipped every `null`, so a row with a `NULL` column passed where Laravel queries and fails; the skip now applies only when the field carries a `nullable` rule (a blank STRING still skips). `required_array_keys` refused every JS array, while PHP's `is_array()` accepts a LIST and its keys are the numeric indices (`required_array_keys:0` passes for `[1,2]`).
+
+- **Test.** `kernel/tests/validator.test.mjs`: both cases fail against the previous kernel.
+
+### Fix — a date-comparison parameter reads PHP's relative grammar (2026-11-04, audit #671)
+`before:monday`, `after:+3 days`, `before:-18 years`, `before:noon` — the parameter of a date comparison is Carbon's parser (`getDateTimestamp()` → `Carbon::parse()`), and the kernel only read `now`/`today`/`tomorrow`/`yesterday`, `HH:MM`, `@ts` and the absolute shapes. Every other token became timestamp 0, so `before:monday` **rejected every value PHP accepts** — a false rejection of valid input. Measured on PHP 8.3 with a frozen `now`: 25 of 31 probe tokens diverged, and a wider sweep of 81 tokens × 5 rules diverged in **220 of 405** verdict cells.
+
+`phpRelativeTimestamp` now applies PHP's own field setters left to right to `now` (UTC): a weekday (`monday`, `next friday`, `last monday`, `this week`), a month name (`june`, `5 june`, `june 5`), `noon`/`midnight`, `3pm`, offsets (`+3 days`, `-3 months`, `2 weeks ago`, `1 week`), unit words (`next/last day|week|month|year|hour|minute|second`), `first day of january` / `last day of this month`, and the single-letter military zones. The ordering is what makes `noon tomorrow` tomorrow 00:00 ("tomorrow" resets the clock) while `tomorrow noon` is tomorrow 12:00 — both verified against PHP.
+
+- **Parity.** The same sweep is now **0 of 405 cells divergent**; the pre-fix kernel diverged in 220 of them. A word PHP refuses (`tonight`, `new year`, `in 2 days`, `tues`, `thurs`) stays unreadable and compares against 0, exactly as before (a `tues`/`thurs` abbreviation was dropped from the weekday table after PHP refused them).
+- **Test.** `kernel/tests/validator.test.mjs`: a clock-independent verdict test (`before:monday`, `before:noon`, `after:-18 years`, …) and `phpRelativeTimestamp` pinned to the PHP epochs from a frozen `now`.
+
+### Feature — `$this` compiles in a transpiled controller (2026-11-04, audit #725)
+The controller refused `$this` outright (`LW002`: "a controller's own methods are not compiled: inline the helper"), while the app's own **classes** had compiled every method since M61e — the same shape answering two different things. A real app hit it twice: `ProfileController`'s `update()`, `updatePassword()` and `updateNotifications()` all open with `$this->resolveProfile($request)`.
+
+- **The fix.** The handler now builds the **instance object** the route method and its helpers live on (`const __self = {}`). `extractController` collects the class's non-static methods; `emitController` walks the `$this->name()` calls from the route method to its **closure of reachable helpers** (a helper the route never reaches stays out — compiling it would demand the *other* routes' views and segments, which this handler does not have); each helper is transpiled with the same ctx as the entry, so its own scalar/`Request`/FormRequest parameters, its model type-hints (seeded as model vars) and its views all work. Every method is `async function (rt, ...)` and the call site hands the runtime over — the class registry's contract (`rt-from-context.mjs:824`), so one shape serves both.
+- **What still refuses, on purpose.** A `$this` call to a method the class does not declare (the transpiler's own gate); and a controller with a **constructor** once it has a reachable helper — the edge has no container, so the instance would run **half-built**, which is a wrong compile rather than a loud one.
+- **A bug the feature would have hidden.** `collect()` hoisted `$this` as a local (`let v_this;`), which shadows the bound instance with `undefined` — the helper call would have died at request time under a green build.
+- **Test.** `compiler/tests/controller.test.mjs`: the helper reaches the instance (emitted shape), a `$this` call to an unknown method still fails loud, a constructor with a reachable helper fails loud, and three **runtime** cases drive real handlers — a helper returning a model into a view, a helper taking a **model** parameter (the value must not be `undefined`), and a zero-arg helper. All four fail against the previous controller. Full suite (isolated copy) 1163 tests, 1116 pass, 0 fail.
+
+### Fix — two refusals named the wrong thing (2026-11-04, audit #723)
+
+### Fix — a compiled view called `session()`/`old()`/`@csrf` on a runtime that had no HTTP context (2026-11-04, audit #735)
+`rt.view()` renders a compiled view through its OWN `buildRt(entry.context, {...})`, and that call never received `http` — the live context the HTTP kernel hands a controller (`{ request, session, auth, user, route, routeParams, cookieJar, clock, ... }`). So the view's runtime answered every HTTP helper with `session(): no HTTP context (static snapshot / build-time evaluation)`: any page whose Blade called `session('status')`, `old(...)`, `@csrf` or `request()` answered **500** as soon as the route was reachable. Invisible until the same wave taught the compiler that a VIEW may call those helpers at all (audit #726), which is when a real app hit it: `GET /dasbor` (logged in) was a 500 whose body was the framework's "Server Error" page.
+
+- **The fix.** `rt.view()` forwards the captured live context to the sub-runtime (`http: liveHttp`), so a view reads the SAME session/guard/clock/api the controller does. Without an HTTP context (static snapshot, build-time evaluation) it stays `null` and the helpers keep failing loud — no invented state.
+- **Proof (nearFind, worker local).** Before: `GET /dasbor` after login → **500**, worker log `[ERROR] ... session(): no HTTP context ...` at `rt.session → rt.csrf_field → dashboard.mjs`. After: `POST /masuk` 302 + seal cookie, `GET /dasbor` **200** (21554 bytes of real dashboard markup) with a CSRF token that is the LIVE session's (reloading the page returns a new one), `POST /keluar` **302** (token accepted, not 419) and `GET /dasbor` back to 302 → `/masuk`.
+- **Test.** `compiler/tests/controller.test.mjs` gained three cases: a compiled view reads the live session (`session()`, `old()`, `csrf_token()` byte-exact), `@csrf` inside a view emits the live token, and the no-HTTP-context case still fails loud instead of inventing one. All three fail against the previous `rt-from-context.mjs`.
+
+### Fix — a blocked `commitDist` deleted the previous `dist/` and left the app with no worker (2026-11-04, audit #734)
+On Windows a running `wrangler dev` holds a handle on a directory INSIDE `dist/`. The swap refused to keep the old tree: when `rename(dist, dist.old-*)` failed, the fallback **wiped `dist/` in place** and then the landing `rename(dist.building, dist)` failed on the same handle — the app was left with the locked leftovers (a bare `public/`) and **no `dist/src/worker.mjs`**, so the dev server could not even start.
+
+- **The fix.** The wipe-in-place fallback is gone. A blocked move-aside now **refuses**: the previous `dist/` is left untouched and the error names the finished build under `<dist>.building` so neither side is lost. The sibling warning in the early dist clean (`build.mjs`) is also fatal now — stage 1 reuses the same tree, so an undeletable artifact would serve stale bytes for the whole build. Operator contract, same as #720's: **stop the dev server before a build**.
+- **Proof.** `dist.old-<ts>` planted non-empty → `commitDist` REFUSED, `dist/src/worker.mjs` byte-identical, `dist.building/src/worker.mjs` intact; after removing the marker the build is green again. Regression test `compiler/tests/dist-swap.test.mjs` forces a real move-aside failure and asserts the refusal, the untouched old build and the intact staging tree.
+- **Test.** `compiler/tests/dist-swap.test.mjs` 5/5; full suite (isolated copy) 1157 tests, 1110 pass, 0 fail; corpus 55/55.
+
+### Fix — two refusals named the wrong thing (2026-11-04, audit #723)
+A refusal is the product here: the build "never silently degrades" because a refusal stops it and *names what it would take*. Two texts did not hold that up — both hit by an ordinary app.
+
+- **The rule object (`LW002`).** The reason cited a fixed example (`Rule::file()->max(2048)`) whatever the app wrote, and told the operator to *do* what the tool already does: the same rule inside a **FormRequest** is normalized at build time today (the dump reads the rules Laravel itself builds — `tools/formrequest-dump.php` — and a rule object becomes its string form, M62a). The reason now names the actual class (`Illuminate\Validation\Rule`) and the remedy that works: **move the rules into a FormRequest** — an inline `$request->validate([...])` cannot be normalized, because its arguments are runtime values the build never sees.
+- **A service class (`LW003`).** `App\Support\Seal\Sealer` (a static `Sealer::durationToMilliseconds()`) was refused as "is not a registered Eloquent model" — true, and useless: the operator is sent looking at models. The reason now says what the class is: no edge surface at all, with the model-dump case named separately.
+- **The `$this` refusal** also names its remedy now (a controller's own methods are not compiled → inline the helper or write a port).
+- **Test.** `compiler/tests/controller.test.mjs`: the rule-object case asserts the class is named and the FormRequest remedy is stated; a new case asserts a service class is refused *without* being called a model. Measured on the fixture app: the two messages above are what the build prints for `/masuk` and `/profil`.
+
+### Fix — every ternary in `config/*.php` vanished from the build, and a route nullability Laravel never had (2026-11-04, audit #50, #51)
+
+Two findings the line-by-line sweep left `OPEN`, both silent-divergence class, fixed with their proofs.
+
+- **`#50` — a config ternary was dropped without a trace.** The build-time config evaluator (`tools/static.mjs` → `evalConfigExpr`) matched AST kind `ternary`, but php-parser 3.x tags **both** the full ternary (`$a ? $b : $c`) and the elvis (`$a ?: $c`) with kind **`retif`** (`trueExpr` is `null` for the elvis); it never emits `ternary`. So every ternary in an app's `config/*.php` fell through to `undefined`, and the array branch dropped the entry (`val === undefined → continue`) — a `config/foo.php` group whose value was a ternary disappeared entirely, silently, where PHP boots with a value. Measured with the pre-fix module: `config/demo.php` = `['on' => env('APP_DEBUG') ? 'debug' : 'release']` produced `config.demo === undefined` (with `APP_DEBUG=false`). Now `case 'retif'` is handled alongside the kept `ternary` label, the elvis answers the test itself when truthy, and a null/undefined test is the only thing dropped.
+- **`#51` — an `allowsNull()` argument splice that Laravel does not have.** `controller.mjs` read a parameter's nullability from `p.type.kind === 'nullabletype'` — a node kind php-parser 3.7.0 never emits (`?int $n` is a `typereference` plus a `nullable: true` flag on the **parameter**), so the value was always `false`: dead code that carried a wrong comment and a wrong test. The vendored Laravel 13.37 is the arbiter: `Routing/ResolvesRouteDependencies::resolveMethodDependencies` has **no** `allowsNull()` branch, and dispatch drops the null route params first (`Route::parametersWithoutNulls()`, used by `ControllerDispatcher`/`CallableDispatcher`), so a parameter with no segment takes its default or the call has too few arguments (PHP 8 `ArgumentCountError` → 500) — a nullable type is **not** given a null. The `nullable` plumbing is removed from `rt.param`, from the emitted call and from both tests, which now state the vendor behaviour. Behaviour-preserving: `nullable` was always `false`, so no compiled output changed value — the landmine (fixing only the field read would have answered a 200 `null` where Laravel answers 500) is gone.
+- **Test.** `tools/tests/env-fold.test.mjs` gained a case that parses a **real** `config/*.php` through `loadConfig` (the old case hand-built an AST with the never-emitted kind, so it passed falsely); `compiler/tests/rt-blade.test.mjs` and `compiler/tests/controller.test.mjs` assert the vendor truth. Full suite (isolated copy `lw-fix`) **1165 tests, 1118 pass, 0 fail, 47 skipped**; the new config case fails against `HEAD:tools/static.mjs` (`config.demo === undefined`). Residual, not fixed: config `==`/`!=`/`===`/`!==` (kind `bin`) still fall through to `undefined` — the same silent-drop class, left as a separate low item because a faithful PHP `==` needs the loose-equality rules.
+
+### Fix — a page rendered second in one boot lost its font preloads (2026-11-04)
+
+A real app (nearFind) proved it through the shadow harness: `dist/public/index.html` carried no `<link rel="preload" as="font">` while the live PHP page carried three. `Illuminate\Foundation\Vite` is a container singleton and `fonts()` records every URL it emits in `$preloadedAssets` (`Illuminate/Foundation/Vite.php:1144`), skipping a repeat on the next call — one boot renders every URI (`tools/prerender.php`, Track E), so page 1 kept its preloads and every later page silently lost them (measured: `/masuk` 3, `/` 0). The PHP oracle (`tools/php-shadow-oracle.php`) had the same leak between steps, which made the harness report the compiled worker (correct, one render per request) as the mismatch.
+
+- **Fix.** Both PHP hosts drop the resolved `Vite` singleton per URI/step, so each page renders from a clean instance exactly like a fresh boot.
+- **Measured.** `/masuk` and `/` both carry the 3 preloads after the build; the authenticated `/dasbor` step is byte-identical in the harness.
+
+### Fix — `url('/')`/`route('home')` answered a trailing slash (2026-11-04)
+
+Probed against the booted app on PHP 8.3: `url('/')`, `url('')` and `route('home')` are `http://localhost` (no slash) and `url('masuk/')` is `http://localhost/masuk` (`UrlGenerator::to()` trims). The runtime's `genUrl()` answered `origin + '/' + path`, so a root route (stored as `''` in the route map) became `http://localhost/` — every home link in the app diverged from PHP by one byte.
+
+- **Fix.** `joinRoot()` in `compiler/runtime/rt-from-context.mjs` (used by `route()` and `url()`), and the same trimming in `kernel/http.mjs`'s `absoluteUrl()` for redirect `Location` values.
+- **Test.** `compiler/tests/rt-url.test.mjs`: root, a named route, a parameterised route, and the trailing-slash cases, pinned to the PHP probe's output.
+
+### Fix — PHP children rendered in the app's dev environment (2026-11-04)
+
+Every PHP child (prerender, compile, dumps) inherited the app's own `.env` (`APP_ENV=local`, `APP_DEBUG=true` on a developer machine), so dev-only middleware rendered into the build: Laravel Boost's `InjectBoost` only runs outside production (`BoostServiceProvider::shouldRun`) and injected its `<script id="browser-logger-active">` into every snapshot (measured: `/masuk` 25,457 bytes versus 18,231 in production).
+
+- **Fix.** `childEnv()` forces `APP_ENV=production` + `APP_DEBUG=false` — a real environment variable wins over `.env` in Laravel, so an operator who exported either keeps their value.
+
+### Feature — `mimes`/`mimetypes` compile for the image formats the edge can sniff (2026-11-04)
+
+The build refused both rules outright (`LW002`/`LW003`: finfo), although `image`/`dimensions` already read the file HEADER in the kernel. A single `mimes` rule sent a whole controller — and with it the controller's GET page — to a port.
+
+- **Rule.** PHP compares what finfo sniffs with `guessExtension()` (Symfony's FIRST extension for the MIME: `image/jpeg` answers `jpg`, never `jpeg`); the edge reads the same header (`kernel/image.mjs`) and answers for the formats that read can name (jpg, jpeg, png, gif, webp, avif, heic, heif). Any other parameter (pdf, svg, docx, bmp) stays loud and is NAMED in the refusal.
+- **Parity.** `mimes:jpeg` keeps rejecting a real JPEG (PHP does too), `mimetypes:image/png` matches on the MIME, and a text file fails an image-only list — the verdict comes from the bytes, not the browser's declared type.
+- **Test.** `kernel/tests/upload.test.mjs` (accept/reject/mimetypes/loud `mimes:pdf`) and `compiler/tests/controller.test.mjs` (an image-only FormRequest rule compiles; `mimes:png,pdf` refuses and names `pdf`).
+
+### Wave — guard ports: the auth driver the app registers itself, and the `ports/` build cache (2026-11-03)
+
+### Feature — a guard driver the app registers itself is answered by the app's own JS (2026-11-03)
+`Auth::extend('seal', fn () => new SealGuard())` is a closure the compiled rung cannot run, so a non-session `auth.guards.*` driver had exactly one honest answer in the edge build: **refuse**. It refused well (the gate named the guard, `READINESS: DOES NOT RUN`, and wrote nothing), but an app whose guard is its own could not ship the guarded route at all. It now can, with the app writing the driver and the rung keeping everything around it.
+
+- **The declaration.** `registry.json` → `{"guards": {"seal": "seal-guard"}}` plus `ports/seal-guard.mjs` exporting `export default { async user(ctx) { ... } }` (optional `validate`/`login`/`logout`/`userById`). The port receives `{ request, guard, driver, config, app }` — the same building blocks the compiled session guard gets. The build resolves the slug against `ports/` (or `LW_PORTS_DIR`), refuses an unknown slug or a port without `user()`, emits `dist/src/guard-ports.generated.mjs` (a static `import` per declaration — never a dynamic module load, which the Workers runtime forbids), copies the port verbatim and threads it into `handleHttp` (`src/worker.mjs`).
+- **What stays the rung's.** Only the driver is the app's. `auth:seal` resolves through `Authenticate` (and `shouldUse('seal')` switches the request's default driver, exactly as Laravel's `Authenticate::authenticate()` does), so `auth()->user()`, the `guest` middleware, `Auth::viaRemember` and the 401/redirect answer all remain compiled. `PortedGuard` (`kernel/auth.mjs`) resolves `user()` lazily and **at most once per guard per request** — the middleware, the controller and the view share one port call, and `setRequest()` drops the memo. A port that throws keeps throwing (a failure never degrades into "no user", which would let a guarded route through); a port that answers `null` is a guest.
+- **Without a port the build still refuses — and now says how to fix it.** Probed on the fixture app with `'auth.guards.seal' => ['driver' => 'seal']` and no port: exit **1**, `READINESS: DOES NOT RUN`, the message naming `auth.guards.seal (driver 'seal')`, the exact `registry.json` key and the port's contract, and `nothing was written; dist still holds the last build that COMPLETED`. Adding the registry entry and the port: exit **0**, `READINESS: RUNS WITH DECLARED GAPS` listing that one guard as *your decision*, `dist/src/guard-ports.generated.mjs` importing `./ports/seal-guard.mjs`, and the port copied to `dist/src/ports/`.
+- **The motivating PHP keeps working.** The fixture provider then got the real thing — `Auth::extend('seal', fn () => new \App\Auth\SealGuard())` with a `SealGuard implements Guard` class — and the build still **passes** (exit 0): a service-provider closure is not a compiled class body, so declaring the port does not force the app to give up its PHP registration for the oracle or for local dev.
+- **Test.** `kernel/tests/http.test.mjs` drives the whole thing through the real pipeline (no oracle: the port is app code): `auth:seal` + `x-seal: 7` answers `200` `{"id":7,"name":"sealed-7","defaultGuard":"seal"}` — the default driver really did switch — with the port called exactly once, and the same route without the header answers `401 {"message":"Unauthenticated."}`. `kernel/tests/auth.test.mjs` gained 13 cases for `PortedGuard` (memoization, `id()` via `getAuthIdentifier()`, `validate`, `attempt`, `login`/`logout`/`onceUsingId`, the fail-loud paths) and `tools/tests/guard-ports.test.mjs` 10 for the build side (slug resolution, a `guards` value that is not an object, the missing-`user()` refusal, the generated module). All new files are listed in `package.json`'s `test` script. On the frozen tree: `npm test` (with `PHP_BIN` and `LW_LARAVEL_APP` set, so the oracle tests really run) **1145/1145 pass, 0 fail, 0 skip**, and the CI `parity-oracle` set (`auth`/`cache`/`csrf`/`session`/`ratelimit` vs PHP 8.3.30 + framework 13.37) **56/56 pass, 0 fail, 0 skip** — the session guard's byte parity is unchanged by the `PortedGuard` addition.
+
+### Fix — editing a port file did not invalidate the build cache, so dist served the previous revision's port (2026-11-03, audit #692)
+`ports/<slug>.mjs` is copied into the build **verbatim** (route ports and, now, guard ports), but the cache key hashed `app`, `bootstrap`, `config`, `database`, `routes`, `lang`, the views, the lang files and `public` — not `ports/`, and `registry.json` contributes its *mapping*, not the port's bytes. Editing a port therefore answered a **hit** and shipped the old one.
+- Proof, measured on the fixture app with the previous `tools/build-cache.mjs` (212 hashed files): the port on disk said `STALE-`, the build printed `build cache: hit (212 input files unchanged ...) — dist/ is current`, and `dist/src/ports/seal-guard.mjs` still said `SEALED-`. With the fix: the same edit gives `miss (213 input files hashed)` and the new bytes land in `dist/`.
+- `ports/` is part of the key now (its content, at any depth), `LW_PORTS_DIR` content counts too (`extraDirs`, so an app that keeps its ports outside the app root still invalidates), and `src/guard-ports.generated.mjs` is a REQUIRED cache artifact — a stamp from a build that did not emit it is not reusable.
+
+### Doc
+`README.md` (the Auth row + the "if your app needs X" table), `MAP.md` (the Auth row) and `COMPILED.md` (the Auth row) carry the feature and its contract; `node tools/gate.mjs --strict` passes (105/105 doc rows, 116 constructs, README counts match).
+
+### Fix — the audit wave-1 findings (2026-11-03, audit #716, #717, #719, #720)
+
+Four defects the line-by-line audit left `OPEN`, fixed with their proofs.
+
+- **`#717` — the guard-port example taught the wrong `ctx`.** `tools/ports.mjs` showed `ctx.env.SEAL_KEY` / `ctx.models.User.find(ctx.db, id)`; the contract is `ctx.app.*` (`kernel/auth.mjs`, `PortedGuard.portCtx` — `{ request, guard, driver, config, app: { config, db, models, env, session, cookieJar } }`). An operator copying it got `ctx.env` = `undefined` for the very guard being ported. The example is corrected, the contract sentence sits next to it, and `README.md` gained **"A guard port, in practice"** — the two green paths, why `ignore` cannot help (the refusal is config-level), the full `ctx` shape, the port-call semantics (at most once per guard per request, throw keeps throwing, `null` is a guest) and the rule that the port must not hand-roll the provider's token format (implement its `SPEC` + gate its official test vectors, or use its SDK; the sealed-cookie example is linked).
+- **`#719` — `config-dump.mjs` lost parts of a list-shaped lang override.** `deepMerge` replaced a whole list whenever both sides were arrays, while the PHP dump it replaces merges `array_replace_recursive` per KEY — and a list's keys are its indices. Measured with the PHP 8.3 oracle: `array_replace_recursive(['a' => ['x','y','z']], ['a' => ['y2']])` is `{"a":["y2","y","z"]}`; the old JS answered `{"a":["y2"]}`, so a framework validation sentence the app did not override vanished from the edge. The merge is per-key at every depth now (arrays and objects alike), and it lives in a side-effect-free `tools/deep-merge.mjs` — `config-dump.mjs` is a script that reads the app on import, so a test that imported it executed the whole dump (and `process.exit(1)`'d the test process when no app root was set: the workspace run reported the file as a failure). `tools/tests/config-dump-merge.test.mjs` pins six cases whose expected values are that oracle output, including the nested `{"deep":{"k":["9","2"],"keep":1}}` and a list merged with an assoc array (`[0=>'x',1=>'y','k'=>1]`). The test is registered in `scripts.test` (the repo uses an explicit file list, not a glob).
+- **`#720` — the packaging gate could leave `public/hot` behind in the app it tested.** `pack-smoke.mjs` plants the Vite dev markers to prove they do not survive the build, but removed them only at the end of the one step that runs on success. A failing step left the marker in the app (Laravel then hands out dev-server asset URLs: 404 fonts on the error page), and planting over a running `npm run dev` ate that marker too. Worse, `process.exit()` does not unwind the stack — `try { process.exit() } finally {}` never runs the `finally` — so both the report path and the throw path needed explicit cleanup. The markers are now snapshotted before planting and restored by `cleanup()` (called before the exit code and again in the `finally`), and the step-3b-only `rmSync` is gone. Measured on the fixture: a pre-existing sentinel `public/hot` came back **byte-identical** after a PASS run and after a run that FAILED at the CLI step; the leaked `lw-pack-smoke-*` directories from earlier runs (86 MB, 29 dirs on this machine) are cleaned up by the same path now.
+- **`#716` — a trailing backslash run was not doubled when quoting for `cmd.exe`.** `tools/run.mjs` used `arg.replace(/(?=(\\+?)?)\1$/, '$1$1')`, which inserts ONE backslash instead of doubling the run; the CRT rule needs `2n` before a quote. Measured with the fixed and the old helper on this Windows box (child prints its own argv, 11 arguments × 2 positions): the repo version mangled `tail\\` → `tail\" END` (the closing quote swallowed, the next argument glued on) and `tail\\\` → `tail\\`; the fix is **0 mismatch**. The replacement is `arg.replace(/(\\+)$/, (m) => m + m)`.
+
+### Fix — the audit wave-2 finding (2026-11-04, audit #721)
+
+- **`#721` — `event-dump.mjs` honoured an ambient `LW_APP_ROOT` over its own argument.** The port read `process.env.LW_APP_ROOT` first and only fell back to `process.argv[2]`, while the PHP oracle it is compared against reads `$argv[1]` only (`tools/event-dump.php:34`) and `build.mjs` passes the app positionally. `LW_APP_ROOT` is the *documented* way to point the other dump tools (`config-dump`, `routes-dump`, …) at an app — so exporting it silently redirected this dump to a **different app than the caller named**, and the parity test then compared two apps byte for byte. Measured in the isolated copy with `LW_APP_ROOT` pointing at a leftover probe app and `fresh-app` passed as the argument: the port printed the probe app's file paths (`..._sched-probe\app\Events\PostPublished.php`); the parity test failed 2/2. The positional argument wins now (env is the fallback), matching the oracle, and `tools/tests/event-dump.test.mjs` gained a case that points `LW_APP_ROOT` at a non-app directory and asserts the dump still reads the positional app — **3/3 pass with the fix, 3/3 fail without it** (the build itself was never affected: `childEnv()` already sets `LW_APP_ROOT` to the same app it passes positionally).
+
 ## v0.4.8 — the route shapes the scanner missed, the validator's failure line, and the whole-build dev marker (2026-11-03)
 
 ### Fix — an arrow-function route or group was invisible to the scan (2026-11-03, audit #678–#680)
