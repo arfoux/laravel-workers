@@ -12,6 +12,17 @@ break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
 `APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
 fail-open.
 
+### Fix — a stale `bootstrap/cache/packages.php` broke the composer-free boot
+A developer's `composer install` writes `bootstrap/cache/packages.php` naming
+require-dev providers (measured: `Laravel\Boost\BoostServiceProvider`). Building
+that app through vendor-lite then died in `PackageManifest` because the named
+class was never provisioned — and the message pointed at Laravel, not the stale
+file. Every PHP child now keeps its package/services caches in
+`<app>/.cache/laravel-workers/php/` (relative paths: Laravel treats only `/` and
+`\` as absolute prefixes), so the build neither reads nor writes the app's own
+`bootstrap/cache`. Verified: vendor removed + a Composer-written packages.php →
+build renders again; the app's file is left untouched.
+
 ### Fix — a bare snapshot origin shipped `http://localhost`
 `route('home')` renders against the prerender request host, i.e. `http://localhost`
 with no path. The rewrite that makes snapshot origins relative required a trailing

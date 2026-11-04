@@ -120,14 +120,30 @@ let dbSandboxPath = null;
 // production render. A real environment variable always wins over .env in
 // Laravel, so these two override the app's .env; an operator who exported
 // APP_ENV/APP_DEBUG explicitly keeps their value.
-const childEnv = () => ({
-  ...process.env,
-  APP_ENV: process.env.APP_ENV || 'production',
-  APP_DEBUG: process.env.APP_DEBUG || 'false',
-  LW_APP_ROOT: appDir,
-  ...(vendorDir ? { LW_VENDOR_DIR: vendorDir } : {}),
-  ...(dbSandboxPath ? { DB_DATABASE: dbSandboxPath } : {}),
-});
+const childEnv = () => {
+  // A `bootstrap/cache/packages.php` built against ANOTHER vendor tree (a
+  // developer's `composer install`, which has require-dev) names providers
+  // whose class the composer-free vendor-lite tree never ships — measured on a
+  // real app: Class "Laravel\Boost\BoostServiceProvider" not found, and the
+  // build refused to render. Keep the child's package/services caches inside
+  // the build scratch dir so a stale file cannot poison the boot; an operator
+  // who exported these keeps their value.
+  const phpCacheDir = join(cacheDir, 'php');
+  mkdirSync(phpCacheDir, { recursive: true });
+  // Relative, because Laravel's normalizeCachePath() only treats '/' and '\\' as
+  // absolute prefixes: a Windows "C:\\..." value would be joined onto basePath.
+  const phpCacheRel = relative(appDir, phpCacheDir).split('\\').join('/') + '/';
+  return {
+    ...process.env,
+    APP_ENV: process.env.APP_ENV || 'production',
+    APP_DEBUG: process.env.APP_DEBUG || 'false',
+    APP_PACKAGES_CACHE: process.env.APP_PACKAGES_CACHE || phpCacheRel + 'packages.php',
+    APP_SERVICES_CACHE: process.env.APP_SERVICES_CACHE || phpCacheRel + 'services.php',
+    LW_APP_ROOT: appDir,
+    ...(vendorDir ? { LW_VENDOR_DIR: vendorDir } : {}),
+    ...(dbSandboxPath ? { DB_DATABASE: dbSandboxPath } : {}),
+  };
+};
 
 // One place the operator looks to answer "can my app run at the edge?"
 const findings = [];

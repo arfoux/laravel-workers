@@ -35,7 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # ... php, node, composer install, npm ci, npm run build, cp .env.example .env
+      # ... php, node, npm ci, npm run build, cp .env.example .env
+      # No composer: `vendor-lite` provisions a composer-free vendor tree from
+      # composer.lock (the e2e job exercises that path). Install composer only
+      # in a job that runs `php artisan test` — require-dev (PHPUnit) is never
+      # provisioned by vendor-lite.
       - name: Random app_key (never production)
         run: |
           KEY="$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64"))')"
