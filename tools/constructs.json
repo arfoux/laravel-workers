@@ -163,6 +163,15 @@
       "status": "done"
     },
     {
+      "id": "cookie_helper",
+      "label": "`cookie()` (the helper)",
+      "php": "redirect('/x')->withCookie(cookie('k', 'v', 60));",
+      "expect": "ok",
+      "note": "CookieJar::make() through the request's jar; `withCookie()` queues it and the response pipeline emits `set-cookie`. The factory form (`cookie()` with no name) still fails loud.",
+      "batch": "audit #722",
+      "status": "done"
+    },
+    {
       "id": "session_array",
       "label": "`session([...])` (the array form)",
       "php": "session(['k' => 'v']);",
@@ -601,16 +610,27 @@
     },
     {
       "id": "file_rule_mimes",
-      "label": "A `mimes` rule on an upload",
+      "label": "A `mimes`/`mimetypes` rule on an upload",
       "php": "$request->validate(['avatar' => ['required', 'file', 'mimes:png']]);",
       "check": "compiler",
+      "expect": "ok",
+      "note": "PHP compares what finfo sniffs; the edge reads the image HEADER instead (kernel/image.mjs) and answers with the same `guessExtension()` map Symfony uses - so `mimes:jpg,png,webp` (and `mimetypes:image/jpeg,...`) answer Laravel's verdict, including the `guessExtension()` sharp edge (`mimes:jpeg` rejects a real JPEG in PHP too). A parameter naming any other content (pdf, svg, docx, bmp) still fails loud (`LW002`): that verdict would be a guess.",
+      "batch": "M40",
+      "status": "done",
+      "sig": "(\\Illuminate\\Http\\Request $request)"
+    },
+    {
+      "id": "file_rule_mimes_unanswerable",
+      "label": "A `mimes` rule naming a format the edge cannot sniff",
+      "php": "$request->validate(['avatar' => ['required', 'file', 'mimes:png,pdf']]);",
+      "check": "compiler",
       "expect": "fail",
-      "note": "The `mimes` rule compares the extension the content sniffs (finfo): the edge has only the type the browser declared, so the build stops (LW002) instead of answering differently.",
+      "note": "`mimes` compiles only for the formats the header read can name (jpg, jpeg, png, gif, webp, avif, heic, heif): a parameter naming any other content (pdf, svg, docx, bmp) stops the build (`LW002`) and NAMES the parameter, because the verdict PHP reaches comes from finfo.",
       "batch": "M40",
       "status": "done",
       "sig": "(\\Illuminate\\Http\\Request $request)",
       "code": "LW002",
-      "reason": "it reads the file's *content* type (finfo)"
+      "reason": "it reads the file's *content* type through finfo"
     },
     {
       "id": "file_rule_image",
@@ -618,7 +638,7 @@
       "php": "$request->validate(['photo' => ['required', 'image', 'dimensions:min_width=2']]);",
       "check": "compiler",
       "expect": "ok",
-      "note": "`image` and `dimensions` are getimagesize(), a HEADER read (ValidatesAttributes::validateImage/validateDimensions): the edge reads the same header (kernel/image.mjs) and applies the same named checks, so the verdict is Laravel's. The finfo rules (`mimes`, `mimetypes`) stay refused.",
+      "note": "`image` and `dimensions` are getimagesize(), a HEADER read (ValidatesAttributes::validateImage/validateDimensions): the edge reads the same header (kernel/image.mjs) and applies the same named checks, so the verdict is Laravel's. A `mimes`/`mimetypes` parameter naming a format that read cannot sniff stays refused, like any other finfo rule.",
       "batch": "M69",
       "status": "done",
       "sig": "(\\Illuminate\\Http\\Request $request)"

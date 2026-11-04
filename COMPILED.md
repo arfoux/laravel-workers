@@ -96,17 +96,42 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   not compiled (the platform answers the CORS preflight) → the build fails loud
 - Compiled controller subset: scalar params + `Request`/FormRequest injection, model
   chains (`find`/`findOrFail`/`all`/`where`/`whereIn`/`create`), Eloquent writes
-  (`fill`/`save`/`delete`/`forceDelete`/`restore`, `$model->attr = …`), views,
-  `session()`/`old()`/`csrf_token()`/`csrf_field()`/`request()`/`auth()`/`Auth::*`,
+  (`fill`/`save`/`delete`/`forceDelete`/`restore`, `$model->attr = ...`), views,
+  `session()`/`old()`/`csrf_token()`/`csrf_field()`/`method_field()`/`request()`/`auth()`/`Auth::*`,
   `response()`/`response()->json()`, `Cache::*`/`Hash::*` facades, class constants
   (`RouteServiceProvider::HOME`), `ValidationException::withMessages()`.
-  Everything else fails loud (never a wrong compile)
-- FormRequest: `rules()`/`messages()`/`attributes()` are dumped at build time and
+  `$this` is the instance: the helpers the route method **reaches** (`$this->helper()`,
+  directly or through another helper) are compiled into the handler's instance object
+  (`__self`), so `$this->resolveProfile($request)` works and a helper's own parameters,
+  model type-hints and views are handled like the route method's. A `$this` call to a
+  method the class does not declare still fails loud (LW002), and a controller with a
+  **constructor** fails loud when it has a reachable helper — the edge has no container,
+  so the instance would be half-built rather than merely different.
+- Compiled **view** surface: `@error`/`$errors` (the session's ViewErrorBag is shared
+  into every view, exactly like `ShareErrorsFromSession` — the compiled `@error` block
+  reads `$errors->getBag('default')`), `@method`/`method_field()`, `unset($a, $b)` (a
+  plain variable becomes `undefined`; `isset()`/`??` follow; an element unset is
+  refused), `session('k')` (the KEY — the bare form is the store), and Carbon's
+  `->copy()->locale('id')->translatedFormat('j M Y')` on a model date.
+- FormRequest: a **hook** (`prepareForValidation()`, `after()`, …) is refused at build
+  time — the class compiler refuses FormRequest subclasses, so the compiled lifecycle
+  could not call it; `authorize()` that only returns `true` is the parent's own answer
+  and needs no declaration (`return false;` or a condition stays a hook); `rules()`
+  that reads request state is refused too (the string form is evaluated at build time,
+  so `unique()->ignore($this->user()->id)` would bake a `NULL`). Static rules plus a
+  controller-side check compile; a real hook needs a port. A route that a **port**
+  owns is not transpiled at all (the port answers every verb), so it never reports a
+  controller skip.
+- App config: `config('group.key')` compiles only when the group is declared in
+  `registry.json` `"config"`; the build refuses a compiled `config()` key the runtime
+  dump cannot answer.
+- Everything else fails loud (never a wrong compile)
+- FormRequest: static `rules()`/`messages()`/`attributes()` are dumped at build time and
   compiled into the handler — the request is validated *before* the method body and
-  `validated()` returns the ruled attributes. `authorize()` must be true. The hooks run in Laravel's order
-  (`prepareForValidation` -> `authorize` -> `validationData` -> `withValidator` ->
-  `after` -> the rules -> `passedValidation`); the `validator()` factory stays a
-  build error (the edge has one factory, so the app's would never run)
+  `validated()` returns the ruled attributes; a failure answers like Laravel's
+  `failedValidation()` (302 + flash for a web form, 422 for JSON). A hook is refused
+  (see above), and the `validator()` factory stays a build error (the edge has one
+  factory, so the app's would never run)
 - Out-of-subset class body → per-class build error (never a wrong compile)
 
 ### 1.3 Shadow harness (the proof machine)
@@ -214,7 +239,7 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
 | Global middleware | `TrimStrings` + `ConvertEmptyStringsToNull` replayed on the same bags Request reads (query always; JSON body when the body is JSON, else the body), PHP's `Str::trim` character set and `Str::is` key matching; the final stack is read from `bootstrap/app.php` (`use()` replaces; `prepend`/`append`/`remove`/`replace` applied in vendor order), `->trimStrings()`/`->convertEmptyStringsToNull()` arrive as they do in `Middleware` 13.37 | a `skipWhen()` Closure or a non-literal entry refuses the build ("add a port"); anything else the app puts on its own stack (`TrustHosts`, `HandleCors`, its own class) is written to `middleware.prevented` and answers 500 naming the class |
 | **Sessions** | cookie driver (stateless encrypted payload) + D1 driver; flash rotation (`_flash.new/old`), `old()` input, error bag (`$errors`), `regenerate`/`invalidate`/`migrate`, lifetime/expiry | **byte-parity goal for the cookie payload** (encrypter + serialize subset in place); `regenerate`/`invalidate`/`regenerateToken` callable from compiled controllers (M20); **documented gap**: view-only GET routes are auto-snapshotted to a static asset the Worker serves *before* the kernel, so they run no session middleware (e.g. a plain `GET /login`) |
 | Rate limiting | `throttle` middleware full; `RateLimiter::for()` compiled | D1 `database` store (M18); `increment` is read-then-write (D1 has no interactive transactions) — a race under concurrency, flagged not atomic |
-| **Auth** | session guard full API (attempt/login/logout/once/validate/user/id/check/guest), remember-me recaller cookie + rotation, Eloquent + database providers, auth events, `auth`/`guest`/`can`/`password.confirm` middleware, `Auth::viaRemember` | compiles on top of Sessions above; the provider's generated model gets the `Authenticatable` trait applied at kernel boot (`resolveAuthConfig`) |
+| **Auth** | session guard full API (attempt/login/logout/once/validate/user/id/check/guest), remember-me recaller cookie + rotation, Eloquent + database providers, auth events, `auth`/`guest`/`can`/`password.confirm` middleware, `Auth::viaRemember`; a **driver the app registers itself** (`Auth::extend('seal', fn)` — a closure the rung cannot run) is answered by the app's own JS: `registry.json` → `guards` → `ports/<slug>.mjs` (`PortedGuard`, kernel/auth.mjs) | compiles on top of Sessions above; the provider's generated model gets the `Authenticatable` trait applied at kernel boot (`resolveAuthConfig`). A guard port answers `user(ctx)` (required) + optional `validate`/`login`/`logout`/`userById` and receives `{request, guard, driver, config, app:{config, db, models, env, session, cookieJar}}`; `user()` is memoized (at most one port call per guard per request, so a one-time token is not consumed twice) and `setRequest()` (guard reuse) drops the resolved user. A method the port does not export fails loud, never "no user". An UNPORTED non-session driver refuses the **build**, naming its own driver and the port to add — it would otherwise answer a guarded route for an unauthenticated request |
 | Auth flows (Fortify-shaped) | login/register/logout/forgot/reset/verify as **compiled controllers**: validate → attempt → regenerate → intended; reset tokens in D1; mail delivery flagged *adapter* (flow compiles now) | throttling via Rate limiter; validate → attempt → regenerate → intended all compile (M19/M20) |
 | Sanctum | personal access tokens (D1), abilities + middleware; SPA cookie mode last | |
 | Localization | `__()`, `trans_choice`, `@lang`, locale switch mid-request | rides on 1.1 dumps |
@@ -247,9 +272,11 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   then fails loud as `BadMethodCallException`), an ARRAY element is kept whole, and every rule name the vendor
   has is implemented (`base64`, `ulid`, `contains`, `doesnt_contain`, `in_array_keys`, `max_digits`,
   `min_digits`, `prohibits`, `extensions`, `uuid:v` with versions/nil/max, ...) — 89 differential cases, 0 diff.
-  The build refuses (`LW002`) a rule the edge cannot honour (`active_url`/`mx_record` DNS, `mimes`/`mimetypes`
-  finfo, `encoding`, `current_password`, `Validator::extend()` names), naming the rule and the field, at both
-  `$request->validate(...)` and the dumped FormRequest rules.
+  The build refuses (`LW002`) a rule the edge cannot honour (`active_url`/`mx_record` DNS, `encoding`,
+  `current_password`, `Validator::extend()` names), naming the rule and the field, at both
+  `$request->validate(...)` and the dumped FormRequest rules. `mimes`/`mimetypes` compile for the image
+  formats the edge can sniff from the file HEADER (jpg, jpeg, png, gif, webp, avif, heic, heif) and stay loud
+  for any other parameter (pdf, svg, docx, bmp), because finfo's answer for those is not a header the edge reads.
 - ✅ Rule-value semantics (batches #33/#34): the per-rule predicates were re-derived from the vendor
   and differentially fuzzed against PHP 8.3 + vendor 13.37 — `integer` is `filter_var(FILTER_VALIDATE_INT)`
   (a boolean casts, a leading zero fails, the 64-bit range holds) with `integer:strict` → `is_int`;
@@ -273,14 +300,21 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   keeps `:values`; and `gt`/`gte`/`lt`/`lte` put `getSize($attribute, $comparedToValue)` in `:value`
   (`replaceGt()`), so a non-numeric `a` against the field `b=2` reads "greater than 1 characters"
   (mb_strlen of `'2'`), not "greater than 2 characters".
-- A date comparison PARAMETER is not Carbon's parser: `before`/`after`/`before_or_equal`/
-  `after_or_equal`/`date_equals` read it through `getDateTimestamp()` → `Carbon::parse()`, and the
-  kernel covers `now`/`today`/`tomorrow`/`yesterday`, `HH:MM[:SS]`, `@<timestamp>`, the compact digit
-  runs and the absolute shapes. Probed 27 `before:<token>` tokens on PHP 8.3 + 13.37: **23 diverge** —
-  `noon`, `midnight`, `2pm`, `2 pm`, `monday`, `next monday`, `+1 day`, `-1 day`, `1 week ago`,
-  `last week`, `june`, `noon tomorrow` and the single-letter military zones (`b`, `a`, `z`, `m`, `s`,
-  `n`, `d`, `h`, `o`, `t`, `y` — `strtotime('b')` is *now* in UTC+2) all PASS in PHP while the kernel
-  reads the token as a FIELD name (missing → timestamp 0). Declared gap
+- A date comparison PARAMETER is a Carbon parse: `before`/`after`/`before_or_equal`/
+  `after_or_equal`/`date_equals` read it through `getDateTimestamp()` → `Carbon::parse()`. The kernel
+  reads the same grammar: `now`/`today`/`tomorrow`/`yesterday`, `HH:MM[:SS]`, `@<timestamp>`, the
+  compact digit runs, the absolute shapes **and** the relative/named shapes — a weekday (`monday`,
+  `next friday`, `last monday`), a month name (`june`, `5 june`, `june 5`), `noon`/`midnight`, `3pm`,
+  `+3 days` / `-3 months` / `2 weeks ago` / `next week` / `last month`, `first day of january`,
+  `last day of this month`, and the single-letter military zones. `phpRelativeTimestamp` applies PHP's
+  own field setters left to right to `now` (UTC), which is what makes `noon tomorrow` TOMORROW 00:00
+  ("tomorrow" resets the clock) while `tomorrow noon` is tomorrow 12:00. Probed on PHP 8.3 with a
+  frozen `now` (`Carbon::setTestNow`): the 27 `before:<token>` cases that used to diverge (all PASS in
+  PHP, all FAIL in the kernel — a **false rejection of valid input**) now match, and a wider sweep of
+  81 tokens × 5 rules (405 verdict cells) is **0 divergent**. A word PHP refuses (`tonight`,
+  `new year`, `in 2 days`, `tues`, `thurs`) stays unreadable and compares against 0, exactly as
+  before. Declared residual: a relative word resolves in the **app timezone**, which the edge fixes at
+  UTC (§11); an absolute parameter is the same instant PHP answers either way
   *(escape: write the parameter as a literal date, or as a field name — both are faithful)*.
 - Failure flow parity: redirect back + errors bag + old input ✅ (M19); API path: 422 JSON
   shape parity ✅ (M19)
@@ -435,7 +469,7 @@ Everything else in Laravel's web surface: **compilable** — this document is th
    outside debug); otherwise 419/429/500 bodies remain status-only stubs. Multi-verb routes
    still need a port — `--strict` fails the build
    when a route advertises an extra non-POST verb that was not compiled.
-   `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `request()`
+   `Auth::*` / `auth()` / `session()` / `old()` / `csrf_token()` / `csrf_field()` / `method_field()` / `request()`
    and `Request $request` injection in compiled controllers shipped in M16; single-method `POST`
    actions joined the compiled set in M17 (handler registered under `METHOD uri`); and
    `redirect()->intended()` + session `regenerate()`/`invalidate()`/`regenerateToken()` in M20)*
@@ -611,6 +645,7 @@ behind a build rule.
 | `tap()` | ✅ compiles | Passes the value through a closure (the closure support exists). | M37 |
 | `report()` | ✅ compiles | Reports an exception to the platform log (it does not answer it). | M37 |
 | `cache()` (the helper) | ✅ compiles | The helper form of the `Cache` facade (the facade compiles). | M37 |
+| `cookie()` (the helper) | ✅ compiles | CookieJar::make() through the request's jar; `withCookie()` queues it and the response pipeline emits `set-cookie`. The factory form (`cookie()` with no name) still fails loud. | audit #722 |
 | `session([...])` (the array form) | ✅ compiles | The array form writes many keys: `session()->put([...])`. | M37 |
 | `Event::dispatch()` (an event object) | ✅ compiles | The listener is a class, so the build compiles it (the event classes + the listeners, dist/src/classes.generated.mjs). The dispatch is synchronous, like Laravel's. | M39c |
 | `Event::dispatch()` (an event name) | ⛔ fails loud (`LW002`) | An event *name* has no class: the edge cannot know which listener answers, so the dispatch would be a silent no-op - dispatch the event object instead. | M39c |
@@ -639,8 +674,9 @@ behind a build rule.
 | The upload is stored (`$file->storeAs()`) | ✅ compiles | The object store (the D1 blob store on the free plan, R2 with a bucket of its own): the path is the disk-relative one Laravel returns (trim($path.'/'.$name, '/')). | M40 |
 | The upload is stored under a random name (`$file->store()`) | ✅ compiles | The name is a random hash (Str::random(40)) + the extension; the extension comes from the type the browser declared (Laravel sniffs the content with finfo). | M40 |
 | The content type of the upload (`$file->getMimeType()`) | ⛔ fails loud (`LW003`) | The content type is read from the file's bytes (finfo): the edge cannot sniff the content like PHP does, so the build stops (LW003). | M40 |
-| A `mimes` rule on an upload | ⛔ fails loud (`LW002`) | The `mimes` rule compares the extension the content sniffs (finfo): the edge has only the type the browser declared, so the build stops (LW002) instead of answering differently. | M40 |
-| An `image`/`dimensions` rule on an upload | ✅ compiles | `image` and `dimensions` are getimagesize(), a HEADER read (ValidatesAttributes::validateImage/validateDimensions): the edge reads the same header (kernel/image.mjs) and applies the same named checks, so the verdict is Laravel's. The finfo rules (`mimes`, `mimetypes`) stay refused. | M69 |
+| A `mimes`/`mimetypes` rule on an upload | ✅ compiles | PHP compares what finfo sniffs; the edge reads the image HEADER instead (kernel/image.mjs) and answers with the same `guessExtension()` map Symfony uses - so `mimes:jpg,png,webp` (and `mimetypes:image/jpeg,...`) answer Laravel's verdict, including the `guessExtension()` sharp edge (`mimes:jpeg` rejects a real JPEG in PHP too). A parameter naming any other content (pdf, svg, docx, bmp) still fails loud (`LW002`): that verdict would be a guess. | M40 |
+| A `mimes` rule naming a format the edge cannot sniff | ⛔ fails loud (`LW002`) | `mimes` compiles only for the formats the header read can name (jpg, jpeg, png, gif, webp, avif, heic, heif): a parameter naming any other content (pdf, svg, docx, bmp) stops the build (`LW002`) and NAMES the parameter, because the verdict PHP reaches comes from finfo. | M40 |
+| An `image`/`dimensions` rule on an upload | ✅ compiles | `image` and `dimensions` are getimagesize(), a HEADER read (ValidatesAttributes::validateImage/validateDimensions): the edge reads the same header (kernel/image.mjs) and applies the same named checks, so the verdict is Laravel's. A `mimes`/`mimetypes` parameter naming a format that read cannot sniff stays refused, like any other finfo rule. | M69 |
 | The files bag as a method (`$request->files()`) | ⛔ fails loud (`LW002`) | In Laravel `$request->files` is a property (Symfony's FileBag), not a method: the build stops (LW002) and points at `$request->file()` / `$request->allFiles()`. | M40 |
 | An `OPTIONS` route | — documented (build level) | The compiled side answers Laravel's automatic OPTIONS response (200 + the Allow header - byte-proven); a CORS config makes the build skip the route. | M40 |
 | A relation read as a property (`$post->comments`) | ⛔ fails loud (`LW003`) | A relation (or an accessor) read as a property is not compiled: the build stops (LW003). It used to answer null - a wrong answer, silently. | M42 |
@@ -710,7 +746,7 @@ behind a build rule.
 | A FormRequest that overrides `validator()` | — documented (build level) | Laravel asks the app's own factory for the validator (`FormRequest::getValidatorInstance()`), so an override decides the rules, the messages and the factory itself. The edge has ONE validator factory, so the dump refuses the class (LW003, `tools/formrequest-dump.php`) and the build stops instead of validating with different rules than Laravel. | M62f |
 | A `try/catch/finally` statement | ⛔ fails loud (`LW002`) | The transpiler has no `try` handler, so the whole route (and any class method that carries one) fails the build with LW002 (MAP.md 6b lists `try/catch/finally` as UNSUPPORTED - matches). The tracked gap is the missing APP-SOURCE SWEEP rule: a try/catch that no compiled route touches is silent until it is reached. Rewrite without try/catch, or port the route. | GAP |
 
-**116 constructs: 45 compile, 64 fail loud, 7 documented at the build level.** Every probed construct is either compiled *and* proven by the shadow harness, or it fails the build; the 7 documented rows are build-level decisions the compiler cannot judge, and each one names its own proof (the 'proof' field: a shadow step, a test file or the dump that decides it). The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
+**118 constructs: 47 compile, 64 fail loud, 7 documented at the build level.** Every probed construct is either compiled *and* proven by the shadow harness, or it fails the build; the 7 documented rows are build-level decisions the compiler cannot judge, and each one names its own proof (the 'proof' field: a shadow step, a test file or the dump that decides it). The Laravel 13 facades: **47 of 47 classified (6 compile, 41 fail loud) — the facade coverage is 100%** (every facade of the vendored Illuminate/Support/Facades must have a row).
 
 <!-- construct-audit:end -->
 
