@@ -365,6 +365,24 @@ Works on any Laravel ≥ 10 project — a fresh clone or an app you've been runn
 
 `registry.json` and `wrangler.jsonc` are **optional** — the build uses sensible defaults and auto-writes `wrangler.jsonc` when absent (worker name from the app-dir slug; `database_id` is a placeholder). So even the scaffolding happens at build time.
 
+### CI: the verdict people read, and the merge pipeline
+
+If the app lives on GitHub, `build --strict` alone answers "did it compile"; it does
+not tell a reviewer **which routes are actually served and which gaps ship**. The
+official CI surface closes that:
+
+- **[docs/CI.md](docs/CI.md)** — the contract: three layers (tool decides, reporter
+  posts, pipeline schedules), the copy-paste `ci.yml`/`deploy.yml`, token scopes,
+  and the traps that break a deploy silently (`--no-cache`, a valid random `APP_KEY`,
+  `APP_URL` baked at build, `CACHE_STORE=file` disabling the login throttle).
+- **`action/verdict`** — reads the build log, posts one sticky PR comment
+  (`### Verdict: RUNS WITH DECLARED GAPS`) plus the job summary. Fork-safe, always
+  exit 0, never hides a gap.
+- **`app-check.yml` / `app-deploy.yml`** — optional reusable workflows for apps that
+  match the defaults. The documented pattern is the contract; these are convenience.
+
+`doctor` stays the local preflight check; Verdict is the reporter.
+
 ### Build phases: one Laravel boot per phase (measured)
 
 A full build runs every PHP-live step as a phase-scoped worker. Each phase boots
