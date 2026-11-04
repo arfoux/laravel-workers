@@ -10,7 +10,7 @@ This is the first release after 0.4.8. The guard-port work (2026-11-03) and the 
 audit wave (2026-11-04) both ship here; their notes are kept as the two `###` waves below
 because they were written as they landed.
 
-### Fix — every fresh vendor-lite provision died with a ReferenceError (#752)
+### Fix — every fresh vendor-lite provision died with a ReferenceError (#750)
 `tools/vendor-lite.mjs` computed `installedJson` inside `ensureVendorLite`'s scope but wrote it from
 `provision()` — a separate function — so the manifest line answered `ReferenceError: installedJson is
 not defined`. That is the "no `vendor/`, no `composer install`" path the README advertises (Composer:
