@@ -13,6 +13,8 @@ import {
   JSON_THROW_ON_ERROR,
 } from '../../kernel/php-json.mjs';
 import { phpJsonDecodeOrdered } from '../../kernel/php-json-ordered.mjs';
+import { TRANSLATED_NAMES } from '../../kernel/date-names.mjs';
+import { viewErrorBag } from '../../kernel/view-error-bag.mjs';
 import { Mailable } from '../../kernel/mailable.mjs';
 import { setModelRuntime, setModelTimezone, phpDateString } from '../../kernel/model.mjs';
 import { FormRequest } from '../../kernel/form-request.mjs';
@@ -347,6 +349,10 @@ export function buildRt(context, opts = {}) {
   // context and the session/request helpers fail loud rather than invent state.
   const liveSession = (opts && opts.http && opts.http.session) ? opts.http.session : null;
   const liveRequest = (opts && opts.http && opts.http.request) ? opts.http.request : null;
+  // The whole live context, forwarded to a compiled VIEW's own runtime: a view
+  // that calls session()/old()/@csrf resolves the same live session as its
+  // controller (see rt.view below).
+  const liveHttp = (opts && opts.http) ? opts.http : null;
   // The D1 binding, captured WITHOUT throwing: `rt.db()` raises when it is
   // missing, and the FormRequest lifecycle must not raise for a request whose
   // rules never touch the database. `unique`/`exists` check it themselves
@@ -451,7 +457,28 @@ export function buildRt(context, opts = {}) {
   // kernel's (the edge has one factory).
   rt.formRequest = async (fqcn, opts = {}) => {
     const hooks = Array.isArray(opts.hooks) ? opts.hooks : [];
-    const instance = rt.newClass(fqcn, []);
+    // The class is instantiated only when a hook runs: a rule-only FormRequest
+    // (authorize() true, no prepare/with/after/passed) needs nothing but
+    // `all()`, and Laravel's compiled rules arrived inline in `opts`. The
+    // demand for a dumped class used to make `$request->validated()` impossible
+    // for a FormRequest the build had already dumped as {rules, messages}.
+    const instance = hooks.length
+      ? rt.newClass(fqcn, [])
+      : {
+          // The FormRequest surface the lifecycle itself calls (the hooks are
+          // absent — the build refuses them).
+          all: () => (liveRequest && typeof liveRequest.all === 'function' ? liveRequest.all() : {}),
+          setValidator(v) {
+            this._validator = v;
+            return this;
+          },
+          getValidator() {
+            return this._validator;
+          },
+          failedValidation() {
+            throw rt.validationExceptionWithMessages(this._validator.errors(), {});
+          },
+        };
     if (hooks.includes('prepareForValidation')) {
       await instance.prepareForValidation(rt);
     }
@@ -553,10 +580,21 @@ export function buildRt(context, opts = {}) {
   };
   // env(): the build-time config dump is the padanan (there is no .env at the edge).
   rt.env = (key, def = null) => {
-    const cfgKey = ENV_CONFIG_KEYS[String(key)];
+    const name = String(key);
+    // A Worker BINDING is the edge's environment (SEAL_KEY, NEARFIND_AUTH_*):
+    // a port reads it, and compiled code that needs a deployment secret reads
+    // the same value here. A .env-only key still has no counterpart (there is
+    // no .env at the edge), which the config mapping answers below.
+    const bindings = liveHttp && liveHttp.env ? liveHttp.env : null;
+    if (bindings && Object.prototype.hasOwnProperty.call(bindings, name)) {
+      const value = bindings[name];
+      return value === undefined || value === null ? def : value;
+    }
+    const cfgKey = ENV_CONFIG_KEYS[name];
     if (!cfgKey) {
       throw new Error(
-        'env(' + key + ') has no compiled counterpart - use config() (the build-time config dump is the padanan)'
+        'env(' + key + ') is neither a Worker binding nor a compiled config key - use config() for an app ' +
+          'value, or declare the binding in the Worker (wrangler.jsonc vars / .dev.vars)'
       );
     }
     const value = rt.config(cfgKey);
@@ -673,6 +711,10 @@ export function buildRt(context, opts = {}) {
   // Str::random(40), alphanumeric) — kept byte-exact.
   rt.csrf_field = () =>
     '<input type="hidden" name="_token" value="' + String(rt.session().token()) + '" autocomplete="off">';
+  // Illuminate\Foundation\helpers.php method_field(): the method is concatenated
+  // without escaping in Laravel, so `@method('PUT')` stays byte-exact.
+  rt.method_field = (method) =>
+    '<input type="hidden" name="_method" value="' + String(method) + '">';
 
   // Illuminate\Validation\ValidationException::withMessages([...]) — the compiled
   // kernel catches the same class instance (kernel/validation.mjs) and renders the
@@ -1063,6 +1105,18 @@ export function buildRt(context, opts = {}) {
     }
     return v;
   };
+  // UrlGenerator::to()/format() (Laravel 13.37, measured on PHP 8.3):
+  //   to('/')      -> "http://localhost"   (NO trailing slash)
+  //   to('')       -> "http://localhost"
+  //   to('/masuk') -> "http://localhost/masuk"
+  //   to('masuk/') -> "http://localhost/masuk"  (the trailing slash is trimmed)
+  // A root route ('/') is stored as '', so the naive `origin + '/' + path`
+  // answered "http://localhost/" and every `route('home')` link diverged.
+  const joinRoot = (path) => {
+    const trimmed = String(path ?? '').replace(/^\/+|\/+$/g, '');
+    if (trimmed === '') return origin || '/';
+    return (origin || '') + '/' + trimmed;
+  };
   // Runtime route() generation: name → uri pattern (built at build time). Only used
   // when args are passed or when the captured build-time value does not apply.
   const genUrl = (name, args) => {
@@ -1075,7 +1129,7 @@ export function buildRt(context, opts = {}) {
       const raw = modelRouteKey(args[i++]);
       return encodeURIComponent(raw == null ? '' : String(raw));
     }).join('/');
-    return origin + '/' + path;
+    return joinRoot(path);
   };
   const lookupUrl = (key) => {
     if (!Object.prototype.hasOwnProperty.call(urlsCtx, key)) {
@@ -1087,7 +1141,9 @@ export function buildRt(context, opts = {}) {
   };
   rt.url = (p) => {
     const s = String(p);
-    if (runtime && s.startsWith('/')) return origin + s;
+    // UrlGenerator::to('/') -> "http://localhost" (no trailing slash), exactly
+    // like route('home') - the compiled page must not emit a second slash.
+    if (runtime && s.startsWith('/')) return joinRoot(s);
     return lookupUrl(s);
   };
   rt.route = (n, ...rest) => {
@@ -1119,7 +1175,6 @@ export function buildRt(context, opts = {}) {
     if (Array.isArray(v)) return v.length === 0;
     return false;
   };
-  rt.unset = () => {}; // no-op in emitted code (variables are lets; M1 has none)
   rt.count = (v) => {
     requireArrayArg('count', 1, 'value', 'Countable|array', v);
     return Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 0);
@@ -1440,6 +1495,21 @@ export function buildRt(context, opts = {}) {
   };
   rt.strtolower = (s) => String(s).toLowerCase();
   rt.strtoupper = (s) => String(s).toUpperCase();
+  // PHP's mb_* string helpers, in CODE POINTS (`Array.from`), not UTF-16 units —
+  // `mb_substr('😀', 0, 1)` is one character, as PHP answers with UTF-8.
+  const codePoints = (s) => Array.from(String(s ?? ''));
+  rt.mb_strlen = (s, _enc) => codePoints(s).length;
+  rt.mb_substr = (s, start, len, _enc) => {
+    const cp = codePoints(s);
+    const n = cp.length;
+    let begin = Number(start) | 0;
+    if (begin < 0) begin = Math.max(0, n + begin);
+    if (len === undefined || len === null) return cp.slice(begin).join('');
+    const count = Number(len);
+    return cp.slice(begin, count < 0 ? Math.max(begin, n + count) : begin + count).join('');
+  };
+  rt.mb_strtoupper = (s, _enc) => String(s ?? '').toUpperCase();
+  rt.mb_strtolower = (s, _enc) => String(s ?? '').toLowerCase();
   // rt.trim/ltrim/rtrim are defined with the string helpers below — PHP's trim
   // family takes a charlist (with '..' ranges) and its own default character
   // set, which JavaScript's String.prototype.trim() does not reproduce.
@@ -2354,7 +2424,11 @@ export function buildRt(context, opts = {}) {
       s: Number(parts.second),
     };
   }
-  function makeCarbon(date, tz = APP_TZ) {
+// Carbon's localized month/day names: the same table the model's date values
+// read (kernel/date-names.mjs), so `format()`/`translatedFormat()` answer one
+// language everywhere. A locale without a table falls back to English.
+
+function makeCarbon(date, tz = APP_TZ) {
     const d = new Date(date.getTime());
     const api = {
       _d: d,
@@ -2414,6 +2488,38 @@ export function buildRt(context, opts = {}) {
       subHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() - Number(n)); return makeCarbon(nd, tz); },
       copy() { return makeCarbon(new Date(d.getTime()), tz); },
       clone() { return makeCarbon(new Date(d.getTime()), tz); },
+      // Carbon::locale($locale) — sets the locale for the NEXT translatedFormat()
+      // call and answers the instance (the fluent chain `->locale('id')`).
+      locale(next) {
+        const l = String(next ?? '').toLowerCase().split(/[_-]/)[0];
+        if (l) api._locale = l;
+        return api;
+      },
+      // Carbon::translatedFormat() — `format()` with the MONTH and WEEKDAY names
+      // of the instance locale substituted for the tokens `format()` does not
+      // carry (M/F/D/l). Carbon's own tables for id and en; anything else falls
+      // back to en, which is what `format()` already answers.
+      translatedFormat(fmt) {
+        const loc = String(api._locale || 'en').toLowerCase().split(/[_-]/)[0];
+        const t = TRANSLATED_NAMES[loc] || TRANSLATED_NAMES.en;
+        const p = zoneParts(d, tz);
+        // The weekday of the LOCAL calendar day (Carbon's `D`/`l`).
+        const w = new Date(Date.UTC(p.Y, p.m - 1, p.d)).getUTCDay();
+        const out = String(fmt).replace(/\\?.|M{1,4}|F|D|l/g, (token) => {
+          if (token.length > 1 && token[0] === '\\') return token.slice(1);
+          switch (token) {
+            case 'M': return t.monthsShort[p.m - 1];
+            case 'F': return t.months[p.m - 1];
+            case 'D': return t.daysShort[w];
+            case 'l': return t.days[w];
+            case 'MM': return pad2(p.m);
+            case 'MMM': return t.monthsShort[p.m - 1];
+            case 'MMMM': return t.months[p.m - 1];
+            default: return api.format(token);
+          }
+        });
+        return out;
+      },
       toString() { return api.toDateTimeString(); },
       // Carbon is JsonSerializable: `jsonSerialize()` -> `toJSON()` answers the
       // UTC ISO8601 form with MICROSECONDS (Carbon/Converter.php:442-455), so
@@ -2819,9 +2925,53 @@ export function buildRt(context, opts = {}) {
       }
       return res;
     };
+    // `RedirectResponse::withCookie()` (:112-125 + sendCookiesToJar()): queue
+    // the cookie onto the jar; the kernel emits the jar at the response phase.
+    res.withCookie = (cookie) => {
+      const jar = liveHttp && liveHttp.cookieJar ? liveHttp.cookieJar : null;
+      if (!jar) throw new Error('withCookie(): no cookie jar on the request');
+      jar.queue(cookie);
+      return res;
+    };
     return res;
   };
 
+  // Laravel's `cookie($name = null, $value = null, $minutes = 0, $path = null,
+  // $domain = null, $secure = null, $httpOnly = true, $raw = false,
+  // $sameSite = null)` global (Foundation/helpers.php:372-381): the app's
+  // CookieFactory (the CookieJar) `make`s the value. The root form
+  // `cookie('name','value',60)` is the ordinary shape (`withCookie(cookie(...))`).
+  rt.cookie = (name, value, minutes, path, domain, secure, httpOnly, raw, sameSite) => {
+    const jar = liveHttp && liveHttp.cookieJar ? liveHttp.cookieJar : null;
+    if (!jar) {
+      if (liveHttp) throw new Error('cookie(): no cookie jar — the request has no CookieJar');
+      throw new Error('cookie(): no HTTP context');
+    }
+    // `cookie()` with a null name answers the CookieFactory
+    // (Foundation/helpers.php:376-378) — there is no container at the edge.
+    if (name === null || name === undefined) {
+      throw new Error('cookie(): the factory form (no name) is not available at the edge — pass a name');
+    }
+    // CookieJar::make() (Illuminate\Cookie\CookieJar::make(): `$minutes == 0`
+    // is a SESSION cookie whose value is kept as-is; the value never depends on
+    // the minutes).
+    const m = minutes === undefined || minutes === null ? 0 : minutes;
+    return jar.make(
+      name,
+      value,
+      m,
+      path === undefined ? null : path,
+      domain === undefined ? null : domain,
+      secure === undefined ? null : secure,
+      httpOnly === undefined ? true : httpOnly,
+      raw === undefined ? false : raw,
+      sameSite === undefined ? null : sameSite
+    );
+  };
+  // `RedirectResponse::withCookie()` (Illuminate\Http\RedirectResponse::
+  // sendCookiesToJar) queues a cookie onto the jar; the kernel's response
+  // pipeline emits the jar, so queueing is the whole job. Attached to the
+  // redirect shape below (rt.cookie builds the cookie).
   // rt.param: route parameter → PHP method argument coercion (Laravel matches by position;
   // controllers bind after checking the route segment name).
   // PHP 8's coercive typing for a SCALAR parameter (a route segment arrives as
@@ -2837,39 +2987,31 @@ export function buildRt(context, opts = {}) {
         JSON.stringify(value) + ' is not ' + (type === 'int' ? 'an integer' : 'a number') +
         ' (PHP 8 throws a TypeError here, so Laravel answers 500)'
     );
-  rt.param = (params, name, type, hasDefault, def, nullable) => {
+  // Laravel 13's dispatch resolves the controller's arguments from the route's
+  // parameters AFTER dropping the null ones (Route::parametersWithoutNulls() in
+  // ControllerDispatcher/CallableDispatcher), and
+  // RouteDependencyResolverTrait::resolveMethodDependencies has NO `allowsNull()`
+  // branch - a parameter with no value for it is spliced its default only when
+  // one is available, otherwise the call is left with too few arguments (PHP 8
+  // ArgumentCountError -> 500). A nullable type (`?int $n`) is therefore NOT
+  // given a null here: it behaves exactly like a non-nullable one (auditor note
+  // #51 - the old code invented an `allowsNull()` splice and read the type's
+  // nullability from an AST field php-parser never emits, so it was both dead
+  // and wrong).
+  rt.param = (params, name, type, hasDefault, def) => {
     const v = params && typeof params === 'object' ? params[name] : undefined;
-    // A missing segment takes the default (Laravel's own rule: the route would
-    // not match without the segment). A NULL value is different: PHP passes it
-    // to the parameter, so a non-nullable scalar type throws a TypeError
-    // (`f(null)` for `int $n` is "must be of type int, null given") - the
-    // compiled rung used to answer null, a 200 where Laravel answers 500.
-    if (v === undefined) {
+    // A missing segment (or an explicit null, which Laravel's
+    // `parametersWithoutNulls()` strips before dispatch) takes the default when
+    // the parameter has one, else the call has too few arguments: PHP 8 raises
+    // an ArgumentCountError and Laravel answers 500. The compiled rung used to
+    // answer null here - a 200 where Laravel answers 500 (found by the shadow
+    // harness: `/v/{a}/{b?}` with `req(string $a, string $b)`, request `/v/A`).
+    if (v === undefined || v === null) {
       if (hasDefault) return def;
-      // A nullable parameter is spliced a null (Laravel's
-      // RouteDependencyResolverTrait::resolveMethodDependencies: a parameter
-      // that `allowsNull()` gets null when the route has no value for it).
-      if (nullable) return null;
-      // Nothing is spliced at all for a parameter with no default and no
-      // nullability, so the call has too few arguments: PHP 8 raises an
-      // ArgumentCountError and Laravel answers 500. The compiled rung used to
-      // answer null here - a 200 where Laravel answers 500 (found by the shadow
-      // harness: `/v/{a}/{b?}` with `req(string $a, string $b)`, request
-      // `/v/A`).
       throw new TypeError(
         'Too few arguments: the route has no segment for $' + name + ' and the parameter has no default ' +
           '(PHP 8 throws an ArgumentCountError here, so Laravel answers 500)'
       );
-    }
-    if (v === null) {
-      if (nullable) return null;
-      if (type === 'int' || type === 'float' || type === 'string') {
-        throw new TypeError(
-          'Argument #1 ($' + name + ') must be of type ' + type + ', null given (PHP 8 throws a ' +
-            'TypeError here, so Laravel answers 500)'
-        );
-      }
-      return hasDefault ? def : null;
     }
     if (type === 'int' || type === 'float') {
       if (typeof v === 'number') return type === 'int' ? Math.trunc(v) : v;
@@ -3045,6 +3187,18 @@ export function buildRt(context, opts = {}) {
       throw new Error('view not compiled: ' + JSON.stringify(key) + ' — write a port for this route');
     }
     const d = data == null ? {} : data;
+    // ShareErrorsFromSession shares `$errors` into EVERY view; the compiled
+    // @error block reads `$errors->getBag('default')`, so a view with @error
+    // dies without it even when the session holds no errors at all.
+    if (!Object.prototype.hasOwnProperty.call(d, 'errors')) {
+      let stored = null;
+      try {
+        stored = liveSession ? liveSession.get('errors') : null;
+      } catch {
+        stored = null;
+      }
+      d.errors = viewErrorBag(stored);
+    }
     for (const k of Object.keys(d)) {
       if (d[k] instanceof Promise) {
         throw new Error('view data ' + JSON.stringify(k) + ' is an unresolved promise — await the query in a single chain');
@@ -3064,6 +3218,11 @@ export function buildRt(context, opts = {}) {
       config: configCtx,
       // The same env: a layout yields the sections of the view that extends it.
       env: bladeEnv,
+      // The live HTTP context (request/session/guard/clock/adapters). A view
+      // that calls session()/old()/@csrf - every form - resolves them through
+      // the SAME live session the controller sees; without this the view's own
+      // runtime answered `noHttp` and the render failed with a 500.
+      http: liveHttp,
     });
     entry.main(sub);
     // Illuminate\View\Engines\PhpEngine::evaluatePath() returns

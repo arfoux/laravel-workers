@@ -83,6 +83,38 @@ class PostController extends Controller
         return $this->helper();
     }
 
+    public function usesHelper(string $id)
+    {
+        $post = $this->fetchPost($id);
+        return view('posts.show', ['post' => $post]);
+    }
+
+    private function fetchPost(string $id): Post
+    {
+        return Post::findOrFail($id);
+    }
+
+    public function usesModelHelper(string $id)
+    {
+        $post = Post::findOrFail($id);
+        return response()->json(['title' => $this->titleOf($post)]);
+    }
+
+    private function titleOf(Post $post): string
+    {
+        return $post->title;
+    }
+
+    public function usesZeroHelper(string $n)
+    {
+        return response($this->greeting() . ':' . $n);
+    }
+
+    private function greeting(): string
+    {
+        return 'hi';
+    }
+
     public function badClosure()
     {
         $ids = collect([1, 2])->map(fn($i) => Post::find($i));
@@ -217,15 +249,15 @@ test('emit: model chains, view(), compact() and params', () => {
 
 test('emit: findOrFail is awaited and params come from route segments', () => {
   const code = emitOk('show', { ...META_BASE, routeUri: '/posts/{id}', routeParams: ['id'] });
-  assert.match(code, /let v_id = rt\.param\(ctx\.params, "id", "string", false, null, false\);/);
+  assert.match(code, /let v_id = rt\.param\(ctx\.params, "id", "string", false, null\);/);
   assert.match(code, /let v_post;\n\s+v_post = \(await rt\.model\("Post"\)\.findOrFail\(v_id\)\);/);
   assert.match(code, /return rt\.view\("posts\.show", \{\s*"post": v_post\s*\}\);/);
 });
 
 test('emit: typed params with defaults use rt.param', () => {
   const code = emitOk('page', { ...META_BASE, routeUri: '/p/{slug}', routeParams: ['slug'] });
-  assert.match(code, /let v_slug = rt\.param\(ctx\.params, "slug", "string", false, null, false\);/);
-  assert.match(code, /let v_page = rt\.param\(ctx\.params, "page", "int", true, 1, false\);/);
+  assert.match(code, /let v_slug = rt\.param\(ctx\.params, "slug", "string", false, null\);/);
+  assert.match(code, /let v_page = rt\.param\(ctx\.params, "page", "int", true, 1\);/);
   assert.match(code, /\{ "posts": v_posts, "slug": v_slug, "page": v_page \}/);
 });
 
@@ -326,11 +358,59 @@ test('emit: unknown model static fails with LW003', () => {
   assert.match(res.errors[0].message, /Post::destroy/);
 });
 
-test('emit: $this fails with LW002', () => {
+test('emit: the helpers a route method reaches are compiled into the instance', () => {
+  // `$this->helper()` is the class's OWN method: the compiled rung provides it
+  // exactly like the app's classes do (every non-static method of the class is
+  // compiled), so the route method calls it on the instance object.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function demo(Request $request)\n' +
+    '    {\n' +
+    '        return response((string) $this->double((int) $request->input("n")));\n' +
+    '    }\n' +
+    '    private function double(int $n): int\n' +
+    '    {\n' +
+    '        return $n * 2;\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code !== null, true);
+  // The route method is called on the instance, and its helper is ON it.
+  assert.match(res.code, /__self\["demo"\] = async function \(rt/);
+  assert.match(res.code, /__self\["double"\] = async function \(rt, v_n\)/);
+  assert.match(res.code, /await __self\["demo"\]\(rt\)/);
+});
+
+test('emit: a $this call to an unknown method still fails loud (LW002)', () => {
   const res = emitController(SAMPLE, 'badThis', META_BASE);
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
   assert.match(res.errors[0].message, /\$this/);
+});
+
+test('emit: a controller constructor with a compiled helper fails loud (LW002)', () => {
+  // The edge has no container: a constructor would leave the instance
+  // unbuilt and every helper on it would read the wrong state.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use Illuminate\\Http\\Request;\n' +
+    'class C {\n' +
+    '    public function __construct(private readonly string $prefix) {}\n' +
+    '    public function demo(Request $request)\n' +
+    '    {\n' +
+    '        return response($this->tag((string) $request->input("n")));\n' +
+    '    }\n' +
+    '    private function tag(string $n): string\n' +
+    '    {\n' +
+    '        return $this->prefix . $n;\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /constructor/);
 });
 
 test('emit: a database query inside a closure fails with LW002', () => {
@@ -633,7 +713,7 @@ test('emit: $request->validateWithBag() compiles to request.validateWithBag()', 
   assert.match(res.code, /v_request\.validateWithBag\(/);
 });
 
-test('emit: session()/old()/csrf_token()/csrf_field()/auth() map to the rt HTTP helpers', () => {
+test('emit: session()/old()/csrf_token()/csrf_field()/method_field()/auth() map to the rt HTTP helpers', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
     'use Illuminate\\Support\\Facades\\Auth;\n' +
@@ -643,10 +723,11 @@ test('emit: session()/old()/csrf_token()/csrf_field()/auth() map to the rt HTTP 
     "        $email = old('email');\n" +
     '        $token = csrf_token();\n' +
     '        $field = csrf_field();\n' +
+    "        $verb = method_field('PUT');\n" +
     "        $name = session('name');\n" +
     '        $flag = auth()->check();\n' +
     '        $uid = Auth::id();\n' +
-    "        return response()->json(compact('email', 'token', 'field', 'name', 'flag', 'uid'));\n" +
+    "        return response()->json(compact('email', 'token', 'field', 'verb', 'name', 'flag', 'uid'));\n" +
     '    }\n' +
     '}\n';
   const res = emitController(src, 'form', { routeUri: '/form', routeParams: [], models: [], views: [] });
@@ -654,6 +735,7 @@ test('emit: session()/old()/csrf_token()/csrf_field()/auth() map to the rt HTTP 
   assert.match(res.code, /rt\.old\(["']email["']\)/);
   assert.match(res.code, /rt\.csrf_token\(\)/);
   assert.match(res.code, /rt\.csrf_field\(\)/);
+  assert.match(res.code, /rt\.method_field\(["']PUT["']\)/);
   assert.match(res.code, /rt\.session\(\)\.get\(["']name["']\)/);
   assert.match(res.code, /\(await rt\.auth\(\)\.check\(\)\)/);
   assert.match(res.code, /\(await rt\.auth\(\)\.id\(\)\)/);
@@ -1503,7 +1585,7 @@ test('emit: $request->files() fails loud (it is a property in Laravel)', () => {
   assert.match(res.errors[0].message, /FileBag/);
 });
 
-test('emit: a FormRequest with a mimes rule fails loud (the content type cannot be sniffed)', () => {
+test('emit: a FormRequest is compiled for sniffable mimes rules and refused for the rest', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
     'use App\\Http\\Requests\\UploadRequest;\n' +
@@ -1513,23 +1595,37 @@ test('emit: a FormRequest with a mimes rule fails loud (the content type cannot 
     "        return response('ok');\n" +
     '    }\n' +
     '}\n';
-  const res = emitController(src, 'store', {
-    routeUri: '/x',
-    routeParams: [],
-    models: [],
-    views: [],
-    formRequests: {
-      'App\\Http\\Requests\\UploadRequest': {
-        rules: { avatar: ['required', 'file', 'mimes:png,jpg'] },
-        messages: {},
-        attributes: {},
+  const emit = (rule) =>
+    emitController(src, 'store', {
+      routeUri: '/x',
+      routeParams: [],
+      models: [],
+      views: [],
+      formRequests: {
+        'App\\Http\\Requests\\UploadRequest': {
+          rules: { avatar: ['required', 'file', rule] },
+          messages: {},
+          attributes: {},
+        },
       },
-    },
-  });
-  assert.equal(res.code, null);
-  assert.equal(res.errors[0].code, 'LW002');
-  assert.match(res.errors[0].message, /mimes/);
-  assert.match(res.errors[0].message, /finfo/);
+    });
+
+  // The edge sniffs image HEADERS (kernel/image.mjs), so an image-only `mimes`
+  // answers exactly what finfo + guessExtension() would: it compiles.
+  const imageOnly = emit('mimes:png,jpg,jpeg,webp');
+  assert.equal(imageOnly.code !== null, true, 'an image mimes rule compiles');
+  assert.deepEqual(imageOnly.errors, []);
+  const imageMime = emit('mimetypes:image/png,image/jpeg');
+  assert.equal(imageMime.code !== null, true, 'an image mimetypes rule compiles');
+  assert.deepEqual(imageMime.errors, []);
+
+  // Any other extension (pdf, svg, docx, bmp) is content the edge cannot
+  // recognise, so the build stays loud instead of guessing.
+  const pdf = emit('mimes:png,pdf');
+  assert.equal(pdf.code, null);
+  assert.equal(pdf.errors[0].code, 'LW002');
+  assert.match(pdf.errors[0].message, /mimes/);
+  assert.match(pdf.errors[0].message, /pdf/);
 });
 
 test('emit: an unknown validation rule fails loud at build time', () => {
@@ -1693,6 +1789,10 @@ writeTree(tmpRoot, {
   // at json_encode() time.
   'kernel/request-scope.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'request-scope.mjs'), 'utf8'),
   'kernel/php-serialize.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'php-serialize.mjs'), 'utf8'),
+  // model.mjs + the runtime share the localized month/day tables (a model date's
+  // translatedFormat), and rt.view shares the session's ViewErrorBag.
+  'kernel/date-names.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'date-names.mjs'), 'utf8'),
+  'kernel/view-error-bag.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'view-error-bag.mjs'), 'utf8'),
   'src/runtime/rt-from-context.mjs': fs.readFileSync(
     path.join(pkgDir, 'compiler', 'runtime', 'rt-from-context.mjs'),
     'utf8'
@@ -1852,6 +1952,27 @@ async function handlerFor(method, meta = META_BASE) {
   const mod = await import(pathToFileURL(file).href);
   return mod.default;
 }
+
+test('runtime: a $this helper runs on the instance and its model reaches the view', async () => {
+  const handle = await handlerFor('usesHelper', { ...META_BASE, routeUri: '/p/{id}', routeParams: ['id'] });
+  const res = await handle(ctxFor({ id: '1' }), { DB: dbWithRow });
+  assert.equal(res.status, 200);
+  assert.match(res.body, /<h1>Hello Edge<\/h1>/);
+});
+
+test('runtime: a $this helper taking a MODEL receives the model (not undefined)', async () => {
+  const handle = await handlerFor('usesModelHelper', { ...META_BASE, routeUri: '/p/{id}', routeParams: ['id'] });
+  const res = await handle(ctxFor({ id: '1' }), { DB: dbWithRow });
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(res.body), { title: 'Hello Edge' });
+});
+
+test('runtime: a zero-arg $this helper receives the runtime and answers its value', async () => {
+  const handle = await handlerFor('usesZeroHelper', { ...META_BASE, routeUri: '/z/{n}', routeParams: ['n'] });
+  const res = await handle(ctxFor({ n: 'x' }), { DB: dbWithRow });
+  assert.equal(res.status, 200);
+  assert.equal(res.body, 'hi:x');
+});
 
 test('runtime: show renders the compiled view with the model from D1', async () => {
   const handle = await handlerFor('show', { ...META_BASE, routeUri: '/posts/{id}', routeParams: ['id'] });
@@ -2150,6 +2271,54 @@ test('runtime: session()/request() fail loud without an HTTP ctx (static evaluat
   assert.throws(() => rt.old('email'), /no HTTP context/);
 });
 
+test('cookie() compiles and withCookie() queues onto the jar (audit #722)', async () => {
+  // Foundation/helpers.php:372-381: `cookie($name, $value, $minutes, ...)` is
+  // CookieJar::make(); RedirectResponse::withCookie() queues it on the jar,
+  // which the kernel's response pipeline emits as `set-cookie`.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function go()\n' +
+    '    {\n' +
+    "        return redirect('/home')->withCookie(cookie('theme', 'dark', 60));\n" +
+    '    }\n' +
+    '    public function factory()\n' +
+    '    {\n' +
+    '        return cookie();\n' +
+    '    }\n' +
+    '}\n';
+  const ok = emitController(src, 'go', META_BASE);
+  assert.deepEqual(ok.errors, []);
+  assert.match(ok.code, /rt\.cookie\("theme", "dark", 60\)/);
+  assert.match(ok.code, /\.withCookie\(/);
+  // `cookie()` with no name is the CookieFactory form - refused loudly.
+  const bad = emitController(src, 'factory', META_BASE);
+  assert.equal(bad.errors.length, 1);
+  assert.equal(bad.errors[0].code, 'LW002');
+  assert.match(bad.errors[0].message, /CookieFactory/);
+
+  // The runtime: the cookie's expiry/attributes follow the jar's defaults and
+  // the value is unset only by `forget()` (probed against vendor
+  // CookieJar::make() + PHP 8.3: a session cookie keeps its value).
+  const { buildRt } = await import(pathToFileURL(path.join(tmpRoot, 'src', 'runtime', 'rt-from-context.mjs')).href);
+  const { CookieJar } = await import(pathToFileURL(path.join(pkgDir, 'kernel', 'session.mjs')).href);
+  const jar = new CookieJar({ path: '/', domain: null, secure: null, sameSite: 'lax', clock: () => 1000000 });
+  const rt = buildRt(null, { runtime: true, http: { config: {}, cookieJar: jar } });
+  const res = rt.redirect('/home').withCookie(rt.cookie('theme', 'dark', 60));
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, '/home');
+  const queued = jar.getQueuedCookies();
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].name, 'theme');
+  assert.equal(queued[0].value, 'dark');
+  assert.equal(queued[0].expires, 1000000 + 3600);
+  assert.equal(queued[0].path, '/');
+  assert.equal(queued[0].sameSite, 'lax');
+  // A `minutes = 0` cookie is a session cookie but still carries the value.
+  assert.equal(rt.cookie('seen', '1').expires, 0);
+  assert.equal(rt.cookie('seen', '1').value, '1');
+});
+
 test('runtime: redirect()->intended() pulls url.intended; session mutation methods run', async () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
@@ -2378,7 +2547,10 @@ test('emit: a paginator method that is not compiled fails loud (LW003)', () => {
 test('emit: a rule object fails loud (the validator cannot evaluate it)', () => {
   // A rule object is a class: the compiled validator evaluates the string rules
   // only, so the rule would be silently ignored and the validation would
-  // differ from Laravel's. The build stops and names what it would take.
+  // differ from Laravel's. The build stops and names the ONE remedy that works
+  // today: the same rule inside a FormRequest IS normalized at build time (the
+  // dump reads the rules Laravel itself builds), while an inline
+  // `$request->validate([...])` cannot be (its arguments are runtime values).
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
     'use Illuminate\\Http\\Request;\n' +
@@ -2392,8 +2564,32 @@ test('emit: a rule object fails loud (the validator cannot evaluate it)', () => 
   const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
   assert.equal(res.code, null);
   assert.equal(res.errors[0].code, 'LW002');
-  assert.match(res.errors[0].message, /rule object/);
-  assert.match(res.errors[0].message, /kernel validator must evaluate the rule object/);
+  // The class is named (it used to cite a fixed `Rule::file()->max(2048)` example
+  // whatever the app wrote).
+  assert.match(res.errors[0].message, /Illuminate\\Validation\\Rule is a validation rule object/);
+  // The remedy is the FormRequest (the one that works), not a shipped-as-todo step.
+  assert.match(res.errors[0].message, /Move the rules into a FormRequest/);
+});
+
+test('emit: a service class used statically fails loud without calling it a model', () => {
+  // An app service (`Sealer::durationToMilliseconds()`) is neither an Eloquent
+  // model nor a facade: the refusal must say what it is (no edge surface) and
+  // not send the operator looking at models.
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function demo()\n' +
+    '    {\n' +
+    '        $ms = \\App\\Support\\Seal\\Sealer::durationToMilliseconds("1h");\n' +
+    '        return response((string) $ms);\n' +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW003');
+  assert.match(res.errors[0].message, /App\\Support\\Seal\\Sealer is not compiled for this route/);
+  assert.match(res.errors[0].message, /has no edge surface at all/);
+  assert.doesNotMatch(res.errors[0].message, /registered Eloquent model/);
 });
 
 test('emit: Queue::push() fails loud with the structural reason', () => {
@@ -2749,4 +2945,107 @@ test('emit: PHP json flags fold to their numeric value', () => {
   const bad = emitController(src('return strlen(PHP_EOL);'), 'demo', meta);
   assert.equal(bad.code, null);
   assert.match(bad.errors[0].message, /bare identifier not allowed: PHP_EOL/);
+});
+
+// ---------------------------------------------------------------------------
+// #735: rt.view() forwards the live HTTP context to the view's own runtime
+// ---------------------------------------------------------------------------
+
+// The two views `page`/`csrfView` render. The SHAPE is the compiler's own Blade
+// output for `{{ session('status') }}` / `{{ old('name') }}` / `@csrf`, so the
+// body proves the view resolved the LIVE session rather than failing loud.
+writeTree(tmpRoot, {
+  'src/views/page.mjs': [
+    'export default function main(rt) {',
+    "  rt.echo('status=' + rt.e(rt.session().get('status', 'none')));",
+    "  rt.echo(' name=' + rt.e(rt.old('name', 'none')));",
+    "  rt.echo(' token=' + rt.e(rt.csrf_token()));",
+    '}',
+    '',
+  ].join('\n'),
+  'src/views/form.mjs': [
+    'export default function main(rt) {',
+    "  rt.echo(rt.csrf_field());",
+    '}',
+    '',
+  ].join('\n'),
+  'src/contexts/page.mjs': 'export default {};\n',
+  'src/contexts/form.mjs': 'export default {};\n',
+});
+
+const SAMPLE_VIEW = `<?php
+
+namespace App\\Http\\Controllers;
+
+class ViewController
+{
+    public function page()
+    {
+        return view('page');
+    }
+
+    public function csrfView()
+    {
+        return view('form');
+    }
+
+    public function show()
+    {
+        return view('posts.show', ['post' => Post::find(1)]);
+    }
+}
+`;
+
+// The same store/auth/request the controller-level test uses: the view must see
+// THIS session, not an empty one and not the `noHttp` throw.
+const VIEW_SESSION = {
+  get(k, d) {
+    if (k === 'status') return 'Profil berhasil diperbarui.';
+    return d;
+  },
+  getOldInput(k, d) {
+    return k === 'name' ? 'Warga Uji' : d;
+  },
+  token() {
+    return 'B'.repeat(40);
+  },
+};
+
+test('#735: a compiled view reads the SAME live session the controller sees', async () => {
+  const handle = await handlerFromSource(SAMPLE_VIEW, 'page', {
+    ...META_BASE,
+    routeUri: '/page',
+    routeParams: [],
+    views: ['page'],
+  });
+  const res = await handle({ request: { method: 'GET', path: '/page', headers: {}, host: 'example.com' }, session: VIEW_SESSION });
+  assert.equal(res.status, 200);
+  // Before the fix the render threw `session(): no HTTP context (static snapshot
+  // / build-time evaluation)` and the compiled handler answered a 500.
+  assert.equal(res.body, 'status=Profil berhasil diperbarui. name=Warga Uji token=' + 'B'.repeat(40));
+});
+
+test('#735: @csrf inside a view emits the live token', async () => {
+  const handle = await handlerFromSource(SAMPLE_VIEW, 'csrfView', {
+    ...META_BASE,
+    routeUri: '/form',
+    routeParams: [],
+    views: ['form'],
+  });
+  const res = await handle({ request: { method: 'GET', path: '/form', headers: {}, host: 'example.com' }, session: VIEW_SESSION });
+  assert.equal(res.status, 200);
+  assert.equal(res.body, '<input type="hidden" name="_token" value="' + 'B'.repeat(40) + '" autocomplete="off">');
+});
+
+test('#735: without an HTTP ctx the view still fails loud (static snapshot)', async () => {
+  const handle = await handlerFromSource(SAMPLE_VIEW, 'show', {
+    ...META_BASE,
+    routeUri: '/posts/{id}',
+    routeParams: ['id'],
+  });
+  const res = await handle({ params: { id: '1' }, request: { method: 'GET', path: '/', headers: {}, host: 'example.com' } }, { DB: dbWithRow });
+  assert.equal(res.status, 200);
+  // `posts.show` calls no HTTP helper: forwarding `http: undefined` must not
+  // invent one, and the model still comes from D1.
+  assert.match(res.body, /<h1>Hello Edge<\/h1>/);
 });

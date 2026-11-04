@@ -19,7 +19,7 @@ const errOf = (src) => {
   return r.errors[0];
 };
 
-const EXPECTED = new Set(['view', 'abort', 'compact', 'redirect', 'session', 'cache', 'old', 'csrf_token', 'csrf_field', 'request']);
+const EXPECTED = new Set(['view', 'abort', 'compact', 'redirect', 'session', 'cache', 'old', 'csrf_token', 'csrf_field', 'method_field', 'request', 'cookie']);
 
 test('the gated set is exactly the known helpers', () => {
   assert.deepEqual([...CTX_GATED_HELPERS].sort(), [...EXPECTED].sort());

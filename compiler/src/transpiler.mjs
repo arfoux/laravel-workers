@@ -4,7 +4,7 @@ import { Collection } from '../../kernel/collections.mjs';
 import { STR_METHODS } from '../../kernel/str.mjs';
 import { ARR_METHODS } from '../../kernel/arr.mjs';
 import { ADAPTER_ASYNC } from '../../kernel/service-adapters.mjs';
-import { KNOWN_RULES } from '../../kernel/validator.mjs';
+import { KNOWN_RULES, SNIFFED_EXTENSIONS, SNIFFED_MIME_TYPES } from '../../kernel/validator.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -183,7 +183,21 @@ function tx(node) {
         // is a plain function, so `this` is the object it is called on). A
         // constructor compiles into a factory, so it names its own object.
         if (CTX.classMethod) return CTX.thisVar || 'this';
-        throw mkErr('LW002', '$this is not supported in transpiled controllers — ' + PORT_HINT, node.loc, PORT_HINT);
+        // A CONTROLLER's own methods are compiled the same way (the class
+        // surface): `$this` is the instance object built in the handler
+        // (`__self`). It is a const in the enclosing scope, so a closure
+        // captures it lexically - that is why this flag is NOT classMethod
+        // (which would also switch the FormRequest hook gate and the closure
+        // `this`-binding, both of which belong to the class compiler).
+        if (CTX.classSurface) return CTX.thisVar || '__self';
+        throw mkErr(
+          'LW002',
+          '$this is not supported in transpiled controllers — a controller\'s own methods (its private helpers) are not ' +
+            'compiled: inline the helper into the route method, or ' +
+            PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
       }
       return vname(node.name);
     case 'encapsed': {
@@ -614,6 +628,23 @@ function txBin(node) {
       return 'rt.mod(' + L() + ', ' + R() + ')';
     case '**':
       return 'rt.pow(' + L() + ', ' + R() + ')';
+    case 'instanceof':
+      // NOT compiled: the runtime has no general class identity/inheritance
+      // (`__lwClass` marks a compiled class instance, but a Blade component
+      // class like ComponentAttributeBag has no kernel counterpart at all), so
+      // mapping it to a helper would move a BUILD-TIME refusal into a
+      // request-time 500 - the opposite of the promise. The message names the
+      // real cause instead: Laravel's Blade compiler emits this operator for
+      // every `<x-...>` component (CompilesComponents::compileClassComponentOpening),
+      // and COMPILED.md lists components as port-required.
+      throw mkErr(
+        'LW002',
+        'the `instanceof` operator is not compiled (the compiled rung has no general class inheritance). ' +
+          "Laravel's Blade compiler emits it for every <x-...> component, which is a documented gap: " +
+          PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
     default:
       throw mkErr('LW002', 'unsupported operator ' + t, node.loc);
   }
@@ -631,6 +662,12 @@ let LOCAL_VARS = [];
 // controller method body. It enables: model query chains, redirect()/response()->json(),
 // view()/abort()/compact(), and await-based async codegen for D1 queries.
 let CTX = null;
+// The VIEW compile context: a view IS a compile context (Laravel's views call the
+// HTTP helpers - `@csrf` compiles to `echo csrf_field();`, forms read
+// `old('x')`), so the CTX-gated helpers resolve to rt.* there instead of being
+// refused as "no compile context". Kept separate from CTX so the controller
+// branches (which read CTX.models/jobs/classes) never see a half-built map.
+let VIEW_MODE = false;
 let CLOSURE_DEPTH = 0;
 // The kinds of the view data: a Blade view carries no type information, so the
 // build tells the compiler what the view receives ({ paginator: 'paginator' }
@@ -655,6 +692,14 @@ const MODEL_CHAIN_BUILDER = new Set([
 const MODEL_CHAIN_TERMINAL = new Set(['first', 'firstOrFail', 'get', 'count', 'pluck', 'value', 'paginate']);
 // The paginator's surface (kernel/paginator.mjs - the LengthAwarePaginator).
 // `links()` renders the pagination view (the compiled `pagination::tailwind`).
+// The Carbon surface the runtime implements (`rt.now()`/date attributes). A view
+// may call these on a date value; nothing else is opened up.
+const DATE_VIEW_METHODS = new Set([
+  'copy', 'clone', 'format', 'translatedFormat', 'locale',
+  'toDateString', 'toDateTimeString', 'toTimeString', 'toIso8601String',
+  'getTimestamp', 'timestamp',
+]);
+
 const PAGINATOR_METHODS = new Set([
   'items', 'getCollection', 'count', 'isEmpty', 'isNotEmpty', 'total', 'perPage',
   'currentPage', 'lastPage', 'getPageName', 'onEachSide', 'firstItem', 'lastItem',
@@ -719,11 +764,12 @@ const EXCEPTION_VIEW_METHODS = new Set(['getMessage', 'getStatusCode', 'getCode'
 // ---------------------------------------------------------------------------
 // HTTP helpers available inside a compiled controller (7b)
 // ---------------------------------------------------------------------------
-// `session()`, `old()`, `csrf_token()`, `csrf_field()`, `request()` map straight
-// onto rt.* (which reads the live session/request handed down by the kernel).
+// `session()`, `old()`, `csrf_token()`, `csrf_field()`, `method_field()`,
+// `request()` map straight onto rt.* (which reads the live session/request
+// handed down by the kernel).
 // `auth()` / `Auth::*` need the request context too and the guard resolves the
 // user asynchronously (Timebox), so in controller mode those calls are awaited.
-const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'request', 'cache']);
+const HTTP_HELPERS = new Set(['session', 'old', 'csrf_token', 'csrf_field', 'method_field', 'request', 'cache', 'cookie']);
 // The Laravel helpers that only compile inside a controller/view context (the
 // build sets CTX). `transpile()` without CTX (a standalone snippet or a tool
 // run) used to answer the generic LW001 "unknown function" for these — false,
@@ -806,8 +852,8 @@ const FILE_ASYNC = new Set(['store', 'storeAs']);
 // verdict differs at the edge. (The kernel's own KNOWN_RULES decides what IS
 // compiled, so the two can never disagree.)
 const UNCOMPILED_RULE_REASONS = new Map([
-  ['mimes', "it reads the file's *content* type (finfo), and the edge only has the type the browser declared"],
-  ['mimetypes', "it reads the file's *content* type (finfo), and the edge only has the type the browser declared"],
+  ['mimes', "it reads the file's *content* type through finfo, and the edge sniffs image HEADERS only - this parameter names a format the edge cannot answer (jpg, jpeg, png, gif, webp, avif, heic and heif can be answered)"],
+  ['mimetypes', "it reads the file's *content* type through finfo, and the edge sniffs image HEADERS only - this MIME is outside the answerable image set (image/jpeg, image/png, image/gif, image/webp, image/avif, image/heic, image/heif)"],
   ['active_url', 'it resolves the host over DNS, which a Worker cannot do'],
   ['mx_record', 'it resolves the domain over DNS, which a Worker cannot do'],
   ['encoding', "it needs mb_check_encoding over the file's content"],
@@ -888,10 +934,37 @@ export function uncompiledRuleOf(value) {
 
 // The verdict for one rule set already split into tokens (the string form is
 // split by the caller; the ARRAY form's elements are passed whole).
+// `mimes`/`mimetypes` ARE compiled when every parameter names an image format
+// the edge's header read can answer (kernel/image.mjs -> SNIFFED_*): the rule
+// then answers exactly what finfo + guessExtension() would. Any other
+// parameter (pdf, svg, docx, bmp, ...) keeps the build loud and is NAMED.
+function mimesUnanswerableParam(name, token) {
+  const idx = String(token).indexOf(':');
+  if (idx === -1) return null; // no parameter: every file fails, exactly like PHP
+  const params = String(token)
+    .slice(idx + 1)
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const allowed = name === 'mimetypes' ? SNIFFED_MIME_TYPES : SNIFFED_EXTENSIONS;
+  return params.find((p) => !allowed.has(p.toLowerCase())) ?? null;
+}
+
 function uncompiledRuleTokens(tokens) {
   for (const token of tokens) {
     const name = String(token).split(':')[0].trim().toLowerCase();
     if (!name) continue;
+    if (name === 'mimes' || name === 'mimetypes') {
+      const unanswerable = mimesUnanswerableParam(name, token);
+      if (unanswerable === null) continue;
+      return {
+        name,
+        message:
+          'the ' + name + ' validation rule is not compiled for "' + unanswerable + '" - ' +
+          UNCOMPILED_RULE_REASONS.get(name) + '; ' +
+          PORT_HINT,
+      };
+    }
     if (UNCOMPILED_RULE_REASONS.has(name)) {
       return {
         name,
@@ -1025,10 +1098,13 @@ function txRequestCall(node, args) {
     }
     return vname(inner.name) + '.validated()';
   }
-  if (!REQUEST_CALL.has(meth)) {
+  // `user()` is ASYNC at the edge (the guard reads D1), so it lives in
+  // REQUEST_ASYNC - and the gate below only consulted REQUEST_CALL, which
+  // refused the one method every authenticated page calls.
+  if (!REQUEST_CALL.has(meth) && !REQUEST_ASYNC.has(meth)) {
     throw mkErr(
       'LW002',
-      'unsupported $request->' + meth + '() — allowed: ' + [...REQUEST_CALL].join(', ') + '; ' + PORT_HINT,
+      'unsupported $request->' + meth + '() — allowed: ' + [...REQUEST_CALL, ...REQUEST_ASYNC].join(', ') + '; ' + PORT_HINT,
       node.loc,
       PORT_HINT
     );
@@ -1179,8 +1255,11 @@ function txRedirectChain(node) {
       // The flash modifiers: redirect('/x')->with('k','v')->withInput()->withErrors(...)
       // The runtime applies the flash to the session (Laravel's flash lives
       // there for the next request) and returns the same redirect.
-      if (m === 'with' || m === 'withInput' || m === 'withErrors') {
+      if (m === 'with' || m === 'withInput' || m === 'withErrors' || m === 'withCookie') {
         const a = node.arguments || [];
+        if (m === 'withCookie' && a.length !== 1) {
+          throw mkErr('LW002', 'redirect()->withCookie() needs one cookie (build it with cookie(...))', node.loc, PORT_HINT);
+        }
         if (m === 'with' && a.length === 0) {
           throw mkErr(
             'LW002',
@@ -1908,6 +1987,19 @@ function txCall(node) {
     }
     if (CTX && CTX.controller && HTTP_HELPERS.has(name)) {
       const a = node.arguments || [];
+      if (name === 'cookie') {
+        // `cookie($name = null, $value = null, $minutes = 0, $path = null,
+        // $domain = null, $secure = null, $httpOnly = true, $raw = false,
+        // $sameSite = null)` (Foundation/helpers.php:372-381). The runtime
+        // builds the cookie through the request's CookieJar (audit #722); the
+        // `cookie()` ROOT form (no arguments) returns the factory - refused,
+        // because there is no app container to hand out.
+        if (a.length === 0) {
+          throw mkErr('LW002', 'cookie() without arguments returns the CookieFactory — pass a name (audit #722)', node.loc, PORT_HINT);
+        }
+        if (a.length > 9) throw mkErr('LW002', 'cookie() takes at most 9 arguments', node.loc, PORT_HINT);
+        return 'rt.cookie(' + a.map(tx).join(', ') + ')';
+      }
       if (name === 'session') {
         if (a.length === 0) return 'rt.session()';
         if (a.length > 2) throw mkErr('LW002', 'session() supports at most 2 arguments', node.loc, PORT_HINT);
@@ -1960,6 +2052,10 @@ function txCall(node) {
         if (a.length) throw mkErr('LW002', name + '() takes no arguments', node.loc, PORT_HINT);
         return 'rt.' + name + '()';
       }
+      if (name === 'method_field') {
+        if (a.length !== 1) throw mkErr('LW002', 'method_field() takes one argument', node.loc, PORT_HINT);
+        return 'rt.method_field(' + args + ')';
+      }
       if (name === 'request') {
         if (a.length) throw mkErr('LW002', 'request(...) with arguments is not supported', node.loc, PORT_HINT);
         return 'rt.request()';
@@ -1988,6 +2084,22 @@ function txCall(node) {
     }
     // The helper is known to Laravel, but this compile context has no CTX:
     // say so instead of the misleading "unknown function".
+    if (VIEW_MODE && HTTP_HELPERS.has(name)) {
+      // The `cookie()` ROOT form returns the CookieFactory (no container at the
+      // edge), and the factory surface is not modelled — refuse it loudly at
+      // build time instead of answering `undefined` at render time (audit #722).
+      if (name === 'cookie' && (!node.arguments || node.arguments.length === 0)) {
+        throw mkErr('LW002', 'cookie() without arguments returns the CookieFactory — pass a name (audit #722)', node.loc, PORT_HINT);
+      }
+      // session('k') is `session()->get('k', null)` — Laravel's helper takes the
+      // KEY. Emitting `rt.session("k")` handed the view the store OBJECT (every
+      // `@if (session('status'))` was truthy and `{{ session('status') }}`
+      // printed "Object"). The bare form stays the store, like PHP's.
+      if (name === 'session' && node.arguments && node.arguments.length > 0) {
+        return 'rt.session().get(' + args + ')';
+      }
+      return 'rt.' + name + '(' + args + ')';
+    }
     if (CTX_GATED_HELPERS.has(name)) {
       throw mkErr(
         'LW002',
@@ -1998,10 +2110,11 @@ function txCall(node) {
     }
     const whitelisted = new Set(['e', 'str_replace', 'config', 'public_path', 'file_exists', 'url', 'route', 'auth']);
     const builtins = new Set([
-      'isset', 'empty', 'unset', 'count', 'in_array', 'implode', 'explode',
+      'isset', 'empty', 'count', 'in_array', 'implode', 'explode',
       'sprintf', 'strtolower', 'strtoupper', 'trim', 'number_format', 'nl2br',
       'strlen', 'substr', 'str_repeat', 'str_contains', 'str_starts_with', 'str_ends_with',
       'ucfirst', 'lcfirst', 'str_pad', 'array_key_exists', 'array_keys', 'array_values', 'array_merge',
+      'mb_strlen', 'mb_substr', 'mb_strtoupper', 'mb_strtolower',
       'array_diff_key',
       'ltrim', 'rtrim', 'ucwords', 'strrev', 'strpos', 'strrpos', 'substr_count', 'strip_tags', 'htmlspecialchars',
       'is_null', 'is_bool', 'is_boolean', 'is_int', 'is_integer', 'is_long', 'is_float', 'is_double', 'is_real',
@@ -2496,6 +2609,15 @@ function txCall(node) {
         // `$exception->getMessage()`); the runtime's error object carries the
         // methods the framework views use.
         if (phpVar === 'exception' && EXCEPTION_VIEW_METHODS.has(meth)) {
+          return expr;
+        }
+        // A DATE the view received (a model's date attribute is a Carbon value
+        // in the runtime): the date surface below is IMPLEMENTED at the edge, so
+        // refusing it was a false refusal - and it is the one thing every
+        // dashboard needs (`$post->created_at->format('j M Y')`,
+        // `->translatedFormat()`). Only the Carbon methods are named here; a
+        // model's own method still has to go through a controller.
+        if (DATE_VIEW_METHODS.has(meth)) {
           return expr;
         }
         if (phpVar !== 'errors' && !phpVar.startsWith('__')) {
@@ -3180,6 +3302,27 @@ function walkStatement(node, lines, indent, ctx) {
       lines.push(indent + '}');
       break;
     }
+    case 'unset': {
+      // `unset($a, $b)` — the compiled @error block ends with
+      // `unset($__errorArgs, $__bag)` (CompilesErrors.php:52), so every view
+      // with @error needs this. A plain variable becomes undefined: isset()
+      // answers false and `??` takes the default, exactly like PHP's post-unset
+      // value. An element/property unset is a real mutation (PHP keeps the
+      // later keys of an array), so it stays a refusal.
+      for (const v of node.variables || node.vars || []) {
+        if (!v || v.kind !== 'variable') {
+          throw mkErr(
+            'LW002',
+            'unset() of an array element or a property is not compiled — it mutates the value and PHP keeps the ' +
+              'later keys of an array — ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        lines.push(indent + tx(v) + ' = undefined;');
+      }
+      break;
+    }
     case 'nop':
       break;
     default:
@@ -3191,6 +3334,10 @@ function walkStatement(node, lines, indent, ctx) {
 function collect(node, funcs, vars) {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) { for (const n of node) collect(n, funcs, vars); return; }
+  // `$this` is not a local: in a compiled controller it is the instance object
+  // (`__self`), bound by the handler, so hoisting `let v_this;` would shadow it
+  // with undefined and every helper call would die at request time.
+  if (node.kind === 'variable' && node.name === 'this') return;
   if (node.kind === 'function' && node.name) {
     const nm = node.name.name || node.name;
     if (nm) funcs.add(String(nm));
@@ -3222,6 +3369,7 @@ function collect(node, funcs, vars) {
 }
 
 export function transpile(compiledSource, opts = {}) {
+  VIEW_MODE = !!opts.view;
   let ast;
   try {
     ast = phpParser.parseCode(compiledSource);
@@ -3290,6 +3438,7 @@ export function transpile(compiledSource, opts = {}) {
 // Returns { code, errors }; code is the JS body of an async request handler
 // (no wrapper function — the caller generates the handler skeleton).
 export function transpileControllerMethod(bodyChildren, opts = {}) {
+  VIEW_MODE = false;
   const funcs = new Set();
   const vars = new Set();
   collect(bodyChildren || [], funcs, vars);
@@ -3326,6 +3475,10 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     instantiated: new Set(),
     // Inside a compiled class method, `$this` is the instance.
     classMethod: !!opts.classMethod,
+    // A controller whose own methods are compiled into an instance object
+    // (`__self`): `$this` resolves to that object, but the class-method
+    // machinery (the FormRequest gate, the closure `this` binding) stays off.
+    classSurface: !!opts.classSurface,
     // The class's own methods (a method call on $this is one of them).
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
     // The type of each parameter of the method being compiled (the variable
