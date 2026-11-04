@@ -91,6 +91,11 @@ and `.env.example`; it takes `php-version`, `node-version`, `working-directory`,
 `mode`, `schema` (`''` | `skip` | `apply`) and needs `APP_KEY` +
 `CLOUDFLARE_API_TOKEN` secrets and a `CLOUDFLARE_ACCOUNT_ID` variable.
 
+`app-deploy.yml` runs **no composer**: `deploy` provisions a composer-free vendor
+tree from `composer.lock` (vendor-lite). `app-check.yml` keeps one composer step
+only because `tests` runs PHPUnit from require-dev, which vendor-lite never
+provisions; a check with `tests: ''` does not need it either.
+
 Because they encode assumptions, they are **convenience, not the contract**: the
 documented pattern above is the contract. Fork them if an app deviates.
 

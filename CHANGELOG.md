@@ -7,7 +7,9 @@ The change-by-change record of laravel-workers (M1–M70 and the A-series audit 
 served and which gaps ship. `action/verdict` turns the build log into one sticky
 PR comment and the job summary (fork-safe, exit 0, gaps never hidden), and
 `docs/CI.md` documents the contract with copy-paste `ci.yml`/`deploy.yml` plus
-the optional `app-check.yml`/`app-deploy.yml` reusable workflows. The traps that
+the optional `app-check.yml`/`app-deploy.yml` reusable workflows. Neither deploy
+path runs composer: vendor-lite provisions from `composer.lock`; composer is
+kept only where PHPUnit (require-dev) runs. The traps that
 break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
 `APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
 fail-open.

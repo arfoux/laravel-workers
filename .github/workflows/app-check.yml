@@ -75,6 +75,9 @@ jobs:
           restore-keys: |
             composer-${{ runner.os }}-
 
+      # Composer stays ONLY here: when `tests` runs `php artisan test`, PHPUnit
+      # comes from require-dev, and vendor-lite never provisions require-dev.
+      # The build itself does not need it (vendor-lite reads composer.lock).
       - name: Install Composer dependencies
         working-directory: ${{ inputs.working-directory }}
         run: composer install --no-interaction --prefer-dist --no-progress

@@ -84,7 +84,6 @@ jobs:
           php-version: ${{ inputs.php-version }}
           extensions: mbstring, xml, ctype, iconv, sqlite3, pdo_sqlite
           coverage: none
-          tools: composer:v2
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -93,10 +92,9 @@ jobs:
           cache: npm
           cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
 
-      - name: Install Composer dependencies
-        working-directory: ${{ inputs.working-directory }}
-        run: composer install --no-interaction --prefer-dist --no-progress
-
+      # No composer: `deploy` provisions a composer-free vendor tree from
+      # composer.lock (vendor-lite). Nothing in this job runs PHPUnit, and
+      # vendor-lite never provisions require-dev.
       - name: Install npm dependencies
         working-directory: ${{ inputs.working-directory }}
         run: npm ci
