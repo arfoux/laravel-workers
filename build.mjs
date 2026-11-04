@@ -57,6 +57,7 @@ import {
 import { dirname, join, relative, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { relativizeSnapshotUrls } from './tools/snapshot-urls.mjs';
 
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 let appDir;
@@ -875,11 +876,8 @@ const appUrlOrigin = (() => {
     return ''; // no APP_URL / not an absolute URL
   }
 })();
-const originRe = new RegExp(
-  '(?:https?:)?//(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::\\d+)?/|' +
-    (appUrlOrigin ? appUrlOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/' : '(?!)'),
-  'g'
-);
+// The rewrite pattern lives in tools/snapshot-urls.mjs so the bare-root case
+// (`route('home')` -> `http://localhost`, no path) is covered by a test.
 
 // The framework can write an error page to stdout around our payload (console
 // exception renderers bypass PHP output buffering), so prerender.php terminates
@@ -995,11 +993,11 @@ mkdirSync(join(dist, 'public'), { recursive: true });
 mkdirSync(join(dist, 'src'), { recursive: true });
 
 const writePage = (file, html) => {
-  const rel = html.replace(originRe, '/');
+  const { html: rel, fixed } = relativizeSnapshotUrls(html, appUrlOrigin);
   const outPath = join(dist, 'public', file);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, rel);
-  return { bytes: rel.length, fixed: (html.match(originRe) || []).length };
+  return { bytes: rel.length, fixed };
 };
 
 const snapshots = [];
