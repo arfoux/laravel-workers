@@ -10,6 +10,19 @@ This is the first release after 0.4.8. The guard-port work (2026-11-03) and the 
 audit wave (2026-11-04) both ship here; their notes are kept as the two `###` waves below
 because they were written as they landed.
 
+### Fix — every fresh vendor-lite provision died with a ReferenceError (#752)
+`tools/vendor-lite.mjs` computed `installedJson` inside `ensureVendorLite`'s scope but wrote it from
+`provision()` — a separate function — so the manifest line answered `ReferenceError: installedJson is
+not defined`. That is the "no `vendor/`, no `composer install`" path the README advertises (Composer:
+"none — vendor-lite provisions deps"): a real app with no `vendor/` (an isolated copy of the nearFind
+branch, PHP 8.3.30) answered `BUILD FAILED: vendor provisioning failed: installedJson is not defined`
+and `READINESS: DOES NOT RUN`, and `vendor:ensure` could never fill a cold cache. Measured: with the
+fix that same app provisions the tree and the build proceeds (routes, config, schema, snapshots).
+The suite never saw it because every CI app comes from `composer create-project`, which always leaves a
+`vendor/` behind — the new case in `kernel/tests/vendor-lite.test.mjs` drives the cache-MISS path
+offline (the package dir is seeded as already extracted, so nothing is downloaded): **1/1 fail before
+the fix, 9/9 pass after**.
+
 ### Fix — the framework-only allowlist pointed at a doc that does not state it (#749)
 The comment above `FRAMEWORK_ONLY` (`tools/tests/routes-oracle-parity.test.mjs`) said
 the two rows (`up`, `storage/{path}`) are "named in `docs/AUDIT-REAL-APPS.md`", but that

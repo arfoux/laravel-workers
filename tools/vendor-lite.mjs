@@ -542,6 +542,11 @@ export async function ensureVendorLite(appDir, opts = {}) {
 
 async function provision(appDir, dir, autoload, hash, opts) {
   const hasLock = existsSync(join(appDir, 'composer.lock'));
+  // The manifest path `ensureVendorLite` computes for its self-heal branch is
+  // scoped to THAT function; provisioning needs its own (writing the manifest it
+  // never declared used to answer `ReferenceError: installedJson is not
+  // defined`, so every cache miss - the no-vendor/ build - died).
+  const installedJson = join(dir, 'vendor', 'composer', 'installed.json');
   if (!hasLock && !existsSync(join(appDir, 'composer.json'))) {
     throw new Error(`vendor-lite: ${appDir} contains neither composer.lock nor composer.json — nothing to install`);
   }
