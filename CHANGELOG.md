@@ -14,6 +14,14 @@ break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
 `APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
 fail-open.
 
+### Fix — a changed binding replayed a stale verdict
+`wrangler.jsonc` (where the D1/R2/QUEUE bindings the verdict reads live) was not
+part of the build cache key: adding a `queues.producers` binding still answered
+"cache hit, dist is current" and printed the OLD verdict ("binds no QUEUE
+producer"). Measured with `computeBuildCacheKey` on a two-file app: identical
+keys before and after the binding. The key now hashes `wrangler.jsonc` and
+`wrangler.toml`, with `tools/tests/build-cache.test.mjs` as the regression test.
+
 ### Fix — a cache hit hid the verdict from the log
 `build` exits early on a cache hit; the early return skipped the `READINESS:`
 block, so the log a CI reporter reads carried no verdict at all — a green build
