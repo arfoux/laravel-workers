@@ -7,6 +7,30 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const appDir = process.cwd();
 const cmd = process.argv[2] ?? 'help';
+const version = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version;
+
+// The mark, in the terminal (docs/BRAND.md): Laravel red on the stem, Workers
+// orange on the arrow. Colour only for a human — a pipe, `NO_COLOR`, or a dumb
+// terminal gets the plain one-line version, so `--version` stays
+// machine-readable and byte-stable for scripts. `FORCE_COLOR` overrides either
+// way (0/empty = never, anything else = always).
+const MARK_RED = [255, 45, 32];
+const MARK_ORANGE = [243, 128, 32];
+const colourise = (() => {
+  const forced = process.env.FORCE_COLOR;
+  if (forced !== undefined && forced !== '') return forced !== '0';
+  if (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== '') return false;
+  return Boolean(process.stdout.isTTY) && process.env.TERM !== 'dumb';
+})();
+const paint = (rgb, text) => (colourise ? `\x1b[38;2;${rgb.join(';')}m${text}\x1b[39m` : text);
+const stem = (n = 3) => paint(MARK_RED, '█'.repeat(n));
+// The L, three rows, arrowhead orange — the same shape as docs/logo.svg.
+const MARK_ROWS = () => [stem() + ' ', stem() + ' ', stem() + paint(MARK_ORANGE, '▶')];
+// One line of text beside the mark's top row; the rest of the column is blank.
+const markBanner = (rows) =>
+  MARK_ROWS()
+    .map((row, i) => (rows[i] ? row + '  ' + rows[i] : row))
+    .join('\n');
 
 // The Laravel app root is not always the cwd. `npx laravel-workers …` may run
 // from a subdirectory, and an npm install puts this package at
@@ -69,11 +93,21 @@ Developer tasks (test/bench/docs) run via the package.json scripts:
 `;
 
 if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
-  process.stdout.write(HELP);
+  if (colourise) {
+    // The mark sits beside the first line of the existing help text; the copy
+    // itself is generated in exactly one place (HELP), never duplicated.
+    const [first, ...rest] = HELP.split('\n');
+    process.stdout.write('\n' + markBanner([first]) + '\n' + rest.join('\n'));
+  } else {
+    process.stdout.write(HELP);
+  }
   process.exit(0);
 }
 if (cmd === '--version' || cmd === '-v') {
-  process.stdout.write('laravel-workers ' + JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version + '\n');
+  if (colourise) {
+    process.stdout.write('\n' + markBanner([`laravel-workers ${version}`, 'Laravel → Cloudflare Workers']) + '\n');
+  }
+  process.stdout.write('laravel-workers ' + version + '\n');
   process.exit(0);
 }
 

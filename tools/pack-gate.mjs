@@ -63,6 +63,7 @@ export const REQUIRED_DOCS = [
   'docs/AUDIT-2026-10-27.md',
   'docs/AUDIT-REAL-APPS.md',
   'docs/SWEEP-FINDINGS.md',
+  'docs/BRAND.md',
 ];
 
 const here = dirname(fileURLToPath(import.meta.url));

@@ -2,6 +2,19 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Brand — one source for the mark, and the CLI wears it
+
+The mark, palette, voice and surface list now live in **docs/BRAND.md**;
+`docs/CI.md` §Brand keeps only the reporter facts and links to it, so a colour
+changes in one commit, not five. The pack gate requires the file (a dead link
+in the npm page is a bug), and the README points at it from the CI and Docs
+sections.
+
+`laravel-workers --help` and `--version` show the mark (Laravel red stem,
+Workers orange arrowhead) **only for a human**: a pipe, `NO_COLOR`, or a dumb
+terminal gets the plain one-line output, so `--version` stays machine-readable
+and byte-stable for scripts. `FORCE_COLOR` overrides either way. The help text
+itself is still generated in one place.
 ### Brand — Verdict wears the project mark, and can post as your app
 
 The reporter now opens every comment and job summary with the laravel-workers
