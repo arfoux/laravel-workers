@@ -18,6 +18,15 @@ carries the five-step recipe (permissions, private key, secret, caller). A fork
 pull request never receives the app token — it carries write — so the comment
 falls back to `github.token` there. No app configured means no secret and no
 install step; the mark is still there.
+### Brand — the mark is the Laravel L, its foot ending in an edge arrow
+
+`docs/logo.svg` (+ `.png`) is the project mark, and `docs/banner.svg` /
+`docs/social-preview.svg` now carry it next to the wordmark. The palette is the two
+brands the tool joins, and nothing else: Laravel `#ff2d20` at the stem (the PHP side),
+Cloudflare Workers `#f38020` at the arrowhead (the edge). The hero keeps the warm
+radial wash and the red→orange top rule; the gradient runs `#ff2d20 → #ff4f20 → #f38020`,
+so the old cyan (`#38bdf8`) is gone. Marks are re-used as transformed groups rather
+than redrawn, so the logo and the hero cannot drift.
 
 ### CI — Verdict, the reporter for `READINESS`, and the official app workflows
 `build --strict` says whether the app compiles; it does not say which routes are
