@@ -14,6 +14,14 @@ inputs:
     description: '"false" keeps the job summary but skips the pull-request comment.'
     required: false
     default: 'true'
+  token:
+    description: >
+      Token used for the pull-request comment. Defaults to github.token, which
+      posts as github-actions[bot]. Pass a GitHub App installation token to have
+      the comment authored by your own app (see docs/CI.md, "Comment as your own
+      app"); the job summary needs no token either way.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -23,7 +31,7 @@ runs:
       env:
         INPUT_LOG: ${{ inputs.log }}
         INPUT_COMMENT: ${{ inputs.comment }}
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.token != '' && inputs.token || github.token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
       run: node "${{ github.action_path }}/main.mjs"

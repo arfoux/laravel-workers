@@ -23,6 +23,15 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 
 const MARKER = '<!-- verdict -->';
 
+// The reporter carries the project's own mark, so a build comment in an APP
+// repository is recognisably laravel-workers rather than an anonymous green
+// check. The PNG is the rgba mark from this repo's `main`: comments render
+// markdown images from any host, and the mark has no background rect, so it
+// reads on the light and the dark comment theme alike. The marker must stay the
+// first line — the sticky lookup matches `body.startsWith(MARKER)`.
+const MARK = 'https://github.com/arfoux/laravel-workers/raw/main/docs/logo.png?raw=1';
+const BRAND = `<img src="${MARK}" width="20" height="20" alt="laravel-workers" align="top"> **laravel-workers**`;
+
 const logPath = process.env.INPUT_LOG || process.argv[2] || 'edge-build.log';
 const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
 
@@ -52,7 +61,7 @@ if (routes !== null) facts.push(`**${routes}/${routes} routes** handled`);
 if (tables !== null) facts.push(`**${plural(tables, 'table', 'tables')}** in \`dist/schema.sql\``);
 if (commit) facts.push(`commit \`${commit}\``);
 
-const lines = [MARKER, `### Verdict: ${verdict}`, ''];
+const lines = [MARKER, BRAND + ' · edge gate', '', `### Verdict: ${verdict}`, ''];
 
 if (!block) {
   lines.push(
