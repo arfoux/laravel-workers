@@ -42,6 +42,13 @@ on:
         description: Run `php artisan test` after the gate.
         type: boolean
         default: true
+      app-id:
+        description: >
+          Optional. With your app's private key passed as the LW_APP_PRIVATE_KEY
+          secret (`secrets: inherit`), Verdict comments as your app instead of
+          github-actions[bot]. Leave empty for the zero-secret default.
+        type: string
+        default: ''
 
 jobs:
   check:
@@ -114,11 +121,26 @@ jobs:
 
       # Verdict ships in this repo and is released with these workflows: the
       # caller pins @v1 and both stay in step.
+      #
+      # A fork pull request is skipped on purpose: the app token carries WRITE,
+      # so minting one for a PR nobody has reviewed would hand an untrusted
+      # branch the repo's comment permissions. The default github.token is
+      # read-only on forks, which is the safe half of the same trade.
+      - name: Verdict token (optional — comment as your app)
+        id: verdict-token
+        if: ${{ inputs.app-id != '' && github.event.pull_request.head.repo.fork != true }}
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.LW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Verdict
         if: always()
         uses: arfoux/laravel-workers/action/verdict@v1
         with:
           log: ${{ inputs.working-directory }}/edge-build.log
+          token: ${{ steps.verdict-token.outputs.token || '' }}
 
       - name: Check code style
         if: ${{ inputs.lint }}

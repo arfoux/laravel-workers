@@ -2,6 +2,23 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Brand — Verdict wears the project mark, and can post as your app
+
+The reporter now opens every comment and job summary with the laravel-workers
+mark (`docs/logo.png`, 20 px) instead of an anonymous green check, so a build
+comment in an app repository is recognisably the tool that produced it. The mark
+sits after the `<!-- verdict -->` marker, which the sticky lookup matches from
+the start of the body — reordering those two lines would silently turn every
+update into a new comment.
+
+Posting as **your own GitHub App** is now opt-in rather than absent: `verdict`
+takes an optional `token`, `app-check.yml` takes an optional `app-id` and mints
+an installation token with `actions/create-github-app-token`, and `docs/CI.md`
+carries the five-step recipe (permissions, private key, secret, caller). A fork
+pull request never receives the app token — it carries write — so the comment
+falls back to `github.token` there. No app configured means no secret and no
+install step; the mark is still there.
+
 ### CI — Verdict, the reporter for `READINESS`, and the official app workflows
 `build --strict` says whether the app compiles; it does not say which routes are
 served and which gaps ship. `action/verdict` turns the build log into one sticky
