@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="laravel-workers">
+  <title>laravel-workers — the Laravel L, its foot ending in a Workers edge arrow</title>
+  <!--
+    Brand palette, exactly two brands:
+      Laravel  #FF2D20  — the stem, the PHP side
+      Workers  #F38020  — the arrowhead, the Cloudflare edge
+    One shape: Laravel's "L" with a sharp-cornered foot ending in an arrowhead.
+    No background rect: it reads on light and on dark.
+  -->
+  <defs>
+    <linearGradient id="lw-edge" gradientUnits="userSpaceOnUse" x1="146" y1="80" x2="432" y2="372">
+      <stop offset="0" stop-color="#ff2d20"/>
+      <stop offset="0.55" stop-color="#ff4f20"/>
+      <stop offset="1" stop-color="#f38020"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#lw-edge)" d="M132 68h140v240h96l100 64-100 64H132z"/>
+</svg>

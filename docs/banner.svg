@@ -1,26 +1,46 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 280" width="1280" height="280" role="img" aria-label="laravel-workers — compile Laravel to Cloudflare Workers">
   <title>laravel-workers</title>
+  <!--
+    Palette: Laravel #ff2d20 -> Cloudflare Workers #f38020. The mark is docs/logo.svg,
+    re-used here as a transformed group so the hero and the mark can never drift.
+  -->
   <defs>
     <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#ff2d20"/>
-      <stop offset="1" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#f38020"/>
     </linearGradient>
+    <linearGradient id="lw-edge" gradientUnits="userSpaceOnUse" x1="146" y1="80" x2="432" y2="372">
+      <stop offset="0" stop-color="#ff2d20"/>
+      <stop offset="0.55" stop-color="#ff4f20"/>
+      <stop offset="1" stop-color="#f38020"/>
+    </linearGradient>
+    <radialGradient id="warmth" cx="0.12" cy="0.5" r="0.75">
+      <stop offset="0" stop-color="#ff2d20" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#f38020" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#0b1220" stop-opacity="0"/>
+    </radialGradient>
     <clipPath id="card">
       <rect x="0" y="0" width="1280" height="280" rx="20"/>
     </clipPath>
   </defs>
-  <rect x="0" y="0" width="1280" height="280" rx="20" fill="#0b1220" stroke="#1e293b" stroke-width="1"/>
+  <rect x="0" y="0" width="1280" height="280" rx="20" fill="#0b1220" stroke="#2a3242" stroke-width="1"/>
   <g clip-path="url(#card)">
+    <rect x="0" y="0" width="1280" height="280" fill="url(#warmth)"/>
     <rect x="0" y="0" width="1280" height="6" fill="url(#edge)"/>
   </g>
-  <text x="72" y="116" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="60" font-weight="700" fill="#f8fafc">laravel-workers</text>
-  <text x="72" y="159" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="25" fill="#a3b1c6">Compile Laravel to a tiny JS bundle that runs on Cloudflare Workers.</text>
-  <text x="72" y="196" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="21" fill="#8296ad">No PHP at the edge · No WASM · No cold-start drama · pure V8 isolates, p95 ≤ 5 ms CPU</text>
-  <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="20">
-    <text x="72" y="241" fill="#e6edf6">Blade · PHP · Eloquent</text>
-    <text x="374" y="241" fill="#ff2d20">→</text>
-    <text x="420" y="241" fill="#e6edf6">compile at build</text>
-    <text x="649" y="241" fill="#38bdf8">→</text>
-    <text x="695" y="241" fill="#e6edf6">V8 isolates + D1</text>
+
+  <g transform="translate(60,114) scale(0.25)">
+    <path fill="url(#lw-edge)" d="M132 68h140v240h96l100 64-100 64H132z"/>
+  </g>
+
+  <text x="212" y="128" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="54" font-weight="700" fill="#f8fafc">laravel-workers</text>
+  <text x="212" y="168" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="24" fill="#a9b6c8">Compile Laravel to a tiny JS bundle that runs on Cloudflare Workers.</text>
+  <text x="212" y="203" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="20" fill="#8593a6">No PHP at the edge · No WASM · No cold-start drama · pure V8 isolates, p95 ≤ 5 ms CPU</text>
+  <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="19">
+    <text x="212" y="245" fill="#e6edf6">Blade · PHP · Eloquent</text>
+    <text x="500" y="245" fill="#ff2d20">→</text>
+    <text x="546" y="245" fill="#e6edf6">compile at build</text>
+    <text x="760" y="245" fill="#f38020">→</text>
+    <text x="806" y="245" fill="#e6edf6">V8 isolates + D1</text>
   </g>
 </svg>
