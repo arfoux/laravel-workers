@@ -357,6 +357,13 @@ if (noCache) {
       console.log(
         `• build cache: hit (${buildCacheInfo.files} input files unchanged; built with PHP ${stamp.phpVersion || '?'}) — dist/ is current`
       );
+      // The verdict is a property of the artifact, not of the work: a cache hit
+      // that stayed silent hid the gaps from the log a CI reporter reads.
+      if (typeof stamp.readiness === 'string' && stamp.readiness.trim()) {
+        console.log(stamp.readiness);
+      } else {
+        console.log('  (this cached build predates the stored verdict — pass --no-cache to print it)');
+      }
       console.log('  (pass --no-cache or set LW_NO_BUILD_CACHE=1 to rebuild anyway)');
       process.exit(0);
     }
@@ -3899,6 +3906,8 @@ try {
         bytes: finalInfo.bytes,
         phpVersion: resolved && resolved.version,
         dist: relPath(distFinal),
+        // The verdict travels with the stamp so a cache hit can still print it.
+        readiness: renderReadiness(findings),
       },
       null,
       2
