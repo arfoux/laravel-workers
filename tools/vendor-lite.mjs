@@ -114,6 +114,11 @@ function readLockPackages(appDir) {
       vendor,
       pkg,
       version: String(p.version || ''),
+      // `provision()` skips metapackages by `type` (they declare requirements
+      // and ship no files, so the lock carries no dist for them). Reading the
+      // lock without this field made that skip unreachable and refused the
+      // build with "no dist archive" for a package that was never fetchable.
+      type: String(p.type || ''),
       url: (p.dist && p.dist.url) || null,
       shasum: (p.dist && p.dist.shasum) || null,
       source: (p.source && p.source.url) || null,
@@ -563,7 +568,7 @@ async function provision(appDir, dir, autoload, hash, opts) {
     if (existsSync(pkgDir)) continue; // already extracted: resume without re-downloading
     if (!e.url) {
       throw new Error(
-        `${e.pkg}: no dist archive${e.source ? ` (source-only package: ${e.source})` : ''} — vendor-lite only fetches dist zips; commit a composer.lock or fall back to composer install for this project`
+        `${e.name || e.pkg}: no dist archive${e.source ? ` (source-only package: ${e.source})` : ''} — vendor-lite only fetches dist zips; commit a composer.lock or fall back to composer install for this project`
       );
     }
     const zip = join(tmpdir(), `lw-vendor-${process.pid}-${Date.now()}-${e.pkg}.zip`);
@@ -571,12 +576,15 @@ async function provision(appDir, dir, autoload, hash, opts) {
     extractZip(zip, pkgDir);
     rmSync(zip, { force: true });
   }
-  writeFileSync(autoload, buildAutoloadPhp(entries, appDir, dir));
-  // composer's own metadata lands where Laravel looks for it (see
-  // installedJsonOf()); `lw_boot_app()` points COMPOSER_VENDOR_DIR at the same
-  // directory. The file is not optional, and `vendor/composer/` only exists when
-  // the app happens to depend on a composer/* package — create it either way.
+  // `vendor/` exists only once a package was extracted, and a lock whose every
+  // package is virtual (a metapackage, skipped above) extracts none — the
+  // generated autoloader still belongs there, so the directories come first.
+  // `vendor/composer/` is where composer's own metadata lands; `lw_boot_app()`
+  // points COMPOSER_VENDOR_DIR at the same directory. installed.json is not
+  // optional, and the directory only exists when the app happens to depend on a
+  // composer/* package — create it either way.
   mkdirSync(join(dir, 'vendor', 'composer'), { recursive: true });
+  writeFileSync(autoload, buildAutoloadPhp(entries, appDir, dir));
   writeFileSync(installedJson, JSON.stringify(installedJsonOf(entries), null, 4) + '\n');
   try { writeFileSync(join(dir, '.lw-app'), appDir + '\n'); } catch {}
   if (!hasLock) {
