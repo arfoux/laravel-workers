@@ -29,21 +29,21 @@
   <rect x="0" y="0" width="1280" height="640" fill="url(#warmth2)"/>
   <rect x="0" y="0" width="1280" height="10" fill="url(#edge)"/>
 
-  <g transform="translate(96,36) scale(0.345)">
+  <g transform="translate(96,72) scale(0.345)">
     <path fill="url(#lw-edge)" d="M132 68h140v240h96l100 64-100 64H132z"/>
   </g>
 
-  <text x="96" y="290" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="86" font-weight="700" fill="#f8fafc">laravel-workers</text>
-  <text x="96" y="352" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="34" fill="#a9b6c8">Compile Laravel to a tiny JS bundle</text>
-  <text x="96" y="398" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="34" fill="#a9b6c8">that runs on Cloudflare Workers.</text>
+  <text x="96" y="326" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="86" font-weight="700" fill="#f8fafc">laravel-workers</text>
+  <text x="96" y="388" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="34" fill="#a9b6c8">Compile Laravel to a tiny JS bundle</text>
+  <text x="96" y="434" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="34" fill="#a9b6c8">that runs on Cloudflare Workers.</text>
   <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="26">
-    <text x="96" y="470" fill="#e6edf6">No PHP at the edge  ·  No WASM  ·  No cold-start drama</text>
+    <text x="96" y="506" fill="#e6edf6">No PHP at the edge  ·  No WASM  ·  No cold-start drama</text>
   </g>
   <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="24">
-    <text x="96" y="528" fill="#93a2b6">Blade · PHP · Eloquent</text>
-    <text x="452" y="528" fill="#ff2d20">→</text>
-    <text x="510" y="528" fill="#93a2b6">compile at build</text>
-    <text x="800" y="528" fill="#f38020">→</text>
-    <text x="858" y="528" fill="#93a2b6">V8 isolates + D1</text>
+    <text x="96" y="564" fill="#93a2b6">Blade · PHP · Eloquent</text>
+    <text x="452" y="564" fill="#ff2d20">→</text>
+    <text x="510" y="564" fill="#93a2b6">compile at build</text>
+    <text x="800" y="564" fill="#f38020">→</text>
+    <text x="858" y="564" fill="#93a2b6">V8 isolates + D1</text>
   </g>
 </svg>
