@@ -34,7 +34,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # ... php, node, npm ci, npm run build, cp .env.example .env
       # No composer: `vendor-lite` provisions a composer-free vendor tree from
       # composer.lock (the e2e job exercises that path). Install composer only
