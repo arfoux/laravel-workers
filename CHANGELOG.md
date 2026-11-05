@@ -14,6 +14,13 @@ break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
 `APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
 fail-open.
 
+### Fix — one "cannot resolve" line per route, not per verb
+`Route::redirect()` expands to five compiled verbs, and the controller pass
+printed the same `cannot resolve Illuminate\Routing\RedirectController` line
+once per verb: one gap read like five. Deduplicated by (route, class). Measured
+on a probe app: 5 identical lines -> 1; the readiness block is unchanged (it
+still names the route's verb gaps).
+
 ### Fix — a changed binding replayed a stale verdict
 `wrangler.jsonc` (where the D1/R2/QUEUE bindings the verdict reads live) was not
 part of the build cache key: adding a `queues.producers` binding still answered

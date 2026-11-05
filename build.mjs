@@ -2101,10 +2101,17 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
     // build's process count O(routes).
     const prepared = [];
     const resolvable = [];
+    // One target per (route, verb): a redirect route expands to five verbs and
+    // used to print the same "cannot resolve" line five times.
+    const unresolved = new Set();
     for (const t of targets) {
       const file = resolvePsr4(t.fqcn);
       if (!file) {
-        console.log(`  controller ${t.route}: skipped — cannot resolve ${t.fqcn} via composer autoload`);
+        const key = `${t.route}|${t.fqcn}`;
+        if (!unresolved.has(key)) {
+          unresolved.add(key);
+          console.log(`  controller ${t.route}: skipped — cannot resolve ${t.fqcn} via composer autoload`);
+        }
         continue;
       }
       resolvable.push({ ...t, file });
