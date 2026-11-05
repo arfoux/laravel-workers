@@ -51,6 +51,11 @@ const APP_FILES = [
   'public/build/fonts-manifest.json',
   'public/hot',
   'public/mix-manifest.json',
+  // The bindings live here and the readiness verdict reads them (D1/R2/QUEUE
+  // notes), so a changed binding must rebuild instead of replaying a stale
+  // verdict from the cache.
+  'wrangler.jsonc',
+  'wrangler.toml',
 ];
 // The worker's own source (`src/worker.mjs`) ships into every artifact; it is
 // as much a compiler input as tools/.
