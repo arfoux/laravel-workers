@@ -31,6 +31,7 @@ import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import { BLOCK, DECLARED, isBuildEnvDbFailure, renderReadiness, sweepAppSources } from './tools/readiness.mjs';
 import { utcTriggersFor } from './tools/schedule-utc.mjs';
 import { deserializeOrdered, configModuleSource } from './tools/order-json.mjs';
+import { parseJsonc } from './tools/jsonc.mjs';
 import { compilePolicies } from './compiler/src/policy.mjs';
 import { compileClasses, compileOneMethod } from './compiler/src/classes.mjs';
 import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
@@ -130,8 +131,8 @@ const childEnv = () => {
   // who exported these keeps their value.
   const phpCacheDir = join(cacheDir, 'php');
   mkdirSync(phpCacheDir, { recursive: true });
-  // Relative, because Laravel's normalizeCachePath() only treats '/' and '\\' as
-  // absolute prefixes: a Windows "C:\\..." value would be joined onto basePath.
+  // Relative, because Laravel's normalizeCachePath() only treats '/' and '\' as
+  // absolute prefixes: a Windows "C:\..." value would be joined onto basePath.
   const phpCacheRel = relative(appDir, phpCacheDir).split('\\').join('/') + '/';
   return {
     ...process.env,
@@ -1413,15 +1414,36 @@ const authProviderFqcns = Object.entries(runtimeConfig)
 }
 
 // Does the app bind a Cloudflare product under a given name? `product` is the
-// wrangler key ('r2_buckets' | 'd1_databases'). `wrangler.jsonc` is JSON with
-// comments, so the comments are stripped before parsing.
+// wrangler key ('r2_buckets' | 'd1_databases' | 'queues' etc.).
+// wrangler.jsonc is JSONC: comments, trailing commas and a BOM are all legal,
+// and JSON.parse rejects every one of them (`{"a":1,}` and a BOM both throw —
+// verified against tools/jsonc.mjs on those inputs). A rejected parse answered
+// `false` for EVERY product, so the `d1_databases`/`r2_buckets` notes fired for
+// apps that did bind them. The project's own reader is the authority — the same
+// one `deploy` edits — so the source-aware AST is turned back into plain data.
+function jsoncValue(node) {
+  if (!node || typeof node !== 'object') return null;
+  if (node.type === 'object') {
+    const out = {};
+    for (const entry of node.entries || []) out[entry.key] = jsoncValue(entry.value);
+    return out;
+  }
+  if (node.type === 'array') return (node.items || []).map(jsoncValue);
+  return node.value === undefined ? null : node.value;
+}
+
 function hasBinding(appRoot, product, name) {
   const jsonc = join(appRoot, 'wrangler.jsonc');
   if (existsSync(jsonc)) {
     try {
-      const text = readFileSync(jsonc, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-      const cfg = JSON.parse(text);
-      const list = cfg[product];
+      const cfg = jsoncValue(parseJsonc(readFileSync(jsonc, 'utf8')));
+      // `d1_databases` and `r2_buckets` are arrays of `{ binding, ... }`;
+      // Queues nests its bindings instead —
+      // {"queues":{"producers":[{"queue":"...","binding":"QUEUE"}]}}
+      // (docs/queues/configuration/configure-queues). Reading `cfg.queues` as
+      // an array answered `false` no matter what the app bound, so the
+      // schedule note below fired for every app with cron triggers.
+      const list = product === 'queues' ? cfg.queues && cfg.queues.producers : cfg[product];
       if (Array.isArray(list) && list.some((b) => b && b.binding === name)) return true;
     } catch {
       /* a wrangler.jsonc we cannot parse is not a binding we can rely on */
@@ -1432,8 +1454,11 @@ function hasBinding(appRoot, product, name) {
     try {
       const text = readFileSync(toml, 'utf8');
       // Every [[product]] block (up to the next table): does one bind the name?
+      // Same divergence as the JSON above: `[[d1_databases]]`/`[[r2_buckets]]`
+      // bind directly, Queues binds through `[[queues.producers]]`.
+      const table = product === 'queues' ? 'queues.producers' : product;
       return text
-        .split(new RegExp('\\[\\[' + product + '\\]\\]'))
+        .split(new RegExp('\\[\\[' + table.split('.').join('\\.') + '\\]\\]'))
         .slice(1)
         .some((b) => new RegExp('binding\\s*=\\s*"' + name + '"').test(b.split(/\n\s*\[/)[0]));
     } catch {
@@ -3784,14 +3809,36 @@ if (strict && blocked) {
 // A queued job with no cron trigger never runs: the route would answer 200 and
 // the work would silently never happen (Laravel runs it). This runs LAST -
 // `queuePushes` is filled while the controllers are emitted.
+//
+// The check reads the build-time schedule (`cronTriggers`), but a Controller may
+// own its own cron trigger through the OUTER web surface instead: `POST
+// /__lw/cron` (kernel/worker.mjs, gated on `LW_CRON_SECRET`) runs `runSchedule`
+// AND `drainQueue` over the same `lw_jobs` table. That is the documented
+// padanan for an app with no consumer runtime, so refusing the push would be
+// refusing the app's only queue path. `GET` reaches this check (the compiler
+// only turns `Job::dispatch()` into `rt.queuePush(` inside a GET handler: a
+// POST controller is emitted elsewhere), so the app answers it by routing a GET
+// to the dispatching Controller - `GET /jobs` in lw-showcase. When it does, the
+// queue cause below is set DECLARED (it shows in the verdict and the route
+// ships) instead of BLOCK.
+const queueCronSecret = !!process.env.LW_CRON_SECRET;
 if (queuePushes.length && !(cronTriggers && cronTriggers.length)) {
-  for (const route of queuePushes) note({ route, area: 'queue', severity: BLOCK, cause: 'dispatches a queued job, but the worker has no cron trigger', fix: 'add `[triggers] crons = ["*/1 * * * *"]` to wrangler.toml (a Worker has no long-lived consumer), or dispatch the job inline (QUEUE_CONNECTION=sync)', paths: [{ tier: 'free', what: 'add `[triggers] crons = ["*/1 * * * *"]` to wrangler.toml - the compiled rung writes the job to the D1 lw_jobs table and the cron trigger drains it (free accounts get 5 triggers)' }, { tier: 'free', what: 'or dispatch inline with QUEUE_CONNECTION=sync when the work is small enough to finish in the request' }, { tier: 'paid', what: 'Cloudflare Queues with a consumer you write - charged per operation' }] });
-  fail(
-    'the route(s) ' + queuePushes.join(', ') + ' dispatch a queued job, but the worker has no cron trigger - ' +
-      'a Worker has no long-lived queue consumer, so the job would never run. Add a cron trigger ' +
-      '(wrangler.toml `[triggers] crons = ["*/1 * * * *"]`) or dispatch the job inline ' +
-      "(Laravel's sync driver) instead"
-  );
+  const queuePaths = [
+    { tier: 'free', what: 'expose the HTTP cron face: set LW_CRON_SECRET and call `POST /__lw/cron` with `X-LW-Cron` - it runs the schedule AND drains lw_jobs (the same drain the deployed trigger runs)' },
+    { tier: 'free', what: 'add `[triggers] crons = ["*/1 * * * *"]` to wrangler.toml - the compiled rung writes the job to the D1 lw_jobs table and the cron trigger drains it (free accounts get 5 triggers)' },
+    { tier: 'free', what: 'or dispatch inline with QUEUE_CONNECTION=sync when the work is small enough to finish in the request' },
+    { tier: 'paid', what: 'Cloudflare Queues with a consumer you write - charged per operation' },
+  ];
+  for (const route of queuePushes) note({ route, area: 'queue', severity: queueCronSecret ? DECLARED : BLOCK, cause: 'dispatches a queued job, but the worker has no build-time cron trigger', fix: queueCronSecret ? 'the build ran with LW_CRON_SECRET set, so the HTTP cron face is armed: POST /__lw/cron drains lw_jobs (and runs the schedule). Set the same secret on the deployed Worker, or add a wrangler.toml cron trigger.' : 'add `[triggers] crons = ["*/1 * * * *"]` to wrangler.toml (a Worker has no long-lived consumer), or dispatch the job inline (QUEUE_CONNECTION=sync)', paths: queuePaths });
+  if (!queueCronSecret) {
+    fail(
+      'the route(s) ' + queuePushes.join(', ') + ' dispatch a queued job, but the worker has no cron trigger - ' +
+        'a Worker has no long-lived queue consumer, so the job would never run. Add a cron trigger ' +
+        '(wrangler.toml `[triggers] crons = ["*/1 * * * *"]`), bind LW_CRON_SECRET so the HTTP cron face ' +
+        'drains lw_jobs, or dispatch the job inline ' +
+        "(Laravel's sync driver) instead"
+    );
+  }
 }
 
 // A pushed job whose class did not COMPILE can never run either: the drain
