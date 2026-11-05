@@ -46,7 +46,10 @@ export function isPlatformKey(name) {
 
 /** Stability of a release string: 1.0.0=stable, 1.0.0-rc1=rc, 13.x-dev=dev. */
 export function stabilityOf(version) {
-  const v = String(version).toLowerCase();
+  // Composer strips `+build` metadata before reading the modifier: a
+  // `1.0.0-rc1+build` release is RC, not stable (probed against
+  // Composer\Semver\VersionParser::parseStability).
+  const v = String(version).toLowerCase().split('+')[0];
   if (v.startsWith('dev-') || /[-.]dev(?:[.-]?\d+)?$/.test(v)) return 'dev';
   let m = v.match(/[-.](?:alpha|beta|rc)(?:[.-]?\d+)?$/);
   if (m) return m[0].includes('alpha') ? 'alpha' : m[0].includes('beta') ? 'beta' : 'rc';

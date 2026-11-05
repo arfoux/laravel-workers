@@ -67,6 +67,8 @@ test('stabilityOf classifies tagged, prerelease, and branch versions', () => {
     '1.0.0-beta2': 'beta', '1.0.0-alpha.1': 'alpha', '1.0.0a1': 'alpha',
     '1.0.0-dev': 'dev', 'dev-main': 'dev', 'dev-master': 'dev', '13.x-dev': 'dev',
     '1.0.x-dev': 'dev',
+    // Composer strips `+build` metadata (probe: VersionParser::parseStability).
+    '1.0.0+build.5': 'stable', '1.0.0-rc1+build': 'rc', '1.0.0-beta.2+exp.sha': 'beta',
   };
   for (const [v, want] of Object.entries(table)) assert.equal(stabilityOf(v), want, v);
 });
