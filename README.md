@@ -377,7 +377,9 @@ official CI surface closes that:
   `APP_URL` baked at build, `CACHE_STORE=file` disabling the login throttle).
 - **`action/verdict`** — reads the build log, posts one sticky PR comment
   (`### Verdict: RUNS WITH DECLARED GAPS`) plus the job summary. Fork-safe, always
-  exit 0, never hides a gap.
+  exit 0, never hides a gap. The mark, palette and voice it carries are defined
+  once in **[docs/BRAND.md](docs/BRAND.md)**, together with how to pin the action
+  in your own repo instead of copying the script.
 - **`app-check.yml` / `app-deploy.yml`** — optional reusable workflows for apps that
   match the defaults. The documented pattern is the contract; these are convenience.
 
@@ -647,6 +649,8 @@ PHP boots **only at S0** (build time). The edge (S1–S6) is pure JS.
 - `npm run bench` — the local micro-bench (a Node proxy for CPU: a fast regression detector).
 - `npm run gate:cpu` — the platform's own numbers: deploys a probe worker running the real kernel hot paths, reads `cpuTime`/`outcome` back through `wrangler tail`, asserts a page-like load fits the Free budget **and** that a burn is caught, then deletes the worker. Outside `gate:ci` (it needs a logged-in wrangler).
 - `kernel/tests/budget.test.mjs` — p95 ≤ 5 ms hot, ≤ 30 ms for the encrypter.
+- [docs/BRAND.md](docs/BRAND.md) — the mark's geometry and palette, the voice, the
+  surface list, and the one thing never to do (a runtime response header).
 
 ---
 

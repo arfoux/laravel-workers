@@ -256,16 +256,14 @@ and the PR comment are the live surface — the badge is documentation.
 
 ## Brand
 
+The mark, the palette, the voice and the surface list live in one place —
+**[docs/BRAND.md](BRAND.md)**. In reporter terms:
+
 - **Name**: Verdict — what it posts, nothing more. Not a checker (`doctor` is),
   not a pipeline.
-- **Mark**: `docs/logo.svg` — the Laravel **L** whose foot ends in an edge arrow
-  (Laravel `#ff2d20` at the stem → Cloudflare Workers `#f38020` at the arrowhead).
-  It is the same mark the README hero and the social card carry, and the reporter
-  renders it (`docs/logo.png`, 20 px) as the first line of every comment.
-- **Secondary mark**: `docs/verdict.svg` — monoline hexagon with a check, for a
-  standalone badge; `currentColor`, no gradients, no text inside.
-- **Voice**: English, terse, factual. Verdict first, then numbers, then the full
-  report folded away. Gaps are never hidden: say how many, and that they ship.
-  Never "all checks passed" without what was checked.
-- **Palette**: `ink #0E1412`, `paper #F5F2EA`, `shore #1FA37C`, `signal #E0A126`
-  (declared gaps), `block #D14343` (refusal).
+- The reporter renders the mark (`docs/logo.png`, 20 px) as the first line of
+  every comment and job summary, after the `<!-- verdict -->` marker the sticky
+  lookup matches on.
+- The mark's geometry, the palette tokens, the voice rules and the recipe for
+  pinning the action in your own repo are in BRAND.md; keep them there so a
+  colour changes in one commit, not five.
