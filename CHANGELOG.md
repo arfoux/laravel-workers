@@ -14,6 +14,14 @@ break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
 `APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
 fail-open.
 
+### Fix — `+build` metadata hid a prerelease's stability
+`stabilityOf('1.0.0-rc1+build')` answered `stable`: the modifier regexes are
+end-anchored and the build metadata sits after the tag, so vendor-lite could
+accept an RC where Composer's `minimum-stability` refuses it. Composer's
+`VersionParser::parseStability` answers RC; the metadata is now stripped before
+the modifier is read. Probed: a 19-version matrix (tagged, prerelease, branch,
+build metadata) matches Composer after case-normalisation.
+
 ### Fix — one "cannot resolve" line per route, not per verb
 `Route::redirect()` expands to five compiled verbs, and the controller pass
 printed the same `cannot resolve Illuminate\Routing\RedirectController` line
