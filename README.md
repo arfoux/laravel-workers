@@ -3,7 +3,8 @@
 > Compile your Laravel app to a tiny JS bundle that runs on Cloudflare Workers.
 > No PHP at the edge. No WASM. No cold-start drama.
 
-[![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/laravel-workers.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml/badge.svg)](https://github.com/arfoux/laravel-workers/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/laravel-workers.svg)](https://www.npmjs.com/package/laravel-workers) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![verdict: runs on the edge](https://img.shields.io/badge/verdict-RUNS%20ON%20THE%20EDGE-1FA37C)](docs/CI.md)
+
 
 ![laravel-workers — compile Laravel to Cloudflare Workers](https://github.com/arfoux/laravel-workers/raw/main/docs/banner.png?raw=1)
 
