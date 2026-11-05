@@ -2,6 +2,13 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Brand — the README badge row states the verdict
+
+The shields snippets were documentation only; the badge row now carries
+`verdict | RUNS ON THE EDGE` in the brand's `shore` green, linking the CI
+contract. Repo metadata (description, homepage, 16 topics) and the social
+preview are set, and the surface list in docs/BRAND.md records where each one
+lives.
 ### Brand — one source for the mark, and the CLI wears it
 
 The mark, palette, voice and surface list now live in **docs/BRAND.md**;

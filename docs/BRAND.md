@@ -62,10 +62,10 @@ English, terse, factual, first thing first.
 | surface | file / mechanism | notes |
 |---|---|---|
 | README hero | `docs/banner.png` | 1280×280, the first thing on the npm page |
-| GitHub social preview | `docs/social-preview.png` | uploaded by hand in Settings — the one non-automatic step |
+| GitHub social preview | `docs/social-preview.png` | uploaded in Settings; live and byte-identical to the file (`og:image` sha256 `dd1d8f7c…`) |
 | repo About | description, homepage, topics | words only; no asset |
 | the reporter | `docs/logo.png` at 20 px | first line of every Verdict comment and job summary |
-| badge | `docs/verdict.svg` / shields snippet | `docs/CI.md` §Badge |
+| badge | shields snippet in `docs/CI.md` §Badge | the README badge row carries `verdict | RUNS ON THE EDGE` in `shore` |
 | CLI | `bin/laravel-workers.mjs` | the mark above `--help`, and on `--version` **when stdout is a TTY** |
 | docs | this file | the source the rest point at |
 
