@@ -122,6 +122,9 @@ comment plus the job summary.
 | `comment` | `true` | `false` keeps the summary, skips the comment |
 
 ```markdown
+<!-- verdict -->
+<img src="https://github.com/arfoux/laravel-workers/raw/main/docs/logo.png?raw=1" width="20" height="20" align="top"> **laravel-workers** · edge gate
+
 ### Verdict: RUNS WITH DECLARED GAPS
 
 **1 declared gap** — the app answers it; it ships as-is.
@@ -140,6 +143,50 @@ comment plus the job summary.
 - No `READINESS` block → `BUILD FAILED` plus the last 40 log lines.
 - `GITHUB_STEP_SUMMARY` gets the same body, so `deploy` runs have the verdict
   too.
+
+### Comment as your own app
+
+The comment is posted with `github.token` by default, so it is authored by
+`github-actions[bot]`. To have it authored by **your** bot — its own name and
+avatar — register a GitHub App and hand Verdict an installation token:
+
+1. **Settings → Developer settings → GitHub Apps → New GitHub App.** Homepage can
+   be the repo. Permissions: **Pull requests: Read and write**, **Issues: Read and
+   write**, **Contents: Read-only**. Nothing else. Install it on the repository
+   (or organisation) that runs the build.
+2. On the app page, **Generate a private key** (`.pem`), and note the **App ID**.
+3. Store the key as a repository secret (the workflow reads this name):
+
+   ```bash
+   gh secret set LW_APP_PRIVATE_KEY < app.pem
+   ```
+
+4. Pass the App ID to the reusable workflow:
+
+   ```yaml
+   jobs:
+     check:
+       uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v1
+       secrets: inherit              # LW_APP_PRIVATE_KEY
+       with:
+         app-id: ${{ vars.LW_APP_ID }}   # or a literal id
+   ```
+
+`app-check.yml` mints the token with
+[`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)
+and passes it to Verdict, which prefers it over `github.token`. Two things to know
+before opting in:
+
+- **An app token carries write**, so a pull request from a **fork** never gets one:
+  that step is skipped and the comment falls back to `github.token` (read-only on
+  forks, so the comment is skipped and only the job summary is published).
+  Deliberate, not a limitation.
+- The private key is a real credential — same handling as `CLOUDFLARE_API_TOKEN`:
+  a repository secret, never committed. Rotate it from the app page; a revoked key
+  only costs the comment (exit code is 0 either way).
+
+With no app configured there is **nothing to install and no secret**: the reporter
+still carries the laravel-workers mark, it is just posted by `github-actions[bot]`.
 
 ## Before you deploy
 
@@ -211,8 +258,12 @@ and the PR comment are the live surface — the badge is documentation.
 
 - **Name**: Verdict — what it posts, nothing more. Not a checker (`doctor` is),
   not a pipeline.
-- **Mark**: `docs/verdict.svg` — monoline hexagon (the Worker) with a check;
-  `currentColor`, no gradients, no text inside.
+- **Mark**: `docs/logo.svg` — the Laravel **L** whose foot ends in an edge arrow
+  (Laravel `#ff2d20` at the stem → Cloudflare Workers `#f38020` at the arrowhead).
+  It is the same mark the README hero and the social card carry, and the reporter
+  renders it (`docs/logo.png`, 20 px) as the first line of every comment.
+- **Secondary mark**: `docs/verdict.svg` — monoline hexagon with a check, for a
+  standalone badge; `currentColor`, no gradients, no text inside.
 - **Voice**: English, terse, factual. Verdict first, then numbers, then the full
   report folded away. Gaps are never hidden: say how many, and that they ship.
   Never "all checks passed" without what was checked.
