@@ -14,14 +14,6 @@ break a deploy silently are named there: `--no-cache`, a valid random `APP_KEY`,
 `APP_URL` baked at build time, `CACHE_STORE=file` turning the login throttle
 fail-open.
 
-### Fix — a cache hit hid the verdict from the log
-`build` exits early on a cache hit; the early return skipped the `READINESS:`
-block, so the log a CI reporter reads carried no verdict at all — a green build
-with declared gaps looked like a green build with none. The stamp now stores the
-rendered verdict and the hit prints it (older stamps print a one-line hint).
-Measured on nearFind: forced build and cache hit now both print
-`READINESS: RUNS WITH DECLARED GAPS` with the same gap list.
-
 ### Fix — four divergences the second differential sweep found
 - `Collection::sortBy()`/`sortByDesc()` on a LIST dropped PHP's keys: PHP
   `collect([3,1])->sortBy(fn ($v) => $v)->all()` is `[1 => 1, 0 => 3]` (a keyed
