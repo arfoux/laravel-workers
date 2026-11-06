@@ -58,7 +58,7 @@ import {
 import { dirname, join, relative, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { relativizeSnapshotUrls } from './tools/snapshot-urls.mjs';
+import { relativizeContextJson, relativizeSnapshotUrls } from './tools/snapshot-urls.mjs';
 
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 let appDir;
@@ -1024,6 +1024,19 @@ const writePage = (file, html) => {
   return { bytes: rel.length, fixed };
 };
 
+// A compiled view's captured context carries the same dev origin the snapshots
+// do: compile-view.php boots the app with host `localhost`, so `@vite` and the
+// precomputed `url()` entries come back as `http://localhost/build/...`. Unlike
+// a snapshot these views run in the worker per request, and the origin would
+// then be the visitor's own machine — the page fetches its stylesheet from
+// localhost and renders unstyled. Rewrite it here, exactly as writePage() does.
+const writeContextModule = (view, context) => {
+  writeFileSync(
+    join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'),
+    'export default ' + relativizeContextJson(context, appUrlOrigin) + ';\n'
+  );
+};
+
 const snapshots = [];
 const partials = [];
 const needsPort = [];
@@ -1629,10 +1642,7 @@ const emitViewModule = (view, dumpPath, viewModulePath, viewDataKinds) => {
     writeFileSync(dumpPath, JSON.stringify(dump));
   }
   transpileToModule(dumpPath, viewModulePath);
-  writeFileSync(
-    join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'),
-    'export default ' + JSON.stringify(dump.context) + ';\n'
-  );
+  writeContextModule(view, dump.context);
   return dump;
 };
 
@@ -1787,8 +1797,7 @@ for (const [route, view] of viewMap) {
     );
   }
 
-  const contextPath = join(dist, 'src', 'contexts', viewFileName(view) + '.mjs');
-  writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
+  writeContextModule(view, dump.context);
 
   const controllerPath = join(dist, 'src', 'controllers', slug + '.mjs');
   writeFileSync(
@@ -1891,8 +1900,10 @@ if (errorViewCodes.length) {
       );
     }
 
-    const contextPath = join(dist, 'src', 'contexts', errorViewFileName + '.mjs');
-    writeFileSync(contextPath, 'export default ' + JSON.stringify(dump.context) + ';\n');
+    writeFileSync(
+      join(dist, 'src', 'contexts', errorViewFileName + '.mjs'),
+      'export default ' + relativizeContextJson(dump.context, appUrlOrigin) + ';\n'
+    );
 
     const importName = 'errorView_' + String(code).replace(/[^A-Za-z0-9_]/g, '_');
     errorViewImports.push(`import ${importName}Main from './views/${errorViewFileName}.mjs';`);
@@ -2514,7 +2525,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
               writeFileSync(dumpPath, JSON.stringify(dump));
             }
             transpileToModule(dumpPath, viewModulePath);
-            writeFileSync(join(dist, 'src', 'contexts', viewFileName(view) + '.mjs'), 'export default ' + JSON.stringify(dump.context) + ';\n');
+            writeContextModule(view, dump.context);
             compiledViews.add(view);
             for (const d of scanViewDeps(view, dump.compiled)) {
               if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
