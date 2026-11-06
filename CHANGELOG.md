@@ -2,6 +2,8 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+## v0.4.10 — a rendered view fetches its stylesheet from the app, and the brand surfaces go live (2026-11-06)
+
 ### A view rendered per request fetches its stylesheet from the app again
 
 A compiled view's captured context kept the origin the build boots it with:
