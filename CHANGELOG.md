@@ -2,6 +2,20 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A view rendered per request fetches its stylesheet from the app again
+
+A compiled view's captured context kept the origin the build boots it with:
+`compile-view.php` runs the app on host `localhost`, so `@vite()` output and the
+precomputed `url()` entries landed in `dist/src/contexts/*.mjs` as
+`http://localhost/build/...`. Prerendered snapshots already went through
+`relativizeSnapshotUrls()`; contexts did not, so every view the worker renders
+per request asked the visitor's own machine for its CSS and shipped unstyled.
+
+`relativizeContextJson()` now applies the same rewrite to the serialized
+context, and all four writers that emit one — route views, error views, the
+manifest clone, and the dependency walk — go through it. Verified on a compiled
+app: the worker emits `/build/assets/…` and the page renders styled on the edge.
+
 ### Brand — the README badge row states the verdict
 
 The shields snippets were documentation only; the badge row now carries

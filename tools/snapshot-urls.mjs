@@ -56,3 +56,18 @@ export function relativizeSnapshotUrls(html, appUrlOrigin = '') {
   out = out.replace(escaped, '\\/');
   return { html: out, fixed: fixed + escapedFixed };
 }
+
+/**
+ * A compiled view's captured runtime context, serialized for
+ * `dist/src/contexts/`. compile-view.php boots the app with host `localhost`,
+ * so `@vite()` and the precomputed `url()` entries carry that origin. Unlike a
+ * prerendered snapshot, these views run in the worker per request — an
+ * absolute `http://localhost/build/...` would point at the visitor's machine.
+ *
+ * @param {object} context
+ * @param {string} [appUrlOrigin]
+ * @returns {string} JSON with the dev/app origins turned root-relative
+ */
+export function relativizeContextJson(context, appUrlOrigin = '') {
+  return relativizeSnapshotUrls(JSON.stringify(context), appUrlOrigin).html;
+}
