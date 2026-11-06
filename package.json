@@ -1,6 +1,6 @@
 {
   "name": "laravel-workers",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Compile your Laravel app to a tiny JS bundle that runs on Cloudflare Workers. No PHP at the edge, no WASM, no cold-start drama — pure V8 isolates (measured p95 ≤ 5 ms CPU on the reference machine), D1, Blade → JS.",
   "keywords": [
     "laravel",
