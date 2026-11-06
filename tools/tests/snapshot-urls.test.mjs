@@ -3,7 +3,7 @@
 // Deployed that way, "back to the map" opened http://localhost/ on the worker.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { relativizeSnapshotUrls } from '../snapshot-urls.mjs';
+import { relativizeContextJson, relativizeSnapshotUrls } from '../snapshot-urls.mjs';
 
 const app = 'https://nearfind.example.workers.dev';
 
@@ -52,4 +52,39 @@ test('JSON-escaped slashes (json_encode wants \\/) are relativized too', () => {
 test('an origin authored in caps still resolves to the same host', () => {
   assert.equal(relativizeSnapshotUrls('HTTP://LOCALHOST/x').html, '/x');
   assert.equal(relativizeSnapshotUrls('<a href="HTTP://localhost">x</a>').html, '<a href="/">x</a>');
+});
+
+test('a serialized view context loses the dev origin (vite tags and urls)', () => {
+  // compile-view.php boots the app with host `localhost`, so the captured
+  // context ships `http://localhost/build/...` in @vite() output. Those views
+  // are rendered by the worker per request: the origin must not survive, or
+  // the deployed page asks the visitor's machine for its stylesheet.
+  const out = relativizeContextJson({
+    vite: {
+      fonts: '<link rel="preload" href="http://localhost/build/a.woff2">',
+      invoke: '<link rel="stylesheet" href="http://localhost:8000/build/app.css">',
+    },
+    urls: { home: 'http://localhost', login: 'http://localhost/masuk' },
+  });
+  assert.equal(
+    out,
+    JSON.stringify({
+      vite: {
+        fonts: '<link rel="preload" href="/build/a.woff2">',
+        invoke: '<link rel="stylesheet" href="/build/app.css">',
+      },
+      urls: { home: '/', login: '/masuk' },
+    })
+  );
+});
+
+test('a context keeps external origins intact', () => {
+  const out = relativizeContextJson({
+    vite: { fonts: '<link href="https://fonts.example/a.woff2">' },
+    urls: { docs: 'https://laravel.com/docs' },
+  });
+  assert.equal(out, JSON.stringify({
+    vite: { fonts: '<link href="https://fonts.example/a.woff2">' },
+    urls: { docs: 'https://laravel.com/docs' },
+  }));
 });
