@@ -2,6 +2,28 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### An unverifiable schema state stops the deploy instead of skipping it silently
+
+A D1 that already has tables was skipped under `--yes` whenever no schema hash
+was recorded for it, and a CI checkout never records one: `lw-state.json` is
+written by an interactive run, which is why `deploy.yml` reads the D1 id from
+`wrangler.jsonc` in the first place. The run printed one informational line,
+exited 0, and deployed. When the compiled schema had moved on since that
+database was created, the green deploy shipped code whose column did not exist —
+the first visitor got a 500, `wrangler tail` reported `outcome=ok`, and nothing
+in the workflow pointed at the schema. There is no fallback ledger to check
+either: nothing writes the `migrations` table, and `dist/schema.sql` is a
+CREATE-only snapshot that cannot add a column to a table that already exists.
+
+`resolveSchemaAction()` now answers `fail/unknown-schema` for that case, so a
+`--yes` run (and the reusable workflow, which passes it) **stops with exit 2**
+and names both explicit ways on: `--skip-schema` when the D1 is current, or
+`--schema=apply` to apply the snapshot deliberately. `--plan` reports the same
+stop (`would STOP: the schema cannot be verified`), the interactive prompt is
+unchanged, and a workflow that relied on the old silent skip adds `schema: skip`
+(its `--skip-schema`). The fake-Wrangler integration suite covers both the
+refusal (no config, state or deploy touched) and the `--skip-schema` escape.
+
 ## v0.4.10 — a rendered view fetches its stylesheet from the app, and the brand surfaces go live (2026-11-06)
 
 ### A view rendered per request fetches its stylesheet from the app again
