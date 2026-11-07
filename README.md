@@ -246,7 +246,7 @@ When the D1 already has tables, `deploy` will **not** apply the schema silently.
 - `y` → apply `dist/schema.sql` anyway.
 - A database with **0 tables** gets the schema automatically.
 - If tables exist and the current `dist/schema.sql` hash equals the hash recorded for this D1, the schema is skipped as **already applied** — no prompt.
-- With `--yes`, tables plus **no recorded hash** → skip (never apply silently). Tables plus a **changed** hash (schema drift) → **stop with exit 2** and ask for `--skip-schema` (keep the data) or `--schema=apply` (apply the change deliberately).
+- With `--yes`, tables plus **no recorded hash** → **stop with exit 2**: a CI checkout records no hash (`lw-state.json` is written by an interactive run), so the state cannot be verified and the run refuses to ship code against a schema it cannot check. Pass `--skip-schema` (these tables are current) or `--schema=apply` to go on deliberately. Tables plus a **changed** hash (schema drift) → the same **stop with exit 2**.
 - `--skip-schema` always skips. `--schema=apply` always applies, even with tables; the two flags conflict.
 - A failed table-count query stops the run (exit 1) instead of assuming the D1 is empty.
 
@@ -301,7 +301,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 
 ### When nothing prompts
 
-- `--yes` → every missing choice takes its default. A D1 with tables and no recorded hash is skipped; if the recorded hash shows drift, the run **stops** instead of re-applying.
+- `--yes` → every missing choice takes its default. A D1 with tables and **no recorded hash** stops the run (exit 2) — the schema cannot be verified, so `--skip-schema` (these tables are current) or `--schema=apply` is how you say which state you mean; if the recorded hash shows drift, the run stops the same way.
 - Non-TTY with neither `--mode` nor `--d1-*` → defaults to **mode 1 (build only)**, never touching Cloudflare.
 - `--name` alone is not a cloud mode: without `--mode 2|3` or a D1 flag it falls into mode 1 and is **rejected**, because build-only does not touch `wrangler.jsonc`.
 - A D1 flag without `--mode` on a non-TTY (or with `--yes`) implies **mode 2** — database only, no deploy.
@@ -474,7 +474,7 @@ Laravel is two halves and the build treats them as two halves. Which one you hav
 
 ### What `RUNS ON THE EDGE` claims (and what it does not)
 
-It is a claim about **routes, not data**: every route has a compiled handler, a snapshot or a port; nothing is ignored; no binding is missing. It does **not** claim your database is populated — `deploy` mode 2/3 provisions the D1 and applies `dist/schema.sql` to an empty database; with tables present it skips, prompts, or refuses on schema drift, but the rows are whoever wrote them.
+It is a claim about **routes, not data**: every route has a compiled handler, a snapshot or a port; nothing is ignored; no binding is missing. It does **not** claim your database is populated — `deploy` mode 2/3 provisions the D1 and applies `dist/schema.sql` to an empty database; with tables present it refuses unless a recorded hash proves the schema already applied (or you say which state you mean), and it refuses on schema drift, but the rows are whoever wrote them.
 
 To render pages the build boots your app, and a Laravel app reads its own `sessions` table on every request — which used to make a fresh `laravel new` project report `DOES NOT RUN` for no reason at all. So when your own `database/database.sqlite` is absent, the build gives the app a throwaway SQLite (`.cache/laravel-workers/build.sqlite`, your schema applied, **empty**) for the duration of the build. It is not your database and not the cloud D1. Your existing database file, when present, is used as-is.
 

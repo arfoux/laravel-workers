@@ -223,8 +223,12 @@ Dashboard → My Profile → API Tokens → Create Custom Token:
 ## Schema and data
 
 `deploy --mode 3` = build + ensure D1 + schema + deploy, in one process.
-Schema is stateful: empty D1 → applied; tables present → skipped; schema hash
-changed → refused (`--skip-schema` / `--schema=apply` are the only ways past).
+Schema is stateful: empty D1 → applied; tables present → **refused** unless a
+recorded hash proves the schema is already applied (`--skip-schema` /
+`--schema=apply` are the only ways past); schema hash changed → refused. A CI
+checkout has no `lw-state.json`, so on a populated D1 `--yes` refuses by
+default — pass `schema: skip` (the reusable workflow's input) when the tables
+are already current.
 `dist/schema.sql` is `CREATE TABLE` only — apply it once.
 
 Data comes after schema, as **data-only** SQL (no DDL), verified with
@@ -236,7 +240,8 @@ Data comes after schema, as **data-only** SQL (no DDL), verified with
 |---|---|
 | `commitDist: cannot move … dist aside` | `dist/` locked by `wrangler dev`/editor; the previous `dist` is intact, the new build is in `dist.building` |
 | `Unsupported cipher or incorrect key length` | `APP_KEY` malformed (needs `base64:` + 32 bytes), also in CI's random key |
-| `schema drift: dist/schema.sql changed …` | tables exist and the schema changed; decide `--skip-schema` or `--schema=apply` |
+| `schema drift: dist/schema.sql changed ...` | tables exist and the schema changed; decide `--skip-schema` or `--schema=apply` |
+| `schema state unknown: "<db>" already has N table(s) ...` | tables exist but no hash was ever recorded for this D1 (a CI checkout, or a database that predates the tool); decide `--skip-schema` or `--schema=apply` |
 | no `READINESS` in CI | cache hit; add `--no-cache` |
 | `GET /up` 404 on the edge | health route registered in `bootstrap/app.php`, not a route file — declare it |
 | login works, no rate-limit | `CACHE_STORE=file` at build; the throttle port fails open |
