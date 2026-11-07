@@ -2,6 +2,27 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A signed number in an app config group reaches the edge again
+
+`tools/static.mjs` (`evalConfigExpr()`) never had a `unary` branch, and
+php-parser tags a SIGNED literal as `unary`: `-6.8905` is
+`unary('-', number('6.8905'))`, never a `number` node. The value therefore
+evaluated to `undefined`, and the array entry around it was dropped by the
+evaluator's "never give an unknown expression a slot" rule — the **key**
+disappeared from `dist/src/config.generated.mjs` with no note, no warning and no
+build failure, while every positive neighbour came through.
+
+A real app hit it: `config/needs.php` carries six `'latitude' => -6.8905…`
+values (Bandung is south of the equator), all six were missing from the dump, and
+the page died on `Invalid LngLat object: (107.5944, NaN)`. The same hole swallowed
+`-12` and an explicit `+6.8905`; only a binary spelling (`0 - 6.8905`) survived.
+
+`evalConfigExpr()` now answers `unary` for `-`, `+` and `!`, mirroring
+`evalConstantExpr()`, which has always handled them. The new case in
+`tools/tests/env-fold.test.mjs` writes a real `config/demo.php` and pins PHP
+8.3's own answers (`-6.8905`, `+6.8905` → `6.8905`, `-12`, and the nested
+`latitude`/`longitude` pair); it fails without the branch.
+
 ### An unverifiable schema state stops the deploy instead of skipping it silently
 
 A D1 that already has tables was skipped under `--yes` whenever no schema hash
