@@ -1326,6 +1326,26 @@ export function evalConfigExpr(node, ctx, depth = 0) {
       return node.value;
     case 'number':
       return Number(node.value);
+    // php-parser 3.x wraps a SIGNED literal in a `unary` node: `-6.8905` is
+    // `unary('-', number('6.8905'))`, `+6.8905` its `+` twin — never a `number`
+    // node. The array-KEY sibling above (`keyExprOf`) has always handled the
+    // sign; this VALUE branch did not, so the value evaluated to `undefined`
+    // and the entry around it was dropped by the "never give an unknown
+    // expression a slot" rule below — the KEY vanished from the dumped config
+    // with no note (`'latitude' => -6.8905` was missing from
+    // dist/src/config.generated.mjs while its positive neighbour survived, and
+    // the app's map died on `Invalid LngLat object: (107.5944, NaN)`).
+    // `!` goes through phpTruthy(): PHP's `!'0'` and `![]` are TRUE.
+    case 'unary': {
+      if (node.type === '!') {
+        const v = evalConfigExpr(node.what, ctx, depth + 1);
+        return v === undefined ? undefined : !phpTruthy(v);
+      }
+      if (node.type !== '-' && node.type !== '+') return undefined;
+      const v = evalConfigExpr(node.what, ctx, depth + 1);
+      if (typeof v !== 'number') return undefined;
+      return node.type === '-' ? -v : v;
+    }
     case 'string':
       return node.value;
     case 'array': {

@@ -170,3 +170,44 @@ test('a ternary in a REAL config/*.php is evaluated (parser kind `retif`)', () =
   assert.equal(config.demo.miss, 'unset');
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('a signed number literal in a REAL config/*.php survives the load (parser kind `unary`)', () => {
+  // php-parser 3.x tags `-6.8905` as `unary('-', number('6.8905'))` — a SIGNED
+  // literal is never a `number` node. evalConfigExpr() had no `unary` branch, so
+  // the value evaluated to `undefined` and the array entry was skipped by its
+  // "never give an unknown expression a slot" rule: the KEY disappeared from the
+  // dumped config, with no note and no build failure. A map config hit it for
+  // real — `'latitude' => -6.8905` was absent from
+  // `dist/src/config.generated.mjs` while `longitude` (positive) came through,
+  // and the page died on `Invalid LngLat object: (107.5944, NaN)`.
+  //
+  // PHP 8.3 oracle:
+  //   php -r "echo json_encode(['lat' => -6.8905, 'plus' => +6.8905,
+  //     'int' => -12, 'rows' => [['id' => 'a', 'latitude' => -6.8905]]]);"
+  //   -> {"lat":-6.8905,"plus":6.8905,"int":-12,"rows":[{"id":"a","latitude":-6.8905}]}
+  //   php -r "var_dump(!'0');" -> bool(true)   (a bare JS `!'0'` answers false)
+  const dir = mkdtempSync(join(tmpdir(), 'lw-cfg-'));
+  mkdirSync(join(dir, 'config'), { recursive: true });
+  writeFileSync(join(dir, '.env'), '');
+  writeFileSync(
+    join(dir, 'config', 'demo.php'),
+    '<?php\nreturn [\n'
+      + "    'lat'  => -6.8905,\n"
+      + "    'plus' => +6.8905,\n"
+      + "    'int'  => -12,\n"
+      + "    'pos'  => 6.8905,\n"
+      + "    'negate' => !'0',\n"
+      + "    'rows' => [['id' => 'a', 'latitude' => -6.8905, 'longitude' => 107.5944]],\n"
+      + '];\n'
+  );
+  const { config, error } = loadConfig(dir, readEnvFile(dir));
+  assert.equal(error, null);
+  assert.equal(config.demo.lat, -6.8905);
+  assert.equal(config.demo.plus, 6.8905);
+  assert.equal(config.demo.int, -12);
+  assert.equal(config.demo.pos, 6.8905);
+  assert.equal(config.demo.negate, true);
+  // The nested form is the one a real `needs`-style group uses.
+  assert.deepEqual(config.demo.rows[0], { id: 'a', latitude: -6.8905, longitude: 107.5944 });
+  rmSync(dir, { recursive: true, force: true });
+});
