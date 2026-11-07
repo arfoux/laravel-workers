@@ -269,6 +269,28 @@ test('--plan --check with drift and --yes exits 2 and explains both safe flags',
   assert.equal(app.readConfig(), beforeConfig);
 });
 
+test('--plan --check with an unverifiable schema state exits 2 before any cloud write', (t) => {
+  const app = makeApp(t, {
+    state: stateFor({ schemaHash: null }),
+    databases: [{ uuid: DB_ID, name: 'my-app-db', tables: 3 }],
+  });
+  const beforeState = readFileSync(app.statePath, 'utf8');
+  const beforeConfig = app.readConfig();
+
+  const result = app.run([
+    '--plan', '--mode', '3', '--d1-auto', '--name', 'my-app', '--yes', '--check',
+  ]);
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stdout, /the schema cannot be verified/);
+  assert.match(result.stdout, /--skip-schema/);
+  assert.match(result.stdout, /--schema=apply/);
+  assert.match(result.stdout, /Plan NOT ready/);
+  assert.equal(app.schemaCalls().length, 0);
+  assert.equal(readFileSync(app.statePath, 'utf8'), beforeState);
+  assert.equal(app.readConfig(), beforeConfig);
+});
+
 test('--plan uses a manually renamed wrangler.jsonc name without writing', (t) => {
   const app = makeApp(t);
   const beforeConfig = app.readConfig();

@@ -1026,9 +1026,6 @@ function schemaPlanText(action, meta, count) {
       ? `would ask; drift detected (${count} table(s) present)`
       : `would ask; ${count} table(s) present`;
   }
-  if (action.action === 'fail') {
-    return `would STOP: drift detected and --yes is set (${count} table(s) present)`;
-  }
   return 'not checked (current dist/schema.sql; --plan does not rebuild)';
 }
 
