@@ -703,6 +703,46 @@ test('schema drift with --yes fails before injecting or deploying', (t) => {
   assert.doesNotMatch(app.readConfig(), new RegExp(DB_ID));
 });
 
+test('tables with no recorded hash refuse under --yes instead of skipping silently', (t) => {
+  // The failure this locks: a CI deploy has no lw-state.json (the file is
+  // local), so against a D1 that already has tables the run used to print one
+  // informational line, exit 0, and ship code whose new schema never reached
+  // the database. The refusal must come before the config is touched.
+  const app = makeApp(t, {
+    state: stateFor({ schemaHash: null }),
+    databases: [{ uuid: DB_ID, name: 'my-app-db', tables: 3 }],
+  });
+  const beforeState = readFileSync(app.statePath, 'utf8');
+  const beforeConfig = app.readConfig();
+
+  const result = app.run(['--mode', '3', '--d1-id', DB_ID, '--yes', '--name', 'other-app']);
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /schema state unknown/);
+  assert.match(result.stderr, /3 table\(s\)/);
+  assert.match(result.stderr, /--skip-schema/);
+  assert.match(result.stderr, /--schema=apply/);
+  assert.equal(app.schemaCalls().length, 0);
+  assert.equal(app.calls().filter((call) => call.args?.[0] === 'deploy').length, 0);
+  assert.equal(readFileSync(app.statePath, 'utf8'), beforeState);
+  assert.equal(app.readConfig(), beforeConfig);
+});
+
+test('--skip-schema keeps the unknown-state deploy possible', (t) => {
+  const app = makeApp(t, {
+    state: stateFor({ schemaHash: null }),
+    databases: [{ uuid: DB_ID, name: 'my-app-db', tables: 3 }],
+  });
+
+  const result = app.run(['--mode', '3', '--d1-id', DB_ID, '--yes', '--skip-schema']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /schema skipped \(--skip-schema\)/);
+  assert.equal(app.schemaCalls().length, 0);
+  assert.equal(app.calls().filter((call) => call.args?.[0] === 'deploy').length, 1);
+  assert.equal(app.readState().d1.schemaHash, null);
+});
+
 test('--schema=apply applies a drifted schema deliberately under --yes', (t) => {
   const app = makeApp(t, {
     state: stateFor({ schemaHash: sha256(OLD_SCHEMA) }),

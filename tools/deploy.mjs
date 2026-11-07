@@ -768,16 +768,23 @@ async function doDeploy() {
  * what stops the preview from inventing a different policy.
  *
  * actions: none | skip | apply | prompt | fail | unknown
- * reasons: no-schema | flag | empty | already-applied | tables-yes | tables |
- *          drift | drift-yes | no-count
+ * reasons: no-schema | flag | empty | already-applied | tables | drift |
+ *          drift-yes | unknown-schema | no-count
  *
- * `tables-yes` is the deliberate, occasionally surprising case: under --yes, a
- * D1 that already has tables is skipped. When no schemaHash was ever recorded
- * for this D1 (a first deploy against a pre-populated database, or a different
- * D1), the CLI cannot tell "already applied" from "unrelated tables", so it
- * writes no hash: `schemaHash` stays null and every later --yes run skips again.
- * This is safe — it never re-applies DDL blindly — but it is silent, so
- * `--schema=apply` is the explicit way to apply the schema in that situation.
+ * `unknown-schema` is the case that used to be a silent skip, and it is the one
+ * worth reading carefully. A D1 that already has tables is never re-applied
+ * blindly, and the CLI can only tell "already applied" from "drifted" when a
+ * schema hash was recorded for that D1 (`lw-state.json`, written by an
+ * interactive run - a CI checkout has none, which is why `deploy.yml` reads the
+ * D1 id from `wrangler.jsonc`). With no recorded hash the state cannot be
+ * verified at all, and there is no migration ledger to fall back on: nothing
+ * writes the `migrations` table and `dist/schema.sql` is a CREATE-only
+ * snapshot, so it cannot add a column to a table that already exists. A run
+ * under `--yes` therefore refuses (exit 2): deploying code against a schema it
+ * cannot verify is how an app reaches production missing a column, with a green
+ * workflow and a 500 for the first visitor. The refusal names both explicit
+ * ways forward - `--skip-schema` (this D1 is current) and `--schema=apply`
+ * (apply the snapshot deliberately).
  */
 export function resolveSchemaAction({
   schemaExists,
@@ -808,7 +815,12 @@ export function resolveSchemaAction({
         message: `schema drift: dist/schema.sql changed since it was applied to "${dbName}", and the D1 has ${count} table(s). Refusing to re-apply it under --yes. Pass --skip-schema to keep the D1 as-is, or --schema=apply to apply the change deliberately.`,
       };
     }
-    return { action: 'skip', reason: 'tables-yes', count };
+    return {
+      action: 'fail',
+      reason: 'unknown-schema',
+      count,
+      message: `schema state unknown: "${dbName}" already has ${count} table(s) but no schema hash is recorded for it, so this run cannot tell whether dist/schema.sql is already applied. Refusing to deploy against a schema it cannot verify. Pass --skip-schema if those tables are current (the D1 was created outside this tool, or dist/schema.sql has nothing new for it), or --schema=apply to apply dist/schema.sql deliberately (it is CREATE-only: it fails on a table that already exists and cannot add a column to one).`,
+    };
   }
   return { action: 'prompt', reason: drift ? 'drift' : 'tables', count, drift };
 }
@@ -1003,8 +1015,11 @@ function schemaPlanText(action, meta, count) {
   if (action.action === 'skip' && action.reason === 'already-applied') {
     return 'would skip (already applied; hash matches)';
   }
-  if (action.action === 'skip' && action.reason === 'tables-yes') {
-    return `would skip (${count} table(s) present; --yes, no recorded hash)`;
+  if (action.action === 'fail' && action.reason === 'unknown-schema') {
+    return `would STOP: the schema cannot be verified (${count} table(s) present, no recorded hash) — pass --skip-schema or --schema=apply`;
+  }
+  if (action.action === 'fail') {
+    return `would STOP: drift detected and --yes is set (${count} table(s) present)`;
   }
   if (action.action === 'prompt') {
     return action.reason === 'drift'
@@ -1461,8 +1476,6 @@ async function main() {
         console.log('→ schema skipped (--skip-schema)');
       } else if (schemaDecision.reason === 'already-applied') {
         console.log('→ schema skipped (already applied; hash matches)');
-      } else if (schemaDecision.reason === 'tables-yes') {
-        console.log(`→ schema skipped (${schemaDecision.count} table(s) present; --yes, no recorded hash)`);
       } else if (schemaDecision.reason === 'drift-kept') {
         console.log('→ schema skipped (drift kept; D1 unchanged)');
       } else if (schemaDecision.reason === 'tables-kept') {

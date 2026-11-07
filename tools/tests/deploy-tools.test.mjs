@@ -255,9 +255,17 @@ test('schema decisions are shared by the real run and --plan', () => {
     /--schema=apply/,
   );
   assert.equal(resolveSchemaAction({ ...base, count: 2 }).reason, 'drift');
+  // No recorded hash = the state cannot be verified; --yes refuses instead of
+  // deploying code against a schema the tool cannot check (exit 2).
+  const unknown = resolveSchemaAction({ ...base, count: 2, recordedHash: null, yes: true });
+  assert.equal(unknown.action, 'fail');
+  assert.equal(unknown.reason, 'unknown-schema');
+  assert.match(unknown.message, /schema state unknown/);
+  assert.match(unknown.message, /--skip-schema/);
+  assert.match(unknown.message, /--schema=apply/);
   assert.equal(
-    resolveSchemaAction({ ...base, count: 2, recordedHash: null, yes: true }).reason,
-    'tables-yes',
+    resolveSchemaAction({ ...base, count: 2, recordedHash: null, skipSchema: true }).action,
+    'skip',
   );
   assert.equal(
     resolveSchemaAction({ ...base, count: 2, recordedHash: null }).reason,
