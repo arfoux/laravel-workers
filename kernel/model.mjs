@@ -1439,8 +1439,11 @@ export class Model {
 
     const pk = ctor.primaryKey;
     const id = this.attributes[pk];
-    const { changes } = await ctor.withTrashed(db).where(pk, id).update(data);
-    if (changes === 0) throw new Error('model update affected 0 rows');
+    // Laravel's performUpdate() (Model.php:1544) runs the UPDATE but does NOT
+    // check the affected-row count: it fires the `updated` event, syncs the
+    // changes, and returns true regardless. A row deleted by a concurrent
+    // request answers 0 affected rows in PHP too — silently, not as an error.
+    await ctor.withTrashed(db).where(pk, id).update(data);
     this._dirty.clear();
     this.syncOriginal();
     return true;
