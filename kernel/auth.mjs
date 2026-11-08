@@ -1179,10 +1179,15 @@ export class AuthenticationException extends Error {
 // Contract (`ports/<slug>.mjs`):
 //   export default {
 //     async user(ctx)  { return { id, ...attributes } | null },  // required
-//     async validate(credentials, ctx) { return bool },          // optional
+//     async validate(credentials, ctx) { return bool | user },   // optional
 //     async login(user, remember, ctx) { ... },                  // optional
 //     async logout(ctx) { ... },                                 // optional
 //   }
+// A `validate()` that answers the USER it resolved (instead of `true`) feeds
+// the guard's `getLastAttempted()` the way `SessionGuard::validate()` does
+// (SessionGuard.php:328) - Laravel's value survives a FAILED password check
+// because the provider resolved the user first, and only the port knows which
+// user the credentials named (#861).
 //   ctx = { request, guard, driver, config, app: { config, db, models, env, session, cookieJar } }
 //
 // Every method the rung calls is awaited (the `auth` middleware awaits
@@ -1202,6 +1207,11 @@ export class PortedGuard {
     this.userValue = null;
     this.userResolved = false;
     this.userPromise = null;
+    // `GuardHelpers`-side state: the user the last credential check resolved to
+    // (`SessionGuard::$lastAttempted` - SessionGuard.php:68). It is NOT the
+    // resolved user of the request, it is the user the CREDENTIALS named, which
+    // is why a failed attempt still has one (#861).
+    this.lastAttempted = null;
     this.portCtx = {
       request: ctx.request ?? null,
       guard: name,
@@ -1306,7 +1316,17 @@ export class PortedGuard {
    */
   async validate(credentials = {}) {
     if (!this.port || typeof this.port.validate !== 'function') return false;
-    return (await this.port.validate(credentials, this.portCtx)) ? true : false;
+    const answer = await this.port.validate(credentials, this.portCtx);
+    // `SessionGuard::validate()` (SessionGuard.php:328: `$this->lastAttempted =
+    // $user = $this->provider->retrieveByCredentials($credentials)`) records the
+    // user the credentials named BEFORE the password is checked, so
+    // `getLastAttempted()` answers even when the check fails (#861). The port
+    // owns credential resolution here, and its `validate(credentials, ctx)`
+    // answers the boolean - so a port MAY answer the user object instead of
+    // `true` (both are "valid"; the contract in the header of this file says
+    // so), and that object is the attempted user.
+    if (answer && typeof answer === 'object') this.lastAttempted = answer;
+    return !!answer;
   }
 
   /** GuardHelpers::once() — validate, then take the user the port answers. */
@@ -1314,6 +1334,9 @@ export class PortedGuard {
     if (!(await this.validate(credentials))) return false;
     const user = await this.user();
     if (!user) return false;
+    // `SessionGuard::once()` (SessionGuard.php:475) keeps the same
+    // `lastAttempted` the validation resolved.
+    this.lastAttempted = user;
     this.setUser(user);
     return true;
   }
@@ -1329,6 +1352,9 @@ export class PortedGuard {
     if (!(await this.validate(credentials))) return false;
     const user = await this.user();
     if (!user) return false;
+    // `SessionGuard::attempt()` (:438) resolved the user to validate the
+    // credentials, so the successful path answers the same `lastAttempted`.
+    this.lastAttempted = user;
     return this.login(user, remember);
   }
 
