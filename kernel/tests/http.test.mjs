@@ -42,7 +42,7 @@ import { createDatabaseCache } from '../cache.mjs';
 import { applyAuthenticatable } from '../auth.mjs';
 import { Model } from '../model.mjs';
 import { normalizeTable } from '../router.mjs';
-import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
+import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
 
 let DatabaseSync = null;
 try {
@@ -286,6 +286,7 @@ function runOracle() {
   const res = spawnSync(PHP, [oraclePath], {
     input: JSON.stringify({
       app_root: APP_ROOT,
+      db_path: oracleDbPath('http-pipeline'),
       freeze_ms: FREEZE_MS,
       user: { id: 1, name: 'Test User', email: 'u@example.com', password_hash: HASH12 },
       steps,
@@ -859,6 +860,178 @@ test('guard port: auth:<driver> authenticates through the app port, and a guest 
   assert.equal(portCalls, 2, 'the second request resolved the user once more');
 });
 
+test('guest redirect: url.intended = the referer, then the previous session URL, then the root (probed)', { skip: noSqlite }, async () => {
+  // Redirector::guest() (Redirector.php:71-84) stores the intended URL:
+  //   a GET that matched a route and does not want JSON  => UrlGenerator::full()
+  //   anything else => UrlGenerator::previous() (UrlGenerator.php:162-175):
+  //     `$referrer = $this->request->headers->get('referer');`
+  //     `$url = $referrer ? $this->to($referrer) : $this->getPreviousUrlFromSession();`
+  //     `if ($url) { return $url; } ... return $this->to('/');`
+  // Probed against the vendor (Laravel 13.37 on PHP 8.3): referer + session =>
+  // the REFERER; session only => the session value; neither => 'http://localhost'
+  // (`to('/')` has no trailing slash). The kernel asked the session first
+  // (audit #851) and stored nothing at all when both were absent, so
+  // `redirect()->intended()` fell to its default instead of the root.
+  // The non-GET path is exercised with a POST, because a routed GET takes the
+  // `full()` branch above (its own URL) - also probed.
+  const table = normalizeTable([...ROUTES, { uri: '/__probe/auth', methods: ['POST'], middleware: ['web', 'auth'] }]);
+  const handlers = {
+    'GET /__probe/state': stateHandler,
+    'GET /__probe/auth': async (ctx) => json({ user: await guardId(ctx) }),
+    'POST /__probe/auth': async (ctx) => json({ user: await guardId(ctx) }),
+  };
+  const makeOptions = () => {
+    const { db, sqlite } = makeDb();
+    return {
+      sqlite,
+      options: {
+        table,
+        handlers,
+        config: baseConfig(),
+        env: { DB: db },
+        db,
+        models: { LWOracleUser },
+        clock: () => FREEZE_S,
+        randomString: (n) => 'A'.repeat(n),
+        strRandom: (n) => 'A'.repeat(n),
+        clientIp: CLIENT_IP,
+      },
+    };
+  };
+  const step = async (options, jar, method, uri, { headers = {}, body = '' } = {}) => {
+    const h = { host: 'localhost', 'user-agent': USER_AGENT, accept: 'text/html', ...headers };
+    if (jar.size) h.cookie = serializeJar(jar);
+    if (body !== '') h['content-type'] = 'application/x-www-form-urlencoded';
+    const res = await handleHttp({ method, url: BASE + uri, headers: h, body }, options);
+    if (!res) throw new Error(`no handler matched ${method} ${uri}`);
+    for (const sc of res.setCookie) {
+      const c = parseSetCookie(sc);
+      if (c.value === '' && /expires=/i.test(sc) && /max-age=0/i.test(sc)) jar.delete(c.name);
+      else jar.set(c.name, c.value);
+    }
+    return res;
+  };
+  // A CSRF token for the session in `jar`. An ajax GET does NOT record
+  // `_previous.url` (StartSession::storeCurrentUrl skips it), so case 3 can
+  // reach the root floor.
+  const tokenOf = async (options, jar, ajax) => {
+    const headers = { accept: 'application/json' };
+    if (ajax) headers['x-requested-with'] = 'XMLHttpRequest';
+    const res = await step(options, jar, 'GET', '/__probe/state', { headers });
+    assert.equal(res.status, 200);
+    return JSON.parse(res.body).token;
+  };
+  const intendedOf = (sqlite) => {
+    for (const row of sqlite.prepare('SELECT payload FROM sessions').all()) {
+      const stored = JSON.parse(decodePayload(row.payload));
+      if (stored && stored.url && stored.url.intended) return stored.url.intended;
+    }
+    return null;
+  };
+
+  // (1) a routed GET takes full(), so the intended URL is the request's own URL.
+  {
+    const { sqlite, options } = makeOptions();
+    const jar = new Map();
+    assert.equal((await step(options, jar, 'GET', '/__probe/state')).status, 200);
+    const res = await step(options, jar, 'GET', '/__probe/auth');
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.location, BASE + '/login');
+    assert.equal(intendedOf(sqlite), BASE + '/__probe/auth', 'a routed GET intends its own URL');
+  }
+  // (2) a POST with no referer: the session's `_previous.url` (the earlier GET).
+  {
+    const { sqlite, options } = makeOptions();
+    const jar = new Map();
+    const token = await tokenOf(options, jar, false);
+    const res = await step(options, jar, 'POST', '/__probe/auth', { body: '_token=' + token });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.location, BASE + '/login');
+    assert.equal(intendedOf(sqlite), BASE + '/__probe/state', 'no referer: the session previous URL');
+  }
+  // (3) the referer wins over the session value.
+  {
+    const { sqlite, options } = makeOptions();
+    const jar = new Map();
+    const token = await tokenOf(options, jar, false);
+    const res = await step(options, jar, 'POST', '/__probe/auth', {
+      headers: { referer: 'http://example.com/from-referer' },
+      body: '_token=' + token,
+    });
+    assert.equal(res.status, 302);
+    assert.equal(intendedOf(sqlite), 'http://example.com/from-referer', 'the referer wins');
+  }
+  // (4) neither: UrlGenerator::to('/') floors it at the site root.
+  {
+    const { sqlite, options } = makeOptions();
+    const jar = new Map();
+    const token = await tokenOf(options, jar, true);
+    const res = await step(options, jar, 'POST', '/__probe/auth', { body: '_token=' + token });
+    assert.equal(res.status, 302);
+    assert.equal(intendedOf(sqlite), BASE, 'the root floor (to("/") has no trailing slash)');
+  }
+});
+
+test('csrf: preventRequestForgery(allowSameSite/originOnly) reaches the middleware (audit #801)', { skip: noSqlite }, async () => {
+  // Laravel's `->withMiddleware(fn (Middleware $m) => $m->preventRequestForgery(
+  // originOnly: true, allowSameSite: true))` (Foundation/Configuration/Middleware.php:605-612)
+  // sets PreventRequestForgery::$allowSameSite / $originOnly, which the middleware
+  // reads in hasValidOrigin() (:151 same-site, :155 origin-only) and
+  // shouldAddXsrfTokenCookie() (:205). Both config dumps wrote the flags as
+  // `csrf.allow_same_site` / `csrf.origin_only` and NOTHING in the runtime read
+  // them, so an app that asked for origin-only verification silently kept the
+  // token check and the XSRF cookie.
+  const post = async (csrfConfig, headers, body = '') => {
+    const { db } = makeDb();
+    const res = await handleHttp(
+      {
+        method: 'POST',
+        url: BASE + '/__probe/state',
+        headers: {
+          host: 'localhost',
+          'user-agent': USER_AGENT,
+          'content-type': 'application/x-www-form-urlencoded',
+          ...headers,
+        },
+        body,
+      },
+      {
+        table: normalizeTable(ROUTES),
+        handlers,
+        config: { ...baseConfig(), ...csrfConfig },
+        env: { DB: db },
+        db,
+        models: { LWOracleUser },
+        clock: () => FREEZE_S,
+        randomString: (n) => 'A'.repeat(n),
+        strRandom: (n) => 'A'.repeat(n),
+        clientIp: CLIENT_IP,
+      }
+    );
+    if (!res) throw new Error('no handler matched POST /__probe/state');
+    return res;
+  };
+  const hasXsrf = (res) => res.setCookie.some((c) => /^XSRF-TOKEN=/.test(c));
+
+  // A tokenless same-site POST is refused by default...
+  assert.equal((await post({}, { 'sec-fetch-site': 'same-site' })).status, 419);
+  // ...allowed once the app turned the flag on...
+  assert.equal((await post({ 'csrf.allow_same_site': true }, { 'sec-fetch-site': 'same-site' })).status, 200);
+  // ...and same-origin passes either way.
+  assert.equal((await post({}, { 'sec-fetch-site': 'same-origin' })).status, 200);
+  // `originOnly` throws OriginMismatchException - a plain Exception, so Laravel
+  // answers 500 - and stops the XSRF cookie from being added (:205).
+  const sameSite = await post({ 'csrf.origin_only': true }, { 'sec-fetch-site': 'same-site' });
+  assert.equal(sameSite.status, 500);
+  assert.equal(hasXsrf(sameSite), false, 'origin-only drops the XSRF cookie');
+  const sameOrigin = await post({ 'csrf.origin_only': true }, { 'sec-fetch-site': 'same-origin' });
+  assert.equal(sameOrigin.status, 200);
+  assert.equal(hasXsrf(sameOrigin), false, 'origin-only drops the XSRF cookie');
+  // The token check still wins when both bypass flags are irrelevant.
+  const noToken = await post({ 'csrf.allow_same_site': true }, {});
+  assert.equal(noToken.status, 419, 'no token at all is still a mismatch');
+});
+
 test('fail loud: throttle middleware without a cache store', async () => {
   await assert.rejects(
     callPipeline((o) => {
@@ -1399,6 +1572,67 @@ test('request: the method override follows Symfony (the header wins, A-Z only)',
       }),
     /Invalid HTTP method override/,
   );
+});
+
+test('request: the _method override reads the FORM bag, not a JSON body (probed)', () => {
+  // Symfony's getMethod() (http-foundation 7.4, Request.php:1263-1300):
+  //   `$method = $this->headers->get('X-HTTP-METHOD-OVERRIDE');`
+  //   `if (!$method && $override) $method = $this->request->get('_method',
+  //      $this->query->get('_method', 'POST'));`
+  // `$this->request` is the FORM bag - filled for a urlencoded/multipart body
+  // only. Probed on a live PHP 8.3 server + 13.37:
+  //   JSON {"_method":"PUT"}        -> POST (the JSON body is not the form bag)
+  //   form PUT + ?_method=PATCH     -> PUT  (the form bag wins)
+  //   _method=put                   -> PUT
+  //   X-HTTP-Method-Override: 0     -> POST (PHP's `!$method` is true for '0')
+  //   _method=GET                   -> GET  (only a deprecation in 7.4)
+  //   _method[]=PUT (form or query) -> BadRequestException, 'Input value
+  //     "_method" contains a non-scalar value.' (a 500)
+  // The kernel read the JSON body, so an SPA's `_method` selected a different
+  // route (audit #850).
+  const form = (body, extra = {}) =>
+    buildRequest({
+      method: 'POST',
+      url: 'http://localhost/x',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...extra },
+      body,
+    });
+  const jsonReq = buildRequest({
+    method: 'POST',
+    url: 'http://localhost/x',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ _method: 'PUT' }),
+  });
+  assert.equal(jsonReq.methodOverride(), null);
+  assert.equal(jsonReq.method(), 'POST');
+  const formWins = buildRequest({
+    method: 'POST',
+    url: 'http://localhost/x?_method=PATCH',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: '_method=PUT',
+  });
+  assert.equal(formWins.methodOverride(), 'PUT');
+  assert.equal(form('_method=put').methodOverride(), 'PUT');
+  assert.equal(form('_method=DELETE', { 'x-http-method-override': '0' }).methodOverride(), 'DELETE');
+  assert.equal(form('_method=GET').methodOverride(), 'GET');
+  // A plain POST (or an explicit `_method=POST`) is not an override.
+  assert.equal(form('').methodOverride(), null);
+  assert.equal(form('_method=POST').methodOverride(), null);
+  for (const [url, body] of [
+    ['http://localhost/x', '_method[]=PUT'],
+    ['http://localhost/x?_method[]=PUT', '_method=PUT'],
+  ]) {
+    assert.throws(
+      () =>
+        buildRequest({
+          method: 'POST',
+          url,
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body,
+        }),
+      (e) => e.name === 'BadRequestException' && e.message === 'Input value "_method" contains a non-scalar value.'
+    );
+  }
 });
 
 test('request: merge() follows Laravel (the input source, replace not deep merge)', () => {

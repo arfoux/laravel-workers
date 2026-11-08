@@ -43,7 +43,7 @@ import { CookieJar, PhpSessionStore } from '../session.mjs';
 import { serializeCookie } from '../cookies.mjs';
 import { hmacSha256Hex, sha1Hex } from '../digest.mjs';
 import { Model } from '../model.mjs';
-import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
+import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
 
 let DatabaseSync = null;
 try {
@@ -84,7 +84,11 @@ function runOracle(payload) {
     throw new Error(oracleSkip('auth.test.mjs'));
   }
   const res = spawnSync(PHP, [oraclePath], {
-    input: JSON.stringify({ app_root: APP_ROOT, ...payload }),
+    input: JSON.stringify({
+      app_root: APP_ROOT,
+      db_path: oracleDbPath('auth'),
+      ...payload,
+    }),
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -1408,4 +1412,52 @@ test('auth: an unported driver fails loud and names the registry key', () => {
     () => manager.guard('nope'),
     (e) => e.phpClass === 'InvalidArgumentException'
   );
+});
+
+test('auth: a ported guard answers the user the credentials named (#861)', async () => {
+  // `SessionGuard::validate()` (SessionGuard.php:328:
+  // `$this->lastAttempted = $user = $this->provider->retrieveByCredentials(...)`)
+  // records the user the credentials named, so `getLastAttempted()` answers one
+  // even when the password check fails. The port owns credential resolution
+  // here, so it MAY answer that user instead of `true` (both are "valid" - the
+  // contract in kernel/auth.mjs); the guard records it.
+  const attempted = { id: 7, name: 'Ada' };
+  const guard = portedGuard({
+    async user() {
+      return attempted;
+    },
+    async validate() {
+      return attempted;
+    },
+  });
+  assert.equal(guard.getLastAttempted(), null, 'nothing attempted yet');
+  assert.equal(await guard.validate({ email: 'ada@example.com' }), true);
+  assert.equal(guard.getLastAttempted(), attempted);
+
+  // A port that answers the boolean only (the original contract) still gets
+  // Laravel's value on the SUCCESSFUL path: `attempt()`/`once()` log the same
+  // user in, and that is the user the credentials resolved to.
+  const user = { id: 9, name: 'Bo' };
+  const booleanPort = portedGuard({
+    async user() {
+      return user;
+    },
+    async validate() {
+      return true;
+    },
+    async login() {},
+  });
+  assert.equal(await booleanPort.attempt({ email: 'bo@example.com' }), true);
+  assert.equal(booleanPort.getLastAttempted(), user);
+
+  const onceGuard = portedGuard({
+    async user() {
+      return user;
+    },
+    async validate() {
+      return true;
+    },
+  });
+  assert.equal(await onceGuard.once({ email: 'bo@example.com' }), true);
+  assert.equal(onceGuard.getLastAttempted(), user);
 });

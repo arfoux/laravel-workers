@@ -170,6 +170,47 @@ test('platform-incompatible releases drop out; a compatible one still wins', asy
   assert.equal(pick(entries, 'acme/lib').version, '1.7.0');
 });
 
+// `config.platform` is composer's "resolve as if the platform were this": the
+// `php` pin must gate `php` requirements instead of the machine's interpreter
+// (audit #806). The injected PLATFORM here is PHP 8.3.30, so a passing test can
+// only mean the pin won - the same way composer ignores the real interpreter.
+test('config.platform.php gates php requirements instead of the machine', async () => {
+  const catalog = { 'acme/tool': { releases: [rel('1.0.0', { require: { php: '^8.2' } })] } };
+  await assert.rejects(
+    run({ require: { 'acme/tool': '^1.0' }, config: { platform: { php: '8.1.0' } } }, catalog),
+    (err) => {
+      assert.match(err.message, /platform-filtered: 1 release\(s\)/);
+      assert.match(err.message, /probing PHP 8\.1\.0/);
+      assert.match(err.message, /1\.0\.0 needs php \^8\.2/);
+      return true;
+    },
+  );
+  const entries = await run(
+    { require: { 'acme/tool': '^1.0' }, config: { platform: { php: '8.3.0' } } },
+    catalog,
+  );
+  assert.equal(pick(entries, 'acme/tool').version, '1.0.0');
+});
+
+test('a config.platform.php that is not a version is ignored, never invented', async () => {
+  const catalog = { 'acme/tool': { releases: [rel('1.0.0', { require: { php: '^8.3' } })] } };
+  // A constraint (`^8.3`) is not a platform VERSION: composer would refuse the
+  // file, so guessing a version from it would resolve against a platform
+  // nobody pinned. The machine's 8.3.30 decides instead.
+  const entries = await run({ require: { 'acme/tool': '^1.0' }, config: { platform: { php: '^8.3' } } }, catalog);
+  assert.equal(pick(entries, 'acme/tool').version, '1.0.0');
+});
+
+test('the php pin does not leak into the caller\'s platform object', async () => {
+  // `run()` injects PLATFORM — the same object every test in this file shares.
+  // Mutating it (writing the pin into `platform.php`) would make every LATER
+  // test resolve against this one's pin, which is exactly the kind of shared
+  // state that turns a green suite into a lie.
+  const injected = { php: '8.3.30', intSize: 8, exts: new Set(['json']) };
+  await run({ require: { 'acme/tool': '^1.0' }, config: { platform: { php: '8.1.0' } } }, { 'acme/tool': { releases: [rel('1.0.0')] } }, { platform: injected });
+  assert.equal(injected.php, '8.3.30');
+});
+
 test('default floor is stable: dev releases need an explicit @dev', async () => {
   const catalog = { 'acme/lib': { releases: [rel('1.0.0')], dev: [dev('2.0.x-dev')] } };
 

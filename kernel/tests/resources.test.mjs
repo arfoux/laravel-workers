@@ -235,6 +235,47 @@ test('the additional keys are at the TOP level (not inside `data`)', () => {
   JsonResource.flushState();
 });
 
+test("an EMPTY wrapper is not the same as NO wrapper (wrap(''))", () => {
+  // `ResourceResponse::wrapper()` is `get_class($this->resource)::$wrap` (:110)
+  // - a bare property read. So an empty wrapper answers the EMPTY key where the
+  // `?? 'data'` fallback (:69) does not fire, while the truthiness tests
+  // (`$this->wrapper() && ...` :87, `! $this->wrapper()` :100) still treat it as
+  // absent. Probed against Laravel 13.37 through `ResourceResponse::wrap()` (the
+  // level the kernel's `wrapPayload()` implements):
+  //   wrap('') plain        -> {"id":1}
+  //   wrap('') additional   -> {"":{"id":1},"meta":{"x":1}}
+  //   wrap('') forced       -> {"":{"id":1}}
+  //   wrap('') forced+extra -> {"":{"id":1},"meta":{"x":1}}
+  JsonResource.setWrap('');
+  assert.equal(
+    resourceResponse(new UserResource(user(1, 'Ada'))).body,
+    '{"id":1,"name":"Ada"}',
+    'an empty wrapper is falsy, so the data is NOT wrapped on its own'
+  );
+  const withMeta = new UserResource(user(1, 'Ada'));
+  withMeta.additional({ meta: { x: 1 } });
+  assert.equal(
+    resourceResponse(withMeta).body,
+    '{"":{"id":1,"name":"Ada"},"meta":{"x":1}}',
+    'the additional keys need a home, and the home is the EMPTY key'
+  );
+  JsonResource.forceWrapping = true;
+  assert.equal(
+    resourceResponse(new UserResource(user(1, 'Ada'))).body,
+    '{"":{"id":1,"name":"Ada"}}',
+    '$forceWrapping wraps whenever there IS a wrapper (`!== null`), even an empty one'
+  );
+  JsonResource.forceWrapping = false;
+
+  // The contrast, on the same probe: `withoutWrapping()` is NULL, and that is
+  // what `?? 'data'` falls back from.
+  JsonResource.withoutWrapping();
+  const bare = new UserResource(user(1, 'Ada'));
+  bare.additional({ meta: { x: 1 } });
+  assert.equal(resourceResponse(bare).body, '{"data":{"id":1,"name":"Ada"},"meta":{"x":1}}');
+  JsonResource.flushState();
+});
+
 test('a resource collection answers `data` with the items', () => {
   // JsonResource.php:90-104 (`collection()`) and ResourceCollection.php:104-112
   // (`toArray()`) - a probe: the body is
@@ -401,4 +442,66 @@ test('a NESTED resource that wraps NULL answers null (filter() :45-47)', () => {
     '{"id":1,"user":null,"list":[null,{"cid":2}]}'
   );
   assert.equal(phpJsonEncode(new ChildRes(null).resolve()), '{"cid":"NONE"}');
+});
+
+test('withResponse($request, $response) has the last word on the response (#854)', () => {
+  // `ResourceResponse::toResponse()` (ResourceResponse.php:46-49) taps the
+  // response it just built and calls the app's hook with the REQUEST and the
+  // response, so an override may rewrite the headers, the status or the body.
+  // Nothing called it (audit #854): every override was a silent no-op.
+  const request = { path: () => '/users' };
+  const seen = [];
+  class HookedResource extends UserResource {
+    withResponse(req, res) {
+      seen.push(req);
+      res.header('X-Hooked', 'yes');
+      res.setStatusCode(202);
+      res.setContent('{"hooked":true}');
+    }
+  }
+  const out = resourceResponse(new HookedResource(user(1, 'Ada')), request);
+  assert.deepEqual(seen, [request]);
+  assert.equal(out.headers['x-hooked'], 'yes');
+  assert.equal(out.status, 202);
+  assert.equal(out.body, '{"hooked":true}');
+  // The methods are `JsonResponse`'s (`Response::header()` :135-155,
+  // `setStatusCode()` :797-803), and the fields the worker reads follow them.
+  assert.equal(out.getStatusCode(), 202);
+  assert.equal(out.getContent(), '{"hooked":true}');
+});
+
+test('jsonOptions() reaches the encoder, and an unportable flag fails loud (#855)', () => {
+  // `ResourceResponse.php:44` passes `$this->resource->jsonOptions()` as the
+  // 4th argument of `response()->json(...)`. The expected bodies are PHP 8.3's
+  // own (`json_encode($payload, $flags)` probed on the vendor app).
+  class PrettyResource extends UserResource {
+    jsonOptions() {
+      return 128; // JSON_PRETTY_PRINT
+    }
+  }
+  assert.equal(
+    resourceResponse(new PrettyResource(user(1, 'Ada'))).body,
+    '{\n    "data": {\n        "id": 1,\n        "name": "Ada"\n    }\n}'
+  );
+  class SlashResource extends UserResource {
+    toArray() {
+      return { url: 'http://x/y' };
+    }
+    jsonOptions() {
+      return 64; // JSON_UNESCAPED_SLASHES
+    }
+  }
+  assert.equal(
+    resourceResponse(new SlashResource(user(1, 'Ada'))).body,
+    '{"data":{"url":"http://x/y"}}'
+  );
+  class UnportableResource extends UserResource {
+    jsonOptions() {
+      return 32; // JSON_NUMERIC_CHECK: no byte-exact port, so it fails loud
+    }
+  }
+  assert.throws(
+    () => resourceResponse(new UnportableResource(user(1, 'Ada'))),
+    /not supported at the edge/
+  );
 });

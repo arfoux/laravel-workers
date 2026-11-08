@@ -34,6 +34,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import model from '../model.mjs';
 import { makeDateValue } from '../model.mjs';
+import { phpJsonEncode } from '../php-json.mjs';
 
 const { Model } = model;
 
@@ -793,7 +794,7 @@ function diffFixture() {
 
 test('sqlite: the timestamp cast is numeric-aware and timezone-stable', { skip: sqliteSkip }, async () => {
   const applyCast = model.applyCast;
-  const { setModelTimezone } = await import('../model.mjs');
+  const { setModelTimezone, makeDateValue } = await import('../model.mjs');
   // PHP: asTimestamp() -> asDateTime('1700000000') is a UNIX TIMESTAMP; the old
   // port answered null and read '2024-1-2 3:4:5' through JS Date.parse.
   try {
@@ -803,6 +804,27 @@ test('sqlite: the timestamp cast is numeric-aware and timezone-stable', { skip: 
     assert.equal(applyCast('2024-01-02 03:04:05', 'timestamp'), 1704139445);
     assert.equal(applyCast('2024-1-2 3:4:5', 'timestamp'), 1704139445);
     assert.throws(() => applyCast('garbage', 'timestamp'), (e) => e.name === 'InvalidFormatException');
+    // Carbon's createFromTimestamp() sums the digit runs of a numeric string
+    // (#826). Probed on Carbon 3 + PHP 8.3, through the real cast,
+    //   '1e400' -> 401   '1e10' -> 11   '1e14' -> 15   '-1e10' -> -11
+    //   '99999999999999' -> 99999999999999 (still under the parser's limit)
+    //   '100000000000000' -> InvalidFormatException('Unexpected data found.')
+    // and number_format() leaves an INF/NAN with no digit at all -> 0.
+    assert.equal(applyCast('1e400', 'timestamp'), 401);
+    assert.equal(applyCast('1e10', 'timestamp'), 11);
+    assert.equal(applyCast('1e14', 'timestamp'), 15);
+    assert.equal(applyCast('-1e10', 'timestamp'), -11);
+    assert.equal(applyCast('99999999999999', 'timestamp'), 99999999999999);
+    assert.equal(applyCast(Number.POSITIVE_INFINITY, 'timestamp'), 0);
+    assert.equal(applyCast(Number.NaN, 'timestamp'), 0);
+    assert.throws(
+      () => applyCast('100000000000000', 'timestamp'),
+      (e) => e.phpClass === 'Carbon\\Exceptions\\InvalidFormatException' && /Trailing data/.test(e.message)
+    );
+    // asDateTime() reads the same value: 401 s past the epoch, in the APP tz.
+    assert.equal(makeDateValue('1e400').format('Y-m-d H:i:s'), '1970-01-01 07:06:41');
+    // ...and the fraction it keeps ('1700000000.5' = 22:13:20 UTC).
+    assert.equal(makeDateValue('1700000000.5').format('Y-m-d H:i:s'), '2023-11-15 05:13:20');
   } finally {
     setModelTimezone('UTC');
   }
@@ -868,6 +890,98 @@ test('sqlite: restore() persists through save(), like the trait does', { skip: s
   assert.equal(row.deleted_at, null);
 });
 
+test('sqlite: increment() carries updated_at on the Eloquent builder, and the raw builder does not', { skip: sqliteSkip }, async () => {
+  // Eloquent's `Builder::increment()` (:1392-1405) puts the statement's value set
+  // through `addUpdatedAtColumn()` (:1448-1479), so a MODEL query moves the row's
+  // timestamp - where `DB::table()` (the base builder) has no model to ask.
+  // Every expectation below is from the PHP 8.3.30 + 13.37 probe of the same
+  // rows: `$post->increment()` and `Post::query()->...->increment()` bump,
+  // `timestamps = false` (on the CLASS or on the instance) does not, a
+  // caller-supplied `updated_at` wins, `$extra` columns are written, the raw
+  // `DB::table()` statement leaves the timestamp alone, and a non-numeric text
+  // COLUMN is PHP's TypeError (`Unsupported operand types: string + int`) - the
+  // kernel used to answer `0 + 1` and write the row anyway (#843/#844).
+  const { setModelTimezone } = await import('../model.mjs');
+  const { table } = await import('../db.mjs');
+  const sqlite = new DatabaseSync(':memory:');
+  sqlite.exec(`
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, votes INTEGER,
+      votes_txt TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT);
+    INSERT INTO posts (id, title, votes, votes_txt, created_at, updated_at)
+      VALUES (1, 'a', 5, 'abc', '2020-01-01 00:00:00', '2020-01-01 00:00:00');
+  `);
+  const db = d1(sqlite);
+  const OLD = '2020-01-01 00:00:00';
+  const NOW = '2026-11-08 02:13:47';
+  const reset = () =>
+    sqlite.exec(`UPDATE posts SET votes = 5, title = 'a', updated_at = '${OLD}' WHERE id = 1`);
+  const updatedAt = () => sqlite.prepare('SELECT updated_at FROM posts WHERE id = 1').get().updated_at;
+  const votes = () => sqlite.prepare('SELECT votes FROM posts WHERE id = 1').get().votes;
+  class IncPost extends Model {
+    static table = 'posts';
+    static fillable = ['title', 'votes', 'votes_txt'];
+  }
+  class NoStampPost extends IncPost {
+    static timestamps = false;
+  }
+  IncPost.clock = () => Date.parse('2026-11-08T02:13:47Z') / 1000;
+  try {
+    setModelTimezone('UTC');
+
+    reset();
+    const post = await IncPost.find(db, 1);
+    assert.equal(await post.increment(db, 'votes'), 1);
+    assert.equal(post.attributes.votes, 6); // the in-memory bump
+    assert.equal(votes(), 6);
+    assert.equal(updatedAt(), NOW);
+
+    reset();
+    await IncPost.query(db).where('id', 1).increment('votes');
+    assert.equal(updatedAt(), NOW);
+
+    reset();
+    await NoStampPost.query(db).where('id', 1).increment('votes');
+    assert.equal(updatedAt(), OLD); // the CLASS gate
+
+    reset();
+    const over = await IncPost.find(db, 1);
+    over.timestamps = false;
+    await over.increment(db, 'votes');
+    assert.equal(updatedAt(), OLD); // the INSTANCE gate
+
+    reset();
+    const given = await IncPost.find(db, 1);
+    await given.increment(db, 'votes', 1, { updated_at: '2001-02-03 04:05:06' });
+    assert.equal(updatedAt(), '2001-02-03 04:05:06');
+
+    reset();
+    const extra = await IncPost.find(db, 1);
+    await extra.increment(db, 'votes', 2, { title: 'zz' });
+    const row = sqlite.prepare('SELECT title, votes FROM posts WHERE id = 1').get();
+    assert.equal(row.title, 'zz'); // forceFill($extra) + the extra in the SET list
+    assert.equal(row.votes, 7);
+    assert.equal(updatedAt(), NOW);
+
+    reset();
+    await table(db, 'posts').where('id', 1).increment('votes');
+    assert.equal(votes(), 6);
+    assert.equal(updatedAt(), OLD); // no model, no timestamp
+
+    reset();
+    const text = await IncPost.find(db, 1);
+    text.attributes.votes_txt = 'abc';
+    await assert.rejects(
+      () => text.increment(db, 'votes_txt'),
+      (e) => e.name === 'TypeError' && e.message === 'Unsupported operand types: string + int'
+    );
+    assert.equal(updatedAt(), OLD); // PHP never reaches the statement
+    assert.equal(sqlite.prepare('SELECT votes_txt FROM posts WHERE id = 1').get().votes_txt, 'abc');
+  } finally {
+    setModelTimezone('UTC');
+    IncPost.clock = null;
+  }
+});
+
 test('a model date value answers Carbon\'s locale()/translatedFormat() (probed on PHP 8.3)', () => {
   // `$profile->created_at->copy()->locale('id')->translatedFormat('j M Y')` is
   // the shape every Blade date cell uses. The model's date value used to carry
@@ -886,4 +1000,74 @@ test('a model date value answers Carbon\'s locale()/translatedFormat() (probed o
   assert.equal(d.copy().translatedFormat('j M Y'), '20 Oct 2026');
   // locale() is per instance: the model's own value is still English.
   assert.equal(d.translatedFormat('j M Y'), '20 Oct 2026');
+});
+
+test('a float cast keeps PHP\'s INF, and the JSON rung refuses it like json_encode (#821)', () => {
+  // HasAttributes::castAttribute() -> asFloat() = `(float) $value`. PHP 8.3.30:
+  //   (float) '1e400'  -> float(INF)        (int) '1e400'  -> int(0)
+  //   (float) 1e400    -> float(INF)        (int) INF      -> int(0)
+  //   json_encode(['x' => INF]) -> false, json_last_error_msg() =
+  //     "Inf and NaN cannot be JSON encoded"   (a 500 under JSON_THROW_ON_ERROR)
+  // The cast used to answer 0 for the overflow (a silent wrong value); the
+  // kernel's own JSON encoder already refuses non-finite numbers with PHP's
+  // message (kernel/php-json.mjs:164-165), so keeping INF is end-to-end
+  // faithful instead of two half-truths.
+  const { Model } = model;
+  class Overflow extends Model {
+    static casts = { x: 'float', n: 'int' };
+  }
+  const m = new Overflow({ x: '1e400', n: '1e400' });
+  assert.equal(m.get('x'), Infinity, "PHP: (float) '1e400' is INF");
+  assert.equal(m.get('n'), 0, "PHP: (int) '1e400' is 0");
+  assert.equal(new Overflow({ x: '1e3' }).get('x'), 1000);
+  assert.equal(new Overflow({ x: '-1e400' }).get('x'), -Infinity);
+  assert.equal(new Overflow({ x: 'nan' }).get('x'), 0, 'a non-numeric string has no numeric prefix');
+  assert.throws(
+    () => phpJsonEncode(m.get('x')),
+    /Inf and NaN cannot be JSON encoded/,
+    'the JSON rung fails with json_encode\'s own message'
+  );
+});
+
+test('a date attribute compares through fromDateTime, not the raw column text (#845)', { skip: sqliteSkip }, async () => {
+  // Eloquent's originalIsEquivalent() takes the date branch FIRST
+  // (HasAttributes.php:2403-2405), so both sides become the model's
+  // date-format text. Probed on PHP 8.3 + 13.37 with `published_at => datetime`:
+  //   orig '2024-01-02 03:04' + set '2024-01-02 03:04:00' -> isDirty() = false
+  //   orig '1700000000'       + set the same instant      -> isDirty() = false
+  //   orig 'garbage'          + set a canonical value     -> InvalidFormatException
+  const { sqlite, db } = diffFixture();
+  try {
+    sqlite.exec(`
+      INSERT INTO posts (id, title, created_at) VALUES (9, 'short', '2024-01-02 03:04');
+      INSERT INTO posts (id, title, created_at) VALUES (10, 'epoch', '1700000000');
+      INSERT INTO posts (id, title, created_at) VALUES (11, 'garbage', 'garbage');
+    `);
+    const short = await DiffPost.find(db, 9);
+    // The RAW attribute keeps the column text (`setRawAttributes`, and the
+    // hydration path does not run `fromDateTime()`), so the dirty check is the
+    // only place the two spellings meet: both sides go through
+    // `fromDateTime()` - that is what the fix added (#845).
+    assert.equal(String(short.attributes.created_at), '2024-01-02 03:04');
+    // `created_at` is only in `_original` when the model was hydrated from a
+    // row that carried it: this fixture inserts it, so it is.
+    assert.equal(short.originalIsEquivalent('created_at'), true);
+    short.forceFill({ created_at: '2024-01-02 03:04:00' });
+    assert.equal(short.isDirty('created_at'), false);
+    assert.deepEqual(short.getDirty(), {});
+    short.forceFill({ created_at: '2024-01-02 04:00:00' });
+    assert.equal(short.isDirty('created_at'), true);
+
+    const epoch = await DiffPost.find(db, 10);
+    // Carbon's createFromTimestamp() reads the numeric text: 1700000000 s =
+    // 2023-11-14 22:13:20 UTC.
+    epoch.forceFill({ created_at: '2023-11-14 22:13:20' });
+    assert.equal(epoch.isDirty('created_at'), false);
+
+    const bad = await DiffPost.find(db, 11);
+    bad.forceFill({ created_at: '2024-01-02 03:04:00' });
+    assert.throws(() => bad.isDirty('created_at'), (e) => e.name === 'InvalidFormatException');
+  } finally {
+    sqlite.close();
+  }
 });

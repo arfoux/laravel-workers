@@ -242,33 +242,28 @@ test('the FormRequest base throws the ValidationException on a failed validation
   );
 });
 
-test("the lifecycle runs the hooks in Laravel's order", async () => {
-  // ValidatesWhenResolvedTrait::validateResolved(): prepareForValidation ->
+test('fails() runs the after callbacks the request registered', async () => {
+  // The lifecycle ORDER belongs to the runtime's handler and is pinned there
+  // (compiler/tests/formrequest-lifecycle.test.mjs): prepareForValidation ->
   // the validator -> withValidator -> after -> the rules -> passedValidation.
-  const order = [];
+  // What the KERNEL owns is the validator those hooks run on - an `after()`
+  // callback registered through withValidator()/after() runs when the
+  // validation fails, and `passedValidation()` is the app's own hook point.
+  const ran = [];
   const request = new FormRequest(fakeRequest({ email: '' }));
-  request.prepareForValidation = () => order.push('prepareForValidation');
-  request.prepareForValidation();
-
   const validator = new Validator(request.validationData(), { email: 'required' });
   request.setValidator(validator);
 
-  // The app's withValidator() hook: it registers on the validator.
-  validator.after(() => order.push('withValidator'));
-  // The app's after() hook: it RETURNS the callback Laravel registers.
-  const callback = () => order.push('after');
+  // The two hooks an app registers: withValidator($validator) calls
+  // `$validator->after(...)`, and after() RETURNS the callback Laravel
+  // registers on the validator (FormRequest.php:126-141).
+  validator.after(() => ran.push('withValidator'));
+  const callback = () => ran.push('after');
   validator.after(callback);
 
   assert.equal(await request.getValidatorInstance().fails(), true);
-  request.passedValidation();
-  order.push('passedValidation');
-
-  assert.deepEqual(order, [
-    'prepareForValidation',
-    'withValidator',
-    'after',
-    'passedValidation',
-  ]);
+  assert.deepEqual(ran, ['withValidator', 'after']);
+  assert.equal(request.passedValidation(), undefined);
 });
 
 // ---------------------------------------------------------------------------

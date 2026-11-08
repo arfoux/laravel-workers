@@ -508,6 +508,48 @@ test('insertGetId / truncate / increment / decrement', async () => {
   assert.deepEqual(calls[3].params, [-2, 3]);
 });
 
+// Query\Builder::incrementOrDecrement() (:4528-4560) opens with
+// `if (! is_numeric($amount)) throw new InvalidArgumentException('Non-numeric
+// value passed to increment method.')`; `decrement()` (:4537-4544) runs the same
+// guard with the DECREMENT message (probed on PHP 8.3 + 13.37:
+// `->decrement('votes', 'abc')` says "decrement method").
+// Probed against real SQLite rows: 'abc', '0x1A', '', '8a',
+// true, null, an array and an object throw it; '5', ' 7 ', '1e2', '.5', '5.'
+// and '+3' bind (10 + N -> 15, 17, 110, 10.5, 15, 13). The kernel coerced with
+// `Number()`, so a bad amount bound `NaN` and the row took NULL instead of
+// failing loud (#885).
+test('increment/decrement refuse a non-numeric amount like Laravel (#885)', async () => {
+  const calls = [];
+  const db = mockDb({
+    run: (sql, params) => {
+      calls.push({ sql, params });
+      return { success: true, meta: { changes: 1 } };
+    },
+  });
+  const q = () => table(db, 't').where('id', 1);
+  for (const bad of ['abc', '0x1A', '', '8a', true, null, [1], {}]) {
+    await assert.rejects(
+      () => q().increment('views', bad),
+      (e) => e.name === 'InvalidArgumentException' && e.message === 'Non-numeric value passed to increment method.'
+    );
+    // `decrement()` throws the same guard with ITS OWN message (Query\Builder.php:4537-4544;
+    // probed on PHP 8.3 + 13.37: `->decrement('votes', 'abc')` says "decrement").
+    await assert.rejects(
+      () => q().decrement('views', bad),
+      (e) => e.name === 'InvalidArgumentException' && e.message === 'Non-numeric value passed to decrement method.'
+    );
+  }
+  assert.equal(calls.length, 0); // no statement reached the driver
+  for (const [amount, bound] of [['5', 5], [' 7 ', 7], ['1e2', 100], ['.5', 0.5], ['5.', 5], ['+3', 3]]) {
+    calls.length = 0;
+    await q().increment('views', amount);
+    assert.deepEqual(calls[0].params, [bound, 1]);
+  }
+  calls.length = 0;
+  await q().decrement('views', '2');
+  assert.deepEqual(calls[0].params, [-2, 1]);
+});
+
 test('updateOrInsert updates when found, inserts otherwise', async () => {
   const calls = [];
   let found = { id: 1, name: 'A' };
@@ -1082,4 +1124,46 @@ test('find() with an array of ids returns the rows (Laravel: findMany)', async (
   await assert.rejects(() => M.findOrFail(db, [1, 9]), /not found: 9/);
   await assert.rejects(() => M.findOrFail(db, ['1', '2']), /not found: 2/);
   await assert.doesNotReject(() => M.findOrFail(db, ['1', '3']));
+});
+
+test('Model firstOrCreate retries a lost race like createOrFirst (#846)', async () => {
+  // Laravel's firstOrCreate() reaches createOrFirst() (Builder.php:1392-1405):
+  // a unique-constraint violation means another request won, so it queries once
+  // more and answers that row - and rethrows when the where does not match it.
+  const makeDb = (state) =>
+    mockDb({
+      all: (sql, params) => ({ results: state.rows.filter((r) => r.name === params[0]) }),
+      run: (sql, params) => {
+        if (/^INSERT/.test(sql)) {
+          state.inserts++;
+          // The other request inserted 'Ada' between our first() and our
+          // create(), so the insert collides.
+          if (params[0] === 'Ada') state.rows.push({ id: 7, name: params[0], role: params[1] });
+          throw new Error('D1_ERROR: UNIQUE constraint failed: rels.name: SQLITE_CONSTRAINT');
+        }
+        return { success: true, meta: { changes: 1 } };
+      },
+    });
+
+  const won = { rows: [], inserts: 0 };
+  const raced = await RelModel.firstOrCreate(makeDb(won), { name: 'Ada' }, { role: 'admin' });
+  assert.equal(raced.get('id'), 7);
+  assert.equal(raced.get('role'), 'admin');
+  assert.equal(won.inserts, 1); // the insert collided once, then the row was read
+
+  // The where does not match the row that won: the violation is rethrown.
+  const lost = { rows: [], inserts: 0 };
+  await assert.rejects(
+    () => RelModel.firstOrCreate(makeDb(lost), { name: 'Ghost' }, { role: 'admin' }),
+    /UNIQUE constraint failed/
+  );
+
+  // A non-unique failure is NOT swallowed.
+  const badDb = mockDb({
+    all: () => ({ results: [] }),
+    run: () => {
+      throw new Error('D1_ERROR: no such table: rels');
+    },
+  });
+  await assert.rejects(() => RelModel.firstOrCreate(badDb, { name: 'Zed' }, {}), /no such table/);
 });
