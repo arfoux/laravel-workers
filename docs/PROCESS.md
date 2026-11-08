@@ -128,7 +128,12 @@ Why a PR and not "push to main, then tag":
   (coverage / declared gaps) and `README.md`/`MAP.md` when a construct's verdict moves. The
   `gate` (`tools/docs-check.mjs` + `tools/construct-audit.mjs`) fails if the map and the code
   disagree.
-- CRLF→LF warnings on Windows are expected and harmless — git normalises on commit.
+- The tree is **pinned to LF** (`.gitattributes`: `* text=auto eol=lf`). A CRLF→LF warning on
+  Windows is harmless — git normalises on commit — but the *checkout* matters too: with
+  `core.autocrlf=true` (the Windows default) an unpinned tree handed the corpus fixtures CRLF,
+  and `npm run test:corpus` reported **49 of 55 cases** as "byte mismatch: expected N bytes
+  longer" on a commit that was green on Linux CI. The byte-compare is real, so the endings are
+  pinned rather than assumed; `git worktree add` no longer needs `-c core.autocrlf=false`.
 
 ## 5. Parity discipline — "identical to PHP" needs a probe
 

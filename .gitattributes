@@ -1,9 +1,18 @@
-# Byte-exact test artifacts — never let git translate line endings.
-# (corpus expected outputs are compared byte-for-byte by tests/run-corpus.mjs)
-compiler/tests/corpus/expected/** -text
+# Everything textual is LF on every platform.
+#
+# The corpus compares bytes: `compiler/tests/run-corpus.mjs` reads
+# `corpus/expectations/<id>.txt` and `Buffer.compare`s it against the compiled
+# output. A checkout that translated line endings therefore failed 49 of the 55
+# cases with "byte mismatch: expected N bytes longer" - while the very same
+# commit was green on Linux CI. `core.autocrlf=true` (the Windows default) is
+# what did it: the rule below is what makes a clone, a `git worktree` and CI
+# agree byte-for-byte.
+* text=auto eol=lf
 
-# Normalised LF for all source (mixes of CRLF/LF are history)
-*.mjs text eol=lf
-*.json text eol=lf
-*.md text eol=lf
-*.yml text eol=lf
+# Binary assets: never translated, never diffed as text.
+*.png binary
+
+# The byte-exact corpus artifacts, named explicitly (the rule this replaces
+# pointed at `compiler/tests/corpus/expected/**`, a directory that has never
+# existed - the real one is `expectations/`).
+compiler/tests/corpus/expectations/** text eol=lf
