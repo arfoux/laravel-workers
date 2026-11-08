@@ -643,7 +643,13 @@ export default {
       uri: '/helpers-demo',
       jar: true,
       form: { _token: '@token' },
-      expectBody: 'local|2|v|yes|cached',
+      // `env('APP_ENV')` is 'production', not the `.env`'s 'local': the harness
+      // boots the PHP oracle with APP_ENV=production (run.mjs:274) because the
+      // compiled worker is prod-like, and the build folds the same value. Both
+      // sides are byte-identical here — the expectation has to name the value
+      // the harness actually asks for, or the step reports a mismatch that is
+      // the scenario's, not the compiler's.
+      expectBody: 'production|2|v|yes|cached',
     },
     {
       // The Str family: the values are PHP-exact (slug/studly/title/ascii/

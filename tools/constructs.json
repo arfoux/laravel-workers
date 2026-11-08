@@ -614,7 +614,7 @@
       "php": "$request->validate(['avatar' => ['required', 'file', 'mimes:png']]);",
       "check": "compiler",
       "expect": "ok",
-      "note": "PHP compares what finfo sniffs; the edge reads the image HEADER instead (kernel/image.mjs) and answers with the same `guessExtension()` map Symfony uses - so `mimes:jpg,png,webp` (and `mimetypes:image/jpeg,...`) answer Laravel's verdict, including the `guessExtension()` sharp edge (`mimes:jpeg` rejects a real JPEG in PHP too). A parameter naming any other content (pdf, svg, docx, bmp) still fails loud (`LW002`): that verdict would be a guess.",
+      "note": "PHP compares what finfo sniffs; the edge reads the image HEADER instead (kernel/image.mjs) and answers with the same `guessExtension()` map Symfony uses - so `mimes:jpg,png,webp` (and `mimetypes:image/jpeg,...`) answer Laravel's verdict, including the `jpg`/`jpeg` merge: `guessExtension()` answers `jpg` for `image/jpeg` and the vendor adds BOTH names, so `mimes:jpeg` ACCEPTS a real JPEG (`ValidatesAttributes::validateMimes()` :1764-1766). A parameter naming any other content (pdf, svg, docx, bmp) still fails loud (`LW002`): that verdict would be a guess.",
       "batch": "M40",
       "status": "done",
       "sig": "(\\Illuminate\\Http\\Request $request)"
@@ -736,7 +736,7 @@
       "label": "A FormRequest that overrides `after()` / `validationData()` / `passedValidation()`",
       "php": null,
       "check": "build",
-      "note": "All three hooks run in the compiled lifecycle, in Laravel's order: `validationData()` is the data source, `after()` registers its RETURN VALUE as a validator callback, and `passedValidation()` runs after the rules pass. Proven by the shadow (`POST /hooked-request-demo` 422/422 for the `after()` refusal and 200/200 carrying the `passedValidation` marker).",
+      "note": "All three hooks run in the compiled lifecycle, in Laravel's order: `validationData()` is the data source, `after()` registers its RETURN VALUE as a validator callback, and `passedValidation()` runs after the rules pass. Proven by the shadow (`POST /hooked-request-demo` 422/422 for the `after()` refusal and 200/200 carrying the `passedValidation` marker). The hook parameter needs its TYPE HINT (`Validator $validator`, and the same on the callbacks the hook registers through `$validator->after(...)`): an untyped parameter is LW002 (the class compiler cannot infer the validator), and the route that injects the class is then STOPPED with that reason instead of shipping a handler that answers 500 (audit #891). `after()` returns a single callable in the proven shape.",
       "batch": "M62f",
       "status": "done",
       "proof": "shadow:POST /hooked-request-demo (the FormRequest hooks run)"
@@ -746,7 +746,7 @@
       "label": "A FormRequest that overrides `withValidator()`",
       "php": null,
       "check": "build",
-      "note": "Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled class carries the hook and the lifecycle calls it with the kernel's validator, in Laravel's order. Proven by the shadow (`POST /hooked-request-demo` 422/422 byte-identical when `withValidator()` refuses the flag) and by the compiled handler's `hooks: [...]` list.",
+      "note": "Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled class carries the hook and the lifecycle calls it with the kernel's validator, in Laravel's order. Proven by the shadow (`POST /hooked-request-demo` 422/422 byte-identical when `withValidator()` refuses the flag) and by the compiled handler's `hooks: [...]` list. The hook parameter needs its TYPE HINT (`Validator $validator`, and the same on the callbacks the hook registers through `$validator->after(...)`): an untyped parameter is LW002 (the class compiler cannot infer the validator), and the route that injects the class is then STOPPED with that reason instead of shipping a handler that answers 500 (audit #891). `after()` returns a single callable in the proven shape.",
       "batch": "M62f",
       "status": "done",
       "proof": "shadow:POST /hooked-request-demo (withValidator refuses the flag)"

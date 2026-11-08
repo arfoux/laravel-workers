@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { toNativePath } from '../tools/native-path.mjs';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const appDir = process.cwd();
@@ -188,7 +189,7 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
     }
   }
 } else if (cmd === 'verify') {
-  const php = process.env.PHP_BIN ?? 'php';
+  const php = toNativePath(process.env.PHP_BIN) || 'php';
   const verifyPath = join(pkgDir, 'tools', 'verify-s0.php');
   if (!existsSync(verifyPath)) {
     console.error('laravel-workers verify: tools/verify-s0.php not found in package.');

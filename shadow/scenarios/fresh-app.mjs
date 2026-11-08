@@ -45,6 +45,52 @@ export default {
     { label: 'GET /posts/1/resource (nested resource)', method: 'GET', uri: '/posts/1/resource', query: { probe: 'hello' } },
     { label: 'GET /posts/1/json (json_encode of a resource)', method: 'GET', uri: '/posts/1/json', query: { probe: 'hello' } },
     {
+      // The FormRequest lifecycle end-to-end: prepareForValidation() merged
+      // `slug` before the rules, the rules passed, withValidator()/after()
+      // registered their callbacks and passedValidation() merged `passed`.
+      // A NULL slug or passed means a hook never ran.
+      label: 'POST /hooked-request-demo (the hooks run)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', flag: 'ok' },
+      expectStatus: 200,
+    },
+    {
+      // withValidator() registered an after() callback on the validator: it runs
+      // after the rules pass and the message it adds is the 422 body.
+      label: 'POST /hooked-request-demo (withValidator refuses the flag)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', flag: 'with-validator' },
+      expectStatus: 422,
+    },
+    {
+      // after() RETURNED the callback Laravel registers on the validator.
+      label: 'POST /hooked-request-demo (after refuses the flag)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', flag: 'after' },
+      expectStatus: 422,
+    },
+    {
+      // authorize() returns false -> Laravel raises the 403
+      // (ValidatesWhenResolvedTrait::failedAuthorization), NOT a skipped route
+      // and NOT a 422.
+      label: 'POST /hooked-request-demo (authorize() denies)',
+      method: 'POST',
+      uri: '/hooked-request-demo',
+      jar: true,
+      headers: { Accept: 'application/json' },
+      form: { _token: '@token', title: 'Hello hooks', deny: 'yes' },
+      expectStatus: 403,
+    },
+    {
       // A snapshot is a *static asset*: the platform serves it without a session,
       // so the fair comparison is a guest request (no cookie jar).
       label: 'GET / (welcome snapshot, guest)',

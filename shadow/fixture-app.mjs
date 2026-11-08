@@ -44,6 +44,7 @@ const FILES = {
 
 use App\\Http\\Controllers\\Auth\\LoginController;
 use App\\Http\\Controllers\\DashboardController;
+use App\\Http\\Controllers\\HookedRequestController;
 use App\\Http\\Controllers\\PostController;
 use Illuminate\\Support\\Facades\\Route;
 
@@ -63,6 +64,14 @@ Route::post('/login', [LoginController::class, 'store'])->middleware(['guest', '
 Route::post('/logout', [LoginController::class, 'destroy'])->middleware('auth')->name('logout');
 
 Route::get('/dashboard', [DashboardController::class, 'index'])->middleware('auth')->name('dashboard');
+
+// The FormRequest lifecycle: prepareForValidation -> authorize -> the validator
+// over validationData() -> withValidator -> after -> the rules ->
+// passedValidation. The release fixture carries a hooked request because a P1
+// regression of that lifecycle (the hooks never ran) slipped past a fixture
+// whose only validation-shaped code was $request->validate([...]) - a plain
+// Request method, not the trait the lifecycle lives in.
+Route::post('/hooked-request-demo', [HookedRequestController::class, 'store']);
 `,
 
   'app/Http/Controllers/Auth/LoginController.php': `<?php
@@ -157,6 +166,95 @@ class PostController extends Controller
     {
         $post = Post::findOrFail($id);
         return response()->json(new SlimPostResource($post));
+    }
+}
+`,
+
+  'app/Http/Requests/HookedPostRequest.php': `<?php
+
+namespace App\\Http\\Requests;
+
+use Illuminate\\Contracts\\Validation\\Validator;
+use Illuminate\\Foundation\\Http\\FormRequest;
+use Illuminate\\Support\\Str;
+
+class HookedPostRequest extends FormRequest
+{
+    // authorize() returning false is Laravel's 403 (failedAuthorization), NOT a
+    // skipped route and NOT a 422.
+    public function authorize(): bool
+    {
+        return $this->input('deny') !== 'yes';
+    }
+
+    // The first hook: it runs BEFORE the rules, so the merged value is part of
+    // the data the rules (and validated()) see.
+    protected function prepareForValidation(): void
+    {
+        $this->merge(['slug' => Str::slug((string) $this->input('title'))]);
+    }
+
+    public function rules(): array
+    {
+        return [
+            'title' => ['required', 'string', 'max:40'],
+        ];
+    }
+
+    // withValidator($validator) registers an after() callback on the validator:
+    // it runs once the rules have passed and the message it adds is the 422 body.
+    // BOTH parameters are left UNTYPED - the shape Laravel's own form-request
+    // stub writes and the shape a hand-written override takes when it drops the
+    // base's type hint. The compiler seeds the hook parameter and the first
+    // untyped callback parameter from Laravel's own signatures (Validator
+    // $validator on the hook, call_user_func($callback, $this) on after()),
+    // so this form compiles (audit #891) - and the release gate proves it,
+    // because this file is what shadow/fixture-app.mjs scaffolds.
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator) {
+            if ($this->input('flag') === 'with-validator') {
+                $validator->errors()->add('flag', 'withValidator refused the flag');
+            }
+        });
+    }
+
+    // after() RETURNS the callbacks Laravel registers on the validator.
+    public function after(): callable
+    {
+        return function (Validator $validator) {
+            if ($this->input('flag') === 'after') {
+                $validator->errors()->add('flag', 'after refused the flag');
+            }
+        };
+    }
+
+    // The last hook: it runs after the rules passed. The merge() lands in the
+    // request's INPUT source, so the controller (and the JSON answer) sees it.
+    public function passedValidation(): void
+    {
+        $this->merge(['passed' => 'ran']);
+    }
+}
+`,
+
+  'app/Http/Controllers/HookedRequestController.php': `<?php
+
+namespace App\\Http\\Controllers;
+
+use App\\Http\\Requests\\HookedPostRequest;
+
+class HookedRequestController extends Controller
+{
+    public function store(HookedPostRequest $request)
+    {
+        return response()->json([
+            'title' => $request->input('title'),
+            // Merged by prepareForValidation() - NULL if the hook never ran.
+            'slug' => $request->input('slug'),
+            // Merged by passedValidation() - NULL if the hook never ran.
+            'passed' => $request->input('passed'),
+        ]);
     }
 }
 `,
