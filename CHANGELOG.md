@@ -1,6 +1,6 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
-## Unreleased — the mail boundary is one source, and `buildViewData()` is Laravel's order
+## Unreleased — the mail boundary is one source, `buildViewData()`'s order, and a checkout that no longer keeps CRLF
 
 ### The four methods the mailer refuses are refused by the build the same way
 
@@ -41,6 +41,21 @@ cache hit prints only `build cache: hit ... dist/ is current` — so the test
 failed for everyone on the second run in the same checkout. The fixture build
 now runs with `LW_NO_BUILD_CACHE=1` (`app-check.yml` already treated
 `--no-cache` as mandatory for the same reason): cold and warm runs both pass.
+
+### A Windows checkout kept CRLF and the corpus byte-compare called it a regression
+
+`.gitattributes` pinned `eol=lf` for `*.mjs`, `*.json`, `*.md` and `*.yml` only, and its
+byte-exact rule pointed at `compiler/tests/corpus/expected/**` — a directory that has never
+existed (the corpus reads `expectations/`). With `core.autocrlf=true` (the Windows default) a
+fresh checkout therefore wrote CRLF into `compiler/tests/corpus/cases/*.php` and into the 55
+`expectations/*.txt` fixtures that `run-corpus.mjs` compares with `Buffer.compare`, and
+`npm run test:corpus` reported **6/55 pass, 49 fail** — "byte mismatch: expected N bytes
+longer", one byte per line — on a commit that was green on Linux CI.
+
+The tree is pinned to LF now (`* text=auto eol=lf`, `*.png binary`, and the corpus rule names
+the directory that exists), so a clone, a `git worktree` and CI hand the byte-compare the same
+bytes. No blob changed: the history is already LF (`git grep -lI $'\r' HEAD` is empty), so this
+is a checkout rule, not a renormalisation.
 
 ## v0.4.11 — the line-by-line sweep: an honest `Schema::table` deploy path, Laravel's own FormRequest stub, and PHP's config semantics (2026-11-08)
 
