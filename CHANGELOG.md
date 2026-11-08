@@ -1,5 +1,47 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
+## Unreleased — the mail boundary is one source, and `buildViewData()` is Laravel's order
+
+### The four methods the mailer refuses are refused by the build the same way
+
+`Mail::raw()`, `Mail::html()`, `Mail::queue()` and `Mail::later()` were refused
+in two places that told different stories. The build said the kernel "does not
+implement" them, and the kernel did implement them — as a hard failure. An
+operator who read the build message looked for a missing feature instead of the
+real reason. Worse, the kernel's own `raw()`/`html()` handed the callback a
+plain object where Laravel hands it an `Illuminate\Mail\Message`, so the
+documented idiom (`Mail::raw('Hi', fn ($m) => $m->to('a@b.co')->subject('S'))`)
+threw `TypeError: message.to is not a function` — reachable through a
+constructor-injected mailer, which the build did not guard.
+
+There is one source now: `ADAPTER_REFUSED` in `kernel/service-adapters.mjs`
+holds the four methods, the kernel fails loud on them with the reason (Laravel
+builds the message itself; the worker has no queue consumer), and both build
+guards — the facade (`Mail::raw(...)`, `Mail::to($u)->queue($m)`) and the
+injected service (`$this->mailer->raw(...)`) — refuse the same four with the
+same wording. The supported surface (`Mail::to($u)->send($mailable|$payload)`)
+is untouched. `kernel/tests/mail.test.mjs` and
+`compiler/tests/mail-refusal.test.mjs` lock it: the refused set equals
+`ADAPTER_REFUSED.mail` exactly, the supported call still compiles and is
+awaited, and the `log` adapter is not caught by the guard.
+
+### A mailable's public property wins over `with()` — Laravel's `buildViewData()` order
+
+`Illuminate\Mail\Mailable::buildViewData()` starts from `$this->viewData` and
+then **overwrites** it with the mailable's public properties, so a property named
+like a `with()` key wins. The kernel merged them the other way round, so a
+mailable that both declares `public $foo` and calls `with(['foo' => ...])`
+rendered the wrong value. The order matches the vendor now (verified against
+Laravel 13.37 and locked by a test).
+
+### The login-flow oracle test is deterministic under a warm build cache
+
+`kernel/tests/login-flow.test.mjs` asserts on the build's output, and a build
+cache hit prints only `build cache: hit ... dist/ is current` — so the test
+failed for everyone on the second run in the same checkout. The fixture build
+now runs with `LW_NO_BUILD_CACHE=1` (`app-check.yml` already treated
+`--no-cache` as mandatory for the same reason): cold and warm runs both pass.
+
 ## v0.4.11 — the line-by-line sweep: an honest `Schema::table` deploy path, Laravel's own FormRequest stub, and PHP's config semantics (2026-11-08)
 
 ### The `Schema::table` deploy path is honest now
