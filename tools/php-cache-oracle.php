@@ -107,7 +107,11 @@ $schema->create('cache_locks', function ($t) {
     $t->bigInteger('expiration')->index();
 });
 
-$store = new DatabaseStore($connection, 'cache', $prefix, 'cache_locks', [2, 100], 86400, false);
+// The 7th argument is `$serializableClasses`: a stock app passes
+// `CacheManager::getSerializableClasses()` = `cache.serializable_classes ?? null`,
+// so the oracle passes null too (audit #814 — an object payload is rejected by
+// `lw_encode()` either way, so `false` only made the model differ from the app).
+$store = new DatabaseStore($connection, 'cache', $prefix, 'cache_locks', [2, 100], 86400, null);
 $repo = new Repository($store);
 
 $results = [];

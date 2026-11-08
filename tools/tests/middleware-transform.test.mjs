@@ -269,3 +269,32 @@ return Application::configure(basePath: dirname(__DIR__))
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('middleware state: preventRequestForgery() records originOnly and allowSameSite', () => {
+  // `Illuminate\Foundation\Configuration\Middleware::preventRequestForgery(
+  // originOnly:, allowSameSite:)` (vendor Middleware.php:605-612) turns into two
+  // STATICS on the middleware class (PreventRequestForgery.php:151/155/205), and
+  // `tools/config-dump.mjs` writes them as `csrf.origin_only` /
+  // `csrf.allow_same_site`. The kernel reads those keys per request (audit #801);
+  // this pins the first half of that chain - the app's call reaching the state.
+  const dir = scaffold(withMiddleware('$middleware->preventRequestForgery(originOnly: true, allowSameSite: true);'));
+  try {
+    const report = {};
+    const state = appMiddlewareState(dir, report);
+    assert.equal(report.failure, undefined, 'no refusal expected');
+    assert.equal(state.originOnly, true);
+    assert.equal(state.allowSameSite, true);
+
+    // The defaults stay false when the app does not ask.
+    const plain = scaffold(withMiddleware(''));
+    try {
+      const plainState = appMiddlewareState(plain, {});
+      assert.equal(plainState.originOnly, false);
+      assert.equal(plainState.allowSameSite, false);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

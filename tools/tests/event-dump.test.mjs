@@ -139,6 +139,9 @@ class LwBindingProbeJob
         protected AbstractReporter $reporter,
         protected ListenerContract $contract,
         protected string $tag = 'probe',
+        protected int $mode = 0777,
+        protected int $oct = 017,
+        protected int $thousand = 1_000,
     ) {}
 }
 `;
@@ -205,6 +208,13 @@ test('event-dump: a bound interface/abstract parameter resolves to its impl', { 
       { name: 'reporter', type: 'App\\Support\\AbstractReporter', kind: 'class', impl: 'App\\Services\\LwBindingReporter' },
       { name: 'contract', type: 'App\\Support\\ListenerContract', kind: 'class', impl: 'App\\Services\\LwBindingReporter' },
       { name: 'tag', kind: 'builtin', type: 'string', default: 'probe' },
+      // A numeric default is PHP's own value, not the raw php-parser text:
+      // `0777` is 511, `017` is 15, `1_000` is 1000 (PHP 7.4+ ignores the
+      // underscore). `Number(node.value)` answered 777 / 17 and NaN (falling
+      // back to the raw STRING '1_000' — a string default where PHP has an int).
+      { name: 'mode', kind: 'builtin', type: 'int', default: 511 },
+      { name: 'oct', kind: 'builtin', type: 'int', default: 15 },
+      { name: 'thousand', kind: 'builtin', type: 'int', default: 1000 },
     ]);
 
     // The impl is part of the dependency graph: the build compiles it.

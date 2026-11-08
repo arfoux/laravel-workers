@@ -137,6 +137,18 @@ $parseColumns = static function (string $sql): array {
 
 $tables = DB::select("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
 
+// Laravel's schema builder writes `->unique()` / `->index()` as SEPARATE
+// `CREATE [UNIQUE] INDEX` statements, not as constraints inside the table DDL
+// (#738): without their SQL the snapshot knew an index existed but not what it
+// was, so `dist/schema.sql` shipped the tables and silently dropped every
+// unique/partial index. Auto-indexes (a UNIQUE or PRIMARY KEY declared INSIDE
+// the table DDL) have `sql IS NULL` — they are already recreated by the table
+// statement itself and are deliberately left out.
+$indexDdl = [];
+foreach (DB::select("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL") as $row) {
+    $indexDdl[(string) $row->name] = (string) $row->sql;
+}
+
 $out = ['tables' => []];
 
 foreach ($tables as $table) {
@@ -179,6 +191,10 @@ foreach ($tables as $table) {
                 'origin' => (string) ($index->origin ?? ''),
                 'partial' => (bool) ($index->partial ?? false),
                 'columns' => $indexColumns,
+                // The index's OWN DDL when SQLite stored it separately (NULL for
+                // an auto-index a table constraint already creates) — this is
+                // what lets the build emit the index into dist/schema.sql.
+                'sql' => $indexDdl[$indexName] ?? null,
             ];
         }
     } catch (Throwable $e) {

@@ -37,7 +37,8 @@ if ($appRoot === '' || !is_dir($appRoot)) {
     exit(2);
 }
 
-require lw_vendor_autoload_for($appRoot);
+$autoload = lw_vendor_autoload_for($appRoot);
+require $autoload;
 $app = lw_boot_app($appRoot);
 require_once __DIR__ . '/mailable-views.php';
 $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
@@ -67,6 +68,39 @@ $isAppClass = function (string $fqcn) use ($appRootReal): bool {
     if (!str_starts_with($real, $appRootReal . DIRECTORY_SEPARATOR)) return false;
     if (str_contains($real, DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR)) return false;
     return true;
+};
+
+// Audit #818: `$addClass()` can only compile a class whose file lives under the
+// app root. A class that resolves somewhere ELSE (neither the app nor the
+// vendor dir) means the app's autoloader is stale or was dumped for another
+// app - `vendor/composer/autoload_classmap.php` still names that app's
+// directory. The dump would then report NO classes at all, and the byte-parity
+// test blames the port for the missing entries (its diff reads like "the port
+// emits `file`/`impl`, the oracle does not"), so the reason is said once on
+// stderr. stdout stays exactly the JSON the parity test compares.
+$vendorReal = realpath(dirname($autoload));
+$foreignNoted = [];
+$noteForeignClass = function (string $fqcn) use ($appRootReal, $vendorReal, &$foreignNoted): void {
+    if (isset($foreignNoted[$fqcn])) return;
+    try {
+        if (!class_exists($fqcn) && !interface_exists($fqcn) && !trait_exists($fqcn)) return;
+        $file = (new ReflectionClass($fqcn))->getFileName();
+    } catch (Throwable $e) {
+        return;
+    }
+    if (!$file) return;
+    $real = realpath($file);
+    if (!$real) return;
+    $ds = DIRECTORY_SEPARATOR;
+    if (str_starts_with($real, $appRootReal . $ds)) return;
+    if ($vendorReal !== false && $vendorReal !== null && str_starts_with($real, $vendorReal . $ds)) return;
+    $foreignNoted[$fqcn] = true;
+    fwrite(
+        STDERR,
+        "event-dump: {$fqcn} resolves to {$real}, outside the app root ({$appRootReal}) and outside the vendor dir"
+        . ' - the app\'s autoloader is stale or belongs to another app (run `composer dump-autoload` in the app);'
+        . " classes resolved there are NOT dumped.\n"
+    );
 };
 
 
@@ -179,9 +213,12 @@ $ctorDump = function (string $fqcn) use ($app, $isAppClass): array {
 
 // The classes the build compiles: the events, the listeners and the services
 // they depend on (the dependency graph).
-$addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$addClass, $ctorDump, $isAppClass): void {
+$addClass = function (string $fqcn, string $kind = 'service') use (&$classes, &$addClass, $ctorDump, $isAppClass, $noteForeignClass): void {
     if ($fqcn === '' || isset($classes[$fqcn])) return;
-    if (!$isAppClass($fqcn)) return;
+    if (!$isAppClass($fqcn)) {
+        $noteForeignClass($fqcn);
+        return;
+    }
     try {
         $rc = new ReflectionClass($fqcn);
     } catch (Throwable $e) {

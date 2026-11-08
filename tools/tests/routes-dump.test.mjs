@@ -735,3 +735,33 @@ Route::namespace('App\\\\Http\\\\Controllers')->group(fn () => Route::resource('
   assert.equal(by.get('res').action, FQ + '@index');
   assert.equal(by.get('res').name, 'res.index');
 });
+
+test('an invokable controller route carries the class as the action and a null path', () => {
+  // `Route::get('/invokable', X::class)` is Laravel's invokable form: the class
+  // itself is the action and Laravel runs `X::__invoke()`, so `route:list --json`
+  // prints `X@__invoke` with `path: null` (only a CLOSURE route carries a
+  // file:line). That pair is what build.mjs:isAppRoute() keys on — an action that
+  // is neither '' nor 'Closure' is an app route — so an entry the scan reports
+  // with an empty action is blamed as "route(s) defined outside routes/" and the
+  // edge answers 404 where PHP answers 200 (audit #724: the array form and the
+  // class-string form must land on the SAME action, and the build's own
+  // `action.slice(at + 1) : '__invoke'` fallback (build.mjs:2034) agrees).
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use App\\Http\\Controllers\\HomeController;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get('/invokable', HomeController::class);
+Route::get('/array', [HomeController::class, '__invoke']);
+Route::get('/named-method', [HomeController::class, 'index']);
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  const FQ = 'App\\Http\\Controllers\\HomeController';
+  assert.equal(by.get('invokable').action, FQ + '@__invoke');
+  assert.equal(by.get('invokable').path, null, 'a controller route has no file:line (Laravel reports path: null)');
+  assert.equal(by.get('array').action, FQ + '@__invoke');
+  assert.equal(by.get('named-method').action, FQ + '@index');
+});
