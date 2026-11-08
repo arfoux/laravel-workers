@@ -12,6 +12,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveAppRoot } from './native-path.mjs';
 import { classFile, parsePhpFile, classConstants } from './static.mjs';
 
 const nodeName = (n) => {
@@ -22,9 +23,7 @@ const nodeName = (n) => {
   return '';
 };
 
-const appDir =
-  process.env.LW_APP_ROOT ||
-  (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+const appDir = resolveAppRoot();
 
 if (!appDir) {
   process.stderr.write('constants-dump.mjs: cannot find app root (set LW_APP_ROOT)\n');
