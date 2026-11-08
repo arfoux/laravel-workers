@@ -1,6 +1,6 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
-## Unreleased
+## v0.4.11 — the line-by-line sweep: an honest `Schema::table` deploy path, Laravel's own FormRequest stub, and PHP's config semantics (2026-11-08)
 
 ### The `Schema::table` deploy path is honest now
 
