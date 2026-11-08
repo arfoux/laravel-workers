@@ -294,6 +294,26 @@ function tx(node) {
       if (typeof name !== 'string') {
         throw mkErr('LW002', 'unsupported property access', node.loc);
       }
+      // `$request->files` read as a PROPERTY. The method-call form
+      // (`$request->files()`) is refused in txRequestCall via REQUEST_DENY, but
+      // the property form reached the generic rt.prop() below and answered null
+      // where Laravel hands Symfony's FileBag — a silent divergence. In Laravel
+      // `files` is a property, not a method, so neither spelling has a compiled
+      // equivalent: refuse loudly and point at the compiled upload surface. The
+      // receiver test keeps this to a request variable, so every other
+      // property read still goes through rt.prop() unchanged.
+      if (
+        CTX && CTX.requestVars && node.what && node.what.kind === 'variable' &&
+        CTX.requestVars.has(vname(node.what.name)) && name === 'files'
+      ) {
+        throw mkErr(
+          'LW002',
+          "$request->files is not compiled — in Laravel it is Symfony's FileBag (a property, not a method): " +
+            "use $request->file('x') (the uploaded file) or $request->allFiles() (every file); " + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
       if (CTX && node.what && node.what.kind === 'call') {
         const _m = requestMethodOfCall(node.what);
         if (_m && REQUEST_NO_CHAIN.has(_m)) {
@@ -1326,6 +1346,33 @@ function txRedirectChain(node) {
         const def = a.length ? tx(a[0]) : '"/"';
         return 'rt.redirect(rt.session().pull("url.intended", ' + def + '))';
       }
+      // Redirector::back() -> the same as the bare back() helper (the session's
+      // url.previous, else the Referer, else the fallback '/'). rt.back is the
+      // runtime the bare helper already compiles to, so refusing the
+      // `redirect()->back()` spelling was a false refusal with no reason -
+      // `back()` worked and `redirect()->back()` did not, for the same operation.
+      // Only the ZERO-argument form is emitted: Redirector::back($status = 302,
+      // $headers = []) takes the HTTP STATUS as its first argument, while
+      // rt.back(fallback) treats its first argument as a PATH — so forwarding
+      // `redirect()->back(302)` would build rt.back(302) and use "302" as a URL.
+      // Refuse the argument form rather than answer the wrong thing.
+      // NOTE: read arguments into a local `a` here — `args` is NOT in scope
+      // inside this method-call walk (the to/intended/away siblings each declare
+      // their own `a`); referencing `args` threw an internal LW999.
+      if (m === 'back') {
+        const a = node.arguments || [];
+        if (a.length) {
+          throw mkErr(
+            'LW002',
+            'redirect()->back(...) with arguments is not compiled — Redirector::back() takes an HTTP status, which the ' +
+              "compiled rung's rt.back(fallback) would read as a path; use redirect()->back() (no arguments) or " +
+              'the bare back() helper — ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return 'rt.back()';
+      }
       throw mkErr('LW002', 'unsupported redirect()->' + m + '() — ' + PORT_HINT, node.loc, PORT_HINT);
     }
     if (base === 'cache') {
@@ -2275,7 +2322,14 @@ function txCall(node) {
       return 'rt.Arr.' + meth + '(' + args + ')';
     }
     // Illuminate\Support\Str - the string helpers (the PHP-exact subset).
-    if ((cls === 'Str' || cls === 'Illuminate\\Support\\Str') && CTX && CTX.controller) {
+    // NOT gated on CTX.controller, like Arr above: a view's own code calls
+    // `Str::slug()`/`Str::limit()`/... just as it calls `Arr::get()`, and the
+    // runtime answers them (rt.Str), so gating on the controller context made
+    // every view that used a Str helper fall through to the catch-all LW003
+    // "unknown class" - a false refusal with a wrong message (the method exists
+    // at runtime). The STR_METHODS allowlist still gates WHICH methods, exactly
+    // as it does in a controller, so de-gating does not widen the surface.
+    if (cls === 'Str' || cls === 'Illuminate\\Support\\Str') {
       if (!STR_METHODS.has(meth)) {
         throw mkErr(
           'LW002',

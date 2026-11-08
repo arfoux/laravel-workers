@@ -2761,7 +2761,15 @@ function makeCarbon(date, tz = APP_TZ) {
     return e;
   };
   rt.statusErr = statusErr;
-  rt.abort = (code, message) => { throw statusErr(code, message || ('HTTP ' + code)); };
+  // Laravel's abort($code) with no message throws NotFoundHttpException('') /
+  // HttpException($code, ''), and Handler::convertExceptionToArray() (non-debug)
+  // answers `['message' => $e->getMessage()]` = '' — the JSON body is
+  // `{"message": ""}` (EMPTY), probed on Laravel 13.37: abort(404/403/422/500)
+  // each render `{\n    "message": ""\n}`. The old default 'HTTP ' + code put a
+  // message where Laravel answers none, so the compiled JSON diverged. Default
+  // to '' so errorResponse()'s `e.message ? ... : 'HTTP ' + status` falls through
+  // to '' for the JSON body, exactly like Laravel; an explicit message still wins.
+  rt.abort = (code, message) => { throw statusErr(code, message == null ? '' : String(message)); };
   // Laravel's abort_if()/abort_unless(): they answer null unless they abort.
   rt.abortIf = (condition, code, message) => {
     if (condition) rt.abort(code, message);
@@ -2773,7 +2781,12 @@ function makeCarbon(date, tz = APP_TZ) {
   };
   rt.errorResponse = (e) => {
     const status = (e && e.status) || 500;
-    const message = e && e.message ? String(e.message) : 'HTTP ' + status;
+    // `e.message` present but EMPTY (an `abort(404)` with no message) must stay
+    // '' — Laravel renders that as `{"message": ""}` (probed on Laravel 13.37).
+    // Only a truly ABSENT message (an exception that never set one) falls back to
+    // 'HTTP ' + status. `e.message !== undefined && !== null` (NOT truthiness) is
+    // what keeps the empty string from being replaced by the fallback.
+    const message = e && e.message !== undefined && e.message !== null ? String(e.message) : 'HTTP ' + status;
     // Illuminate\Foundation\Exceptions\Handler::prepareJsonResponse(): an
     // expectsJson request gets the exception as JSON, and Laravel encodes it
     // with JSON_PRETTY_PRINT (4 spaces) - convertExceptionToArray() answers

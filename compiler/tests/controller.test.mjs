@@ -1283,6 +1283,34 @@ test('emit: the helper surface compiles (away, back, env, data_get, tap, report,
   assert.match(res.code, /rt\.session\(\)\.put\(/);
 });
 
+// `redirect()->back()` is the Redirector spelling of the bare `back()` helper.
+// It used to be refused, and the first fix for that referenced `args` — which is
+// NOT in scope inside the method-call walk — so it threw an internal LW999
+// "args is not defined" instead of compiling. This probe runs the REAL path
+// (emitController, not a text scan) so the crash can never come back: the whole
+// point is that a refusal-turned-compile must actually compile. Only the
+// ZERO-argument form compiles; the ARGUMENT form is refused, because
+// Redirector::back($status) takes an HTTP status while rt.back(fallback) reads
+// its first argument as a PATH — forwarding `back(302)` would build rt.back(302)
+// and use "302" as a URL, so it stops the build instead.
+test('emit: redirect()->back() compiles to rt.back; the argument form is refused', () => {
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n    }\n}\n';
+  const meta = { routeUri: '/x', routeParams: [], models: [], views: [] };
+  // The no-argument form compiles, byte-identical to the bare back() helper.
+  const ok = emitController(src('return redirect()->back();'), 'demo', meta);
+  assert.deepEqual(ok.errors, [], JSON.stringify(ok.errors));
+  assert.match(ok.code, /rt\.back\(\)/);
+  assert.ok(!/LW999/.test(ok.code));
+  // The argument form (an HTTP status) is refused, not mis-compiled to a path.
+  const bad = emitController(src("return redirect()->back('/login');"), 'demo', meta);
+  assert.equal(bad.code, null);
+  assert.equal(bad.errors[0].code, 'LW002');
+  assert.match(bad.errors[0].message, /redirect\(\)->back/);
+});
+
 test('emit: a relation call on a model fails loud (LW003)', () => {
   const src = String.raw`<?php
 namespace App\Http\Controllers;
@@ -2145,6 +2173,37 @@ test('runtime: abort(404, message) becomes a 404 error response', async () => {
   const res = await handle(ctxFor({}), { DB: dbWithRow });
   assert.equal(res.status, 404);
   assert.equal(res.body, 'gone');
+});
+
+// abort($code) with NO message: Laravel throws NotFoundHttpException('') and the
+// non-debug handler renders `{"message": ""}` (EMPTY — probed on Laravel 13.37,
+// abort(404/403/422/500) each answer `{\n    "message": ""\n}`). The compiled
+// default used to be 'HTTP ' + code, which put a message where Laravel answers
+// none. An expectsJson request must get the empty-message JSON, not "HTTP 404".
+test('runtime: abort(404) with no message renders the empty-message JSON body', async () => {
+  const src = `<?php
+namespace App\\Http\\Controllers;
+class BounceController
+{
+    public function bounce()
+    {
+        abort(404);
+    }
+}
+`;
+  const handle = await handlerFromSource(src, 'bounce', {
+    ...META_BASE,
+    routeUri: '/bounce',
+    routeParams: [],
+    views: [],
+  });
+  // expectsJson lives on the request the handler hands the runtime (the same
+  // shape the other error-rendering tests use), so abort() reaches the JSON
+  // branch of errorResponse().
+  const req = { method: 'GET', path: '/bounce', headers: { accept: 'application/json' }, host: 'example.com', expectsJson: () => true };
+  const res = await handle({ ...ctxFor({}), request: req }, { DB: dbWithRow });
+  assert.equal(res.status, 404);
+  assert.deepEqual(JSON.parse(res.body), { message: '' });
 });
 
 test('runtime: response()->json() serialises model attributes', async () => {
