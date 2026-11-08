@@ -17,6 +17,7 @@
 // same on every machine (a leftover dev directory can no longer decide whether
 // the oracle parity runs or skips).
 import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +40,17 @@ export function oracleAppRoot() {
   if (!existsSync(path.join(app, 'vendor', 'autoload.php'))) return null;
   if (!existsSync(path.join(app, 'app'))) return null;
   return app;
+}
+
+/**
+ * A temp `db_path` for an oracle that creates its own sqlite file. Every such
+ * oracle defaults to `<app_root>/<name>-oracle.sqlite` (documented on the tool
+ * itself) — fine for a manual run, but a test that omits `db_path` leaves that
+ * file inside whatever checkout it ran against. One name per test file, so
+ * parallel runs never share a database.
+ */
+export function oracleDbPath(name) {
+  return path.join(os.tmpdir(), `lw-${name}-oracle-${process.pid}.sqlite`);
 }
 
 /** The skip reason for a test file whose oracle needs an app. */

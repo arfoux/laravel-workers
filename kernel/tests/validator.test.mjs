@@ -1290,34 +1290,71 @@ test('before/after read the relative shapes PHP\'s parser accepts', async () => 
   assert.equal(await pass('2000-01-01', 'after:tonight'), true);
 });
 test('phpRelativeTimestamp follows PHP\'s field-setter grammar', async () => {
-  // Pinned against PHP 8.3 with `Carbon::setTestNow(2026-11-04 10:20:30 UTC)`
-  // (a Wednesday): every epoch below is the timestamp PHP answered for that
-  // token. The grammar applies field setters left to right, which is why
-  // `noon tomorrow` is TOMORROW 00:00 ("tomorrow" resets the clock) while
-  // `tomorrow noon` is tomorrow 12:00.
+  // Pinned against PHP 8.3.30 + Carbon: every epoch below is what
+  // `strtotime($raw, gmmktime(10, 20, 30, 11, 4, 2026))` answered - NOW is
+  // 2026-11-04 10:20:30 UTC, a Wednesday. The grammar applies field setters
+  // left to right, which is why `noon tomorrow` is TOMORROW 00:00 ("tomorrow"
+  // resets the clock where it sits) while `tomorrow noon` is tomorrow 12:00.
+  // A WEEKDAY and a day word move the DAY against the fields the REST of the
+  // string sets (`monday june 5` is the Monday on/after June 5), and a named
+  // month with no clock anywhere answers midnight (`june` is 00:00, `june 5
+  // 10:30` keeps 10:30, `first day of THIS month` keeps the clock) - the rows
+  // corrected by the audit #859 probes.
   const NOW = Date.UTC(2026, 10, 4, 10, 20, 30);
   const at = (raw) => phpRelativeTimestamp(raw, NOW);
   const cases = {
     now: 1793787630, today: 1793750400, tomorrow: 1793836800, yesterday: 1793664000,
-    b: 1793787630, z: 1793787630, noon: 1793793600, midnight: 1793750400,
+    // A lone military-zone letter is "now" read in that zone: b (+2) is now-2h,
+    // z (UTC) is now, and j is unassigned (audit #883).
+    b: 1793780430, z: 1793787630, j: null, noon: 1793793600, midnight: 1793750400,
     '2pm': 1793800800, '12am': 1793750400, '12pm': 1793793600, '10:30pm': 1793831400,
     monday: 1794182400, sun: 1794096000, tue: 1794268800, thu: 1793836800,
     'next monday': 1794182400, 'last monday': 1793577600,
     'next week': 1794219630, 'last week': 1793010030, 'this week': 1793614830,
-    june: 1780568430, '5 june': 1780654830, 'june 5': 1780654830, december: 1796379630,
+    june: 1780531200, '5 june': 1780617600, 'june 5': 1780617600, december: 1796342400,
+    'june 2027': 1811808000, '5 june 2027': 1812153600, '2027 june': 1811808000,
+    '26 june 2026': 1782432000, 'june 5 2027 10:30': 1812191400, 'feb 29 2024': 1709164800,
+    'june 10:30': 1780569000, 'monday june 5': 1780876800, 'monday december 5': 1796601600,
+    'tomorrow december': 1796428800,
     'noon tomorrow': 1793836800, 'tomorrow noon': 1793880000, 'midnight tomorrow': 1793836800,
     '+1 day': 1793874030, 'next day': 1793874030, 'last day': 1793701230,
     '1 week': 1794392430, '+2 weeks': 1794997230, '-3 months': 1785838830, '+1 year': 1825323630,
     '2 weeks ago': 1792578030, '5 days ago': 1793355630, '90 minutes': 1793793030,
     '1 month': 1796379630, 'last month': 1791109230, 'next month': 1796379630,
-    'first day of january': 1767262830, 'last day of this month': 1796034030,
-    'monday 9am': 1794214800, 'yesterday noon': 1793707200,
+    'first day of january': 1767225600, 'last day of january': 1769817600,
+    'last day of this month': 1796034030,
+    'monday 9am': 1794214800, 'yesterday noon': 1793707200, '24:00': 1793836800,
     // PHP refuses these (an unknown word), so the timestamp stays unreadable.
     tonight: null, 'new year': null, 'in 2 days': null, tues: null, thurs: null, junk: null,
   };
   for (const [raw, want] of Object.entries(cases)) {
     assert.equal(at(raw), want, `${JSON.stringify(raw)} should answer ${want}`);
   }
+});
+test('the date comparison path reads PHP\'s compact digit runs and wall clocks', async () => {
+  // `strtotime()` refuses these, so Carbon's `getDateTime()` is null and the
+  // comparison falls to 0 (the #671 rule) - `before:2000-01-01` answers TRUE.
+  // The kernel used to silently compute a value instead: `20261301` rolled to
+  // 2027-01-01, `99:99` to a 04:39 clock, `0060` to 01:00 today. Probed on PHP
+  // 8.3.30 (`strtotime` FALSE for every one of them).
+  const before2000 = (raw) => new Validator({ x: raw }, { x: 'before:2000-01-01' }).passes();
+  const after2000 = (raw) => new Validator({ x: raw }, { x: 'after:2000-01-01' }).passes();
+  for (const raw of ['20261301', '20261332', '99:99', '12:60', '25:00', '25:00:00', '9:99', '129999']) {
+    assert.equal(await before2000(raw), true, `${raw} is unreadable in PHP (null -> 0)`);
+  }
+  // A four-digit run that is NOT a wall clock is a YEAR (`1299` is the year
+  // 1299, `0060` the year 60 - both before 2000), while `2400` IS a clock and
+  // rolls into tomorrow. `1259` and the `HHMMSS` runs are clocks too.
+  for (const raw of ['1299', '0060']) assert.equal(await before2000(raw), true, raw);
+  for (const raw of ['2400', '1259', '245959', '123456']) {
+    assert.equal(await after2000(raw), true, `${raw} is today's clock in PHP`);
+    assert.equal(await before2000(raw), false, `${raw} is today's clock in PHP`);
+  }
+  // The compact `YYYYMMDD` date still reads, and an impossible DAY overflows
+  // (`20260230` is 2026-03-02 in PHP) while an impossible MONTH does not read.
+  assert.equal(await after2000('20261030'), true);
+  assert.equal(await new Validator({ x: '20260230' }, { x: 'after:2026-03-01' }).passes(), true);
+  assert.equal(await new Validator({ x: '20260230' }, { x: 'before:2026-03-03' }).passes(), true);
 });
 test('array/list/json match is_array()/array_is_list()/json_validate()', async () => {
   const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
@@ -1609,5 +1646,31 @@ test('failure messages: comparison sizes, present/missing and the displayable va
     await v.fails();
     const field = Object.keys(rules)[0];
     assert.deepEqual(v.errors()[field], [expected], label);
+  }
+});
+
+// Audit #671: the date-comparison rules take a DATE STRING or the name of
+// another field. PHP reads the parameter through `getDateTimestamp()` ->
+// `Date::parse()`, and Carbon answers "now" for an EMPTY string - verified on
+// PHP 8.3.30 + laravel/framework 13.37: `Carbon::parse('')`, `' '` and `'now'`
+// are the same instant (a bare `'0'` throws, and `getDateTime()`'s try/catch
+// turns that into the null the caller compares against 0). The kernel fell
+// through every branch for `''` and answered null, i.e. epoch 0, so a rule
+// whose parameter went missing PASSED `after:` and FAILED `before:` - the
+// opposite of PHP on both sides. A probe over 37 tokens (military zones,
+// `noon`, `2pm`, `next monday`, `+1 day`, `1 week ago`, `june`,
+// `noon tomorrow`, clock times, digit runs, garbage) now matches PHP on 37/37.
+test('a comparison rule with a MISSING parameter reads as "now", not epoch 0', async () => {
+  // The value is in the past either way, so the verdict does not depend on the
+  // clock: a rule that means "now" passes for it, a rule that means 0 does not.
+  for (const rules of [{ a: 'before:' }, { a: 'before: ' }, { a: 'before_or_equal:' }, { a: 'before:now' }]) {
+    const v = new Validator({ a: '2000-01-01' }, rules);
+    await v.fails();
+    assert.deepEqual(v.errors(), {}, JSON.stringify(rules));
+  }
+  for (const rules of [{ a: 'after:' }, { a: 'after_or_equal:' }, { a: 'date_equals:' }]) {
+    const v = new Validator({ a: '2000-01-01' }, rules);
+    await v.fails();
+    assert.deepEqual(Object.keys(v.errors()), ['a'], JSON.stringify(rules));
   }
 });

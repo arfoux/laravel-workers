@@ -27,7 +27,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { oracleAppRoot, oracleSkip } from './oracle-app.mjs';
+import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
 
 let DatabaseSync = null;
 try {
@@ -148,7 +148,12 @@ function runOracle() {
     ...(s.form ? { form: s.form } : {}),
   }));
   const res = spawnSync(PHP, [ORACLE], {
-    input: JSON.stringify({ app_root: APP_ROOT, freeze_ms: FREEZE_MS, steps }),
+    input: JSON.stringify({
+      app_root: APP_ROOT,
+      db_path: oracleDbPath('login-flow'),
+      freeze_ms: FREEZE_MS,
+      steps,
+    }),
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });

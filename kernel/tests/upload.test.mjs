@@ -53,6 +53,18 @@ const PNG_BYTES = new Uint8Array([
   0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
 ]);
 
+// A real 1x1 JPEG (SOI + APP0/JFIF + DQT + SOF0 + SOS + EOI): `mimes:jpeg` must
+// accept it, which is why the fixture decodes from base64 instead of hand-typing
+// marker bytes (audit #857).
+const JPEG_BYTES = new Uint8Array(
+  Buffer.from(
+    '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAx' +
+      'NDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEA' +
+      'AD8AKp//2Q==',
+    'base64'
+  )
+);
+
 function multipartBytes(parts) {
   const chunks = [];
   const enc = new TextEncoder();
@@ -121,6 +133,122 @@ test('upload: a field with name[] holds an array of files', () => {
   assert.equal(photos.length, 2);
   assert.equal(photos[0].getClientOriginalName(), 'a.txt');
   assert.equal(photos[1].getSize(), 2);
+});
+
+// PHP registers a FILE name through the SAME `php_register_variable_ex()` rule
+// as a field name, so `name="post[image]"` is `$_FILES['post']['image']` - a MAP,
+// not a part to drop. Measured against a live PHP 8.3 server (`php -S` + `curl
+// -F 'post[image]=@f'`, the real rfc1867 parser):
+//   post[image] -> $_FILES['post']['image']   a map
+//   a[b][c]     -> $_FILES['a']['b']['c']     nested maps
+//   k[0]        -> $_FILES['k'][0]            a list (json_encode emits `[..]`)
+//   a.b, 'a b'  -> $_FILES['a_b']             the base-name rule (dots/spaces -> _)
+//   x[y][]      -> $_FILES['x']['y'][0]
+// The old bespoke walk read the NEXT bracket key to pick the shape, so
+// `post[image]` built `files.post = []` and the upload vanished: a valid form
+// failed `required` (422) or the controller read null and 500'd (audit #848,
+// #886).
+test('upload: a bracketed file name nests like $_FILES (map, index, base-name rule)', () => {
+  const req = uploadRequest([
+    { name: 'post[title]', content: 't' },
+    { name: 'post[image]', filename: 'a.txt', content: 'A' },
+    { name: 'a[b][c]', filename: 'b.txt', content: 'B' },
+    { name: 'k[0]', filename: 'c.txt', content: 'C' },
+    { name: 'a.b', filename: 'd.txt', content: 'D' },
+    { name: 'x[y][]', filename: 'e.txt', content: 'E' },
+    { name: 'photos[]', filename: 'f.txt', content: 'F' },
+  ]);
+  assert.equal(req.hasFile('post.image'), true);
+  assert.equal(req.file('post.image').getClientOriginalName(), 'a.txt');
+  assert.equal(req.hasFile('a.b.c'), true);
+  assert.equal(req.file('a.b.c').getClientOriginalName(), 'b.txt');
+  // `k[0]` is a LIST: PHP's `$_FILES['k']` json_encodes as `[..]`.
+  assert.deepEqual(
+    req.file('k').map((f) => f.getClientOriginalName()),
+    ['c.txt']
+  );
+  // A dot in the BASE name becomes `_`, so the dot gets its usual nested read.
+  assert.equal(req.hasFile('a_b'), true);
+  assert.equal(req.file('a_b').getClientOriginalName(), 'd.txt');
+  assert.equal(req.file('x.y')[0].getClientOriginalName(), 'e.txt');
+  assert.deepEqual(
+    req.allFiles().photos.map((f) => f.getClientOriginalName()),
+    ['f.txt']
+  );
+});
+
+// InteractsWithInput::hasFile() (:218-236) is
+// `array_any(array_wrap($this->file($key)), fn ($f) => $f instanceof SplFileInfo
+// && $f->getPath() !== '')`: a MAP answers TRUE where its own values are files
+// and FALSE where a further map sits in between. Probed on the live PHP 8.3
+// server with `$_FILES['a']['b']['c']` + `$_FILES['post']['image']`:
+//   hasFile('post') = true, hasFile('post.image') = true,
+//   hasFile('a') = false,  hasFile('a.b') = true, hasFile('a.b.c') = true,
+//   hasFile('k') = true,   hasFile('k.0') = true, hasFile('nope') = false
+// The kernel called `isValid()` on whatever came back, so `hasFile('post')` for
+// a nested file name THREW (audit #848).
+test('upload: hasFile follows array_wrap + isValidFile over a nested name', () => {
+  const req = uploadRequest([
+    { name: 'post[image]', filename: 'a.txt', content: 'A' },
+    { name: 'a[b][c]', filename: 'b.txt', content: 'B' },
+    { name: 'k[0]', filename: 'c.txt', content: 'C' },
+  ]);
+  assert.equal(req.hasFile('post'), true);
+  assert.equal(req.hasFile('post.image'), true);
+  assert.equal(req.hasFile('a'), false);
+  assert.equal(req.hasFile('a.b'), true);
+  assert.equal(req.hasFile('a.b.c'), true);
+  assert.equal(req.hasFile('k'), true);
+  assert.equal(req.hasFile('k.0'), true);
+  assert.equal(req.hasFile('nope'), false);
+  // A field-only key is not a file.
+  const fieldsOnly = uploadRequest([{ name: 'title', content: 't' }]);
+  assert.equal(fieldsOnly.hasFile('title'), false);
+});
+
+// InteractsWithInput::all() (:87-105) merges the files into the input
+// RECURSIVELY (`array_replace_recursive($input, $this->allFiles(), $input)`),
+// and a replaced key keeps its ORIGINAL position. Probed on the live server:
+//   all() = {"post":{"title":..,"image":..}, "a":.., "a_b":.., ..}
+// The kernel's shallow union answered `post` = the input's own `{title}` only -
+// the upload vanished from `all()`, so `Model::create($request->all())` and any
+// echo of `all()` diverged (audit #849).
+test('upload: all() merges the uploaded files into the input recursively', () => {
+  const req = uploadRequest([
+    { name: 'post[title]', content: 't' },
+    { name: 'post[image]', filename: 'a.txt', content: 'A' },
+    { name: 'zz', content: 'z' },
+    { name: 'photos[]', filename: 'f.txt', content: 'F' },
+  ]);
+  const all = req.all();
+  // The input's key first, then the file-only keys - PHP's array_replace_recursive.
+  assert.deepEqual(Object.keys(all), ['post', 'zz', 'photos']);
+  assert.deepEqual(Object.keys(all.post), ['title', 'image']);
+  assert.equal(all.post.title, 't');
+  assert.equal(all.post.image.getClientOriginalName(), 'a.txt');
+  assert.equal(all.photos[0].getClientOriginalName(), 'f.txt');
+  // `input()` itself stays the fields only.
+  assert.deepEqual(req.input(), { post: { title: 't' }, zz: 'z' });
+});
+
+// A field called `__proto__` is ordinary DATA in PHP (`$_FILES['__proto__']`,
+// and `$_FILES['x']['__proto__']` for `x[__proto__]` - probed on the live
+// server). The file tree used a plain `out[key] = ..` walk, which SETS THE
+// PROTOTYPE for that one name: the upload disappeared from `Object.keys()` and
+// the returned object carried the wrong prototype (audit #887).
+test('upload: a file named __proto__ stays data (no prototype write)', () => {
+  const req = uploadRequest([
+    { name: '__proto__', filename: 'p.txt', content: 'P' },
+    { name: 'x[__proto__]', filename: 'q.txt', content: 'Q' },
+  ]);
+  assert.equal(Object.prototype.filename, undefined);
+  const all = req.allFiles();
+  assert.equal(Object.getPrototypeOf(all), Object.prototype);
+  assert.deepEqual(Object.keys(all), ['__proto__', 'x']);
+  // own-property read (a `all.__proto__` read would reach the prototype).
+  assert.equal(Object.getOwnPropertyDescriptor(all, '__proto__').value.getClientOriginalName(), 'p.txt');
+  assert.deepEqual(Object.keys(all.x), ['__proto__']);
+  assert.equal(Object.getOwnPropertyDescriptor(all.x, '__proto__').value.getClientOriginalName(), 'q.txt');
 });
 
 test('upload: storeAs() writes the object and returns the disk-relative path', async () => {
@@ -197,6 +325,9 @@ test('validation: `mimes`/`mimetypes` answer for sniffable image formats (a head
   const png = uploadRequestBinary([
     { name: 'avatar', filename: 'a.png', type: 'image/png', bytes: PNG_BYTES },
   ]).file('avatar');
+  const jpeg = uploadRequestBinary([
+    { name: 'avatar', filename: 'a.jpg', type: 'image/jpeg', bytes: JPEG_BYTES },
+  ]).file('avatar');
   const txt = uploadRequest([
     { name: 'avatar', filename: 'a.txt', type: 'text/plain', content: 'hello file' },
   ]).file('avatar');
@@ -204,8 +335,15 @@ test('validation: `mimes`/`mimetypes` answer for sniffable image formats (a head
   assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:png' }).passes(), true);
   assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:jpg,png' }).passes(), true);
   assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:jpg' }).passes(), false);
-  // Symfony's guessExtension() answers "jpg" for image/jpeg - never "jpeg" -
-  // so `mimes:jpeg` rejects a real JPEG in Laravel too.
+  // Laravel MERGES the two names: `ValidatesAttributes::validateMimes()`
+  // (:1764-1766) adds 'jpg' AND 'jpeg' to the parameters as soon as either is
+  // named, because Symfony's guessExtension() answers "jpg" for image/jpeg.
+  // So `mimes:jpeg` accepts a real JPEG (audit #857 - the kernel used to reject
+  // it, and the comment here claimed Laravel did too).
+  assert.equal(await new Validator({ avatar: jpeg }, { avatar: 'mimes:jpeg' }).passes(), true);
+  assert.equal(await new Validator({ avatar: jpeg }, { avatar: 'mimes:jpg' }).passes(), true);
+  assert.equal(await new Validator({ avatar: jpeg }, { avatar: 'mimes:jpeg,png' }).passes(), true);
+  assert.equal(await new Validator({ avatar: jpeg }, { avatar: 'mimes:png' }).passes(), false);
   assert.equal(await new Validator({ avatar: png }, { avatar: 'mimes:jpeg' }).passes(), false);
   assert.equal(
     await new Validator({ avatar: png }, { avatar: 'mimetypes:image/png' }).passes(),

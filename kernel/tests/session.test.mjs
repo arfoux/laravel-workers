@@ -40,8 +40,8 @@ const noApp = APP_ROOT ? false : oracleSkip('session.test.mjs');
 const FIXED_ID = 'a1'.repeat(20); // 40 chars, alnum
 const NOW = Math.floor(Date.now() / 1000);
 
-function runOracle(payload, { requireApp = true } = {}) {
-  if (requireApp && !APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
+function runOracle(payload) {
+  if (!APP_ROOT || !existsSync(path.join(APP_ROOT, 'vendor', 'autoload.php'))) {
     throw new Error(oracleSkip('session.test.mjs'));
   }
   const res = spawnSync(PHP, [oraclePath], {

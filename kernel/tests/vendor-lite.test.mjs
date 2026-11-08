@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cacheBase, vendorLiteDir, classNames, ensureVendorLite, hashFor, installedJsonOf } from '../../tools/vendor-lite.mjs';
+import { cacheBase, vendorLiteDir, classNames, ensureVendorLite, hashFor, installedJsonOf, writeComposerLock, contentHashOf } from '../../tools/vendor-lite.mjs';
 
 // The cache path is derived, not configured: these tests pin the CONTRACT
 // (a stable directory per hash) without running composer.
@@ -216,5 +216,57 @@ test('a cache miss provisions the entry: the manifest and the autoloader are wri
     else process.env.XDG_CACHE_HOME = prev;
     rmSync(appDir, { recursive: true, force: true });
     rmSync(cacheRoot, { recursive: true, force: true });
+  }
+});
+
+// `--lock` writes the standard pinning file for the PRODUCTION set (audit #805).
+// It is not a Composer-authored lock: `resolveDependencies()` walks `require`
+// only, so `packages-dev` stays empty and an app that declares `require-dev`
+// gets `composer validate` exit 2 ("Required (in require-dev) package … is not
+// present in the lock file", Composer 2.9.0). That limit is not silent — it is
+// named in the file itself and returned to the caller — and these tests pin both
+// halves so a later "helpful" change (filling packages-dev with garbage, or
+// dropping the notice) cannot quietly make the file a lie again.
+
+test('writeComposerLock names the require-dev packages it cannot carry', () => {
+  const appDir = mkdtempSync(join(tmpdir(), 'lw-lock-'));
+  try {
+    writeFileSync(
+      join(appDir, 'composer.json'),
+      JSON.stringify({
+        name: 'acme/app',
+        require: { 'laravel/framework': '^13.0' },
+        'require-dev': { 'laravel/pint': '^1.0', 'phpunit/phpunit': '^11.0' },
+      })
+    );
+    const entries = [{ name: 'laravel/framework', version: 'v13.0.0', require: { 'php': '^8.3' }, type: 'library' }];
+    const { devRequires } = writeComposerLock(appDir, entries);
+    assert.deepEqual(devRequires, ['laravel/pint', 'phpunit/phpunit']);
+
+    const lock = JSON.parse(readFileSync(join(appDir, 'composer.lock'), 'utf8'));
+    assert.deepEqual(lock['packages-dev'], [], 'the dev closure is not resolved and must not be faked');
+    assert.deepEqual(lock.packages.map((p) => p.name), ['laravel/framework']);
+    assert.deepEqual(lock.packages[0].require, { php: '^8.3' });
+    // The hash is Composer's own recipe over this composer.json, so the lock is
+    // not called stale - the dev packages are the ONLY complaint validate has.
+    assert.equal(lock['content-hash'], contentHashOf(JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8'))));
+    const readme = lock._readme.join('\n');
+    assert.match(readme, /laravel\/pint, phpunit\/phpunit/, 'the file itself names what it does not carry');
+    assert.match(readme, /composer validate/, 'and the consequence the app will hit');
+  } finally {
+    rmSync(appDir, { recursive: true, force: true });
+  }
+});
+
+test('writeComposerLock stays quiet for an app without require-dev', () => {
+  const appDir = mkdtempSync(join(tmpdir(), 'lw-lock-'));
+  try {
+    writeFileSync(join(appDir, 'composer.json'), JSON.stringify({ name: 'acme/app', require: { 'laravel/framework': '^13.0' } }));
+    const { devRequires } = writeComposerLock(appDir, [{ name: 'laravel/framework', version: 'v13.0.0' }]);
+    assert.deepEqual(devRequires, []);
+    const lock = JSON.parse(readFileSync(join(appDir, 'composer.lock'), 'utf8'));
+    assert.ok(!lock._readme.join('\n').includes('require-dev'), 'no caveat to state when there is nothing to state');
+  } finally {
+    rmSync(appDir, { recursive: true, force: true });
   }
 });
