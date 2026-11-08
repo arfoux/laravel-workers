@@ -169,6 +169,21 @@ The cache therefore stores the lock hash, not the app path, and a project that
 uses path repositories gets a hit that may be wrong — the build's own boot is
 what catches it (it fails loudly rather than silently). Tracked in §5.
 
+#### `vendor-lite --lock`: the pinning file, and what it is not
+
+A lock-less app (the stock `laravel/laravel` skeleton ships none) resolves its
+production requires from packagist on every cold cache. `--lock` writes a
+`composer.lock` for that resolved set so the *next* build reads a lock instead.
+It is a **pinning file for vendor-lite**, not a Composer-authored lock:
+`resolveDependencies()` walks `require` only, so the written `packages-dev` is
+empty by design and `composer validate` reports every `require-dev` package as
+missing (`Required (in require-dev) package "…" is not present in the lock file.`,
+Composer 2.9.0 / PHP 8.3.30, exit 2). `content-hash` is Composer's own recipe over
+the same `composer.json`, so the lock is not called stale — the dev-package
+complaint is the only one. Resolving `require-dev` here would fetch a test-only
+closure (PHPUnit, Pint, …) the build never loads; an app that wants a Composer
+lock should run `composer update`.
+
 ### F. Rejected: ship a bundled framework
 
 Bundling `laravel/framework` inside laravel-workers would break the one

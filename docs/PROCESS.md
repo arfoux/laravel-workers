@@ -74,13 +74,15 @@ in a scratch directory, not this repository):
 | CI job | local command |
 |---|---|
 | `test` | `npm test` → `npm run test:corpus` → `node tools/gate.mjs --strict` → `npm run bench` → syntax check → `node tools/pack-gate.mjs` |
-| `parity-oracle` | `LW_LARAVEL_APP=<app> node --test kernel/tests/{auth,cache,csrf,session,ratelimit}.test.mjs` |
+| `parity-oracle` | `LW_LARAVEL_APP=<app> node --test kernel/tests/{auth,cache,csrf,session,ratelimit}.test.mjs` and `node --test tools/tests/routes-oracle-parity.test.mjs` (it boots the app too, so it is the same job) |
 | `e2e-fresh-laravel` | `npm pack` then install the tarball into a fresh app and `npx laravel-workers build`; `node tools/pack-smoke.mjs --app <app>` |
 | `shadow` (release only) | `node shadow/run.mjs --app <app> --scenarios shadow/scenarios/fresh-app.mjs --build` |
 
 Facts worth knowing:
 - `npm test` skips the oracle tests when there is no Laravel app; the `parity-oracle` job exists
   precisely so they run for real, and it re-checks `# skipped 0` so a silent skip fails the job.
+  `tools/tests/routes-oracle-parity.test.mjs` is one of those (it boots the app), which is why
+  `npm test` does not list it: the local `test` mirror is weaker than CI for that one file, by design.
 - `tools/pack-smoke.mjs` **skips** without an app — that skip is expected locally, not a failure.
 - `node --check` over every shipped module catches the syntax error a test would miss.
 

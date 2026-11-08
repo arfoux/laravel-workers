@@ -240,9 +240,10 @@ Data comes after schema, as **data-only** SQL (no DDL), verified with
 |---|---|
 | `commitDist: cannot move … dist aside` | `dist/` locked by `wrangler dev`/editor; the previous `dist` is intact, the new build is in `dist.building` |
 | `Unsupported cipher or incorrect key length` | `APP_KEY` malformed (needs `base64:` + 32 bytes), also in CI's random key |
-| `schema drift: dist/schema.sql changed ...` | tables exist and the schema changed; decide `--skip-schema` or `--schema=apply` |
-| `schema state unknown: "<db>" already has N table(s) ...` | tables exist but no hash was ever recorded for this D1 (a CI checkout, or a database that predates the tool); decide `--skip-schema` or `--schema=apply` |
+| `schema drift: dist/schema.sql changed ...` | tables exist and the schema changed; decide `--skip-schema` (the D1 is current) or `--schema=apply` (re-run the snapshot deliberately — CREATE-only: it fails on a table that already exists and cannot add a column, so a `Schema::table` migration on a live D1 is applied by hand) |
+| `schema state unknown: "<db>" already has N table(s) ...` | tables exist but no hash was ever recorded for this D1 (a CI checkout, or a database that predates the tool); decide `--skip-schema` or `--schema=apply` (CREATE-only, see the row above) |
 | no `READINESS` in CI | cache hit; add `--no-cache` |
+| `worth knowing (n): N migration(s) mutate an EXISTING table` | `dist/schema.sql` is CREATE-only, so a `Schema::table` migration cannot reach a D1 that already has the table — nothing to do for a fresh D1, apply the `ALTER` by hand for a populated one |
 | `GET /up` 404 on the edge | health route registered in `bootstrap/app.php`, not a route file — declare it |
 | login works, no rate-limit | `CACHE_STORE=file` at build; the throttle port fails open |
 
