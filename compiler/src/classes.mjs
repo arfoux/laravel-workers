@@ -19,8 +19,10 @@
 // is not compiled and the routes that use it stay blocked.
 import parser from 'php-parser';
 import { readFileSync } from 'node:fs';
-import { transpileControllerMethod, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES } from './transpiler.mjs';
+import { transpileControllerMethod, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES, JSON_RESPONSE_TYPES } from './transpiler.mjs';
 import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapters.mjs';
+// The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore).
+import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -288,7 +290,16 @@ function literalOf(node) {
     case 'nullkeyword':
     case 'null': return { js: 'null' };
     case 'boolean': return { js: node.value ? 'true' : 'false' };
-    case 'number': return { js: String(node.value) };
+    case 'number': {
+      // php-parser keeps the RAW text. `0777` is 511 in PHP, but emitted
+      // verbatim it is a LEGACY OCTAL literal - a SyntaxError in an ES module,
+      // so `classes.generated.mjs` could not even be imported (the build said
+      // nothing). `phpNumberLiteral()` is PHP's own reader (`017` is octal,
+      // `1_000` ignores the underscore); a value outside JSON number safety
+      // stays "cannot inline" (the caller fails loud with LW002).
+      const n = phpNumberLiteral(node.value);
+      return n === null ? null : { js: String(n) };
+    }
     case 'string': return { js: JSON.stringify(node.value) };
     case 'array': {
       const items = (node.items || []).filter((i) => i && i.kind !== 'comment');
@@ -767,7 +778,12 @@ function compileMethod(fqcn, methodNode, opts) {
     // asking for a service the edge cannot inject).
     const isResourceRequest =
       !!opts.resource && resolvedType && RESOURCE_REQUEST_TYPES.has(resolvedType);
-    if (ptype && !isEventType && !isValidatorType && !isResourceRequest) {
+    // A RESOURCE's withResponse() takes the response the runtime built
+    // (Laravel's own signature: `withResponse(Request $request, JsonResponse
+    // $response)` - JsonResource.php:251), so the compiled body may use the
+    // response surface (the method-call gate in the transpiler checks it).
+    const isJsonResponseType = resolvedType && JSON_RESPONSE_TYPES.has(resolvedType);
+    if (ptype && !isEventType && !isValidatorType && !isResourceRequest && !isJsonResponseType) {
       return {
         error:
           'the method ' + fqcn + '::' + name + '() takes a ' + p.type + ' — the edge cannot inject a service ' +
@@ -790,6 +806,23 @@ function compileMethod(fqcn, methodNode, opts) {
       (opts.imports instanceof Map && opts.imports.get(written)) || written;
     paramTypes.set(vname(p.name), resolved);
   }
+  // Laravel's OWN FormRequest stub writes the hook UNTYPED -
+  // `public function withValidator($validator)` - because an override may drop
+  // the base's type hint (PHP's contravariance), and a probe of the vendored
+  // 13.37 `FormRequest::withValidator()` shows the same `Validator $validator`.
+  // Laravel calls the hook with the validator IT built, so the first parameter
+  // IS the kernel's validator: the type is seeded by POSITION (only for this
+  // hook, only when the app left it untyped) - the same idea as
+  // `withResponse`'s `$response` below. Without it the hook body's
+  // `$validator->after(...)` had no type and the whole class failed LW002.
+  if (
+    opts.formRequest &&
+    name === 'withValidator' &&
+    params.length &&
+    !paramTypes.has(vname(params[0].name))
+  ) {
+    paramTypes.set(vname(params[0].name), 'Illuminate\\Validation\\Validator');
+  }
   // A RESOURCE's toArray(Request $request)/with(Request $request) takes the live
   // request: the parameters typed as one are request variables for the compiled
   // body (the same set the controller compiler builds).
@@ -797,6 +830,21 @@ function compileMethod(fqcn, methodNode, opts) {
   if (opts.resource) {
     for (const [v, t] of paramTypes) {
       if (RESOURCE_REQUEST_TYPES.has(t)) resourceRequestVars.add(v);
+    }
+  }
+  // `withResponse(Request $request, JsonResponse $response)` is the base's
+  // signature, but it declares `$response` UNTYPED there - an app override
+  // that keeps the untyped second parameter is legal PHP and still receives
+  // the response. The parameter is named here by POSITION (only for
+  // `withResponse`, so no other method's argument is granted the surface).
+  const jsonResponseVars = new Map();
+  if (opts.resource && name === 'withResponse') {
+    for (const p of params) {
+      const t = paramTypes.get(vname(p.name));
+      if (t && JSON_RESPONSE_TYPES.has(t)) jsonResponseVars.set(vname(p.name), t);
+    }
+    if (!jsonResponseVars.size && params.length > 1) {
+      jsonResponseVars.set(vname(params[1].name), 'Illuminate\\Http\\JsonResponse');
     }
   }
   const emitted = transpileControllerMethod((methodNode.body && methodNode.body.children) || [], {
@@ -834,7 +882,7 @@ function compileMethod(fqcn, methodNode, opts) {
     resource: !!opts.resource,
     // The type of each parameter (the variable -> the FQCN of the type): the
     // FormRequest hooks take the validator, so the compiled body must know it.
-    paramTypes,
+    paramTypes: new Map([...paramTypes, ...jsonResponseVars]),
     // The file's own `use` statements (the alias -> the FQCN): a type written
     // short (`Validator`) resolves through them.
     imports: opts.imports instanceof Map ? opts.imports : new Map(),

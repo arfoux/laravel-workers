@@ -7,12 +7,14 @@
 //                            deployment secret (a FormRequest fallback hash) must
 //                            get the binding, not a throw.
 //   rt.formRequest(...)    — the compiled lifecycle. A rule-only FormRequest has
-//                            no hooks (the build refuses a hook: the class
-//                            compiler refuses FormRequest subclasses), so the
-//                            runtime validates the inline rules against the live
-//                            request and answers validator.validated(). A failure
-//                            raises the kernel's ValidationException (302/422,
-//                            not a TypeError).
+//                            no hooks (the dump reported none), so the runtime
+//                            validates the inline rules against the live request
+//                            and answers validator.validated(); a hook the dump
+//                            DID report forces the compiled class and the
+//                            lifecycle calls it (see
+//                            formrequest-lifecycle.test.mjs). A
+//                            failure raises the kernel's ValidationException
+//                            (302/422, not a TypeError).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRt } from '../runtime/rt-from-context.mjs';

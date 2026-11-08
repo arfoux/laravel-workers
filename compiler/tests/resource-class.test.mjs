@@ -38,7 +38,11 @@ class PostResource extends JsonResource
 
     public function with(Request $request): array
     {
-        return ['meta' => ['version' => 1]];
+        // The hook reads the REQUEST (audit #853): Laravel's
+        // ResourceResponse::toResponse() calls $resource->with($request), so
+        // this value must arrive. The old fixture ignored $request, which is
+        // how the missing argument went unnoticed.
+        return ['meta' => ['version' => 1, 'path' => $request->path()]];
     }
 }
 `;
@@ -64,15 +68,17 @@ test('resource: the compiled class extends the kernel base and takes the request
 
   // The request the resource's toArray($request) receives (the runtime reads
   // it from the live HTTP context, exactly like every other request helper).
-  const request = { input: () => undefined, all: () => ({}), header: () => null };
+  const request = { input: () => undefined, all: () => ({}), header: () => null, path: () => '/posts/7' };
   const rt = buildRt({}, { http: { request }, classes });
   const resource = rt.newClass('App\\Http\\Resources\\PostResource', [{ id: 7 }]);
   // The body the app wrote runs against the wrapped model ($this->id).
   const answer = rt.toResponse(resource);
   assert.equal(answer.status, 200);
   assert.equal(answer.headers['content-type'], 'application/json');
-  // Laravel's body: the `data` wrapper (the `$wrap` key) and the with() keys.
-  assert.equal(answer.body, '{"data":{"id":7,"slug":"post-7"},"meta":{"version":1}}');
+  // Laravel's body: the `data` wrapper (the `$wrap` key) and the with() keys -
+  // the `path` here proves the hook received the request (audit #853). PHP's
+  // json_encode escapes the slashes, hence the `\/` in the expected body.
+  assert.equal(answer.body, '{"data":{"id":7,"slug":"post-7"},"meta":{"version":1,"path":"\\/posts\\/7"}}');
 });
 
 test('resource: a body that needs an await fails loud (the response path is synchronous)', () => {
@@ -159,4 +165,51 @@ class ProbeResource extends JsonResource
     // PHP escapes `/` as `\/` (the kernel's phpJsonEncode is byte-compatible).
     '{"data":{"id":3,"path":"posts\\/1\\/resource","probe":"hello"}}'
   );
+});
+
+test('resource: withResponse() and jsonOptions() reach the runtime (#854/#855)', async () => {
+  // Laravel hands the app's hook the response it built and the flags it asked
+  // for (ResourceResponse.php:36-49). Both used to be dropped: the hook was
+  // never called and the body ignored `jsonOptions()`.
+  const res = compile(
+    `<?php
+namespace App\\Http\\Resources;
+use Illuminate\\Http\\Request;
+use Illuminate\\Http\\Resources\\Json\\JsonResource;
+class HookedResource extends JsonResource
+{
+    public function toArray(Request $request): array
+    {
+        return ['id' => $this->id];
+    }
+
+    public function jsonOptions(): int
+    {
+        return 128;
+    }
+
+    public function withResponse(Request $request, $response): void
+    {
+        $response->header('X-Hooked', $request->path());
+        $response->setStatusCode(202);
+    }
+}
+`,
+    'HookedResource'
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  const dir = mkdtempSync(join(tmpdir(), 'lw-resource-hooked-'));
+  const mod = join(dir, 'classes.generated.mjs');
+  writeFileSync(mod, res.code, 'utf8');
+  const classes = (await import(pathToFileURL(mod).href)).classes;
+  const request = { input: () => undefined, all: () => ({}), header: () => null, path: () => '/posts/7' };
+  const rt = buildRt({}, { http: { request }, classes });
+  const resource = rt.newClass('App\\Http\\Resources\\HookedResource', [{ id: 7 }]);
+  const answer = rt.toResponse(resource);
+  // The wrapper is the resource's, the header and the status are the HOOK's
+  // (it runs last), and the body is `json_encode($payload, 128)` - PHP's
+  // pretty print, probed on 8.3.
+  assert.equal(answer.headers['x-hooked'], '/posts/7');
+  assert.equal(answer.status, 202);
+  assert.equal(answer.body, '{\n    "data": {\n        "id": 7\n    }\n}');
 });

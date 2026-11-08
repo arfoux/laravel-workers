@@ -5,6 +5,10 @@ import { STR_METHODS } from '../../kernel/str.mjs';
 import { ARR_METHODS } from '../../kernel/arr.mjs';
 import { ADAPTER_ASYNC } from '../../kernel/service-adapters.mjs';
 import { KNOWN_RULES, SNIFFED_EXTENSIONS, SNIFFED_MIME_TYPES } from '../../kernel/validator.mjs';
+// The number-literal canon (`0777` is OCTAL, `1_000` ignores the underscore):
+// the SAME reader the class/controller/view-name compilers use, so one literal
+// reads the same way everywhere.
+import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -155,7 +159,19 @@ function tx(node) {
       // The int/float distinction matters (PHP's `===` and `match`): 1 and 1.0
       // are different values, so a float literal must stay a float literal.
       const raw = String(node.value);
-      return /[.eE]/.test(raw) ? raw : String(Number(raw));
+      if (/[.eE]/.test(raw)) return raw;
+      // An INTEGER literal is read with PHP's own reader: php-parser keeps the
+      // RAW text, so `Number()` answered 777 for the OCTAL `0777` (PHP: 511),
+      // 17 for `017` (PHP: 15) and NaN (emitted as the JS `NaN`) for `1_000`
+      // (PHP: 1000) — a silently wrong value at request time with a green build.
+      // `phpNumberLiteral()` is the canon (hex/bin/oct/underscore); an integer
+      // outside JSON number safety stays "cannot inline" (loud, LW002) instead
+      // of a silently rounded double.
+      const n = phpNumberLiteral(raw);
+      if (n === null) {
+        throw mkErr('LW002', 'the integer literal ' + raw + ' is outside the integer-safe range the edge can hold', node.loc);
+      }
+      return String(n);
     }
     case 'boolean':
       return node.value ? 'true' : 'false';
@@ -1412,6 +1428,26 @@ const RESOURCE_REQUEST_TYPES = new Set([
   'Illuminate\\Http\\Request',
   'Illuminate\\Http\\Request\\Request',
 ]);
+// The RESPONSE type a JsonResource's `withResponse()` takes - Laravel's own
+// signature is `withResponse(Request $request, JsonResponse $response)`
+// (JsonResource.php:251) and the hook receives the response the runtime built
+// (kernel/resources.mjs). The base declares the parameter UNTYPED, so an app
+// override may too; classes.mjs names the variable for that case.
+const JSON_RESPONSE_TYPES = new Set(['Illuminate\\Http\\JsonResponse']);
+// The `JsonResponse` surface the kernel's resource response implements:
+// `header()`/`withHeaders()`/`setStatusCode()`/`getStatusCode()`/`setContent()`/
+// `getContent()`/`getData()`/`setData()`. A method outside the set stays a build
+// error instead of a runtime TypeError.
+const JSON_RESPONSE_METHODS = new Set([
+  'header',
+  'withHeaders',
+  'setStatusCode',
+  'getStatusCode',
+  'setContent',
+  'getContent',
+  'getData',
+  'setData',
+]);
 
 function txGate(node, meth) {
   const argNodes = node.arguments || [];
@@ -1866,7 +1902,27 @@ function txCall(node) {
       PORT_HINT
     );
   }
+  // `Validator::after($callback)` hands the callback THE VALIDATOR
+  // (`call_user_func($callback, $this)` - Validator.php:447), and Laravel's own
+  // FormRequest stub writes that callback's parameter untyped
+  // (`function ($validator) { ... }`). The type is seeded by POSITION and only
+  // when the receiver is a validator the compiled body already knows - the same
+  // idea as `withResponse`'s `$response`. Seeded BEFORE the arguments are
+  // translated, because the closure is translated there.
+  const savedClosureSeed = CTX ? CTX.closureParamSeed : undefined;
+  if (
+    CTX &&
+    CTX.paramTypes &&
+    what.what &&
+    what.what.kind === 'variable' &&
+    what.offset &&
+    what.offset.name === 'after'
+  ) {
+    const receiverType = CTX.paramTypes.get(vname(what.what.name));
+    if (receiverType && VALIDATOR_TYPES.has(receiverType)) CTX.closureParamSeed = receiverType;
+  }
   const args = (node.arguments || []).map(tx).join(', ');
+  if (CTX) CTX.closureParamSeed = savedClosureSeed;
   if (CTX) {
     const redir = txRedirectChain(node);
     if (redir) return redir;
@@ -2583,6 +2639,22 @@ function txCall(node) {
         }
         return isAsync ? txAwait(obj + '.' + meth + '(' + args + ')', node, '$validator->' + meth + '()') : expr;
       }
+      // The RESPONSE a resource's `withResponse(Request $request, JsonResponse
+      // $response)` receives (JsonResource.php:251; the runtime hands it in -
+      // kernel/resources.mjs). The kernel's response object carries the
+      // `JsonResponse` subset, so a call outside it stays a build error.
+      if (paramType && JSON_RESPONSE_TYPES.has(paramType)) {
+        if (!JSON_RESPONSE_METHODS.has(meth)) {
+          throw mkErr(
+            'LW002',
+            'the response method ' + meth + '() is not compiled - the compiled response has: ' +
+              [...JSON_RESPONSE_METHODS].join(', ') + '; ' + PORT_HINT,
+            node.loc,
+            PORT_HINT
+          );
+        }
+        return expr;
+      }
       // A FormRequest's request surface (the kernel's base): merge(), input(),
       // all(), user() - the hooks read the request and write into the input
       // bag. It is the class's OWN base (the compiled class extends the
@@ -2794,6 +2866,19 @@ function txClosure(node){
     const t = closureParamType(p);
     if (pn && t) closureParamTypes.set(vname(pn), t);
   }
+  // A seed from the RECEIVER's signature (`Validator::after($callback)` - see
+  // txCall): the first parameter the app left UNTYPED is the validator Laravel
+  // hands the callback. Written types win, and only one parameter is seeded.
+  if (CTX && CTX.closureParamSeed) {
+    for (const p of (node.arguments||[])) {
+      const pn = p.name && p.name.name ? p.name.name : p.name;
+      const pv = pn ? vname(pn) : null;
+      if (pv && !closureParamTypes.has(pv)) {
+        closureParamTypes.set(pv, CTX.closureParamSeed);
+        break;
+      }
+    }
+  }
   // build body JS: need to render block children via inline walk? reuse tx for statements by emitting JS function body string
   // Instead generate JS code for body by simulating walkChildren into string buffer via helper emitClosureBody
   const bodyCode=emitClosureBody(node.body, byVal, byRef, node.arguments||[], closureParamTypes);
@@ -2892,6 +2977,17 @@ function txArrowFunc(node){
     const pn = p.name && p.name.name ? p.name.name : p.name;
     const t = closureParamType(p);
     if (pn && t) arrowParamTypes.set(vname(pn), t);
+  }
+  // The receiver's seed covers the arrow form too (`fn ($validator) => ...`).
+  if (CTX && CTX.closureParamSeed) {
+    for (const p of (node.arguments||[])) {
+      const pn = p.name && p.name.name ? p.name.name : p.name;
+      const pv = pn ? vname(pn) : null;
+      if (pv && !arrowParamTypes.has(pv)) {
+        arrowParamTypes.set(pv, CTX.closureParamSeed);
+        break;
+      }
+    }
   }
   const savedParamTypes = CTX && CTX.paramTypes ? new Map(CTX.paramTypes) : null;
   if (CTX && CTX.paramTypes) {
@@ -3594,6 +3690,8 @@ export {
   REQUEST_DENY,
   VALIDATOR_TYPES,
   RESOURCE_REQUEST_TYPES,
+  JSON_RESPONSE_TYPES,
+  JSON_RESPONSE_METHODS,
   // The allowlists a compiled method call is checked against: each name
   // MUST exist on the kernel object it is compiled to call (a name the
   // kernel lacks compiles green and throws "is not a function" at request

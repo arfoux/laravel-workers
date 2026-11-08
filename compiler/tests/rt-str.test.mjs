@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // compiler/tests/rt-str.test.mjs — standalone probe for str_* helpers (str_starts_with/str_ends_with/str_is).
-// Run: node compiler/tests/rt-str.test.mjs
-// Not wired into package.json test enumerator (intentional — see task notes). Use `node --test` directly or run standalone.
+// Run: node --test compiler/tests/rt-str.test.mjs (it IS part of `npm test`, which enumerates this file
+// explicitly — as plain `node` it drives the same assertions through the file's own bottom block).
 import assert from 'node:assert/strict';
 import { buildRt } from '../runtime/rt-from-context.mjs';
 

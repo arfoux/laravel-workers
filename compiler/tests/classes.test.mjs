@@ -144,6 +144,36 @@ class EmptyCtor
   // reachable (rt.newClass merges this object onto the kernel's Mailable).
   assert.equal(Object.prototype.hasOwnProperty.call(instance, 'view'), false);
 });
+test('classes: a legacy-octal property default is emitted as PHP\'s value, not the raw literal', async () => {
+  // PHP 8.3.30: `public int $perm = 0777;` is 511, `= 017` is 15. The raw text
+  // was emitted verbatim (`js: String(node.value)`), and `0777` is a LEGACY
+  // OCTAL literal in JS: a SyntaxError in an ES module, so the generated
+  // classes.generated.mjs could not be imported at all - every request that
+  // loads the class registry died while the build stayed green.
+  const file = classFile('Perms', `<?php
+namespace App\\Mail;
+class Perms
+{
+    public int $perm = 0777;
+    public int $oct = 017;
+    public int $sep = 1_000;
+    public int $hex = 0x1F;
+    public function __construct() {}
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Mail\\Perms': { file, kind: 'mailable' } } },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  const mod = await compiledModule(res.code);
+  const instance = mod.classes['App\\Mail\\Perms'].ctor([], {});
+  assert.equal(instance.perm, 511, 'PHP: 0777 is 511');
+  assert.equal(instance.oct, 15, 'PHP: 017 is 15');
+  assert.equal(instance.sep, 1000, 'PHP 7.4+ ignores the underscore');
+  assert.equal(instance.hex, 31);
+});
+
 test('classes: a listener that takes a service fails loud', () => {
   const file = classFile('WithService', `<?php
 namespace App\\Listeners;
@@ -1339,6 +1369,81 @@ test('classes: a FormRequest compiles - the hook is compiled and the base is the
   assert.match(res.code, /prepareForValidation/, 'the hook is compiled');
   assert.match(res.code, /this\.merge\(/, 'the hook writes into the request');
   assert.match(res.code, /this\.input\(/, 'the hook reads the request');
+});
+
+const UNTYPED_HOOK_REQUEST = `<?php
+namespace App\\Http\\Requests;
+
+use Illuminate\\Foundation\\Http\\FormRequest;
+
+class UntypedHookRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return ['title' => ['required']];
+    }
+
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($v) {
+            if ($this->input('flag') === 'yes') {
+                $v->errors()->add('flag', 'refused');
+            }
+        });
+    }
+}
+`;
+
+test('classes: the FormRequest hook compiles with NO type hint on either parameter', () => {
+  // Laravel's own `form-request` stub writes `withValidator($validator)`
+  // untyped - an override may drop the base's hint - and the hook hands the
+  // validator to the `after()` callback
+  // (`Illuminate/Foundation/Http/FormRequest::withValidator()` names it
+  // `Validator $validator`; `Validator::after()` calls the callback with the
+  // validator). Both parameters are therefore known by POSITION, and the
+  // compiled body must resolve the calls on them. Before those seeds this
+  // class failed LW002 and the route injecting it shipped a handler that
+  // answered 500 while the build stayed green (audit #891).
+  const file = classFile('UntypedHookRequest', UNTYPED_HOOK_REQUEST);
+  const res = compileClasses(
+    {
+      events: {},
+      classes: {
+        'App\\Http\\Requests\\UntypedHookRequest': { file, kind: 'formRequest', ctor: [] },
+      },
+    },
+    OPTIONS
+  );
+  assert.deepEqual(res.errors, [], 'the untyped stub form compiles');
+  assert.match(res.code, /withValidator/, 'the hook is compiled');
+  assert.match(res.code, /\.after\(/, 'the call on the untyped hook parameter is compiled');
+  assert.match(res.code, /errors\(\)/, "the callback's untyped parameter resolves to the validator");
+});
+
+test('classes: the hook seed is scoped to a FormRequest - a plain class stays loud', () => {
+  // The seed names the FIRST parameter of `withValidator` on a FormRequest.
+  // A class that is not one keeps failing loud: guessing the value would make
+  // the compiled rung answer something Laravel would not have.
+  const source = `<?php
+namespace App\\Support;
+
+class NotARequest
+{
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($v) {
+            $v->errors()->add('flag', 'refused');
+        });
+    }
+}
+`;
+  const file = classFile('NotARequest', source);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Support\\NotARequest': { file, kind: 'class', ctor: [] } } },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 1, JSON.stringify(res.errors));
+  assert.match(res.errors[0].message, /not compiled/);
 });
 
 test('emit: the controller runs the FormRequest hook before the validation (awaited, with the runtime)', () => {

@@ -13,6 +13,10 @@ import parser from 'php-parser';
 import { snake } from '../../kernel/str.mjs';
 import { transpileControllerMethod, uncompiledRuleOf } from './transpiler.mjs';
 import { viewFileName } from './view-name.mjs';
+// The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore):
+// the same reader the config/const folders use, so a signature default cannot
+// bake a different number than PHP's.
+import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -269,7 +273,16 @@ function typeName(t) {
 
 function literalOf(node) {
   if (!node) return { ok: false };
-  if (node.kind === 'number') return { ok: true, value: Number(node.value) };
+  if (node.kind === 'number') {
+    // php-parser keeps the RAW literal text: `Number()` answered 17 for the
+    // octal `017` (PHP 15) and NaN for `1_000` (PHP 1000) — and a NaN default
+    // was emitted as JSON `null` (JSON.stringify(NaN)), so a compiled route
+    // parameter read a different default than Laravel's (#798's canon).
+    // `phpNumberLiteral()` answers null for an integer outside JSON safety,
+    // which stays "not a literal here" (the route keeps failing loud).
+    const n = phpNumberLiteral(node.value);
+    return n === null ? { ok: false } : { ok: true, value: n };
+  }
   if (node.kind === 'string') return { ok: true, value: String(node.value) };
   if (node.kind === 'boolean') return { ok: true, value: !!node.value };
   if (node.kind === 'nullkeyword' || node.kind === 'null') return { ok: true, value: null };
@@ -951,6 +964,14 @@ export function emitController(source, methodName, meta = {}) {
   // so a helper that leaves the supported subset fails the build instead of
   // throwing at request time.
   const helperCode = [];
+  // The capability flags a HELPER can raise on its own. The module's imports and
+  // the runtime wiring were decided from the entry method's flags only, so a
+  // helper that is the only thing using the Gate (`Gate::allows('update',
+  // Post::class)`), dispatching an event, building a compiled class or
+  // paginating emitted the call with NO wiring: the build stayed green and the
+  // request answered 500 (`gate: no compiled policy for App\Models\Post`, or the
+  // class/view missing) where Laravel answers 200/403.
+  const helperFlags = { usedGate: false, usedQueue: false, usedClasses: false, usedPaginator: false, usedEvents: false };
   for (const nm of reachable) {
     const hm = helperByName.get(nm);
     const hname = nm;
@@ -1019,6 +1040,8 @@ export function emitController(source, methodName, meta = {}) {
       };
     }
     helperCode.push({ name: hname, code: hEmitted.code, params: hparams.map((p) => p.name) });
+    // Every flag the helper raised joins the module's wiring (see `helperFlags`).
+    for (const k of Object.keys(helperFlags)) helperFlags[k] = helperFlags[k] || !!hEmitted[k];
   }
 
   const paramVars = new Set(params.map((p) => vname(p.name)));
@@ -1066,6 +1089,15 @@ export function emitController(source, methodName, meta = {}) {
   });
   if (emitted.errors.length) return { code: null, errors: emitted.errors };
 
+  // The module's capability flags: the entry method's OR every reachable
+  // helper's (a helper is part of this handler, so its Gate/event/class/
+  // paginator/queue use has to be wired exactly like the method's own).
+  const usesGate = emitted.usedGate || helperFlags.usedGate;
+  const usesEvents = emitted.usedEvents || helperFlags.usedEvents;
+  const usesClasses = emitted.usedClasses || helperFlags.usedClasses;
+  const usesPaginator = emitted.usedPaginator || helperFlags.usedPaginator;
+  const usesQueue = emitted.usedQueue || helperFlags.usedQueue;
+
   const importLines = [];
   const viewEntries = [];
   // The views the handler imports: the ones the method renders + the ones
@@ -1074,7 +1106,7 @@ export function emitController(source, methodName, meta = {}) {
   // The views the handler imports: the route method's own, every reachable
   // helper's, plus anything a meta override names.
   const viewNames = [...new Set([...(Array.isArray(meta.views) && meta.views.length ? meta.views : info.views), ...allViews])];
-  if (emitted.usedPaginator && meta.paginationView && !viewNames.includes(meta.paginationView)) {
+  if (usesPaginator && meta.paginationView && !viewNames.includes(meta.paginationView)) {
     viewNames.push(meta.paginationView);
   }
   viewNames.forEach((v, i) => {
@@ -1165,14 +1197,14 @@ export function emitController(source, methodName, meta = {}) {
   for (const l of importLines) lines.push(l);
   lines.push("import { models as LW_MODELS, routeMap as LW_ROUTE_MAP } from '../models.generated.mjs';");
   // The Gate check reads the compiled policies (the abilities, the guest rules).
-  if (emitted.usedGate) {
+  if (usesGate) {
     lines.push(
       "import { policies as LW_POLICIES, gateDefinitions as LW_GATE_DEFINITIONS } from '../policies.generated.mjs';"
     );
   }
   // The compiled classes (the listeners, the services, the mailables): the
   // runtime builds the instances.
-  if (emitted.usedEvents || emitted.usedClasses || usesFormRequestClass) {
+  if (usesEvents || usesClasses || usesFormRequestClass) {
     lines.push(
       "import { classes as LW_CLASSES, eventListeners as LW_EVENT_LISTENERS } from '../classes.generated.mjs';"
     );
@@ -1189,14 +1221,14 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('    db: env && env.DB ? env.DB : null,');
   lines.push('    models: LW_MODELS,');
   lines.push('    views: VIEWS,');
-  if (emitted.usedGate) {
+  if (usesGate) {
     lines.push('    policies: LW_POLICIES,');
     lines.push('    gateDefinitions: LW_GATE_DEFINITIONS,');
   }
-  if (emitted.usedEvents || emitted.usedClasses || usesFormRequestClass) {
+  if (usesEvents || usesClasses || usesFormRequestClass) {
     lines.push('    classes: LW_CLASSES,');
   }
-  if (emitted.usedEvents) {
+  if (usesEvents) {
     lines.push('    eventListeners: LW_EVENT_LISTENERS,');
   }
   lines.push("    origin: (function () { var r = ctx && ctx.request; if (!r) return null; var h = (typeof r.host === 'function') ? r.host() : r.host; if (!h) return null; if (typeof r.schemeAndHttpHost === 'function') return r.schemeAndHttpHost(); var s = (typeof r.scheme === 'function') ? r.scheme() : 'https'; return s + '://' + h; })(),");
@@ -1283,7 +1315,7 @@ export function emitController(source, methodName, meta = {}) {
   lines.push('}');
   lines.push('');
 
-  return { code: lines.join('\n'), errors: [], usedQueue: !!emitted.usedQueue };
+  return { code: lines.join('\n'), errors: [], usedQueue: usesQueue };
 }
 
 export default { extractController, emitController };

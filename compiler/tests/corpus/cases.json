@@ -319,7 +319,7 @@
     "file": "cases/str-trim-case.php",
     "kind": "SUP",
     "php_exit": 0,
-    "php_bytes": 54
+    "php_bytes": 78
   },
   {
     "id": "switch-basic",
