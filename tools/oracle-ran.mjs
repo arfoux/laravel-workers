@@ -34,6 +34,13 @@ const DEFAULT_FILES = ['auth', 'cache', 'csrf', 'session', 'ratelimit'].map((nam
 // gate runs it for real - and its own skipped!==0 check keeps it from silently
 // dropping out again (it shipped wired nowhere).
 DEFAULT_FILES.push(path.join('tools', 'tests', 'vendor-dir.test.mjs'));
+// The build-time config fold is an oracle test too, and its PHP half is the
+// whole point: `tools/tests/config-eval.test.mjs` folds `config/*.php` and
+// compares with PHP 8.3 (189 expressions + a whole config directory, byte for
+// byte). Without PHP it SKIPS — the `test` job has none, this one does — so a
+// plain `node --test` in the wrong job is green while proving nothing, exactly
+// what this gate exists to catch.
+DEFAULT_FILES.push(path.join('tools', 'tests', 'config-eval.test.mjs'));
 const files = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES;
 
 const app = oracleAppRoot();

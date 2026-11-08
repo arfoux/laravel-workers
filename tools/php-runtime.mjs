@@ -37,18 +37,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { toNativePath } from './native-path.mjs';
 
 /** The version the parity suite is pinned to. */
 export const ORACLE_PHP = '8.3.30';
-
-/** MSYS2/Git Bash hands Node POSIX paths ("/c/Users/...") that spawn() cannot use. */
-function toNativePath(p) {
-  if (process.platform !== 'win32' || typeof p !== 'string') return p;
-  const s = p.replace(/\\/g, '/');
-  const m = s.match(/^\/([a-zA-Z])(?:\/|$)/);
-  if (!m) return p;
-  return `${m[1].toUpperCase()}:/${s.slice(3)}`;
-}
 
 function parseVer(v) {
   const m = String(v || '').match(/^(\d+)\.(\d+)\.(\d+)/);

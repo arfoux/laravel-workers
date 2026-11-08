@@ -5,19 +5,24 @@
 //   mailViewsByClass, mailableClasses }.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { resolveAppRoot, toNativePath } from './native-path.mjs';
 import {
   classFile, parsePhpFile, parsePhpSource, nodeName, callMethodName, callArgs, argValue, readEnvFile, appPsr4Dirs,
 } from './static.mjs';
+// The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore):
+// a constructor default recorded by the dump is what a compiled class defaults
+// its parameter to, so the raw php-parser text must be read PHP's way.
+import { phpNumberLiteral } from './php-funcs.mjs';
 
 // The positional app root wins over `LW_APP_ROOT`: the PHP oracle reads
 // `$argv[1]` only, and the build passes the app positionally too — an ambient
 // `LW_APP_ROOT` (the documented way to point the *other* dump tools at an app)
 // must not silently redirect this dump to a different app than the caller named.
-let appDir =
-  process.argv.length > 2 && process.argv[2] && existsSync(process.argv[2])
-    ? process.argv[2]
-    : process.env.LW_APP_ROOT || '';
-if (!appDir) appDir = existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : '';
+// Either form is a SHELL path (`/c/Users/app` from Git Bash, audit #803), so it
+// is normalised before `existsSync()` reads it.
+const positional = process.argv.length > 2 && process.argv[2] ? toNativePath(process.argv[2]) : '';
+let appDir = positional && existsSync(positional) ? positional : '';
+if (!appDir) appDir = resolveAppRoot() || '';
 if (!appDir) { process.stderr.write('event-dump.mjs: cannot find app root\n'); process.exit(1); }
 
 const BUILTINS = new Set(['int', 'float', 'string', 'bool', 'array', 'callable', 'iterable', 'object', 'mixed', 'void', 'null', 'true', 'false']);
@@ -72,8 +77,14 @@ const scalarDefault = (node) => {
   switch (node.kind) {
     case 'string': return node.value;
     case 'number': {
-      const n = Number(node.value);
-      return Number.isNaN(n) ? node.value : n;
+      // php-parser keeps the RAW literal text: `Number()` answered 17 for the
+      // OCTAL `017` (PHP: 15) and NaN for `1_000` (PHP: 1000 — which fell back
+      // to the raw STRING, so the compiled constructor defaulted a string where
+      // PHP defaults an int). `phpNumberLiteral()` is the canon (hex/bin/oct/
+      // underscore); a value it cannot carry (an integer outside JSON number
+      // safety) is reported as NO default, so the build fails loud upstream.
+      const n = phpNumberLiteral(node.value);
+      return n === null ? undefined : n;
     }
     case 'boolean': return node.value;
     case 'nullkeyword': return null; // PHP: is_scalar($d) || $d === null  -> records null

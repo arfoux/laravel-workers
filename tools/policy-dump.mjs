@@ -21,6 +21,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePhp } from './php-runtime.mjs';
+import { resolveAppRoot } from './native-path.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -30,9 +31,7 @@ const isMain =
     process.argv[1].replace(/\\/g, '/').endsWith('/tools/policy-dump.mjs'));
 
 if (isMain) {
-  const appDir =
-    process.env.LW_APP_ROOT ||
-    (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+  const appDir = resolveAppRoot();
   if (!appDir) {
     process.stderr.write('policy-dump.mjs: cannot find app root (set LW_APP_ROOT)\n');
     process.exit(1);

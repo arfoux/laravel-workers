@@ -25,7 +25,12 @@
 // installed instead of the covered package, without checking the provided
 // VERSION against the constraint); a mid-run re-pick can briefly orphan a
 // package (pruned at output, with a net that fails loud if that orphan was
-// suppressing something still required). Both paths tell you to commit a lock.
+// suppressing something still required); root `conflict` is NOT honoured (a
+// package composer would have refused is installed if some require pulls it in —
+// announced every time it applies); `config.platform` is honoured for its
+// `php` pin only, because the machine's own extensions are what decide `ext-*`
+// requirements here (the other keys are named too). Every one of those paths
+// tells you to commit a lock.
 //
 // Output entries have the exact shape readLockPackages() produces from a lock,
 // so everything downstream (download, shasum verify, autoloader) is unchanged.
@@ -319,7 +324,43 @@ export async function resolveDependencies(appDir, opts = {}) {
   assertPackagistOnly(root.repositories);
 
   const basePlatform = opts.platform || detectPlatform(opts.phpBin, (root.require && root.require.php) || null);
-  const platform = basePlatform.exts instanceof Set ? basePlatform : { ...basePlatform, exts: new Set(basePlatform.exts || []) };
+  // Always a fresh object: `detectPlatform()` returns a Set-bearing object, and
+  // the php pin below writes into this one — aliasing the caller's object (the
+  // tests inject a shared PLATFORM, the build its own probe) would leak the pin
+  // into whoever holds it. `exts` is read-only here, so its Set is shared.
+  const platform = { ...basePlatform, exts: basePlatform.exts instanceof Set ? basePlatform.exts : new Set(basePlatform.exts || []) };
+  const machinePhp = String(basePlatform.php || '');
+  // `config.platform` is composer's "resolve as if the platform were this". The
+  // php pin is honoured (it decides which releases satisfy `php` requirements —
+  // exactly what composer does on a machine whose interpreter differs from the
+  // pin); every other key is named out loud and skipped, because the machine's
+  // extensions are what decide `ext-*` here and inventing them would silently
+  // install a package this runtime cannot load (audit #806).
+  const platformPin = (root.config && root.config.platform) || {};
+  const pinnedPhp = /^\d+\.\d+(?:\.\d+)?$/.test(String(platformPin.php || '')) ? String(platformPin.php) : null;
+  if (pinnedPhp) platform.php = pinnedPhp;
+  if (!opts.silent) {
+    // Only worth saying when the pin actually changes the answer: a pin equal to
+    // the machine's own version is the common case (a CI pinning the PHP it
+    // already runs).
+    if (pinnedPhp && pinnedPhp !== machinePhp) {
+      console.log(
+        `composer-resolve: config.platform.php pins ${pinnedPhp} — resolving against the pin, not the machine's ${machinePhp || 'unprobed PHP'}`
+      );
+    }
+    const unhonoured = Object.keys(platformPin).filter((k) => k !== 'php');
+    if (unhonoured.length) {
+      console.log(
+        `composer-resolve: config.platform also pins ${unhonoured.join(', ')} — not honoured here (the machine's extensions decide ext-* requirements); commit a composer.lock if that matters`
+      );
+    }
+    const conflicts = Object.keys(root.conflict || {});
+    if (conflicts.length) {
+      console.log(
+        `composer-resolve: composer.json declares ${conflicts.length} \`conflict\` constraint(s) (${conflicts.slice(0, 5).join(', ')}${conflicts.length > 5 ? ', …' : ''}) — this resolver does not honour them, so a package composer would have refused can still be installed; commit a composer.lock if your app relies on one`
+      );
+    }
+  }
   const rootFloor = STAB_RANK[root['minimum-stability'] || 'stable'] ?? STAB_RANK.stable;
   const meta = makeMeta(opts.fetch || ((u, o) => fetch(u, o)), new Map());
 

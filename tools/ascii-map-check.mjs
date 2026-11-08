@@ -20,14 +20,15 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toNativePath } from './native-path.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MODULE = join(ROOT, 'kernel', 'ascii-map.data.mjs');
 const GENERATOR = join(ROOT, 'tools', 'ascii-map.php');
 
 const requireApp = process.argv.includes('--require') || process.env.LW_ASCII_REQUIRE === '1';
-const appRoot = process.env.LW_APP_ROOT || '';
-const php = process.env.PHP_BIN || 'php';
+const appRoot = toNativePath(process.env.LW_APP_ROOT) || '';
+const php = toNativePath(process.env.PHP_BIN) || 'php';
 
 if (!appRoot || !existsSync(join(appRoot, 'artisan'))) {
   if (requireApp) {

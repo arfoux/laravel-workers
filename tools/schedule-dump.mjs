@@ -14,15 +14,17 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import parser from 'php-parser';
-import { parsePhpFile, appRouteFiles, callMethodName, callArgs, argValue, loadConfig, readEnvFile, configGet } from './static.mjs';
+import { resolveAppRoot } from './native-path.mjs';
+import { parsePhpFile, appRouteFiles, callMethodName, callArgs, argValue, loadConfig, readEnvFile, configGet, renestMixedChains } from './static.mjs';
 
-const appDir = process.env.LW_APP_ROOT || (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+const appDir = resolveAppRoot();
 if (!appDir) { process.stderr.write('schedule-dump.mjs: cannot find app root\n'); process.exit(1); }
 
 let _parser;
 const phpParse = (source) => {
   _parser = _parser || new parser({ parser: { extractDoc: false }, ast: { withPositions: false } });
-  return _parser.parseCode(source);
+  // PHP 8's mixed-chain precedence (php-parser still nests the PHP 7 tree).
+  return renestMixedChains(_parser.parseCode(source));
 };
 
 const strLit = (n) => {
@@ -123,6 +125,15 @@ const lastDayOfCurrentMonth = () => {
   }
 };
 
+// The build-time day `->lastDayOfMonth()` baked, if any event used it. Laravel
+// re-computes `Carbon::now()->endOfMonth()->day` at EVERY boot, so the number the
+// dump writes is only right for the month it was built in: the compiled worker
+// keeps it forever (a build in a 31-day month never fires in February, and a
+// February build fires on the 28th of a 31-day month). The dump's stdout is the
+// PHP oracle's byte-compared JSON and must stay identical, so this limit is
+// reported on stderr and documented in COMPILED.md §8b (audit #808).
+let bakedMonthEndDay = null;
+
 /**
  * Replay one ManagesFrequencies method onto the expression state.
  * Returns false for a method that is not a frequency method at all (the
@@ -167,7 +178,13 @@ const applyStep = (state, method, args) => {
     case 'monthly': splice(state, 1, 0); splice(state, 2, 0); splice(state, 3, 1); return true;
     case 'monthlyOn': applyDailyAt(state, a[1] === null || a[1] === undefined ? '0:0' : a[1]); splice(state, 3, a[0] ?? 1); return true;
     case 'twiceMonthly': applyDailyAt(state, a[2] === null || a[2] === undefined ? '0:0' : a[2]); splice(state, 3, `${a[0] ?? 1},${a[1] ?? 16}`); return true;
-    case 'lastDayOfMonth': applyDailyAt(state, a[0] === null || a[0] === undefined ? '0:0' : a[0]); splice(state, 3, lastDayOfCurrentMonth()); return true;
+    case 'lastDayOfMonth': {
+      applyDailyAt(state, a[0] === null || a[0] === undefined ? '0:0' : a[0]);
+      const day = lastDayOfCurrentMonth();
+      bakedMonthEndDay = day;
+      splice(state, 3, day);
+      return true;
+    }
     case 'daysOfMonth': applyDailyAt(state, '0:0'); splice(state, 3, dayList(a)); return true;
     case 'quarterly': splice(state, 1, 0); splice(state, 2, 0); splice(state, 3, 1); splice(state, 4, '1-12/3'); return true;
     case 'quarterlyOn': applyDailyAt(state, a[1] === null || a[1] === undefined ? '0:0' : a[1]); splice(state, 3, a[0] ?? 1); splice(state, 4, '1-12/3'); return true;
@@ -309,4 +326,12 @@ if (file) {
   inspect(ast);
 }
 
+if (bakedMonthEndDay !== null) {
+  process.stderr.write(
+    `schedule-dump.mjs: warning — ->lastDayOfMonth() baked day ${bakedMonthEndDay} `
+    + `(the build month's end) into a cron expression. Laravel recomputes that day on every boot; `
+    + `the compiled trigger keeps it, so it fires on the ${bakedMonthEndDay}${bakedMonthEndDay === 1 ? 'st' : bakedMonthEndDay === 2 ? 'nd' : bakedMonthEndDay === 3 ? 'rd' : 'th'} of EVERY month `
+    + `and never in a month without one. Schedule an explicit day, or guard inside the job. See COMPILED.md §8b.\n`
+  );
+}
 process.stdout.write(JSON.stringify({ events }) + '\n');

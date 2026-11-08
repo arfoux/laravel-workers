@@ -24,7 +24,9 @@ export function serializeOrdered(value) {
       const hasMarker = Array.isArray(v.__lwOrder);
       const hasReserved = Object.prototype.hasOwnProperty.call(v, RESERVED);
       if (hasMarker || hasReserved) {
-        const order = hasMarker ? v.__lwOrder.map(String) : keys.map(String);
+        const order = (hasMarker ? v.__lwOrder.map(String) : keys.map(String)).filter((k) =>
+          Object.prototype.hasOwnProperty.call(v, k)
+        );
         return '{"' + RESERVED + '":' + JSON.stringify(order) + ',"v":{' + body + '}}';
       }
       return '{' + body + '}';

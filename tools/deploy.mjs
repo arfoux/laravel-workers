@@ -201,6 +201,40 @@ const chosen = {
 };
 
 let rl = null;
+
+/**
+ * Write `lw-state.json` from what this run knows so far. Called at step 8, and
+ * immediately after a successful schema apply (audit #809): the schema is a
+ * fact in D1 from that moment, so a `wrangler deploy` that fails later must not
+ * leave a state file claiming no schema — the next `--yes` run would then stop
+ * with `unknown-schema` for tables that really exist. Failing to record state
+ * is fatal (exit 2), exactly like step 8: an unrecorded applied schema is worse
+ * than a stopped run.
+ */
+function persistDeployState(why) {
+  try {
+    writeState(appDir, {
+      account: {
+        id: chosen.account.id || null,
+        name: chosen.account.name || null,
+        email: chosen.account.email || null,
+      },
+      workerName: chosen.workerName,
+      workerUrl: chosen.workerUrl || null,
+      deployedAt: chosen.deployedAt || null,
+      d1: {
+        binding: 'DB',
+        databaseName: chosen.d1.databaseName || null,
+        databaseId: chosen.d1.databaseId || null,
+        schemaAppliedAt: chosen.d1.schemaAppliedAt || null,
+        schemaHash: chosen.d1.schemaHash || null,
+      },
+    });
+  } catch (e) {
+    fail(`${why ? why + ' — ' : ''}could not write lw-state.json: ${e.message}`, 2);
+  }
+}
+
 function prompt(question) {
   if (!rl) rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => rl.question(question + ' ', resolve));
@@ -1468,6 +1502,12 @@ async function main() {
       await d1ApplySchema(dbName, d1Id);
       chosen.d1.schemaAppliedAt = new Date().toISOString();
       chosen.d1.schemaHash = meta.hash;
+      // Persist NOW, not only at step 8 (audit #809): the schema is a fact in D1
+      // from this line on, and a `wrangler deploy` that fails afterwards used to
+      // leave `lw-state.json` claiming no schema — the next `--yes` run then
+      // stopped with `unknown-schema` for tables that really exist. Recorded
+      // state must not be older than reality.
+      persistDeployState('the schema was applied but could not be recorded in lw-state.json');
     } else if (schemaDecision.action === 'skip') {
       if (schemaDecision.reason === 'flag') {
         console.log('→ schema skipped (--skip-schema)');
@@ -1495,29 +1535,7 @@ async function main() {
 
   // --- 8. persist state ---------------------------------------------------
   // Mode 1 is intentionally a pure build: it must not rewrite deploy state.
-  if (mode >= 2) {
-    try {
-      writeState(appDir, {
-        account: {
-          id: chosen.account.id || null,
-          name: chosen.account.name || null,
-          email: chosen.account.email || null,
-        },
-        workerName: chosen.workerName,
-        workerUrl: chosen.workerUrl || null,
-        deployedAt: chosen.deployedAt || null,
-        d1: {
-          binding: 'DB',
-          databaseName: chosen.d1.databaseName || null,
-          databaseId: chosen.d1.databaseId || null,
-          schemaAppliedAt: chosen.d1.schemaAppliedAt || null,
-          schemaHash: chosen.d1.schemaHash || null,
-        },
-      });
-    } catch (e) {
-      fail(`could not write lw-state.json: ${e.message}`, 2);
-    }
-  }
+  if (mode >= 2) persistDeployState();
   if (rl) rl.close();
 
   const summary = mode === 3

@@ -23,10 +23,11 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toNativePath } from './native-path.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const requireApp = process.argv.includes('--require') || process.env.LW_FACADE_REQUIRE === '1';
-const appRoot = process.env.LW_APP_ROOT || '';
+const appRoot = toNativePath(process.env.LW_APP_ROOT) || '';
 
 const FACADES = join('vendor', 'laravel', 'framework', 'src', 'Illuminate', 'Support', 'Facades');
 

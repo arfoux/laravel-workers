@@ -51,13 +51,13 @@ import {
   readEnvFile,
   loadConfig,
   configGet,
+  renestMixedChains,
 } from './static.mjs';
 import { singular as strSingular } from './inflect.mjs';
 import { slugifyRoute } from './route-slug.mjs';
+import { resolveAppRoot } from './native-path.mjs';
 
-const appDir =
-  process.env.LW_APP_ROOT ||
-  (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+const appDir = resolveAppRoot();
 
 if (!appDir) {
   process.stderr.write('routes-dump.mjs: cannot find app root (set LW_APP_ROOT)\n');
@@ -1197,7 +1197,10 @@ import parser from 'php-parser';
 let _parser;
 function phpParse(source) {
   _parser = _parser || new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
-  return _parser.parseCode(source);
+  // php-parser nests PHP 7's `.` precedence; route conditions are PHP, so the
+  // tree is re-associated to PHP 8's (`.` below `+ - << >>`) exactly as the
+  // config fold does (tools/static.mjs renestMixedChains()).
+  return renestMixedChains(_parser.parseCode(source));
 }
 
 const { routes, errors } = parse();
