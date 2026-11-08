@@ -28,7 +28,7 @@ import {
   guardPortsModuleSource,
 } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
-import { BLOCK, DECLARED, isBuildEnvDbFailure, renderReadiness, sweepAppSources } from './tools/readiness.mjs';
+import { ADVISORY, BLOCK, DECLARED, isBuildEnvDbFailure, renderReadiness, sweepAppSources } from './tools/readiness.mjs';
 import { utcTriggersFor } from './tools/schedule-utc.mjs';
 import { deserializeOrdered, configModuleSource } from './tools/order-json.mjs';
 import { parseJsonc } from './tools/jsonc.mjs';
@@ -44,6 +44,7 @@ import { transpile } from './compiler/src/transpiler.mjs';
 import { provisionPhp } from './tools/php-provision.mjs';
 import { computeBuildCacheKey } from './tools/build-cache.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
+import { mutatingMigrations, renderSchemaSql } from './tools/schema-sql.mjs';
 import {
   cpSync,
   existsSync,
@@ -1280,13 +1281,22 @@ let cronTriggers = [];
   console.log('• dumping the app schedule via `tools/schedule-dump.mjs`');
   let schedule = { events: [] };
   try {
-    const raw = execFileSync(process.execPath, [join(pkgDir, 'tools', 'schedule-dump.mjs')], {
+    // spawnSync, not execFileSync: the dump reports its own limits on STDERR
+    // (its stdout is the PHP oracle's byte-compared JSON and cannot carry a
+    // note) — e.g. `->lastDayOfMonth()` bakes the BUILD month's last day into
+    // the trigger forever (audit #808). execFileSync would discard that stderr
+    // on a successful exit: a warning nobody prints is not a warning.
+    const r = spawnSync(process.execPath, [join(pkgDir, 'tools', 'schedule-dump.mjs')], {
       cwd: appDir,
       env: childEnv(),
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
-    }).toString('utf8');
-    schedule = JSON.parse(raw);
+    });
+    if (r.error) throw r.error;
+    if (r.status !== 0) throw Object.assign(new Error(`schedule-dump.mjs exited with status ${r.status}`), { stderr: r.stderr });
+    const warn = String(r.stderr || '').trim();
+    if (warn) console.log(warn.split('\n').map((l) => '  ' + l).join('\n'));
+    schedule = JSON.parse(String(r.stdout || '').toString('utf8'));
   } catch (e) {
     const detail = String(e.stderr || e.message || '').trim().slice(0, 300);
     console.log(`  schedule dump failed — the artifact ships an empty schedule: ${detail.slice(0, 200)}`);
@@ -2052,9 +2062,8 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       const action = meta && meta.action;
       if (!COMPILABLE_METHODS.has(String(verb).toUpperCase())) {
         const alreadyTracked = partials.some((p) => p.route === route && p.methods.includes(verb));
-        const ported = false;
         const ignored = ignoreMap.some(([r]) => r === route);
-        if (!alreadyTracked && !ported && !ignored) {
+        if (!alreadyTracked && !ignored) {
           uncompiledExtraNonPost.push({ route, verb });
         }
         console.log(`  skip ${verb} ${route}: only GET/POST/PUT/PATCH/DELETE handlers are compiled — write a port`);
@@ -2382,7 +2391,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         }
       }
 
-      // views used by prepared controllers (compiled once; skipped views block their routes)
+      // views used by prepared controllers (compiled once). A view that fails
+      // to compile is recorded in `failedViews` and every route that needs it is
+      // skipped with its own line ("controller <route>: skipped — view "x" did
+      // not compile", below); no extra per-view note is pushed — see the wave
+      // loop's asymmetry note.
       // A view can depend on other views (a layout: `@extends('layouts.app')`, a
       // partial: `@include('partials.x')`) — the compiled PHP names them, so
       // the build compiles the whole closure and the handler imports it.
@@ -2480,13 +2493,17 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           const dumpPath = join(cacheDir, viewFileName(view) + '.compiled.json');
           if (!existsSync(dumpPath)) {
             // A view that fails to compile is recorded here, not turned into a
-            // per-view `note()`. That is deliberate and symmetric with the
-            // error-view path (which DOES note): every route that renders this
-            // view is already reported through its own BLOCK entry ("the view
-            // for <route> did not compile"), so a second per-view note would
-            // just duplicate the finding and inflate the `--strict` count. The
-            // skipped views are also excluded from `viewsFor()` above, so a
-            // parent whose dependency is missing cannot silently compile.
+            // per-view `note()`. That is deliberate, and it is the one
+            // asymmetry against the error-view path (which DOES note): a route
+            // view always has routes that carry the finding — each is skipped
+            // with `controller <route>: skipped — view "x" did not compile`
+            // (or the non-controller route's `the view for <route> did not
+            // compile`), and the skipped route reaches the verdict on its own —
+            // while an error view is reached through `abort()` and has no route
+            // to speak for it. A second per-view note here would only duplicate
+            // the finding and inflate the `--strict` count. The skipped views
+            // are also excluded from `viewsFor()` above, so a parent whose
+            // dependency is missing cannot silently compile.
             failedViews.add(view);
             console.log(`  view ${view}: skipped — ${viewJobError(waveStderr, view).slice(0, 300)}`);
             continue;
@@ -2967,24 +2984,40 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
                 : `$${param.name} has unsupported type "${param.typeHint}" — only scalar parameters, Illuminate\\Http\\Request and FormRequest are supported here`;
             break;
           }
-          // A hook is the app's own method on a FormRequest subclass, and the
-          // class compiler refuses a FormRequest (its inherited surface is not
-          // compiled) — so the compiled lifecycle cannot call it. Refuse the
-          // route here instead of shipping a handler that answers 500 at request
-          // time. `authorize()` returning true is Laravel's default: drop the
-          // boilerplate and the route compiles.
-          if (Array.isArray(dumped.hooks) && dumped.hooks.length) {
-            formRequestError =
-              `$${param.name} (${param.typeHint}): the FormRequest hook ${dumped.hooks.join(', ')}() is not ` +
-              'compiled (the class compiler refuses FormRequest subclasses) — an authorize() that ' +
-              'returns true is the default and needs no declaration; any other hook needs a port ' +
-              'handler for this route';
+          // The class compiler's own verdict on the FormRequest CLASS. A hook
+          // body it cannot compile (`withValidator($validator)` whose
+          // `$validator` carries no type hint, `$validator->errors()->add(...)`
+          // in an untyped callback) fails the class, and the route that injects
+          // it used to ship a compiled handler anyway: `rt.formRequest()` then
+          // could not build the instance, so EVERY request to the route
+          // answered 500 - while the build printed "READINESS: RUNS ON THE
+          // EDGE / every route is served by a compiled handler" and exited 0
+          // under `--strict` (audit #891). The class error IS the route's
+          // reason, so it is what the route reports.
+          const frClassError = queueClassErrors.get(param.typeFqcn);
+          if (frClassError) {
+            formRequestError = `$${param.name} (${param.typeHint}): ${frClassError}`;
             break;
           }
+          // The app's own hooks (prepareForValidation, authorize,
+          // validationData, withValidator, after, passedValidation) ARE
+          // compiled: the build compiles the FormRequest class like any other
+          // app class, and the runtime's lifecycle (rt.formRequest) calls
+          // those methods on the instance in Laravel's order. The hook list
+          // therefore travels in the META — without it the runtime takes the
+          // rule-only path and runs NO hook, so an `authorize()` that denies
+          // answered 200 and a `withValidator()`/`after()` 422 answered 200
+          // (audit #874). `validator()` is the one hook that stays refused,
+          // and the DUMP owns that refusal (`tools/formrequest-dump.php`,
+          // LW003) because it is the code that can see the app's own factory —
+          // which the edge does not have. A hook body the class compiler
+          // cannot compile fails that class, and the guard above turns that
+          // failure into the route's own reason (audit #891).
           formRequests[param.typeFqcn] = {
             rules: dumped.rules || {},
             messages: dumped.messages || {},
             attributes: dumped.attributes || {},
+            hooks: Array.isArray(dumped.hooks) ? dumped.hooks : [],
           };
         }
         if (formRequestError) {
@@ -3333,16 +3366,6 @@ console.log('  -> dist/schema.json');
 // `wrangler d1 execute DB --file=dist/schema.sql`. The blob store table (the
 // Storage facade on D1) is included when the app uses Storage::.
 {
-  let tables = [];
-  try {
-    const snapshot = JSON.parse(readFileSync(schemaPath, 'utf8'));
-    tables = (snapshot.tables || [])
-      .map((t) => String(t.sql || '').trim().replace(/;+$/, ''))
-      .filter(Boolean);
-    schemaTableCount = tables.length;
-  } catch {
-    /* the snapshot is unreadable - dist/schema.json is still written */
-  }
   const head =
     '-- laravel-workers: the D1 schema for this app\n' +
     '-- apply: npx laravel-workers deploy --mode 3\n' +
@@ -3350,13 +3373,48 @@ console.log('  -> dist/schema.json');
   const blob = usesStorage
     ? '\n-- the Storage facade on D1 (one row per object)\n' + BLOB_DDL + ';\n'
     : '';
-  writeFileSync(
-    join(dist, 'schema.sql'),
-    head + (tables.length ? tables.join(';\n') + ';\n' : '') + blob
-  );
+  // #738: the render is `tools/schema-sql.mjs` so the unique/partial indexes
+  // Laravel declares as separate `CREATE INDEX` statements travel with the
+  // tables (see that file's header, and tools/tests/schema-sql.test.mjs).
+  let rendered = { sql: head + blob, tableCount: 0, indexCount: 0 };
+  try {
+    rendered = renderSchemaSql(JSON.parse(readFileSync(schemaPath, 'utf8')), { head, blob });
+  } catch {
+    /* the snapshot is unreadable - dist/schema.json is still written */
+  }
+  writeFileSync(join(dist, 'schema.sql'), rendered.sql);
+  schemaTableCount = rendered.tableCount;
   console.log(
-    `  -> dist/schema.sql (${tables.length} table(s)` + (usesStorage ? ` + ${BLOB_TABLE}` : '') + ')'
+    `  -> dist/schema.sql (${rendered.tableCount} table(s)` +
+      (rendered.indexCount ? ` + ${rendered.indexCount} index(es)` : '') +
+      (usesStorage ? ` + ${BLOB_TABLE}` : '') +
+      ')'
   );
+
+  // #737: a migration that mutates an existing table (`Schema::table()`,
+  // `Schema::drop()`, ...) cannot reach an EXISTING D1 through this tool — the
+  // snapshot is CREATE-only, `deploy` skips the schema when the D1 has tables,
+  // and `--schema=apply` re-runs the CREATEs, which fails on the first table
+  // that exists. ADVISORY, not BLOCK: a fresh database gets the final shape
+  // from the snapshot and needs nothing extra, so a green build stays green —
+  // the operator with a live D1 is the one who has to act. The docs used to
+  // present `--schema=apply` as this path's escape hatch; the deploy help
+  // already said it cannot be.
+  const mutating = mutatingMigrations(appDir);
+  if (mutating.length) {
+    note({
+      route: null,
+      area: 'schema',
+      severity: ADVISORY,
+      cause:
+        `${mutating.length} migration(s) mutate an EXISTING table (${mutating.join(', ')}): ` +
+        'dist/schema.sql is CREATE-only, so they cannot reach a D1 that already has that table',
+      fix:
+        'nothing to do for a fresh D1 (the snapshot carries the final shape); for a D1 that already has the ' +
+        'table, apply the change yourself in `npx wrangler d1 execute DB --command "ALTER TABLE ..." --remote` ' +
+        '- see the deploy section of docs/CI.md',
+    });
+  }
 }
 
 // ---------- 4. copy static assets ----------
@@ -3895,11 +3953,16 @@ if (!bladeOff) {
 }
 
 // ---------- every config key the compiled code reads ----------
-// The dump carries the framework keys plus the groups registry.json declares;
-// a compiled `config('x.y')` outside that set would answer null on the edge
-// where PHP answers the value — a silent divergence with no compile error. Read
-// the generated modules (controllers/views/accessors all emit `rt.config(...)`)
-// and refuse any key the dump cannot answer.
+// The dump carries the framework keys plus the groups registry.json declares,
+// as a FLAT map of dotted paths, and `rt.config(k)` answers only an exact own
+// key (`compiler/runtime/rt-from-context.mjs` — `hasOwnProperty(configCtx, k)`,
+// then the caller's default, then a loud throw). The gate asks the SAME
+// question, so a compiled `config('x.y')` the dump cannot answer fails the build
+// instead of shipping a worker that answers null (a wrong value) or throws a 500.
+// A NON-LITERAL call (`config('app.' . $k)` compiles to
+// `rt.config(rt.concat("app.", v_k))`) cannot be checked here at all: the runtime
+// answers the dump's value, the caller's default if there is one, or throws
+// `config: missing key ... with no default` — never a silent null.
 {
   const referenced = new Set();
   const walk = (dir) => {
@@ -3913,18 +3976,15 @@ if (!bladeOff) {
     }
   };
   walk(join(dist, 'src'));
-  const missing = [...referenced].filter((key) => {
-    const parts = key.split('.');
-    for (let i = 1; i <= parts.length; i++) {
-      if (Object.prototype.hasOwnProperty.call(runtimeConfig, parts.slice(0, i).join('.'))) return false;
-    }
-    return true;
-  }).sort();
+  const missing = [...referenced]
+    .filter((key) => !Object.prototype.hasOwnProperty.call(runtimeConfig, key))
+    .sort();
   if (missing.length) {
     const groups = [...new Set(missing.map((k) => k.split('.')[0]))];
     fail(
       'the compiled code reads config key(s) the runtime dump does not carry: ' + missing.join(', ') +
-        ' — the edge would answer null where PHP answers the value\n' +
+        ' — at the edge those throw `config: missing key ... with no default` (a 500) where PHP\n' +
+        '  answers the value (or null, for a key the app never set)\n' +
         '  fix: add the group to registry.json "config" (e.g. "config": ' +
         JSON.stringify(groups) + ') if the values are not credentials'
     );
