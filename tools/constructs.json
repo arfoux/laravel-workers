@@ -362,7 +362,7 @@
       "label": "`Mail::to()->send()`",
       "php": "\\Illuminate\\Support\\Facades\\Mail::to('a@b.co')->send(new \\App\\Mail\\OrderMail());",
       "expect": "ok",
-      "note": "A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The byte-for-byte proof is the shadow: the PHP oracle captures Laravel's `MessageSent` event (the from/to/cc/bcc/replyTo/subject/html/text) and the harness compares those fields with the kernel mailer's outbox - all 8 fields are identical, the log line is not compared. The methods the kernel mailer does not implement (raw, html, queue, later) fail loud.",
+      "note": "A mailable is a class: the build compiles it (the dump takes the app's Mail classes, the class compiler emits the class and the kernel's Mailable base carries Laravel's fluent surface) and the mailer sends the payload Laravel sends - the recipients, the subject and the rendered view (the mailable's data goes into the view). The byte-for-byte proof is the shadow: the PHP oracle captures Laravel's `MessageSent` event (the from/to/cc/bcc/replyTo/subject/html/text) and the harness compares those fields with the kernel mailer's outbox - all 8 fields are identical, the log line is not compared. The four methods the edge refuses on purpose (raw, html, queue, later) fail loud at BUILD time and at request time from ONE source (`ADAPTER_REFUSED`, kernel/service-adapters.mjs): raw/html build the message themselves (the edge sends a compiled mailable or a payload) and queue/later need a queue consumer the Worker does not have.",
       "batch": "M60",
       "status": "done",
       "classes": {
@@ -1204,7 +1204,7 @@
       ],
       "php": "        \\Illuminate\\Support\\Facades\\Mail::to('a@b.co');",
       "expect": "ok",
-      "note": "The Mail facade is compiled: the kernel's mailer implements Laravel's PendingMail (to/cc/bcc/replyTo + send()), so the fluent form compiles. The shadow proves the payload against the real app (the `MessageSent` fields vs the kernel outbox - all 8 fields identical). The methods it does not implement (raw, html, queue, later) fail loud - a mail that silently lost its cc would be a wrong answer.",
+      "note": "The Mail facade is compiled: the kernel's mailer implements Laravel's PendingMail (to/cc/bcc/replyTo + send()), so the fluent form compiles. The shadow proves the payload against the real app (the `MessageSent` fields vs the kernel outbox - all 8 fields identical). The four methods the edge refuses on purpose (raw, html, queue, later) fail loud from ONE source (`ADAPTER_REFUSED`, kernel/service-adapters.mjs) - for the facade and for a constructor-injected mailer alike - because raw/html build the message themselves and queue/later need a queue consumer the Worker does not have; a mail that silently lost its body, or never left, would be the wrong answer.",
       "batch": "M60",
       "status": "done"
     },
