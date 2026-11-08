@@ -41,9 +41,20 @@ export const REFUSED_SERVICES = {
 // The methods of an adapter that are asynchronous at the edge. The compiled
 // class awaits them: a promise must never leak into a response.
 export const ADAPTER_ASYNC = {
-  mail: new Set(['send', 'sendNow', 'raw', 'html']),
+  mail: new Set(['send', 'sendNow']),
   log: new Set(),
   queue: new Set(['push', 'later', 'bulk']),
 };
 
-export default { SERVICE_ADAPTERS, REFUSED_SERVICES, ADAPTER_ASYNC };
+// The methods of an adapter that the edge does NOT implement. One source of
+// truth: the kernel's mailer fails loud on them (`kernel/mail.mjs`) and the
+// build refuses the call before the code runs (`compiler/src/transpiler.mjs`) —
+// for the facade and for an injected service alike. Laravel's raw()/html()
+// build the message themselves and queue()/later() need a queue consumer the
+// worker does not have; a half-built mail (no body, no cc) or a mail that
+// silently never leaves is the wrong answer.
+export const ADAPTER_REFUSED = {
+  mail: new Set(['raw', 'html', 'queue', 'later']),
+};
+
+export default { SERVICE_ADAPTERS, REFUSED_SERVICES, ADAPTER_ASYNC, ADAPTER_REFUSED };

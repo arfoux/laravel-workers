@@ -1,9 +1,15 @@
 // kernel/mail.mjs — Mail (log/noop/resend)
 //
 // The surface is Laravel's: `Mail::to($user)->send($mailable)`,
-// `Mail::send($mailable)`, `Mail::raw($text, $callback)`. The compiled rung
-// calls it exactly like the app does, so a listener (or a controller) that
-// sends a mail needs no port.
+// `Mail::send($mailable)`. The compiled rung calls it exactly like the app
+// does, so a listener (or a controller) that sends a mail needs no port.
+//
+// `Mail::raw()`, `Mail::html()`, `Mail::queue()` and `Mail::later()` are NOT
+// supported at the edge: Laravel builds the message itself there, the edge
+// sends a compiled mailable (or a payload object). They fail loud rather than
+// sending half a message — and the build refuses them before the code runs
+// (`compiler/src/transpiler.mjs` with `ADAPTER_REFUSED` /
+// `kernel/service-adapters.mjs`).
 //
 // The message is a flat payload: { from, to, cc, bcc, replyTo, subject, html,
 // text } — the recipients are a string or an array of them, exactly like
@@ -101,18 +107,6 @@ export function createMailer({ transport = 'log', from: defaultFrom, key: keyOpt
   // The payload of a mailable (the compiled one) or of a plain object.
   // Laravel's message shape: `to` is a string for one address and an array for
   // more; `cc`/`bcc`/`replyTo` are always arrays.
-  const normalizeTo = (v) => {
-    if (v === null || v === undefined) return null;
-    if (typeof v === 'string') return v;
-    if (!Array.isArray(v)) return null;
-    return v.length === 1 ? v[0].address : v.map((a) => (typeof a === 'string' ? a : a.address));
-  };
-  const normalizeMany = (v) => {
-    if (v === null || v === undefined) return [];
-    if (typeof v === 'string') return [v];
-    if (!Array.isArray(v)) return [];
-    return v.map((a) => (typeof a === 'string' ? a : a.address));
-  };
   const payloadOf = async (message) => {
     let base;
     if (message && typeof message.__lwMail === 'function') base = await message.__lwMail();
@@ -139,6 +133,26 @@ export function createMailer({ transport = 'log', from: defaultFrom, key: keyOpt
       html: base.html === undefined ? null : base.html,
       text: base.text === undefined ? null : base.text,
     };
+  };
+
+  // The methods Laravel's mailer has and the edge does not. `raw`/`html` build
+  // the message themselves; `queue`/`later` hand it to a queue nobody consumes
+  // at the edge. Both fail loud — a mail that silently lost its body, or a
+  // queued mail that never leaves, is the wrong answer. The build refuses these
+  // calls before this code runs (`ADAPTER_REFUSED` in kernel/service-adapters.mjs
+  // and the guards in compiler/src/transpiler.mjs).
+  const unsupported = (method) => {
+    throw new Error(
+      'mail(): Mail::' +
+        method +
+        '() is not supported at the edge — the compiled mailer sends a compiled mailable ' +
+        '(Mail::to($user)->send(new OrderMail())) or a payload { to, subject, html|text }'
+    );
+  };
+  const notQueued = () => {
+    throw new Error(
+      'mail(): the queued mail is not delivered at the edge — the worker has no queue consumer, so the mail would never go out'
+    );
   };
 
   // Laravel's PendingMail: the recipients + the envelope, then send().
@@ -183,14 +197,7 @@ export function createMailer({ transport = 'log', from: defaultFrom, key: keyOpt
       buildPayload({ from: p.from, to: p.__to, cc: p.__cc, bcc: p.__bcc, replyTo: p.__replyTo }, message);
     p.send = async (message) => deliver(await build(message));
     p.sendNow = p.send;
-    // A queued mail: the edge pushes it to the queue, but nothing consumes
-    // the queue (the worker has no queue consumer) — the mail would never go
-    // out. It fails loud instead of vanishing.
-    p.queue = () => {
-      throw new Error(
-        'mail(): the queued mail is not delivered at the edge — the worker has no queue consumer, so the mail would never go out'
-      );
-    };
+    p.queue = notQueued;
     p.later = p.queue;
     return p;
   };
@@ -222,46 +229,26 @@ export function createMailer({ transport = 'log', from: defaultFrom, key: keyOpt
     async sendNow(message) {
       return deliver(await buildPayload({}, message));
     },
-    // Laravel: Mail::raw($text, $callback) — the callback fills the message.
-    async raw(text, callback) {
-      const payload = { text: String(text) };
-      if (typeof callback === 'function') await callback(payload);
-      return deliver({
-        from: payload.from || defaultFrom || 'noreply@example.com',
-        to: payload.to === undefined ? null : payload.to,
-        cc: payload.cc === undefined ? null : payload.cc,
-        bcc: payload.bcc === undefined ? null : payload.bcc,
-        replyTo: payload.replyTo === undefined ? null : payload.replyTo,
-        subject: payload.subject || null,
-        html: null,
-        text: payload.text,
-      });
+    // Laravel: Mail::raw($text, $callback). Mailer::raw() builds a message from
+    // the text and hands the callback an `Illuminate\Mail\Message`; the edge
+    // has no such builder (the mail the kernel sends is a compiled mailable or
+    // a payload object), so it fails loud — and the build refuses the call
+    // before the code runs (`ADAPTER_REFUSED`). A half-built message would be
+    // worse than a 500: the mail would leave without its body or its cc.
+    raw() {
+      unsupported('raw');
     },
-    // Laravel: Mail::html($html, $callback).
-    async html(html, callback) {
-      const payload = { html: String(html) };
-      if (typeof callback === 'function') await callback(payload);
-      return deliver({
-        from: payload.from || defaultFrom || 'noreply@example.com',
-        to: payload.to === undefined ? null : payload.to,
-        cc: payload.cc === undefined ? null : payload.cc,
-        bcc: payload.bcc === undefined ? null : payload.bcc,
-        replyTo: payload.replyTo === undefined ? null : payload.replyTo,
-        subject: payload.subject || null,
-        html: payload.html,
-        text: null,
-      });
+    // Laravel: Mail::html($html, $callback) — same boundary as raw().
+    html() {
+      unsupported('html');
     },
-    // Laravel: Mail::queue($mailable) — no consumer at the edge.
+    // Laravel: Mail::queue($mailable) / Mail::later($delay, $mailable) — no
+    // consumer at the edge.
     queue() {
-      throw new Error(
-        'mail(): the queued mail is not delivered at the edge — the worker has no queue consumer, so the mail would never go out'
-      );
+      notQueued();
     },
     later() {
-      throw new Error(
-        'mail(): the queued mail is not delivered at the edge — the worker has no queue consumer, so the mail would never go out'
-      );
+      notQueued();
     },
   };
 }

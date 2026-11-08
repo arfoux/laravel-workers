@@ -68,13 +68,14 @@ export const phpArrayKey = (v) => {
   return v;
 };
 
-/** A number against a numeric string (`==`): PHP 8 only casts a NUMERIC string. */
-export const phpNumberEquals = (num, str) => {
-  const s = String(str).trim();
-  if (s === '') return num === 0;
-  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(s)) return false;
-  return Number(s) === num;
-};
+/**
+ * A number against a string (`==`) — kept for callers that already use it, but
+ * it now DELEGATES to the one canon (`phpScalarEquals`) so it cannot drift from
+ * it again. The old body answered `0 == ''` with true; PHP 8 answers false (it
+ * only casts a NUMERIC string, and `''` is not one). The kernel itself does not
+ * call this helper.
+ */
+export const phpNumberEquals = (num, str) => typeof num === 'number' && phpScalarEquals(num, str);
 
 /** `{key, value}` entries of an array or a PHP-array-shaped object. */
 export const entriesOf = (value, isCollection = () => false) => {
