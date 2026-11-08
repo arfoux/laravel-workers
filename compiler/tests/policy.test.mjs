@@ -368,3 +368,65 @@ test('policy: the global Gate registrations are recorded in the metadata', () =>
   assert.equal(meta.globalAfter, 2);
   assert.deepEqual(meta.definedAbilities, ['update']);
 });
+
+test('policy: the file is matched to the dump FQCN, not the first class (audit #835)', async () => {
+  // A PHP file may declare several classes (autoloading only needs the FQCN to
+  // exist in it), so the FIRST `class` node is not necessarily the policy the
+  // dump named. The compiler took whichever came first, so the abilities ran
+  // another class's methods - silently.
+  const file = policyFile(`<?php
+namespace App\\Policies;
+
+use App\\Models\\Post;
+use App\\Models\\User;
+
+class Helper
+{
+    public function update(User $user, Post $post): bool
+    {
+        return true; // never the policy's answer
+    }
+}
+
+class PostPolicy
+{
+    public function update(User $user, Post $post): bool
+    {
+        return $user->id === $post->user_id;
+    }
+}
+`);
+  const dump = {
+    globals: { before: 0, after: 0, abilities: [] },
+    models: [
+      entryFor('App\\Models\\Post', 'App\\Policies\\PostPolicy', file, {
+        update: methodMeta(file, 'update', [
+          param('user', 'App\\Models\\User'),
+          param('post', 'App\\Models\\Post'),
+        ]),
+      }),
+    ],
+  };
+  const res = compilePolicies(dump, OPTS);
+  assert.deepEqual(res.errors, []);
+  const entry = (await loadRegistry(res.code))['App\\Models\\Post'];
+  // The policy's own rule (owner-only), not Helper's blanket true.
+  assert.equal(await entry.methods.update.fn(fakeRt, { id: 1 }, { user_id: 1 }), true);
+  assert.equal(await entry.methods.update.fn(fakeRt, { id: 2 }, { user_id: 1 }), false);
+
+  // No matching class at all: the build refuses instead of compiling a stranger.
+  const other = policyFile(`<?php
+namespace App\\Policies;
+
+class NotThePolicy {}
+`);
+  const missing = compilePolicies(
+    {
+      globals: { before: 0, after: 0, abilities: [] },
+      models: [entryFor('App\\Models\\Post', 'App\\Policies\\PostPolicy', other, {})],
+    },
+    OPTS
+  );
+  assert.equal(missing.errors.length, 1);
+  assert.match(missing.errors[0].message, /declares no class named PostPolicy/);
+});

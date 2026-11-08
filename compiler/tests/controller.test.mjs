@@ -223,6 +223,70 @@ test('extractController collects types, defaults and compact views', () => {
   assert.deepEqual(info.views, ['posts.index']);
 });
 
+// PHP 8.3.30: `017` is 15 (octal), `1_000` is 1000, `1_000.5` is 1000.5,
+// `0b1011` is 11. `Number(node.value)` answered 17 and NaN, and a NaN default
+// reached the emitted handler as JSON `null` (JSON.stringify(NaN)) — the
+// compiled route then read a different default than Laravel's.
+test('extractController folds a signature default with PHP\'s literal reader', () => {
+  const src = `<?php
+namespace App\\Http\\Controllers;
+class NController extends Controller
+{
+    public function m(int $oct = 017, int $under = 1_000, float $f = 1_000.5, int $bin = 0b1011, int $big = 99999999999999999999)
+    {
+        return view('n.index');
+    }
+}`;
+  const info = extractController(src, 'm');
+  assert.equal(info.ok, true, JSON.stringify(info.errors));
+  assert.deepEqual(
+    info.params.map((p) => [p.name, p.default, p.defaultOk]),
+    [
+      ['oct', 15, true],
+      ['under', 1000, true],
+      ['f', 1000.5, true],
+      ['bin', 11, true],
+      // An integer literal outside JSON safety is not a literal the compiler
+      // can carry: `defaultOk` stays false and the route fails loud.
+      ['big', null, false],
+    ]
+  );
+});
+
+// #841: the BODY's integer literals go through the SAME reader as the
+// signature defaults above. `tx()` emitted `String(Number(raw))` for a
+// non-float literal, so php-parser's RAW text `0777` became 777 (PHP: 511),
+// `017` became 17 (PHP: 15) and `1_000` became `NaN` — a silently wrong value
+// at request time (and a JS `NaN` in the generated module) with a green build.
+test('emit: a body integer literal is emitted as PHP\'s value, not the raw text', () => {
+  const src = `<?php
+namespace App\\Http\\Controllers;
+class LController extends Controller
+{
+    public function m()
+    {
+        $oct = 0777;
+        $under = 1_000;
+        $short = 017;
+        $bin = 0b1011;
+        $hex = 0x1F;
+        $f = 1_000.5;
+        return view('n.index', compact('oct', 'under', 'short', 'bin', 'hex', 'f'));
+    }
+}`;
+  const res = emitController(src, 'm', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
+  assert.match(res.code, /\bv_oct = 511;/);
+  assert.match(res.code, /\bv_under = 1000;/);
+  assert.match(res.code, /\bv_short = 15;/);
+  assert.match(res.code, /\bv_bin = 11;/);
+  assert.match(res.code, /\bv_hex = 31;/);
+  // A FLOAT literal keeps its RAW text (PHP's `===`/`match` distinguish int from
+  // float, so it must not be re-read as an int): `1_000.5` is valid JS - a
+  // numeric separator reads as 1000.5, the same value PHP gives.
+  assert.match(res.code, /\bv_f = 1_000\.5;/);
+});
+
 test('extractController reports a missing method', () => {
   const info = extractController(SAMPLE, 'nope');
   assert.equal(info.ok, false);
@@ -381,6 +445,63 @@ test('emit: the helpers a route method reaches are compiled into the instance', 
   assert.match(res.code, /__self\["demo"\] = async function \(rt/);
   assert.match(res.code, /__self\["double"\] = async function \(rt, v_n\)/);
   assert.match(res.code, /await __self\["demo"\]\(rt\)/);
+});
+
+test('emit: a capability only a HELPER uses is wired into the module', () => {
+  // The module's capability flags were read from the ENTRY method's transpile
+  // result only, so a helper that was the ONLY thing using the Gate emitted
+  // `rt.gate(...)` while the module never imported the policies: the build
+  // stayed green and the request answered 500 (`gate: no compiled policy for
+  // App\Models\Post — the build did not dump it`) where Laravel answers 200 or
+  // 403. The same held for a helper that paginates (the pagination view) or
+  // builds a compiled class (the class registry).
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function demo(string $id)\n' +
+    '    {\n' +
+    "        return response($this->allowed($id) ? 'yes' : 'no');\n" +
+    '    }\n' +
+    '    private function allowed(string $id)\n' +
+    '    {\n' +
+    '        $post = Post::findOrFail($id);\n' +
+    "        return Gate::allows('update', $post);\n" +
+    '    }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', {
+    ...META_BASE,
+    routeParams: ['id'],
+    policies: META_POLICIES,
+    views: [],
+  });
+  assert.deepEqual(res.errors, []);
+  assert.match(res.code, /rt\.gate\(/, "the helper's Gate check is emitted");
+  assert.match(res.code, /import \{ policies as LW_POLICIES/, '... so the policies module must be imported');
+  assert.match(res.code, /policies: LW_POLICIES,/, '... and handed to the runtime');
+
+  // The pagination view, when only the helper paginates.
+  const srcPage = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'use App\\Models\\Post;\n' +
+    'class C {\n' +
+    '    public function demo(string $id)\n' +
+    '    {\n' +
+    '        return view("posts.index", ["rows" => $this->rows()]);\n' +
+    '    }\n' +
+    '    private function rows()\n' +
+    '    {\n' +
+    '        return Post::paginate(5);\n' +
+    '    }\n' +
+    '}\n';
+  const resPage = emitController(srcPage, 'demo', {
+    ...META_BASE,
+    routeParams: ['id'],
+    views: [],
+    paginationView: 'pagination::tailwind',
+  });
+  assert.deepEqual(resPage.errors, []);
+  assert.match(resPage.code, /views\/pagination--tailwind\.mjs/, 'the pagination view must be in the map');
 });
 
 test('emit: a $this call to an unknown method still fails loud (LW002)', () => {

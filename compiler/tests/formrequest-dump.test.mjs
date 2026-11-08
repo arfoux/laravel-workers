@@ -440,9 +440,10 @@ test("the dump REFUSES the app's own validator() hook (the edge has one factory)
   assert.deepEqual(entry.rules, [], 'a refused class carries no rules');
 });
 
-test('the dump REPORTS an overridden prepareForValidation() (the build refuses the route)', { skip }, () => {
-  // The class compiler refuses FormRequest subclasses, so a hook is a route the
-  // build cannot compile: the dump reports it and the route needs a port.
+test('the dump REPORTS an overridden prepareForValidation() (the build compiles it)', { skip }, () => {
+  // The hook list is what the build hands the runtime: a listed hook forces the
+  // compiled class and the runtime's lifecycle calls it. `validator()` is the
+  // only hook the build refuses, and the dump is where that refusal lives.
   const entries = runDump([fqcnOf('PrepareRequest')]);
   const entry = entries.get(fqcnOf('PrepareRequest'));
   assert.ok(entry, 'the dump answered for PrepareRequest');

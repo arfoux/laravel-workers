@@ -465,8 +465,11 @@ export function buildRt(context, opts = {}) {
     const instance = hooks.length
       ? rt.newClass(fqcn, [])
       : {
-          // The FormRequest surface the lifecycle itself calls (the hooks are
-          // absent — the build refuses them).
+          // The FormRequest surface the lifecycle itself calls. This stub is
+          // taken only when the dump listed NO hook (a rule-only FormRequest):
+          // every hook the dump reports travels in `opts.hooks`, and a listed
+          // hook forces the compiled class above — so there is no hook left
+          // for this stub to answer.
           all: () => (liveRequest && typeof liveRequest.all === 'function' ? liveRequest.all() : {}),
           setValidator(v) {
             this._validator = v;

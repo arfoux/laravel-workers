@@ -36,7 +36,7 @@ const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
 // the AST of the policy file
 // ---------------------------------------------------------------------------
 
-function parsePolicyFile(file) {
+function parsePolicyFile(file, policyFqcn) {
   let source;
   try {
     source = readFileSync(file, 'utf8');
@@ -53,15 +53,23 @@ function parsePolicyFile(file) {
     const first = ast.errors[0];
     return { error: 'parse error: ' + (first.msg || first.message || JSON.stringify(first)) };
   }
+  // The dump names the policy by FQCN; a file may legally declare other classes
+  // FIRST (autoloading only needs the FQCN to exist somewhere in it), so taking
+  // the first `class` node compiled whatever class came first - the abilities
+  // then ran another class's methods (audit #835). Match the SHORT name; an
+  // anonymous class has none.
+  const wanted = policyFqcn ? String(policyFqcn).split('\\').pop() : null;
   let classNode = null;
+  let sawClass = false;
   const walk = (node) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
       for (const n of node) walk(n);
       return;
     }
-    if (!classNode && node.kind === 'class') {
-      classNode = node;
+    if (node.kind === 'class') {
+      sawClass = true;
+      if (!classNode && (!wanted || nodeName(node.name) === wanted)) classNode = node;
       return;
     }
     for (const k of Object.keys(node)) {
@@ -70,7 +78,13 @@ function parsePolicyFile(file) {
     }
   };
   walk(ast.children || []);
-  if (!classNode) return { error: 'the policy file has no class' };
+  if (!classNode) {
+    return {
+      error: sawClass && wanted
+        ? `the policy file declares no class named ${wanted} (the dump points at ${policyFqcn})`
+        : 'the policy file has no class',
+    };
+  }
   return { classNode };
 }
 
@@ -249,7 +263,7 @@ export function compilePolicies(dump, opts = {}) {
       continue;
     }
 
-    const parsed = parsePolicyFile(entry.file);
+    const parsed = parsePolicyFile(entry.file, entry.policy);
     if (parsed.error) {
       modelMeta.compileError = parsed.error;
       errors.push({ model: entry.model, message: parsed.error });
