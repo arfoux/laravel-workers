@@ -9,7 +9,7 @@
 //   { "mode": "encode",    "values": [tagged, ...] }
 //     -> { "results": [ {"out": "<serialize()>"} | {"err": "..."}, ... ] }
 //   { "mode": "roundtrip", "strings": ["<serialized>", ...] }
-//     -> { "results": [ {"tagged": tagged, "reserialized": "..."} | {"err": "..."}, ... ] }
+//     -> { "results": [ {"reserialized": "..."} | {"err": "..."}, ... ] }
 //
 // Tagged value format (JSON-safe):
 //   {"t":"n"}                      null
@@ -51,28 +51,6 @@ function fromTagged($t)
     throw new Exception('unknown tag: ' . $t['t']);
 }
 
-function toTagged($v)
-{
-    if (is_null($v)) return ['t' => 'n'];
-    if (is_bool($v)) return ['t' => 'b', 'v' => $v];
-    if (is_int($v)) return ['t' => 'i', 'v' => (string) $v];
-    if (is_float($v)) {
-        if (is_nan($v)) return ['t' => 'd', 'v' => 'NAN'];
-        if ($v === INF) return ['t' => 'd', 'v' => 'INF'];
-        if ($v === -INF) return ['t' => 'd', 'v' => '-INF'];
-        return ['t' => 'd', 'v' => sprintf('%.17G', $v)];
-    }
-    if (is_string($v)) return ['t' => 's', 'v' => $v];
-    if (is_array($v)) {
-        $pairs = [];
-        foreach ($v as $k => $vv) {
-            $pairs[(string) $k] = toTagged($vv); // order preserved for string+int keys in JSON objects? see note below
-        }
-        return ['t' => 'a', 'v' => $pairs];
-    }
-    throw new Exception('unsupported PHP type: ' . gettype($v));
-}
-
 $raw = stream_get_contents(STDIN);
 if ($raw === false || trim($raw) === '') {
     fwrite(STDERR, "no input\n");
@@ -101,7 +79,7 @@ if ($in['mode'] === 'encode') {
             if ($v === false && $s !== 'b:0;') {
                 throw new Exception('php unserialize failed');
             }
-            $results[] = ['tagged' => toTagged($v), 'reserialized' => serialize($v)];
+            $results[] = ['reserialized' => serialize($v)];
         } catch (Throwable $e) {
             $results[] = ['err' => $e->getMessage()];
         }

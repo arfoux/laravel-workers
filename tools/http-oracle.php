@@ -76,7 +76,7 @@ $sessionProbe = function (Illuminate\Http\Request $request) use ($app) {
             case 'regenerate': $session->regenerate(); break;
             case 'regenerateToken': $session->regenerateToken(); break;
             case 'flush':  $session->flush(); break;
-            case 'putFlashBag': break;
+            case 'putFlashBag': throw new RuntimeException('putFlashBag is not implemented (audit #817)');
             default: throw new RuntimeException('unknown op: ' . ($op['type'] ?? '?'));
         }
     }

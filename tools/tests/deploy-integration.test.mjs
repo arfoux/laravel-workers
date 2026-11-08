@@ -382,6 +382,26 @@ test('mode 3 creates a D1, rewrites only the placeholder value, applies schema, 
   }
 });
 
+test('#809: a schema the run applied is recorded even when the deploy afterwards fails', (t) => {
+  // The schema is a fact in D1 the moment `d1 execute` returns; a failing
+  // `wrangler deploy` used to leave lw-state.json claiming no schema, and the
+  // next `--yes` run stopped with `unknown-schema` for tables that exist.
+  const app = makeApp(t);
+  const result = app.run(['--mode', '3', '--d1-auto', '--yes', '--name', 'my-app'], {
+    FAKE_DEPLOY_FAIL: '1',
+  });
+
+  assert.notEqual(result.status, 0, 'a failing deploy must fail the run');
+  assert.equal(app.schemaCalls().length, 1, 'the schema was applied');
+  const state = app.readState();
+  assert.ok(state, 'lw-state.json must exist after the schema was applied');
+  assert.equal(state.d1.schemaHash, sha256(SCHEMA));
+  assert.ok(state.d1.schemaAppliedAt, 'the applied schema carries a timestamp');
+  // The deploy never completed: state must not pretend a deployed URL/time.
+  assert.equal(state.workerUrl, null);
+  assert.equal(state.deployedAt, null);
+});
+
 test('deploy refuses an account mismatch before D1 or deploy mutations', (t) => {
   const app = makeApp(t, {
     state: stateFor({
