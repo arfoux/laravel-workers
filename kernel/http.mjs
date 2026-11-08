@@ -172,15 +172,16 @@ function phpFilterVarBoolean(value) {
 
 const PHP_FLOAT_PREFIX_RE = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
 
-/** (float) cast — numeric string prefix, 0.0 otherwise. */
+/** (float) cast — numeric string prefix, 0.0 otherwise. A value PHP holds as
+ *  INF stays INF (`(float) '1e400'` is INF on 8.3.30; `(int)` is the cast that
+ *  answers 0) — an INF reaching the JSON rung throws there, exactly like
+ *  `json_encode` (#821). */
 function phpFloatCast(value) {
   if (value === null || value === undefined || value === false) return 0;
   if (value === true) return 1;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'number') return value;
   const m = PHP_FLOAT_PREFIX_RE.exec(String(value));
-  if (!m) return 0;
-  const n = parseFloat(m[0]);
-  return Number.isFinite(n) ? n : 0;
+  return m ? parseFloat(m[0]) : 0;
 }
 
 /** Arr::set($target, $key, $value) subset (dot notation); `forget` deletes. */
@@ -218,6 +219,52 @@ export function dataGet(target, key, def = null) {
     }
   }
   return current === undefined ? resolveDefault(def) : current;
+}
+
+/**
+ * `data_get()` over the REQUEST's own arrays (the uploaded-file tree, the input
+ * union): PHP's arrays are all one type, so a dotted key descends into the list
+ * a `name[]`/`name[0]` field built exactly like into a map - `k.0` and `post`
+ * both work. `dataGet()` above owns the general rung (a JS array only takes a
+ * numeric in-range segment), so the PHP-array walk lives here.
+ */
+function dataGetPhpArray(target, key) {
+  const k = String(key == null ? '' : key);
+  if (ownHas(target, k)) return ownGet(target, k);
+  let current = target;
+  for (const seg of k.split('.')) {
+    if (!ownHas(current, seg)) return ARR_MISSING;
+    current = ownGet(current, seg);
+  }
+  return current === undefined ? ARR_MISSING : current;
+}
+
+/** A PHP array as JS holds it: a JS list, or the plain-object MAP of a name. */
+function isPhpArray(v) {
+  return Array.isArray(v) || isPlainObject(v);
+}
+
+/**
+ * `array_replace_recursive()` (Arr.php): every key of a later source replaces the
+ * matching one, recursing when BOTH sides are PHP arrays. A replaced key keeps
+ * the FIRST source's position, and a key only a later source has is appended -
+ * that is the order `Request::all()` answers in (probed: the input's `post`
+ * comes first with its `title`, and the file's `image` follows inside it).
+ */
+function arrayReplaceRecursive(...sources) {
+  const out = {};
+  for (const src of sources) {
+    if (src === null || src === undefined) continue;
+    for (const key of Object.keys(src)) {
+      const value = src[key];
+      if (ownHas(out, key) && isPhpArray(ownGet(out, key)) && isPhpArray(value)) {
+        ownSet(out, key, arrayReplaceRecursive(ownGet(out, key), value));
+      } else {
+        ownSet(out, key, value);
+      }
+    }
+  }
+  return out;
 }
 
 function headerBag(raw) {
@@ -432,21 +479,56 @@ export function buildRequest(raw, options = {}) {
     }
   }
 
-  // Symfony's getMethod(): the X-HTTP-Method-Override header wins over the
-  // `_method` parameter (body/query), and the override must be A-Z - anything
-  // else is a SuspiciousOperationException ('Invalid HTTP method override.'),
-  // which Laravel does not map, so the answer is a 500.
+  // Symfony's getMethod() (http-foundation 7.4, Request.php:1263-1300):
+  //   `$method = $this->headers->get('X-HTTP-METHOD-OVERRIDE');`
+  //   `if (!$method && $httpMethodParameterOverride)`
+  //     `$method = $this->request->get('_method', $this->query->get('_method','POST'));`
+  // `$this->request` is the FORM bag - it is filled for a urlencoded or
+  // multipart body ONLY - so `_method` in a JSON body is NOT an override
+  // (probed on a live PHP 8.3 server: JSON `{"_method":"PUT"}` -> method() =
+  // POST; the kernel read the JSON body and answered PUT, so a DIFFERENT route
+  // was selected). The form bag beats the query (probed: form PUT + `?_method=
+  // PATCH` -> PUT). A non-scalar `_method` (`_method[]=PUT`) makes Symfony's
+  // InputBag::get() throw BadRequestException('Input value "_method" contains a
+  // non-scalar value.') - a 500 Laravel does not map - and the header uses PHP's
+  // `!$method`, so a '0' falls through to the parameter (probed). The override
+  // must be A-Z after upper-casing - anything else is a SuspiciousOperationException
+  // ('Invalid HTTP method override.'), also a 500.
   let methodOverride = null;
   if (rawMethod === 'POST') {
+    // InputBag::get() throws BadRequestException for a non-scalar value, and
+    // Symfony evaluates BOTH bags (`$this->request->get('_method',
+    // $this->query->get('_method', 'POST'))`) - the query default is built
+    // eagerly, so an array in EITHER one is a 500 (probed: `_method=PUT` in the
+    // form plus `?_method[]=PUT` throws 'Input value "_method" contains a
+    // non-scalar value.').
+    const methodParam = (bag) => {
+      if (bag == null || !ownHas(bag, '_method')) return null;
+      const value = ownGet(bag, '_method');
+      if (value !== null && typeof value === 'object') {
+        const err = new Error('Input value "_method" contains a non-scalar value.');
+        err.name = 'BadRequestException';
+        err.phpClass = 'BadRequestException';
+        throw err;
+      }
+      return value;
+    };
+    const queryParam = methodParam(query);
+    const formParam = isJson ? null : methodParam(post);
     const headerOverride = headers.get('x-http-method-override');
-    const candidate = post._method ?? query._method ?? null;
-    const chosen = headerOverride != null && headerOverride !== '' ? headerOverride : candidate;
-    if (chosen != null && chosen !== '') {
-      const up = String(chosen).toUpperCase();
+    const candidate = formParam ?? queryParam ?? 'POST';
+    // PHP falsiness: '' and '0' are falsy, so the header falls through.
+    const headerUsable = headerOverride != null && headerOverride !== '' && headerOverride !== '0';
+    const chosen = headerUsable ? headerOverride : candidate;
+    if (typeof chosen === 'string' && chosen !== '') {
+      const up = chosen.toUpperCase();
       if (up.length !== up.replace(/[^A-Z]/g, '').length) {
         throw new HttpError('Invalid HTTP method override.', 500);
       }
-      methodOverride = up;
+      // `$this->method = 'POST'` and the real method are the same, so the
+      // kernel's own accessor stays null for a plain POST (it is read by the
+      // compiled request snapshot).
+      methodOverride = up === 'POST' ? null : up;
     }
   }
   const method = methodOverride || rawMethod;
@@ -525,17 +607,20 @@ export function buildRequest(raw, options = {}) {
   const makeFile = (desc) => {
     if (Array.isArray(desc)) return desc.map(makeFile);
     // A descriptor of one part (`__part`) becomes a file object; a container
-    // (the map of a nested field name) is walked.
+    // (the map of a nested field name) is walked. The keys go through ownSet:
+    // a field named `x[__proto__]` is ordinary DATA in PHP
+    // (`$_FILES['x']['__proto__']`), and `out[key] = ..` would set the walk's
+    // PROTOTYPE instead (kernel/own-key.mjs).
     if (desc && typeof desc === 'object' && !desc.__uploadedFile && !desc.__part) {
       const out = {};
-      for (const key of Object.keys(desc)) out[key] = makeFile(desc[key]);
+      for (const key of Object.keys(desc)) ownSet(out, key, makeFile(desc[key]));
       return out;
     }
     return makeUploadedFile(desc, storage, defaultDisk, randomString);
   };
   const fileObjects = () => {
     const out = {};
-    for (const name of Object.keys(files)) out[name] = makeFile(files[name]);
+    for (const name of Object.keys(files)) ownSet(out, name, makeFile(files[name]));
     return out;
   };
 
@@ -686,7 +771,7 @@ export function buildRequest(raw, options = {}) {
     // Illuminate\Http\Request::file(): data_get($this->allFiles(), $key, $default).
     file(key = null, def = null) {
       if (key === null) return fileObjects();
-      const found = dataGet(fileObjects(), key, ARR_MISSING);
+      const found = dataGetPhpArray(fileObjects(), key);
       return found === ARR_MISSING ? def : found;
     },
     // allFiles(): every uploaded file (the files of a field with `name[]` are
@@ -694,12 +779,22 @@ export function buildRequest(raw, options = {}) {
     allFiles() {
       return fileObjects();
     },
-    // Illuminate\Http\Request::hasFile(): the field holds a valid file.
+    // InteractsWithInput::hasFile() (:218-236):
+    //   `array_any(array_wrap($this->file($key)), fn ($f) => $f instanceof
+    //    SplFileInfo && $f->getPath() !== '')`
+    // so a MAP of files is true only where its own values are files: a nested
+    // name answers TRUE one level above the file and FALSE where a further map
+    // sits in between (probed on a live PHP 8.3 server with
+    // `$_FILES['a']['b']['c']`: hasFile('a') = false, hasFile('a.b') = true,
+    // hasFile('post') = true for `post[image]`, hasFile('post.image') = true,
+    // hasFile('nope') = false). `array_wrap()` of a PHP array contributes its
+    // VALUES. The kernel called `isValid()` on whatever came back, so the common
+    // `$request->hasFile('post')` for a nested file name THREW (#848).
     hasFile(key) {
-      const found = dataGet(fileObjects(), key, ARR_MISSING);
-      if (found === ARR_MISSING) return false;
-      const list = Array.isArray(found) ? found : [found];
-      return list.some((f) => f && f.isValid());
+      const found = dataGetPhpArray(fileObjects(), key);
+      if (found === ARR_MISSING || found === null) return false;
+      const list = isPhpArray(found) && !found.__uploadedFile ? Object.values(found) : [found];
+      return list.some((f) => !!f && f.__uploadedFile === true);
     },
     json(key = null, def = null) {
       if (key === null) return json;
@@ -750,13 +845,18 @@ export function buildRequest(raw, options = {}) {
     },
     all(...args) {
       // Illuminate\Http\Concerns\InteractsWithInput::all($keys = null)
-      // (:87-105): the input (the source UNION the query bag) + the uploaded
-      // files (the input wins on a key that is in both), and with arguments an
-      // `Arr::only`-shaped SUBSET built with `Arr::set`/`Arr::get` - so the
-      // DOT NOTATION works and an absent key answers null. The edge ignored the
-      // argument, so `all(['name'])` answered the whole input (an app that
-      // validates or creates from `$request->all(['name'])` saw every field).
-      const data = copyOwn(fileObjects(), inputUnion());
+      // (:87-105):
+      //   `$input = $this->input();`
+      //   `$input = array_replace_recursive($input, $this->allFiles(), $input);`
+      // The files merge RECURSIVELY into the input (the input wins last), so
+      // `all()['post']` carries BOTH the field and the `post[image]` upload -
+      // a shallow union dropped the file whenever the same level had a field
+      // (probed on a live PHP 8.3 server: `all()['post']` = title + image; the
+      // kernel answered `{title}` only, #849). With arguments it is the
+      // `Arr::only`-shaped SUBSET built with `Arr::set`/`Arr::get` - the DOT
+      // NOTATION works and an absent key answers null.
+      const input = inputUnion();
+      const data = arrayReplaceRecursive(input, fileObjects(), input);
       const keys = phpKeyList(args);
       if (keys.length === 0) return data;
       const results = {};
@@ -1233,11 +1333,19 @@ async function renderException(error, request, ctx) {
       });
     }
     const target = error.redirectTo ? error.redirectTo(request) : null;
+    // Redirector::guest() stores the intended URL through
+    // UrlGenerator::previous() (UrlGenerator.php:162-175): the REFERER first
+    // (through to(), so it comes back absolute), then the session's
+    // `_previous.url`, then the site root. Probed: referer + session => the
+    // referer; session only => the session value; neither => 'http://localhost'.
+    const referer = request.header('referer');
     const intended =
       request.method() === 'GET' && request.route() && !requestExpectsJson(request)
         ? request.fullUrl()
-        : ctx.store.previousUrl() || request.header('referer') || null;
-    if (intended) ctx.store.put('url.intended', intended);
+        : referer
+          ? absoluteUrl(request.schemeAndHttpHost(), referer)
+          : (ctx.store.previousUrl() ?? absoluteUrl(request.schemeAndHttpHost(), '/'));
+    ctx.store.put('url.intended', intended);
     const uri = target !== null && target !== undefined ? target : ctx.loginUri();
     if (uri === null) {
       throw new HttpError('guest redirect needs a named [login] route (or Authenticate::redirectUsing).', 500);
@@ -1821,6 +1929,17 @@ export async function handleHttp(raw, options = {}) {
   const chain = buildChain(stages, core, (req, e) => renderException(e, req, ctx));
 
   // --- PreventRequestForgery (request phase) -----------------------------
+  // `->withMiddleware(fn (Middleware $m) => $m->preventRequestForgery(
+  //      originOnly: true, allowSameSite: true))` sets two STATICS on
+  // PreventRequestForgery (Foundation/Configuration/Middleware.php:605-612)
+  // which the middleware reads at :151 (allowSameSite) and :155/:205
+  // (originOnly). They are process-wide in PHP, so the app's one-shot boot is
+  // the same as applying the dumped config here - both dumps wrote
+  // `csrf.allow_same_site` / `csrf.origin_only` and nothing read them, so
+  // `originOnly: true` silently kept the token check and the XSRF cookie
+  // (audit #801).
+  PreventRequestForgery.setAllowSameSite(config['csrf.allow_same_site'] === true);
+  PreventRequestForgery.useOriginOnly(config['csrf.origin_only'] === true);
   const csrf = new PreventRequestForgery({
     except: config['csrf.except'] ?? [],
     sessionConfig: {

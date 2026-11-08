@@ -16,8 +16,11 @@ export const TRANSLATED_NAMES = {
     daysShort: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],
   },
   id: {
+    // Copied from Carbon's own `Lang/id.php` (nesbot/carbon 3.x), the file
+    // `translatedFormat()` reads: `months_short[7]` is 'Agt', not 'Agu'.
+    // Pinned by kernel/tests/date-names.test.mjs.
     months: ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'],
-    monthsShort: ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'],
+    monthsShort: ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des'],
     days: ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'],
     daysShort: ['Min','Sen','Sel','Rab','Kam','Jum','Sab'],
   },

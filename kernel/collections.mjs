@@ -4007,4 +4007,13 @@ export class Collection {
   }
 }
 
+// The PHP OPERATOR canons the build-time config fold reuses
+// (tools/php-funcs.mjs): `phpNumeric()` is PHP 8's numeric coercion for
+// `+`/`-`/`*`/`/` (null -> 0, true -> 1, a numeric string -> its number, an
+// array/object -> TypeError), and `phpSortCompare()` is SORT_REGULAR, i.e.
+// `<`/`>`/`<=>` over scalars AND arrays. Exported so the fold and the edge run
+// the SAME implementation: a second copy of either rule in the build tool is
+// exactly the silent divergence this audit is hunting for.
+export { phpNumeric, phpSortCompare, phpDebugType };
+
 export default Collection;

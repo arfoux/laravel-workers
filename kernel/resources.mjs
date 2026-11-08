@@ -143,10 +143,17 @@ function forceWrappingOf(resource) {
 // with the subclasses (a probe: `ResA::withoutWrapping()` left
 // `JsonResource::$wrap` null - JsonResource.php:52 and :326-330), so the
 // wrapper is read from the class the resource was built from.
+//
+// `''` is NOT "no wrapper": `ResourceResponse::wrapper()` is a bare property
+// read (`get_class($this->resource)::$wrap` - :110), so `wrap('')` answers the
+// EMPTY key where the wrapping applies, and the `?? 'data'` fallback in :69
+// only fires for NULL (a probe: `wrap('')` with additional information is
+// `{"":{"id":1},"meta":{"x":1}}`). PHP's truthiness is applied by the caller,
+// where `! $this->wrapper()` is asked separately (`phpEmpty`).
 function wrapperKeyOf(resource) {
   const ctor = resource && resource.constructor;
   const wrap = ctor && ctor.wrap !== undefined ? ctor.wrap : JsonResource.wrap;
-  return wrap === null || wrap === undefined || wrap === '' ? null : String(wrap);
+  return wrap === null || wrap === undefined ? null : String(wrap);
 }
 
 // The compiled class registry: the runtime hands the resolver over so a
@@ -420,8 +427,14 @@ export class JsonResource {
     return this.toJson(JSON_PRETTY_PRINT | options);
   }
 
-  /** The additional top-level keys of the response (JsonResource.php:214-217). */
-  withData() {
+  /**
+   * `JsonResource::with($request)` (JsonResource.php:216-219): the extra
+   * top-level keys (default: the `with` property; an app override reads the
+   * request). The base keeps the name `withData` because the compiled app
+   * method of that name is the override (see rt-from-context.mjs) - the
+   * argument is passed through so `$request` is never undefined (audit #853).
+   */
+  withData(request) {
     return this.with;
   }
 
@@ -820,7 +833,11 @@ function paginatorToArray(paginator) {
  */
 export function resourcePayload(resource, request) {
   const data = resource.resolve(request);
-  const withKeys = resource.withData ? resource.withData() : resource.with;
+  // `ResourceResponse::toResponse()` (ResourceResponse.php:39) passes the
+  // REQUEST to the hook, so an app `with(Request $request)` reads it (audit
+  // #853: the argument used to be missing, which made `$request` undefined in
+  // every such override).
+  const withKeys = resource.withData ? resource.withData(request) : resource.with;
   const additional = resource.additionalData || [];
   const paginator = typeof resource.paginator === 'function' ? resource.paginator() : null;
   if (paginator) {
@@ -840,21 +857,103 @@ export function resourcePayload(resource, request) {
 function wrapPayload(resource, data, withKeys, additional) {
   const wrapper = wrapperKeyOf(resource);
   let payload = data;
-  const hasWrapperKey = wrapper !== null && hasKey(data, wrapper);
-  // `ResourceResponse::haveDefaultWrapperAndDataIsUnwrapped()`
+  // `ResourceResponse::haveDefaultWrapperAndDataIsUnwrapped()` (:79-89) asks
+  // `$this->wrapper() !== null` when `$forceWrapping` is set, and the TRUTHINESS
+  // of the wrapper otherwise (`$this->wrapper() && ! array_key_exists(...)`) - so
+  // an empty wrapper wraps when forced and never wraps on its own. The two are
+  // not the same question, and `! $this->wrapper()` (:100) is a third.
+  const noWrapper = wrapper === null || phpEmpty(wrapper);
+  const hasWrapperKey = !noWrapper && hasKey(data, wrapper);
   // (ResourceResponse.php:79-89): with `$forceWrapping` the wrapper is applied
   // whenever there IS a wrapper, even if the data already carries the key.
-  const defaultWrapper = wrapper !== null && (forceWrappingOf(resource) || !hasWrapperKey);
+  const defaultWrapper = forceWrappingOf(resource) ? wrapper !== null : !noWrapper && !hasWrapperKey;
   // `ResourceResponse::haveAdditionalInformationAndDataIsUnwrapped()`
   // (ResourceResponse.php:95-103).
   const extraInformation =
-    (!phpEmpty(withKeys) || !phpEmpty(additional)) && (wrapper === null || !hasWrapperKey);
+    (!phpEmpty(withKeys) || !phpEmpty(additional)) && (noWrapper || !hasWrapperKey);
   if (defaultWrapper) {
     payload = { [wrapper]: data };
   } else if (extraInformation) {
+    // `($this->wrapper() ?? 'data')` (:69) falls back only for NULL: the empty
+    // wrapper answers the empty key.
     payload = { [wrapper === null ? 'data' : wrapper]: data };
   }
   return phpArrayMergeRecursive(payload, withKeys || [], additional || []);
+}
+
+/**
+ * The subset of `JsonResponse`'s surface an app's `withResponse()` override can
+ * call. Laravel hands the hook the real response (`ResourceResponse.php:46-49`),
+ * and the port's response is a plain `{status, headers, body}` - so a hook that
+ * called `$response->header(...)` (the usual way to add an API header) hit a
+ * TypeError. The methods mutate the same three fields the worker reads
+ * (`Response::header()` :135-155, `setStatusCode()` :797-803,
+ * `JsonResponse::setData()` :129-140); everything outside the subset
+ * (`getOriginalContent()`, the cookie bag, ...) still fails loud rather than
+ * answering something Laravel would not have.
+ */
+class ResourceJsonResponse {
+  constructor(status, headers, body, options, data) {
+    this.status = status;
+    this.headers = headers;
+    this.body = body;
+    this._options = options;
+    this._data = data;
+  }
+
+  header(name, value, replace = true) {
+    const key = String(name).toLowerCase();
+    if (value === undefined) {
+      return Object.prototype.hasOwnProperty.call(this.headers, key) ? this.headers[key] : null;
+    }
+    if (value === null) {
+      delete this.headers[key];
+      return this;
+    }
+    const values = (Array.isArray(value) ? value : [value]).map((v) => String(v));
+    // `HeaderBag::set($values, $replace)`: without replace the values append
+    // and the wire header joins them with ", ".
+    if (!replace && this.headers[key] !== undefined) {
+      this.headers[key] = this.headers[key] + ', ' + values.join(', ');
+    } else {
+      this.headers[key] = values.join(', ');
+    }
+    return this;
+  }
+
+  withHeaders(headers) {
+    for (const [k, v] of Object.entries(headers || {})) this.header(k, v);
+    return this;
+  }
+
+  setStatusCode(status) {
+    this.status = Number(status) || 200;
+    return this;
+  }
+
+  getStatusCode() {
+    return this.status;
+  }
+
+  setContent(body) {
+    this.body = String(body);
+    return this;
+  }
+
+  getContent() {
+    return this.body;
+  }
+
+  getData() {
+    return this._data;
+  }
+
+  /** `JsonResponse::setData()` (JsonResponse.php:129-140): the body follows. */
+  setData(data) {
+    this._data = data;
+    this.body = this._options ? phpJsonEncodeWithFlags(data, this._options) : phpJsonEncode(data);
+    return this;
+  }
 }
 
 /**
@@ -868,11 +967,24 @@ export function resourceResponse(resource, request) {
   // app returned, a DTO) stays a 200 - the edge answered 201 for any truthy key.
   const inner = resource.resource;
   const status = inner instanceof Model && inner.wasRecentlyCreated ? 201 : 200;
-  return {
-    status,
-    headers: { 'content-type': 'application/json' },
-    body: phpJsonEncode(resourcePayload(resource, request)),
-  };
+  const payload = resourcePayload(resource, request);
+  // `ResourceResponse::toResponse()` (ResourceResponse.php:36-45) hands
+  // `$this->resource->jsonOptions()` to `response()->json()` as the 4th
+  // argument, so an app that asked for `JSON_PRETTY_PRINT` or a
+  // `JSON_UNESCAPED_*` got Laravel's body and the kernel's default one - a
+  // silent no-op (audit #855). The flag-aware encoder is the kernel's own: a
+  // flag the port cannot reproduce throws instead of writing a body PHP would
+  // never have written.
+  const options = typeof resource.jsonOptions === 'function' ? resource.jsonOptions() : 0;
+  const body = options ? phpJsonEncodeWithFlags(payload, options) : phpJsonEncode(payload);
+  const response = new ResourceJsonResponse(status, { 'content-type': 'application/json' }, body, options, payload);
+  // `tap(..., function ($response) use ($request) { $this->resource->withResponse($request, $response); })`
+  // (ResourceResponse.php:46-49; PaginatedResourceResponse.php:38-41 runs the
+  // same branch) - the app hook has the LAST word on the response: it may
+  // rewrite the headers, the status or the body, and it used to be a silent
+  // no-op (audit #854).
+  if (typeof resource.withResponse === 'function') resource.withResponse(request, response);
+  return response;
 }
 
 export default {

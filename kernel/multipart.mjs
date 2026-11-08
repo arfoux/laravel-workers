@@ -16,7 +16,6 @@ function indexOfBytes(hay, needle, from) {
   return -1;
 }
 
-import { ownSet, ownGet } from './own-key.mjs';
 import { newBag, bagPut, normalizePhpArrays } from './php-bag.mjs';
 
 export function parseMultipart(bytes, contentType) {
@@ -28,7 +27,7 @@ export function parseMultipart(bytes, contentType) {
   const boundary = (m[1] || m[2] || '').trim();
   const delim = enc.encode('--' + boundary);
   const fields = newBag();
-  const files = {};
+  const files = newBag();
   // PHP's rfc1867 parser (ext/standard/rfc1867.c): the delimiter is
   // CRLF + "--boundary" - a file whose CONTENT contains the boundary bytes
   // must not end the part (the edge searched the bare bytes, so such a file
@@ -79,7 +78,18 @@ export function parseMultipart(bytes, contentType) {
     }
     if (name !== null) {
       if (filename !== null) {
-        setFile(files, name, {
+        // PHP registers a FILE name through the SAME rule as a field name
+        // (`rfc1867.c` -> `php_register_variable_ex()`): the leaf is the file,
+        // the levels above it are the `$_POST`-shaped tree. `post[image]` nests
+        // a MAP, `photos[]` appends at the next free index, `k[0]` is a list
+        // that json_encodes as `[..]`, and a dot or a space in the BASE name
+        // becomes `_` (measured against a live PHP 8.3 server, `php -S` + `curl
+        // -F`: `post[image]` -> `$_FILES['post']['image']`, `a.b` ->
+        // `$_FILES['a_b']`, `k[0]` -> `$_FILES['k'][0]`, `0[]` -> `$_FILES`
+        // itself a list). The old bespoke walk read the NEXT bracket key to
+        // decide the shape, so `post[image]` built `files.post = []` and dropped
+        // the upload, and `a.b` stayed a literal key (#848, #886).
+        bagPut(files, name, {
           name,
           filename,
           mime,
@@ -97,72 +107,8 @@ export function parseMultipart(bytes, contentType) {
     }
     pos = next + delim.length;
   }
-  return { fields: normalizePhpArrays(fields), files };
+  return { fields: normalizePhpArrays(fields), files: normalizePhpArrays(files) };
 }
 
-// PHP's $_FILES naming: 'photos[]' is an append, 'photos[0]' is an index,
-// 'a[b]' is a key. The parser writes the files into the same shape.
-function setFile(files, name, desc) {
-  const m = /^([^[\]]*)((?:\[[^[\]]*\])*)$/.exec(name);
-  const base = m ? m[1] : name;
-  const brackets = m ? m[2] : '';
-  if (!brackets) {
-    if (base === '') ownSet(files, '', desc);
-    else ownSet(files, base, desc);
-    return;
-  }
-  // The path: the base + every bracket key ('' means "append").
-  const keys = brackets.slice(1, -1).split('][');
-  let node = files;
-  let container = base;
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    if (container === '') {
-      container = '0';
-      if (!ownGet(node, container) || typeof ownGet(node, container) !== 'object') ownSet(node, container, []);
-    }
-    let child = ownGet(node, container);
-    if (!child || typeof child !== 'object' || ownGet(child, '__uploadedFile') || ownGet(child, '__part')) {
-      // The next key decides the shape: '' or a number is a list, else a map.
-      const next = keys[i + 1];
-      child = next === undefined || next === '' || /^\d+$/.test(next) ? [] : {};
-      ownSet(node, container, child);
-    }
-    if (Array.isArray(child)) {
-      if (key === '') {
-        // The last segment: append the file.
-        if (i === keys.length - 1) {
-          child.push(desc);
-          return;
-        }
-        const created = [];
-        child.push(created);
-        node = created;
-        container = '';
-        continue;
-      }
-      const idx = Number(key);
-      if (!Number.isInteger(idx) || idx < 0) continue;
-      if (i === keys.length - 1) {
-        child[idx] = desc;
-        return;
-      }
-      if (!ownGet(child, idx) || typeof ownGet(child, idx) !== 'object') ownSet(child, idx, []);
-      node = ownGet(child, idx);
-      container = '';
-      continue;
-    }
-    if (i === keys.length - 1) {
-      ownSet(child, key, desc);
-      return;
-    }
-    const next = keys[i + 1];
-    if (!ownGet(child, key) || typeof ownGet(child, key) !== 'object') {
-      ownSet(child, key, next === '' || /^\d+$/.test(next) ? [] : {});
-    }
-    node = ownGet(child, key);
-    container = key;
-  }
-}
 
 export default { parseMultipart };

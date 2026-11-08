@@ -367,8 +367,9 @@ const IMAGE_RULE_FORMATS = new Set(['png', 'jpeg', 'gif', 'bmp', 'webp', 'avif',
 // SNIFFED_MIME_EXTENSIONS is Symfony's MimeTypes::getExtensions() list for each
 // sniffable MIME (the extensions a `mimes` parameter may name) and
 // `guessExtension()` answers the FIRST entry - image/jpeg answers "jpg", never
-// "jpeg", so `mimes:jpeg` is a valid parameter that never matches a real JPEG
-// in PHP either (a documented Laravel sharp edge the edge must not "fix").
+// "jpeg". Laravel therefore MERGES the two names: naming EITHER `jpg` or `jpeg`
+// accepts BOTH (`ValidatesAttributes::validateMimes()` :1764-1766), so
+// `mimes:jpeg` accepts a real JPEG.
 // bmp stays out on purpose: finfo names it image/x-ms-bmp, so `mimetypes`
 // semantics for it are not the image/bmp the header read sees.
 const SNIFFED_MIME_EXTENSIONS = Object.freeze({
@@ -1362,12 +1363,26 @@ const REL_MONTH = {
 };
 const REL_FIXED_UNIT = { second: 1, sec: 1, minute: 60, min: 60, hour: 3600, day: 86400, week: 604800 };
 const REL_CAL_UNIT = { month: true, year: true };
+// The military-zone letters PHP reads as a zone (`j` is unassigned): a..m are
+// +1..+12, n..y are -1..-12 and z is UTC.
+const MILITARY_ZONE_OFFSET = Object.freeze({
+  a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, k: 10, l: 11, m: 12,
+  n: -1, o: -2, p: -3, q: -4, r: -5, s: -6, t: -7, u: -8, v: -9, w: -10, x: -11, y: -12, z: 0,
+});
 
 export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
   const text = String(raw).trim().replace(/\s+/g, ' ');
   if (text === '') return null;
-  // A lone military-zone letter is `now` (`strtotime('z')` === now).
-  if (/^[A-Za-z]$/.test(text)) return Math.floor(nowMs / 1000);
+  // A lone military-zone letter answers the CURRENT instant read in that zone:
+  // PHP takes "now" as a wall clock and interprets it in the zone, so
+  // `strtotime('b')` with a UTC base is now-2h, `n` is now+1h and `z` (UTC) is
+  // now. `j` is unassigned and unreadable. Probed on PHP 8.3.30 - the kernel
+  // used to answer `now` for every letter (audit #883).
+  if (/^[A-Za-z]$/.test(text)) {
+    const offset = MILITARY_ZONE_OFFSET[text.toLowerCase()];
+    if (offset === undefined) return null;
+    return Math.floor(nowMs / 1000) - offset * 3600;
+  }
   const d0 = new Date(nowMs);
   const st = {
     y: d0.getUTCFullYear(),
@@ -1398,6 +1413,18 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
   };
   let hit = false;
   let i = 0;
+  // PHP's grammar resolves a WEEKDAY / day-word (and the clock reset that comes
+  // with a named month and no clock) against the fields the REST of the string
+  // sets, not against the state at the token: `monday june 5` is the Monday
+  // on/after June 5 (2026-06-08), not June 5, and `june` alone is June 15
+  // 00:00:00 while `june 5 10:30` keeps 10:30. So the DAY moves are queued and
+  // applied once the whole string is read, while the clock reset of a weekday
+  // stays where the token is (`3pm sun` is Sunday 00:00 in PHP, `sun 3pm` is
+  // 15:00). Audit #859 + #882 (probed on PHP 8.3.30).
+  const pendingDayShifts = [];
+  let sawMonthName = false;
+  let sawClock = false;
+  let sawDayNumber = false;
   while (i < text.length) {
     if (text[i] === ' ') { i += 1; continue; }
     const rest = text.slice(i);
@@ -1415,6 +1442,11 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
       st.mo = mo;
       st.y = y;
       st.day = which === 'first' ? 1 : daysIn(y, mo);
+      // `first day of THIS month` keeps the clock in PHP; a NAMED month resets
+      // it (probe: `first day of this month` -> 14:30:45, `first day of
+      // january` -> 00:00).
+      if (m[2].toLowerCase() !== 'this month') sawMonthName = true;
+      sawDayNumber = true;
       hit = true;
       i += m[0].length;
       continue;
@@ -1423,18 +1455,34 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
     if ((m = /^(\d{1,2}):(\d{2})(?::(\d{2}))? ?(am|pm)\b/i.exec(rest))) {
       const h12 = Number(m[1]);
       if (h12 > 12) return null;
+      const mi = Number(m[2]);
+      const sec = Number(m[3] || 0);
+      // PHP refuses a minute past 59 (`12:60` is FALSE) while 60 seconds still
+      // rolls over (`120060` is today 12:01:00).
+      if (mi > 59 || sec > 60) return null;
       st.h = (h12 % 12) + (m[4].toLowerCase() === 'pm' ? 12 : 0);
-      st.mi = Number(m[2]);
-      st.s = Number(m[3] || 0);
+      st.mi = mi;
+      st.s = sec;
+      sawClock = true;
       hit = true;
       i += m[0].length;
       continue;
     }
-    // A bare clock time in a phrase (`tomorrow 00:00`, `monday 17:00`).
-    if ((m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\b/.exec(rest))) {
-      st.h = Number(m[1]);
-      st.mi = Number(m[2]);
-      st.s = Number(m[3] || 0);
+    // A bare clock time in a phrase (`tomorrow 00:00`, `monday 17:00`). PHP
+    // pads a single-digit minute or second (`1:5` is 01:05, `12:0` is 12:00),
+    // but a meridian refuses them (`12:5 pm` is FALSE).
+    if ((m = /^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\b/.exec(rest))) {
+      const h = Number(m[1]);
+      const mi = Number(m[2]);
+      const s = Number(m[3] || 0);
+      // PHP's hour may be 24 (it rolls into the next day: `2400` and `24:00`
+      // are tomorrow 00:00) but not 25; the minute stops at 59 (`99:99` is
+      // FALSE, the kernel used to compute June 19 04:39).
+      if (h > 24 || mi > 59 || s > 60) return null;
+      st.h = h;
+      st.mi = mi;
+      st.s = s;
+      sawClock = true;
       hit = true;
       i += m[0].length;
       continue;
@@ -1444,6 +1492,7 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
       const h12 = Number(m[1]);
       if (h12 > 12) return null;
       setHour12(h12, m[2].toLowerCase() === 'pm');
+      sawClock = true;
       hit = true;
       i += m[0].length;
       continue;
@@ -1453,16 +1502,20 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
       if (m[1].toLowerCase() === 'noon') { st.h = 12; } else { st.h = 0; }
       st.mi = 0;
       st.s = 0;
+      sawClock = true;
       hit = true;
       i += m[0].length;
       continue;
     }
-    // `now` / `today` / `tomorrow` / `yesterday` (the day words reset the clock).
+    // `now` / `today` / `tomorrow` / `yesterday` (the day words reset the clock
+    // where they sit - `noon tomorrow` is tomorrow 00:00 - and move the DAY
+    // against the fields the rest of the string sets: `tomorrow june 5` is
+    // June 6 in PHP, i.e. June 5 + 1 day).
     if ((m = /^(now|today|tomorrow|yesterday)\b/i.exec(rest))) {
       const w = m[1].toLowerCase();
-      if (w === 'today') zeroClock();
-      else if (w === 'tomorrow') { shiftDays(1); zeroClock(); }
-      else if (w === 'yesterday') { shiftDays(-1); zeroClock(); }
+      if (w === 'today') { zeroClock(); pendingDayShifts.push(0); }
+      else if (w === 'tomorrow') { zeroClock(); pendingDayShifts.push(1); }
+      else if (w === 'yesterday') { zeroClock(); pendingDayShifts.push(-1); }
       hit = true;
       i += m[0].length;
       continue;
@@ -1472,10 +1525,9 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
       const mod = m[1].toLowerCase();
       const w = m[2].toLowerCase();
       if (REL_WEEKDAY[w] !== undefined) {
-        let delta = (REL_WEEKDAY[w] - weekdayOfToday() + 7) % 7;
-        if (mod === 'next') delta = delta === 0 ? 7 : delta;
-        else if (mod === 'last') delta = delta === 0 ? -7 : delta - 7;
-        shiftDays(delta);
+        // Deferred: PHP answers the weekday counted from the FINAL date
+        // (`monday june 2027` is 2027-06-07, the Monday after June 1 2027).
+        pendingDayShifts.push({ weekday: REL_WEEKDAY[w], mod });
         zeroClock();
       } else if (w === 'week') {
         let delta = -((weekdayOfToday() + 6) % 7); // the Monday of this week
@@ -1502,9 +1554,10 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
       i += m[0].length;
       continue;
     }
-    // A bare weekday (`monday`): the next occurrence, clock reset to 00:00.
+    // A bare weekday (`monday`): the next occurrence counted from the FINAL
+    // date (deferred, see above), clock reset to 00:00 where the token sits.
     if ((m = /^([a-z]+)\b/i.exec(rest)) && REL_WEEKDAY[m[1].toLowerCase()] !== undefined) {
-      shiftDays((REL_WEEKDAY[m[1].toLowerCase()] - weekdayOfToday() + 7) % 7);
+      pendingDayShifts.push({ weekday: REL_WEEKDAY[m[1].toLowerCase()], mod: null });
       zeroClock();
       hit = true;
       i += m[0].length;
@@ -1515,6 +1568,20 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
     if ((m = /^(\d{1,2}) ([a-z]+)\b/i.exec(rest)) && monthName(m[2].toLowerCase()) !== undefined) {
       st.day = Number(m[1]);
       st.mo = monthName(m[2].toLowerCase());
+      sawMonthName = true;
+      sawDayNumber = true;
+      hit = true;
+      i += m[0].length;
+      continue;
+    }
+    // A bare four-digit year (`june 2027`, `2027 june`, `26 june 2026`) - PHP
+    // reads it as the year and, when the string named no day number, the day
+    // becomes 1 (`june 2027` is June 1 2027, while `june` alone keeps today's
+    // day number). Before the offset rule, which would try to read
+    // `2027 june` as "2027 of an unknown unit".
+    if ((m = /^(\d{4})\b/.exec(rest))) {
+      st.y = Number(m[1]);
+      if (!sawDayNumber) st.day = 1;
       hit = true;
       i += m[0].length;
       continue;
@@ -1540,10 +1607,14 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
       i += m[0].length;
       continue;
     }
-    // `june 5` (a month name before a day number).
-    if ((m = /^([a-z]+) (\d{1,2})\b/i.exec(rest)) && monthName(m[1].toLowerCase()) !== undefined) {
+    // `june 5` (a month name before a day number). The `(?![\d:])` keeps a
+    // CLOCK out of the day slot: PHP reads `june 10:30` as June 15 10:30 (the
+    // day number is not given), and the old pattern swallowed the `10`.
+    if ((m = /^([a-z]+) (\d{1,2})(?![\d:])\b/i.exec(rest)) && monthName(m[1].toLowerCase()) !== undefined) {
       st.mo = monthName(m[1].toLowerCase());
       st.day = Number(m[2]);
+      sawMonthName = true;
+      sawDayNumber = true;
       hit = true;
       i += m[0].length;
       continue;
@@ -1551,6 +1622,7 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
     // A bare month name (`june`): the month field, day and clock preserved.
     if ((m = /^([a-z]+)\b/i.exec(rest)) && monthName(m[1].toLowerCase()) !== undefined) {
       st.mo = monthName(m[1].toLowerCase());
+      sawMonthName = true;
       hit = true;
       i += m[0].length;
       continue;
@@ -1558,6 +1630,21 @@ export function phpRelativeTimestamp(raw, nowMs = Date.now()) {
     return null; // an unknown word: PHP refuses the whole value too
   }
   if (!hit) return null;
+  // The day moves PHP counts from the FINAL date (queued above, in order).
+  for (const move of pendingDayShifts) {
+    if (typeof move === 'number') {
+      shiftDays(move);
+      continue;
+    }
+    let delta = (move.weekday - new Date(Date.UTC(st.y, st.mo, st.day)).getUTCDay() + 7) % 7;
+    if (move.mod === 'next') delta = delta === 0 ? 7 : delta;
+    else if (move.mod === 'last') delta = delta === 0 ? -7 : delta - 7;
+    shiftDays(delta);
+  }
+  // A named month with NO clock anywhere answers midnight in PHP (`june` and
+  // `june 5` are 00:00, while `june 5 10:30` keeps 10:30 and `first day of this
+  // month` - no named month - keeps the clock too). Audit #859.
+  if (sawMonthName && !sawClock) zeroClock();
   return Math.floor(Date.UTC(st.y, st.mo, st.day, st.h, st.mi, st.s) / 1000);
 }
 
@@ -1591,7 +1678,15 @@ function carbonTimestamp(value) {
   }
   if (typeof value !== 'string') return null;
   const raw = value;
-  // `'@…'` is an explicit UNIX timestamp.
+  // An EMPTY string (or whitespace only) is Carbon's "now": verified on PHP
+  // 8.3.30 + nesbot/carbon, `Date::parse('')`, `' '` and `'now'` answer the
+  // same instant (a bare `'0'` THROWS instead, and `getDateTime()` swallows
+  // that into the null the caller compares against 0). Every branch below
+  // used to fall through and answer null, so a comparison rule with a missing
+  // parameter (`before:` - a typo, or a `'before:' . $x` whose `$x` is empty)
+  // FAILED here and PASSED in PHP (#671).
+  if (raw.trim() === '') return Math.floor(Date.now() / 1000);
+  // `'@...'` is an explicit UNIX timestamp.
   const at = /^\s*@(-?[\d.]+)\s*$/.exec(raw);
   if (at !== null) return Math.trunc(Number(at[1]));
   if (isNumericValue(raw)) {
@@ -1634,11 +1729,18 @@ function carbonTimestamp(value) {
     return d / 1000;
   }
   // A bare clock time (`'12:00'`, `'12:00:30'`) is TODAY at that time (UTC).
-  const clock = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(raw);
+  const clock = /^\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s*$/.exec(raw);
   if (clock !== null) {
+    const h = Number(clock[1]);
+    const mi = Number(clock[2]);
+    const s = Number(clock[3] || 0);
+    // PHP's bounds for a wall clock: an hour of 24 rolls into the next day
+    // (`24:00` is tomorrow 00:00) while 25 and a minute of 60+ are unreadable
+    // (`25:00`, `12:60`, `99:99` are FALSE - the kernel used to compute
+    // June 19 04:39 for `99:99`). Probed on PHP 8.3.30.
+    if (h > 24 || mi > 59 || s > 60) return null;
     const now = new Date();
-    return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
-      Number(clock[1]), Number(clock[2]), Number(clock[3] || 0)) / 1000;
+    return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, mi, s) / 1000;
   }
   const digits = /^\s*(\d+)\s*$/.exec(raw);
   if (digits !== null) {
@@ -1646,10 +1748,35 @@ function carbonTimestamp(value) {
     const now = new Date();
     const base = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     const hhmm = (h, i, s) => (base + (h * 3600 + i * 60 + s) * 1000) / 1000;
-    if (run.length === 4) return hhmm(Number(run.slice(0, 2)), Number(run.slice(2)), 0);
-    if (run.length === 6) return hhmm(Number(run.slice(0, 2)), Number(run.slice(2, 4)), Number(run.slice(4)));
+    // PHP reads the run as `HHMM` when the digits make a clock and as a YEAR
+    // otherwise (`1299` is the year 1299 - the month/day/clock of "now" are
+    // kept - while `1259` is today 12:59). Probed on PHP 8.3.30.
+    if (run.length === 4) {
+      const h = Number(run.slice(0, 2));
+      const mi = Number(run.slice(2));
+      if (h <= 24 && mi <= 59) return hhmm(h, mi, 0);
+      const yearOnly = new Date(now.getTime());
+      yearOnly.setUTCFullYear(Number(run));
+      return yearOnly.getTime() / 1000;
+    }
+    // `HHMMSS`, with PHP's bounds: an hour of 24 rolls into the next day
+    // (`235960` is tomorrow 00:00) but a minute past 59 makes the whole run
+    // unreadable (`129999` is FALSE, not a year).
+    if (run.length === 6) {
+      const h = Number(run.slice(0, 2));
+      const mi = Number(run.slice(2, 4));
+      const s = Number(run.slice(4));
+      if (h > 24 || mi > 59 || s > 60) return null;
+      return hhmm(h, mi, s);
+    }
     const ymd = /^\s*(\d{4})(\d{2})(\d{2})\s*$/.exec(raw);
-    if (ymd !== null) return Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) / 1000;
+    if (ymd !== null) {
+      const mo = Number(ymd[2]);
+      // The month must be 1-12 (`20261301` is FALSE) while an impossible DAY
+      // overflows like every other absolute date (`20260230` -> 2026-03-02).
+      if (mo < 1 || mo > 12) return null;
+      return Date.UTC(Number(ymd[1]), mo - 1, Number(ymd[3])) / 1000;
+    }
     return null;
   }
   // The relative/named shapes PHP's parser also reads (`monday`, `noon`,
@@ -2495,7 +2622,17 @@ export class Validator {
         const info = imageInfo(value.bytes);
         if (info === null) return false;
         const guessed = SNIFFED_EXTENSION[info.format];
-        return guessed !== undefined && rule.params.includes(guessed);
+        if (guessed === undefined) return false;
+        // ValidatesAttributes::validateMimes() (:1764-1766): naming EITHER
+        // 'jpg' or 'jpeg' makes BOTH acceptable, because `guessExtension()`
+        // answers 'jpg' for image/jpeg (Symfony's first extension for the MIME).
+        // Without the merge `mimes:jpeg` rejected every real JPEG where Laravel
+        // accepts it (audit #857).
+        const params =
+          rule.params.includes('jpg') || rule.params.includes('jpeg')
+            ? [...new Set([...rule.params, 'jpg', 'jpeg'])]
+            : rule.params;
+        return params.includes(guessed);
       }
       case 'mimetypes': {
         if (!isUploadedFileValue(value) || !value.isValid()) return false;

@@ -1,7 +1,7 @@
 // kernel/model.mjs — Model base
 import { table as tableBuilder } from './db.mjs';
 import { isHashedDigest, makeSync, verifyConfiguration } from './hash.mjs';
-import { Collection } from './collections.mjs';
+import { Collection, phpDebugType, phpNumeric } from './collections.mjs';
 import { phpJsonEncode, tagPhpObjectDeep } from './php-json.mjs';
 import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 import { entriesOf } from './php-loose-eq.mjs';
@@ -94,12 +94,17 @@ function phpIntCast(value) {
 function phpFloatCast(value) {
   if (value === null || value === undefined) return 0;
   if (typeof value === 'boolean') return value ? 1 : 0;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  // PHP's `(float)` KEEPS a non-finite value: `(float) '1e400'` is INF and
+  // `(float) INF` is INF (probed on 8.3.30; `(int)` is what answers 0). The
+  // old `Number.isFinite(n) ? n : 0` here silently answered 0 for an
+  // overflowing column string (#821). The JSON rung refuses it exactly like
+  // PHP: phpJsonEncode throws "Inf and NaN cannot be JSON encoded"
+  // (kernel/php-json.mjs:164-165), the same message json_encode fails with.
+  if (typeof value === 'number') return value;
   if (Array.isArray(value)) return value.length ? 1 : 0;
   const m = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(String(value));
   if (!m) return 0;
-  const n = Number(m[0]);
-  return Number.isFinite(n) ? n : 0;
+  return Number(m[0]);
 }
 
 // Laravel's decimal cast: BigDecimal::of((string) $value)->toScale($decimals,
@@ -164,6 +169,57 @@ function phpDecimalRound(decimal, places) {
   return intPart + (places ? '.' + text.slice(text.length - places) : '');
 }
 
+// Carbon 3's `createFromTimestamp()` is NOT an integer cast (#826). Probed on
+// Carbon 3 + PHP 8.3, `Date::createFromTimestamp` -> `createFromTimestampUTC`
+// -> `getIntegerAndDecimalParts()` (Timestamp.php:170-192) splits the input on
+// every run of non-digit/non-dot characters and ADDS the chunks as integers:
+// '1e400' answers 401 (= 1 + 400), '1e10' answers 11, '1e14' answers 15, and
+// '-1e10' answers -11. A float goes through `number_format($v, 6, '.', '')`
+// first, so an INF/NAN leaves no digit at all and answers epoch 0. The seconds
+// then go to `rawCreateFromFormat('U u', ...)`, which gives up once the value
+// reaches 15 digits - '99999999999999' answers that many seconds while
+// 100000000000000 throws InvalidFormatException("Unexpected data found.
+// Trailing data").
+const CARBON_TIMESTAMP_LIMIT = 1e14;
+function carbonTimestampOverflow() {
+  const err = new Error('Unexpected data found.\nTrailing data');
+  err.name = 'InvalidFormatException';
+  err.phpClass = 'Carbon\\Exceptions\\InvalidFormatException';
+  return err;
+}
+function carbonTimestampSeconds(input) {
+  let text;
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input)) return { seconds: 0, decimal: 0 };
+    // Every float at or past the limit has its own 15 digits, so PHP's
+    // number_format() never shrinks it back under it.
+    if (Math.abs(input) >= CARBON_TIMESTAMP_LIMIT) throw carbonTimestampOverflow();
+    text = input.toFixed(6);
+  } else {
+    text = String(input);
+  }
+  const negative = text.startsWith('-');
+  let integer = 0;
+  let decimal = 0;
+  for (const chunk of text.split(/[^\d.]+/)) {
+    if (!chunk) continue;
+    // PHP's `explode('.', "$chunk.")` takes the part before the FIRST dot as
+    // the integer and the part between the first and second as the fraction.
+    const first = chunk.indexOf('.');
+    const head = first === -1 ? chunk : chunk.slice(0, first);
+    const rest = first === -1 ? '' : chunk.slice(first + 1);
+    const second = rest.indexOf('.');
+    const tail = second === -1 ? rest : rest.slice(0, second);
+    integer += head === '' ? 0 : Number(head);
+    decimal += tail === '' ? 0 : Number('0.' + tail);
+  }
+  const overflow = Math.floor(decimal);
+  integer += overflow;
+  decimal -= overflow;
+  const seconds = (negative ? -1 : 1) * integer;
+  if (Math.abs(seconds) >= CARBON_TIMESTAMP_LIMIT) throw carbonTimestampOverflow();
+  return { seconds, decimal: decimal === 0 ? 0 : (negative ? -1 : 1) * decimal };
+}
 // Laravel's `asTimestamp()` (HasAttributes::asTimestamp() -> `asDateTime($value)
 // ->getTimestamp()`, :1220): a NUMERIC value is a Unix timestamp
 // (`Date::createFromTimestamp`), anything else is parsed with the model's date
@@ -176,10 +232,10 @@ function phpDecimalRound(decimal, places) {
 // exactly as `asDateTime()` does in PHP (`asTimestamp('garbage')` is a 500).
 function phpTimestampCast(value) {
   if (value === null || value === undefined) return null;
-  if (typeof value === 'number') return Math.trunc(value);
-  const str = String(value);
-  if (NUMERIC_TEXT.test(str)) return Math.trunc(Number(str));
-  return makeDateValue(str).timestamp;
+  if (typeof value === 'number' || NUMERIC_TEXT.test(String(value))) {
+    return carbonTimestampSeconds(value).seconds;
+  }
+  return makeDateValue(value).timestamp;
 }
 
 // Laravel's Carbon::toJSON() (Carbon/Converter.php:442-455): `toISOString()`
@@ -230,6 +286,16 @@ function isDateAttribute(ctor, key) {
   if (ctor.softDeletes && key === ctor.deletedAtColumn) return true;
   const cast = ctor.casts && ctor.casts[key];
   return castDateSpec(cast) !== null;
+}
+
+// HasAttributes::fromDateTime() (:1639-1644): `empty($value) ? $value :
+// $this->asDateTime($value)->format($this->getDateFormat())` - the canonical
+// column text of a date value, which `setAttribute()` writes and
+// `originalIsEquivalent()` compares (#845). `asDateTime()` raises
+// InvalidFormatException on unparseable input, exactly as PHP does there.
+function fromDateTimeText(value) {
+  if (isEmptyDateInput(value)) return value;
+  return makeDateValue(value)._raw;
 }
 
 // PHP's `empty()` for the values `HasAttributes::fromDateTime()` (:1866)
@@ -376,9 +442,11 @@ export function makeDateValue(raw, tz = modelTimezone.value) {
   if (raw instanceof Date) {
     ms = raw.getTime();
   } else if (typeof raw === 'number' || NUMERIC_TEXT.test(text)) {
-    const seconds = Number(text);
-    if (!Number.isFinite(seconds)) throwInvalidDate(raw);
-    ms = Math.round(seconds * 1000);
+    // `Date::createFromTimestamp` (Carbon 3), NOT a plain integer cast: the
+    // chunk-sum rule above answers '1e400' -> 1970-01-01 00:06:41 and raises
+    // InvalidFormatException for a 15-digit second count (#826).
+    const t = carbonTimestampSeconds(raw);
+    ms = Math.round((t.seconds + t.decimal) * 1000);
   } else {
     // HasAttributes::asDateTime() (:1614-1622) calls
     // `Date::createFromFormat($this->getDateFormat(), $value)` with the
@@ -688,6 +756,58 @@ export function phpDateString(d, tz = modelTimezone.value) {
   );
 }
 
+// PHP 8's `+` for the model's in-memory bump (`$this->{$column} + $amount`,
+// `Model::incrementOrDecrement()` :1141-1143). The coercion is the kernel's own
+// canon (`phpNumeric`, the same one `Collection::sum()` uses), and the TypeError
+// names the operands LEFT TO RIGHT the way PHP does - a text column reads
+// `Unsupported operand types: string + int` (probed on 8.3; the collections
+// helper's own message is `int + <type>` because `sum()` starts from int 0). A
+// numeric PREFIX walks phpNumeric's other branch instead (`'5a' + 1` is 6 with
+// the warning Laravel promotes to ErrorException), so only a TypeError is
+// re-labelled here.
+function phpSumOperands(left, right) {
+  try {
+    return phpNumeric(left) + phpNumeric(right);
+  } catch (err) {
+    if (!err || err.name !== 'TypeError') throw err;
+    const bad = new Error(
+      'Unsupported operand types: ' + phpDebugType(left) + ' + ' + phpDebugType(right)
+    );
+    bad.name = 'TypeError';
+    bad.phpClass = 'TypeError';
+    throw bad;
+  }
+}
+
+// `usesTimestamps()` for the model the builder is working on - the CLASS for a
+// plain `Post::query()`, or the RECEIVING INSTANCE when the model called its own
+// `increment()` (Laravel's `newQueryWithoutScopes()` -> `setModel($this)`), so
+// `$post->timestamps = false` suppresses the bump exactly as it does in PHP
+// (probed on 8.3: the row keeps `2020-01-01` where `Post::query()` moves it).
+function modelUsesTimestamps(model) {
+  const ctor = typeof model === 'function' ? model : model.constructor;
+  return (model.timestamps === false ? false : ctor.timestamps) !== false;
+}
+
+// Eloquent's `Builder::addUpdatedAtColumn()` (:1448-1479): the UPDATE's value set
+// gains the timestamp column - keyed QUALIFIED with the table name, exactly like
+// the vendor (`Arr::get($values, "posts.updated_at", $values['updated_at'])` then
+// `unset($values['updated_at'])`); the grammar strips the qualifier at render
+// time (db.mjs). The value is the string `save()` writes (`Model::now()` -> the
+// app timezone), so every write path reads the same clock in the same format.
+function addUpdatedAtColumn(ctor, useTimestamps, extra) {
+  const column = 'updated_at';
+  const qualified = ctor.table + '.' + column;
+  if (!useTimestamps) return extra;
+  if (
+    Object.prototype.hasOwnProperty.call(extra, qualified) ||
+    Object.prototype.hasOwnProperty.call(extra, column)
+  ) {
+    return extra;
+  }
+  return { [qualified]: ctor.now(), ...extra };
+}
+
 // Accessors/mutators follow Laravel's naming: getFooBarAttribute / setFooBarAttribute.
 function studly(key) {
   return String(key)
@@ -795,6 +915,21 @@ export class Model {
     if (attribute === original) return true;
     if (attribute == null) return false;
     const cast = this.constructor.casts[key];
+    // Laravel compares a DATE attribute through `fromDateTime()` FIRST
+    // (HasAttributes.php:2403-2405 - `isDateAttribute($key) ||
+    // isDateCastableWithCustomFormat($key)`), so both sides become the model's
+    // date-format text and two spellings of the same instant are equivalent.
+    // The kernel fell through to the primitive cast (which hands the column
+    // text back unchanged), so a canonical set over a non-canonical original
+    // ('2024-01-02 03:04' straight from the column) read DIRTY - a spurious
+    // UPDATE plus the `updated_at` bump (#845). Probed on PHP 8.3 + 13.37:
+    // orig '2024-01-02 03:04' + set '2024-01-02 03:04:00' answers
+    // isDirty()=false, and a garbage original raises the same
+    // InvalidFormatException `fromDateTime()` does.
+    const dateSpec = castDateSpec(cast);
+    if (isDateAttribute(this.constructor, key) || (dateSpec && dateSpec.format)) {
+      return fromDateTimeText(attribute) === fromDateTimeText(original);
+    }
     if (cast != null) {
       const spec = String(cast).toLowerCase();
       // The json-ish casts compare the decoded values.
@@ -1098,6 +1233,20 @@ export class Model {
   static _newQuery(db) {
     const builder = tableBuilder(db, this.table);
     builder.model = this;
+    // Eloquent's Builder wraps the base builder's increment/decrement
+    // (`Builder::increment()` :1392-1405, `decrement()` :1407-1412): the value
+    // set goes through `addUpdatedAtColumn()`, so a MODEL query
+    // (`Post::query()->where(...)->increment(...)`) bumps `updated_at` where the
+    // raw `DB::table()` builder does not (#843). `timestampOwner` is the model
+    // the gate asks - the class here, replaced by the receiving instance when
+    // `Model::increment()` runs (Laravel's `setModel($this)`).
+    builder.timestampOwner = this;
+    const baseIncrement = builder.increment.bind(builder);
+    const baseDecrement = builder.decrement.bind(builder);
+    const withTimestamps = (extra) =>
+      addUpdatedAtColumn(this, modelUsesTimestamps(builder.timestampOwner), extra);
+    builder.increment = (column, amount = 1, extra = {}) => baseIncrement(column, amount, withTimestamps(extra));
+    builder.decrement = (column, amount = 1, extra = {}) => baseDecrement(column, amount, withTimestamps(extra));
     // Eager-loading + local-scope support on the returned builder.
     builder.eagerLoads = [];
     builder.countLoads = [];
@@ -1437,25 +1586,47 @@ export class Model {
     return this;
   }
 
-  async increment(db, column, amount = 1) {
+  async increment(db, column, amount = 1, extra = {}) {
     const ctor = this.constructor;
     // Laravel's incrementOrDecrement() (Model.php:1134-1163): the in-memory
-    // attribute is bumped and ONE atomic statement writes it
-    // (`set counter = counter + N`) - the row's other columns, and
-    // updated_at, are NOT touched (the old save() rewrote the whole row and
-    // bumped the timestamp). The answer is the affected-row count, not the
-    // new value.
-    const next = (Number(this.attributes[column]) || 0) + amount;
-    this.attributes[column] = next;
+    // attribute is bumped with PHP's own `+` (a non-numeric text column is a
+    // TypeError, NOT a silent 0 + N) and ONE atomic statement writes it
+    // (`set counter = counter + N`) - the row's other columns are not
+    // rewritten. The ELOQUENT builder adds `updated_at` to the statement's
+    // value set (`Builder::increment()` :1392-1405 -> `addUpdatedAtColumn()`),
+    // so the row's timestamp IS bumped; the kernel used to skip it, leaving the
+    // DB on the old timestamp while PHP moved it (#843). The answer is the
+    // affected-row count, not the new value.
+    this.attributes[column] = phpSumOperands(this.attributes[column], amount);
     let res;
     if (!this.exists) {
       // Laravel: a model that does not exist increments the whole table
-      // (`newQueryWithoutRelationships()->increment(...)`).
-      res = await ctor.query(db).increment(column, amount);
+      // (`newQueryWithoutRelationships()->increment(...)`). That query carries
+      // a FRESH model, so the timestamp gate is the CLASS default - the builder
+      // adds the timestamp itself.
+      res = await ctor.query(db).increment(column, amount, extra);
     } else {
+      // `$this->forceFill($extra)` followed by
+      // `array_merge($extra, array_intersect_key($this->getAttributes(), $extra))`:
+      // the extra columns are written with the model's OWN values.
+      const values = { ...extra };
+      const keys = Object.keys(extra);
+      if (keys.length) {
+        this.forceFill(values);
+        for (const key of keys) values[key] = this.attributes[key];
+      }
       const pk = ctor.primaryKey;
-      res = await ctor.withTrashed(db).where(pk, this.attributes[pk]).increment(column, amount);
+      const q = ctor.withTrashed(db).where(pk, this.attributes[pk]);
+      // Eloquent's `setModel($this)` on `newQueryWithoutScopes()`: the builder's
+      // timestamp gate asks the RECEIVING model, so an instance override
+      // (`$post->timestamps = false`) suppresses the bump.
+      q.timestampOwner = this;
+      res = await q.increment(column, amount, values);
     }
+    // Eloquent syncs the original of the incremented column (and the model's
+    // `$refreshes`) - the extra attributes stay dirty, and `updated_at` is not
+    // an in-memory attribute here: PHP's in-memory timestamp stays old while
+    // the row carries the new one.
     this.syncOriginalAttributes([column]);
     return res && typeof res.changes === 'number' ? res.changes : 0;
   }
@@ -1463,7 +1634,22 @@ export class Model {
   static async firstOrCreate(db, where = {}, extra = {}) {
     const found = await applyWhere(this.query(db), where).first();
     if (found) return found;
-    return this.create(db, { ...where, ...extra });
+    try {
+      return await this.create(db, { ...where, ...extra });
+    } catch (e) {
+      // Laravel's `firstOrCreate()` reaches `createOrFirst()`
+      // (Builder.php:1392-1405): a unique-constraint violation means the OTHER
+      // request won the race, so it queries once more and answers that row -
+      // rethrowing only when the where does not match it after all (probed on
+      // PHP 8.3 + 13.37: `createOrFirst(['slug'=>'s1','title'=>'second'])`
+      // against a row s1/first rethrows, `createOrFirst(['slug'=>'s1'])` answers
+      // the existing row). The kernel inserted straight through, so a lost race
+      // was a 500 (#846).
+      if (!isUniqueConstraintViolation(e)) throw e;
+      const raced = await applyWhere(this.query(db), where).first();
+      if (raced) return raced;
+      throw e;
+    }
   }
 
   static async updateOrCreate(db, where = {}, values = {}) {
@@ -1475,6 +1661,20 @@ export class Model {
     }
     return this.create(db, { ...where, ...values });
   }
+}
+
+// The unique-constraint violation `createOrFirst()` retries on
+// (Illuminate\Database\UniqueConstraintViolationException): SQLSTATE 23000 from
+// the driver. Both sqlite paths the kernel runs on raise SQLite's own wording -
+// `node:sqlite` answers "UNIQUE constraint failed: t.col" and D1 wraps the same
+// (its error carries the SQLITE_CONSTRAINT_UNIQUE code) - so the message is the
+// portable half, with the SQLSTATE as the fallback for a driver that only sets
+// `code`.
+function isUniqueConstraintViolation(err) {
+  if (!err) return false;
+  const text = String(err.message || err.error || err);
+  if (/unique constraint failed/i.test(text)) return true;
+  return String(err.code || '') === '23000';
 }
 
 function defaultForeignKey(Related) {

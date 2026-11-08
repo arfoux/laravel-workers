@@ -79,7 +79,16 @@ function newBag() {
 }
 
 function isBag(node) {
-  return node !== null && typeof node === 'object' && !Array.isArray(node);
+  // A bag is a PLAIN object (the containers PHP builds). A typed array, a Date
+  // or a class instance that a caller put inside is a LEAF: a Uint8Array's own
+  // keys are 0..n-1, so `normalizePhpArrays()` promoted an uploaded file's
+  // `bytes` into a plain Array and dropped the bytes themselves (#848).
+  return (
+    node !== null &&
+    typeof node === 'object' &&
+    !Array.isArray(node) &&
+    (Object.getPrototypeOf(node) === Object.prototype || Object.getPrototypeOf(node) === null)
+  );
 }
 
 function bagOrder(node) {

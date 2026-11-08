@@ -41,6 +41,23 @@ function quoteIdent(name) {
     .join('.');
 }
 
+/**
+ * `is_numeric($amount)` for the increment guard: an int/float (`NAN`/`INF` are
+ * PHP floats too, and the value is bound as-is) or a numeric STRING - leading
+ * and trailing whitespace allowed, one sign, a decimal point, an exponent. No
+ * hex (`is_numeric('0x1A')` is false in PHP 8), no separator, `''` no.
+ */
+const NUMERIC_AMOUNT = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function assertNumericAmount(amount, method = 'increment') {
+  if (typeof amount === 'number') return;
+  if (typeof amount === 'string' && NUMERIC_AMOUNT.test(amount.trim())) return;
+  const err = new Error(`Non-numeric value passed to ${method} method.`);
+  err.name = 'InvalidArgumentException';
+  err.phpClass = 'InvalidArgumentException';
+  throw err;
+}
+
 function isPlainObject(v) {
   return v != null && typeof v === 'object' && !Array.isArray(v);
 }
@@ -606,17 +623,43 @@ export class QueryBuilder {
     return { success: !!(res && res.success), changes: res?.meta?.changes ?? 0, meta: res?.meta ?? {} };
   }
 
-  async increment(column, amount = 1) {
+  // Laravel's base builder (`Query\Builder::increment()` :4495-4502 ->
+  // `incrementEach()` :4513-4526): the column becomes `col = col + N` and the
+  // `extra` values are ordinary bound SET entries. The BASE builder knows no
+  // model, so it never adds a timestamp - the Eloquent builder does
+  // (model.mjs, `Builder::addUpdatedAtColumn()`).
+  // Laravel's `incrementOrDecrement()` (`Query\Builder::incrementOrDecrement()`
+  // :4528-4560) opens with
+  // `if (! is_numeric($amount)) throw new InvalidArgumentException('Non-numeric
+  // value passed to increment method.')` - and `decrement()` (:4537-4544) throws
+  // the same guard with ITS OWN message ('Non-numeric value passed to decrement
+  // method.', probed on PHP 8.3 + 13.37). The kernel coerced with `Number()`, so
+  // a bad amount bound `NaN` and the row took NULL where PHP failed loud (#885).
+  async increment(column, amount = 1, extra = {}) {
+    assertNumericAmount(amount, 'increment');
     const params = [Number(amount)];
     let sql = `UPDATE ${quoteIdent(this.table)} SET ${quoteIdent(column)} = ${quoteIdent(column)} + ?`;
+    for (const [key, value] of Object.entries(extra || {})) {
+      // The assignment TARGET is the last dot segment - SQLite's own grammar
+      // (`SQLiteGrammar::compileUpdateColumns()` :330-346 takes
+      // `last(explode('.', $key))`), so the Eloquent builder's qualified
+      // `posts.updated_at` renders as `"updated_at" = ?` (a qualified target is
+      // a syntax error in SQLite).
+      sql += `, ${quoteIdent(String(key).split('.').pop())} = ?`;
+      params.push(value ?? null);
+    }
     sql += renderClauses(this.wheres, params);
     const stmt = this._prepare(sql, params);
     const res = await stmt.run();
     return { success: !!(res && res.success), changes: res?.meta?.changes ?? 0, meta: res?.meta ?? {} };
   }
 
-  async decrement(column, amount = 1) {
-    return this.increment(column, -Number(amount));
+  async decrement(column, amount = 1, extra = {}) {
+    // The guard runs BEFORE the negation: `-Number('abc')` is a number, so the
+    // throw inside increment() would never see the bad input - and PHP's message
+    // names the direction the CALLER used (`decrement`, probe on 8.3 + 13.37).
+    assertNumericAmount(amount, 'decrement');
+    return this.increment(column, -Number(amount), extra);
   }
 
   async updateOrInsert(where, values) {

@@ -287,6 +287,21 @@ function writeValue(value, out, opts) {
     writeValue(value.all(), out, opts);
     return;
   }
+  // A MessageBag is JsonSerializable (`jsonSerialize()` -> the message map), so
+  // `json_encode($validator->errors())` / a bag nested in a response writes
+  // `{"field":["msg"]}` - the 422 body of an API. The marker sits on the
+  // constructor, like the Collection's, because `instanceof` cannot be used.
+  if (value && typeof value === 'object' && value.constructor && value.constructor.__lwMessageBag) {
+    writeValue(value.jsonSerialize(), out, opts);
+    return;
+  }
+  // A ViewErrorBag keeps its bags in a PROTECTED property and is neither
+  // JsonSerializable nor Arrayable, so PHP answers `{}` (verified with the
+  // vendor classes) - not a "PHP object" error.
+  if (value && typeof value === 'object' && value.constructor && value.constructor.__lwViewErrorBag) {
+    out.push('{}');
+    return;
+  }
   const name = value?.constructor?.name || t;
   throw new PhpJsonError(`unsupported value (${name}) — PHP objects are outside the subset`);
 }
