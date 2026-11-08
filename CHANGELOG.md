@@ -2,6 +2,521 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The `Schema::table` deploy path is honest now
+
+`dist/schema.sql` is a snapshot of `CREATE TABLE` statements — correct for an
+empty database, and unable to add a column to one that already has the table.
+That made `deploy --schema=apply`, which `README.md` and `docs/CI.md` offered as
+the way out of schema drift, the tool's only silent dead end: on a live D1 the
+apply re-runs the CREATEs and fails on the first table that exists, and nothing
+in the build said so. The deploy code itself was already honest (it skips the
+schema when the D1 has tables, refuses `--yes` on drift, and its help text says
+the file is CREATE-only) — the docs contradicted it and the build was silent.
+
+The build now reads the migration files (`mutatingMigrations()` in
+`tools/schema-sql.mjs`; the SQLite snapshot cannot tell a later `ALTER` from the
+original `CREATE`) and lists the ones that mutate an existing table in the
+readiness footer as an ADVISORY line — "worth knowing (n)" — with the manual
+`npx wrangler d1 execute DB --command "ALTER TABLE ..." --remote` that a live D1
+needs. A green build stays green: a fresh D1 gets the final shape from the
+snapshot and has nothing to do. A mutation that lives only in `down()` is not
+reported (a deploy runs `up()`), so the framework's own default drops do not
+bury the real one. `README.md` and `docs/CI.md` now say what the deploy help
+always said: `--schema=apply` is CREATE-only.
+
+### Laravel's own FormRequest stub compiles: the hook's parameters are seeded by position
+
+Laravel's `form-request` generator writes `public function withValidator($validator)`
+— no type hint — and the hook body's usual second line,
+`$validator->after(function ($validator) { ... })`, has none either. An app
+written in that shape failed `LW002` at the class compiler, and until the guard
+landed the route around it shipped a handler that answered `500`. The parameter
+types were never actually unknown: Laravel calls the hook with the validator it
+built, and `Validator::after()` calls the callback with itself. Both are seeded
+from those signatures (by POSITION, and only for a `FormRequest`'s
+`withValidator` and only when the receiver is a validator the compiled body
+already knows — a written type still wins, and a plain class with a method of
+that name keeps failing loud).
+
+The release fixture's `HookedPostRequest` now uses the UNTYPED stub form, and
+the release gate stays **16/16 byte-identical** with it — the `flag=with-validator`
+step exercises the callback body, so the seeded type is proven end-to-end, not
+just at compile time.
+
+### An empty resource wrapper is not the same as no wrapper
+
+`ResourceResponse::wrapper()` is `get_class($this->resource)::$wrap`, a bare
+property read, so `JsonResource::wrap('')` is a wrapper that EXISTS and is
+empty — a different thing from `withoutWrapping()` (`null`). The kernel
+collapsed the two, so `wrap('')` answered `data` where Laravel answers the empty
+key. Probed against Laravel 13.37 through `ResourceResponse::wrap()`:
+`wrap('')` alone → `{"id":1}` (the truthiness test in
+`haveDefaultWrapperAndDataIsUnwrapped()` treats it as absent), with additional
+information → `{"":{"id":1},"meta":{"x":1}}` (the `?? 'data'` fallback only
+fires for `null`), and under `$forceWrapping` → `{"":{"id":1}}` (there the test
+is `!== null`). PHP's three separate questions — truthiness, `?? 'data'`, and
+`!== null` — are now asked separately.
+
+### The release fixture proves the FormRequest lifecycle — and the build stops when a hook cannot compile
+
+`shadow/fixture-app.mjs` (the app `publish.yml` replays before a tag) had no
+FormRequest at all, so the hook lifecycle — `prepareForValidation()` →
+`authorize()` → `withValidator()` → `after()` → `passedValidation()` — was never
+diffed against real PHP on the release path: the P1 regression that made the
+hooks never run (`#873`/`#874`) slipped through a fixture whose only validation
+was `$request->validate([...])`, which is a `Request` method, not the trait the
+lifecycle lives in. The fixture now carries `App\Http\Requests\HookedPostRequest`
+(a prepare hook that merges `Str::slug()`, rules, a `withValidator()` and an
+`after()` that each refuse a flag, `authorize()` that denies on demand, and a
+`passedValidation()` that merges `passed`) plus its controller and a
+`POST /hooked-request-demo` route, and `shadow/scenarios/fresh-app.mjs` walks it
+in four steps: 200 with both merged values, 422 with each hook's own message,
+and 403 for the denial. Measured: **16/16 byte-identical, coverage 100%**.
+
+Replaying that fixture found the second half of the gap. `build.mjs` asserted
+"a hook body the class compiler cannot compile fails that class at compile time,
+so no route-level guard is needed here" — it was not true. A FormRequest whose
+hook the class compiler refuses (Laravel's own `withValidator($validator)`
+shape, without the validator type hint) failed *the class*, and the build still
+emitted the route's handler: `rt.formRequest()` could not build the instance, so
+EVERY request to that route answered `500 {"message":"Server Error"}` while the
+build printed "READINESS: RUNS ON THE EDGE — every route is served by a compiled
+handler" and exited 0 under `--strict`. The route now reports the class's own
+error: it is skipped with that reason, lands in the partial list (so `--strict`
+fails: "BUILD FAILED: coverage check failed"), the readiness line says
+"DOES NOT RUN ... no handler", and nothing is written to `dist/`. (The untyped
+`withValidator($validator)` shape is no longer one of those refusals — its
+parameters are seeded from Laravel's own signatures, see above.)
+
+### Audit hygiene: a stale corpus metric, two dead branches, a tautological test, a doc row
+
+Six small residues of the line-by-line sweep, all internal (no request answers
+differ): the corpus manifest claimed 54 bytes for `str-trim-case` while its
+expectation is 78 — the only stale entry of the 55 (`#863`); `build.mjs` carried a
+`ported` flag that was a literal `false` beside a `continue` that already covered
+it (`#871`); `session.test.mjs`'s oracle helper took a `requireApp` option no
+caller passed and which precedence made inert (`#869`); the kernel test titled
+"the lifecycle runs the hooks in Laravel's order" assembled that order itself,
+while the real lifecycle order is pinned in
+`compiler/tests/formrequest-lifecycle.test.mjs` — it now pins what the kernel
+actually owns, that `fails()` runs the `after` callbacks the request registered
+(`#868`); two permanent boundaries reached `COMPILED.md` §6, where the other
+fail-loud deviations live: a field named like the error bag's own methods
+(`#870`), and the `JsonResponse` subset the response object of a compiled
+`withResponse()` carries (`#854`); and `docs/PROCESS.md` §2 listed five of the
+six files of the `parity-oracle` job — `tools/tests/routes-oracle-parity.test.mjs`
+was missing, so the local mirror looked complete while it was one file short
+(`#877`; that file stays out of `npm test` on purpose, because it boots the app).
+
+### A ported guard answers `getLastAttempted()`
+
+PHP records the user a credential check resolved to BEFORE it checks the password
+(`SessionGuard.php:328`: `$this->lastAttempted = $user = $this->provider->retrieveByCredentials(...)`;
+`:438` for `attempt()`, `:475` for `once()`), so `getLastAttempted()` answers even
+when the login failed. The ported guard never assigned the field, so every app
+that read `Auth::guard('seal')->getLastAttempted()` — to log a failed login, to
+rate-limit by account — always got `null` (#861). The guard now records it:
+`once()`/`attempt()` store the user they resolved, and `validate()` accepts the
+user object from the port as an alternative to `true` (the port is the half that
+knows which user the credentials named, and calling `user(ctx)` here would have
+poisoned the per-request memo, turning a failed attempt into a logged-in request).
+The port contract in `kernel/auth.mjs` says so. `kernel/tests/auth.test.mjs` pins
+both paths.
+
+### A resource's `withResponse()` runs, and `jsonOptions()` reaches the encoder
+
+`ResourceResponse::toResponse()` hands the app's hook the response it just built
+(`ResourceResponse.php:46-49`; `PaginatedResourceResponse.php:38-41` runs the same
+branch) and passes `$this->resource->jsonOptions()` as the fourth argument of
+`response()->json(...)` (`:44`). The kernel did neither: `withResponse()` was
+never called, so a hook that adds an API header, rewrites the status or wraps the
+payload was a silent no-op (#854), and the JSON flags an app asked for were
+dropped (#855). The hook now runs last and receives a response carrying the
+`JsonResponse` subset an override actually calls (`header()`, `withHeaders()`,
+`setStatusCode()`, `getStatusCode()`, `setContent()`, `getContent()`, `getData()`,
+`setData()`), whose methods mutate the same fields the worker reads; the flags go
+through the kernel's flag-aware encoder, so a flag the port cannot reproduce
+fails loud instead of writing a body PHP never would have. The compiler followed:
+`JsonResponse $response` is an allowed parameter, `$response->header(...)` and the
+seven other methods compile, the base's UNTYPED second parameter is named by
+position for `withResponse` only, and anything else stays an `LW002` build error
+rather than a runtime `TypeError`. `kernel/tests/resources.test.mjs` and
+`compiler/tests/resource-class.test.mjs` pin the hook, the pretty-printed body
+(PHP's own `json_encode($payload, 128)`) and the fail-loud flag.
+
+### A date attribute's dirty check compares PHP's canonical spelling, not the column text
+
+Eloquent runs the date branch of `originalIsEquivalent()` BEFORE the primitive cast
+branch (`HasAttributes.php:2403-2405`: `isDateAttribute($k) || isDateCastableWithCustomFormat($k)`
+→ `fromDateTime($value) === fromDateTime($original)`), so a column read back as
+`2024-01-02 03:04` compares EQUAL to the canonical `2024-01-02 03:04:00` a `set()`
+stores — PHP answers `isDirty() === false`. The kernel fell through to the primitive
+comparison, saw two different strings, and issued a phantom `UPDATE` plus an
+`updated_at` bump on every row whose timestamp column carried second-granularity
+text (#845). A date attribute now takes Laravel's branch first: both sides go
+through `fromDateTime()`, which also reproduces the two sharp edges — an
+unparseable original throws `InvalidFormatException`, and a numeric original reads
+as a UNIX timestamp. Probed on PHP 8.3 + 13.37 through the real methods;
+`kernel/tests/model.test.mjs` pins clean, epoch and throw.
+
+### `firstOrCreate()` retries a lost race instead of answering 500
+
+`Builder::firstOrCreate()` is `createOrFirst()` (`Builder.php:1392-1405`): a unique
+`INSERT` that collides means another request won, so it queries `where(...)->first()`
+once more and answers that row, rethrowing only when the where does not match it.
+The kernel inserted straight through, so the loser of a race on a unique key
+answered a 500 (#846). `firstOrCreate()` now retries once when the driver raises a
+unique-constraint violation (SQLSTATE 23000 / `SQLITE_CONSTRAINT_UNIQUE`, matched by
+`isUniqueConstraintViolation`) and rethrows the original error when the retry finds
+nothing; any other error class still propagates untouched. Probed on PHP 8.3 + 13.37:
+`createOrFirst(['slug' => 's1', 'title' => 'second'])` against an existing
+s1/first row throws, `firstOrCreate(['slug' => 's1'])` answers the existing row.
+`kernel/tests/db.test.mjs` pins both branches.
+
+### `timestamp` casts and `asDateTime()` read a numeric string the way Carbon does
+
+Carbon 3's `createFromTimestamp()` is not an integer cast: it splits the input on
+every non-digit/non-dot run and ADDS the chunks (`1e400` → `1 + 400` = 401 s,
+`1e10` → 11, `-1e10` → -11), formats a float through `number_format($v, 6)` first
+(so `INF`/`NAN` leave no digit and answer epoch 0), and hands the result to
+`rawCreateFromFormat('U u', …)`, which throws `InvalidFormatException` once the
+second count reaches 15 digits (`100000000000000` throws while `99999999999999`
+answers that many seconds). The kernel read a numeric string with `Number()` and
+truncated, so `applyCast('1e400', 'timestamp')` was `Infinity` where PHP answered
+401, and a 15-digit value raised nothing (`#826`). Probed on Carbon 3 + PHP 8.3
+through the real `asTimestamp()`/`asDateTime()`; `kernel/tests/model.test.mjs`
+pins the values.
+
+### The policy compiler matches the dumped FQCN, not the first class in the file
+
+A PHP file may legally declare several classes, so the file the policy dump names
+can open with a class that is NOT the policy. The compiler took the first `class`
+node and compiled it, so the abilities silently ran another class's methods; a file
+that declares no class by the dumped name compiled nothing and answered through it
+(`#835`). The short name from the dump's FQCN now selects the class, and a file
+without it fails the build loud. `compiler/tests/policy.test.mjs` covers both.
+
+### `decrement()` names itself in the non-numeric guard
+
+`Query\Builder::decrement()` runs the same `is_numeric($amount)` guard as
+`increment()` with its OWN message — `'Non-numeric value passed to decrement
+method.'` (`Query/Builder.php:4537-4544`) — while the kernel threw the increment
+text for both directions (a comment asserted the messages were shared; a probe on
+PHP 8.3 + 13.37 shows `->decrement('votes', 'abc')` saying "decrement method"). The
+guard takes the direction now, and `kernel/tests/db.test.mjs` pins both messages.
+
+### `preventRequestForgery(originOnly:, allowSameSite:)` reaches the worker
+
+Laravel's middleware configurator (`Foundation/Configuration/Middleware.php:605-612`)
+sets two STATICS on `PreventRequestForgery` — `$originOnly` and `$allowSameSite` —
+which the middleware reads in `hasValidOrigin()` (same-site at :151, origin-only at
+:155) and `shouldAddXsrfTokenCookie()` (:205). Both config dumps computed them and
+wrote `csrf.origin_only` / `csrf.allow_same_site`, and NOTHING in the runtime read
+either key: an app that asked for origin-only verification still ran the token check
+and still got the `XSRF-TOKEN` cookie. The kernel applies both flags from the dumped
+config now, in the same one-shot place PHP's boot does, so
+`preventRequestForgery(originOnly: true)` answers PHP's `OriginMismatchException`
+(a 500) on a same-site request instead of a 419, and stops adding the XSRF cookie.
+`kernel/tests/http.test.mjs` pins the four outcomes (default refusal, `allowSameSite`
+`200`, `originOnly` `500` + no cookie, same-origin unaffected) and
+`tools/tests/middleware-transform.test.mjs` pins the app's call reaching the state
+that the dump serialises.
+
+### The `_method` override reads the form bag, and `url.intended` follows the referer
+
+`Request::getMethod()` (Symfony http-foundation 7.4, `Request.php:1263-1300`) takes
+the override from `$this->request` — Symfony's FORM bag, which only a urlencoded or
+multipart body fills — with the query as the default:
+
+```php
+$method = $this->headers->get('X-HTTP-METHOD-OVERRIDE');
+if (! $method && $httpMethodParameterOverride) {
+    $method = $this->request->get('_method', $this->query->get('_method', 'POST'));
+}
+```
+
+The kernel read `_method` from whatever bag it had parsed — for a JSON request that
+is the decoded body, not the form bag — so `Accept: application/json` plus
+`{"_method": "PUT"}` (an SPA convention) answered PUT and selected a PUT route where
+PHP answers POST and runs the POST one. A live PHP 8.3 probe (13.37) pinned the whole
+matrix, and the kernel follows it: the form bag wins over the query, the header
+counts only when PHP-true (a `0` header falls through), a lowercase value is
+upper-cased, `GET` is an ordinary override, and `InputBag::get()`'s
+`BadRequestException('Input value "_method" contains a non-scalar value.')` — a 500
+Laravel does not map — is raised for `_method[]=PUT` in EITHER bag. (`_method=""`
+leaves PHP with an empty method string whose routing outcome the fixture app cannot
+serve, so the kernel keeps its POST for that one case; recorded as a known gap.)
+
+`Redirector::guest()` stores the intended URL through `UrlGenerator::previous()`,
+which asks the REQUEST's referer first, then `_previous.url` in the session, then
+floors at `to('/')` — and a non-GET request is what reaches that path, because a
+routed GET intends its own URL (`UrlGenerator::full()`). The kernel asked the session
+first and stored nothing at all when both were absent, so `redirect()->intended()`
+fell back to its default instead of the root. `kernel/tests/http.test.mjs` pins both
+matrices: four guest cases end to end (the intended URL read back out of the
+`sessions` row) and the override table.
+
+### The config-key gate asks the runtime's question, exactly
+
+`rt.config(k)` answers only an exact own key of the dump
+(`hasOwnProperty(configCtx, k)`), and the build's gate is meant to refuse a
+compiled key the edge cannot answer. It accepted any key whose PREFIX was in the
+dump, so `rt.config("a.b.c")` passed whenever `a.b` existed — and a nested group
+object (`translations` is dumped whole) hid every key under it. The gate compares
+the exact dotted key now, the same question the runtime asks, so those ship as a
+build error instead of a 500. A key read through a NON-LITERAL call
+(`config('app.' . $x)`) still cannot be checked at build time: the runtime answers
+the dump's value, the caller's default, or throws
+`config: missing key … with no default` — never a silent `null`, which is what the
+stale build comment claimed.
+
+### A bracketed file name is `$_FILES`, and `all()` merges the uploads in
+
+PHP registers a FILE name through the same `php_register_variable_ex()` rule as a
+field name, so `name="post[image]"` is `$_FILES['post']['image']` and
+`$request->file('post.image')` answers the upload. The parser carried its own walk
+whose shape came from the NEXT bracket key, so a map name built `files.post = []`
+and the part was dropped: `hasFile('post.image')` was false, `allFiles()` was
+`{post: []}`, and a valid form failed `required` (422) or the controller read null
+and 500'd. The file tree now goes through the same registration as the fields
+(`php-bag.mjs`), measured against a live PHP 8.3 server (`php -S` + `curl -F`, the
+real rfc1867 parser): `post[image]` → a map, `a[b][c]` → nested maps, `k[0]` → a
+list (`json_encode` emits `[..]`), `x[y][]` → a list under `x`.`y`, `0[]` → the
+whole bag a list, and a dot or a space in the BASE name becomes `_` (`a.b` →
+`$_FILES['a_b']`, a second silent miss the old walk had). 22 lines of bespoke
+bookkeeping are gone.
+
+Three neighbours came out of the same probe:
+
+- `hasFile()` is `array_any(array_wrap($this->file($key)), fn ($f) => $f instanceof
+  SplFileInfo && $f->getPath() !== '')` (`InteractsWithInput.php:218-236`), so a map
+  answers TRUE where its own values are files (`hasFile('post')` = true,
+  `hasFile('a.b')` = true) and FALSE where a further map sits in between
+  (`hasFile('a')` = false). The kernel called `isValid()` on whatever came back, so
+  `hasFile('post')` for a nested name THREW.
+- `all()` is `array_replace_recursive($input, $this->allFiles(), $input)` (:87-105):
+  the files merge in recursively and a replaced key keeps its original position, so
+  `all()['post']` carries the field AND `post[image]` (`{"title":..,"image":..}`).
+  The shallow union answered `{title}` only — the upload vanished from `all()`,
+  which is what `Model::create($request->all())` reads.
+- The file tree was built with `out[key] = ..`, which SETS THE PROTOTYPE for a field
+  named `__proto__` (ordinary data in PHP): the upload disappeared from
+  `Object.keys()`. The walk goes through `ownSet` now, and `isBag()` only accepts a
+  PLAIN object — a `Uint8Array` inside a bag is a leaf, not a container (its keys
+  are `0..n-1`, so the list promotion rebuilt an uploaded file's `bytes` as a plain
+  Array and dropped the bytes).
+
+`file()`, `hasFile()` and the input union walk with `data_get()`'s PHP-array rule
+(a dotted key descends into a list's index too, `k.0`), which the general rung
+reserves for JS arrays. `kernel/tests/upload.test.mjs` pins the tree, the
+`hasFile` table, the merge and the `__proto__` case on real request bodies.
+
+### `increment()` bumps `updated_at`, and a text column is PHP's `TypeError`
+
+Eloquent's `Builder::increment()`/`decrement()` (:1392-1412) route the statement's
+value set through `addUpdatedAtColumn()` (:1448-1479), so `$post->increment('votes')`
+and `Post::query()->where(...)->increment('votes')` both move the row's timestamp
+in Laravel. The kernel wrote `SET votes = votes + N` alone — the row kept the old
+timestamp while PHP moved it — and its own comment claimed Laravel left
+`updated_at` untouched. The Eloquent-side builder adds the timestamp now, gated by
+`usesTimestamps()`: the CLASS for a query, the RECEIVING instance for
+`$post->increment()` (Laravel's `setModel($this)`), so `$post->timestamps = false`
+suppresses the bump exactly as it does in PHP. The raw `DB::table()` builder still
+never touches it, and `$extra` columns are honoured (`forceFill($extra)` plus the
+SET list) instead of being dropped silently.
+
+The in-memory bump is PHP's own `+`: a non-numeric text column is now a
+`TypeError: Unsupported operand types: string + int` (the kernel computed `0 + N`
+and wrote the row anyway), with the operand-ordered message PHP produces — the
+coercion is the kernel's existing `phpNumeric` canon, so the numeric-prefix warning
+case (`'5a' + 1` → Laravel's `ErrorException`) still walks its own path.
+
+Probed on PHP 8.3.30 + 13.37 on real SQLite rows: the class gate, the instance
+gate, a caller-supplied `updated_at`, `$extra`, the raw builder and the text-column
+`TypeError`. `kernel/tests/model.test.mjs` pins all eight on real rows. Known
+remainder (documented, not fixed): the amount itself is still coerced with
+`Number()` where Laravel's base builder raises
+`InvalidArgumentException('Non-numeric value passed to increment method.')` — see
+`notes/PLAYBOOK.local.md` #885.
+
+### `mimes:jpeg` accepts a real JPEG (PHP merges the two names)
+
+`ValidatesAttributes::validateMimes()` adds `jpg` AND `jpeg` to the parameter list
+as soon as either name appears, because Symfony's `guessExtension()` answers `jpg`
+for `image/jpeg` — so `mimes:jpeg` accepts a JPEG in Laravel. The kernel compared
+the parameter list as written and rejected every such upload (a 422 for a valid
+file), and both the code comment and the test comment claimed PHP behaved the same
+way. The kernel now merges the pair exactly like the vendor, the stale comments
+are gone, and the test carries a real 1x1 JPEG fixture (fail-before: one test).
+
+### An API resource's `with($request)` receives the request
+
+`ResourceResponse::toResponse()` calls `$this->resource->with($request)`, but the
+kernel's `resourcePayload()` invoked the compiled hook with no argument, so every
+`with(Request $request)` override ran with `$request === undefined` (a 500 the
+moment it read `$request->path()`). The request is passed through now, and the
+compiler test whose name claimed it "takes the request" no longer ignores
+`$request` inside its own fixture (fail-before: "Cannot read properties of
+undefined (reading 'path')").
+
+### PHP's date grammar: a named month resets the clock, `month year` reads, a wall clock is bounded
+
+`phpRelativeTimestamp()` reads the relative shapes PHP's `strtotime()` accepts;
+three families were off (every value below probed against PHP 8.3.30 with a frozen
+base):
+
+* a named month with no clock anywhere answers midnight — `june` is June 15
+  00:00 and `june 5` is June 5 00:00, not today's 14:30:45; `first day of this
+  month` keeps the clock, a named month does not;
+* a four-digit year reads: `june 2027`, `26 june 2026`, `2027 june`, `feb 29
+  2024` (with or without a trailing clock);
+* a WEEKDAY or a day word moves the DAY against the fields the REST of the string
+  sets: `monday june 5` is June 8, `monday june 2027` is 2027-06-07, `tomorrow
+  june 5` is June 6 — while the clock reset stays where the token sits (`3pm sun`
+  is Sunday 00:00, `sun 3pm` is 15:00).
+
+The compact digit runs and bare wall clocks are bounded like PHP's: an hour of 24
+rolls into tomorrow but 25 does not read; a minute past 59 does not read (`99:99`
+used to compute June 19 04:39); a four-digit run that is not a clock is a YEAR
+(`1299` is the year 1299); an `YYYYMMDD` run needs a real month (`20261301` is
+unreadable) while an impossible day still overflows (`20260230` is 2026-03-02); a
+lone military-zone letter is "now read in that zone" (`b` is now-2h, `n` now+1h,
+`j` unreadable). Five rows of the pinned table in `kernel/tests/validator.test.mjs`
+carried values PHP never answers (`june`, `5 june`, `june 5`, `december`, `first
+day of january`, `b`); they carry PHP's values now, and a new test pins the digit
+runs through the `before:`/`after:` path.
+
+Known remainder, left as a documented divergence rather than a half-emulation of
+PHP's yacc grammar: the order-dependent compositions PHP refuses (`june 5 noon`,
+`june 5 3pm`, `5 june 10:30`, `2027 june 5`) still read, and a negative day/year
+number (`june -1`) still does not — see `notes/PLAYBOOK.local.md` (#882).
+
+### A FormRequest hook compiles again — and the build stops refusing it
+
+The class compiler compiles a `FormRequest` subclass like any other app class and
+the runtime's lifecycle (`rt.formRequest`) calls its hooks in Laravel's order, but
+the build handed the runtime NO hook list: the controller META carried `{rules,
+messages, attributes}` only. Every hooked request therefore took the rule-only
+path — a 200 where the app's `authorize()` denies (403), a 200 where its
+`withValidator()` or `after()` rejects (422), and no `passedValidation()` — and a
+second, redundant guard refused the ROUTE first with "the class compiler refuses
+FormRequest subclasses" (it does not), so the route was never compiled at all.
+
+`build.mjs` puts `hooks` back into the META, and the `validator()` hook stays the
+single refusal — owned by the dump (LW003), which is the code that can see the
+app's own factory. The constructs shadow fixture replays all four hooked steps
+byte-identical (was five unexplained), and `COMPILED.md` no longer claims the
+limit.
+
+### The config fold's `switch` compares with PHP's `==`, and a string offset is a BYTE offset
+
+Two fold answers that differed silently from PHP 8.3's:
+
+* `switch` compared with JavaScript's `==` whenever the caller had not handed it
+  a comparison function — and nobody did. So `switch ('') { case 0: … }` took the
+  `case` and `switch (null) { case 0: … }` did not, where PHP 8 answers the
+  opposite for both. The fold now uses the same `looseEq` canon the expression
+  path uses for `==` (`kernel/php-loose-eq.mjs`), imported directly so a caller
+  cannot forget it;
+* a STRING offset ignored PHP's negative-offset form (`'abc'[-1]` is `'c'`, PHP
+  7.1+) and indexed UTF-16 code units where PHP indexes BYTES: on `'é'`, PHP's
+  `[0]` is the lone byte `"\xC3"`, which no JS string can carry. Negative and
+  out-of-range offsets now answer what PHP answers, and a NON-ASCII string offset
+  is refused by name instead of answering a different character (or `''`).
+
+### `LW_VENDOR_FETCH_TIMEOUT_MS` must be a number, and says so
+
+Anything but a positive finite number used to reach `AbortSignal.timeout()`,
+which throws a `RangeError` that the download's retry loop read as a transport
+failure — three attempts, and the message named a "delay", never the variable.
+The value is now validated where it is read.
+
+### A config file the builder cannot execute now fails the build
+
+The build-time config fold (`tools/static.mjs` + `tools/config-script.mjs`)
+executes each `config/*.php` and dumps what it answered. Two holes let a
+**plausible but wrong** config reach the edge instead of a loud one:
+
+* a `break`/`continue` in a config file escaped the statement walker as a thrown
+  `Control` object, so `loadConfig()` reported the group as
+  `<file>: [object Object]` and **lost every key of it** with no failure — PHP
+  booted with the file's values, the compiled worker with Laravel's defaults;
+* a construct the walker does **not** model (`static $n`, `try`/`finally`,
+  `foreach ($a as &$v)`, `foreach ($rows as [$name, $n])`, an expression
+  statement such as `sort($a)`) left the file's own state already diverged from
+  PHP's, and only the single key it fed was dropped.
+
+Now: a refusal in the statement path **poisons the file** — `loadConfig()`
+returns an `error` naming the file, the line, the construct and the root cause,
+the group is not folded at all, and `tools/config-dump.mjs` **exits non-zero**
+(`error` used to be destructured and never read, so a config that failed to fold
+silently produced a dump). A refusal at **key** level (`'div' => intdiv(7, 2)`)
+is unchanged: it stays a named drop in the fold report, because the documented
+contract is that the compiled worker answers `null` for that key.
+
+Three value bugs in the same path are fixed with it, each pinned by the PHP 8.3
+oracle in `tools/tests/config-eval.test.mjs`:
+
+* `$a[] = v` on a keyed array took `Object.keys().length` as the new key:
+  `['a' => 1, 'b' => 2]; $a[] = 3;` wrote key `2` where PHP writes `0`
+  (`nextFreeElement` is the highest integer key + 1);
+* `unset($a[1])` on a LIST ran `splice()` (re-indexing every later element) and
+  left the key in the `__lwOrder` marker, so a later `$a[] =` wrote the wrong key
+  and the dump could carry a phantom `"k": null`; PHP leaves a **hole**;
+* `$a['k'] ??= $v` with the key absent fell through to the `??` operator canon
+  (no such operator) and refused, instead of assigning the value PHP assigns.
+
+### The build-time config fold is pinned by a PHP 8.3 oracle
+
+`tools/php-funcs.mjs` has always claimed "a function that IS implemented must
+answer exactly what PHP 8.3 answers (pinned by `tools/tests/config-eval.test.mjs`
+against the PHP oracle)" — and that file, plus the `fixtures/config-eval/oracle.php`
+its corpus documents, did not exist. The corpus (189 expressions + 32 named
+refusals) had no runner, so nothing pinned the fold at all.
+
+`tools/tests/config-eval.test.mjs` now runs both halves:
+
+* **expressions** — every corpus expression is evaluated by real PHP and by the
+  fold, and compared on value AND array key order; every listed refusal is
+  checked to refuse *with its reason* (a silent `undefined` cannot come back
+  unnoticed). Two expressions answer what the EDGE needs rather than what the
+  build host's PHP does (`extension_loaded()` is `false` for every name: the
+  compiled rung is JavaScript), and those are pinned explicitly in the corpus as
+  `edgeAnswers` — a decision, not an accident;
+* **statements** — `fixtures/config-eval/app/` is folded and `include`d by PHP,
+  then compared **byte for byte** through the kernel's own `phpJsonEncode()`,
+  which covers what a single expression cannot: `$a[] =`, `unset()`, key order,
+  loops, closures, `break 2`/`continue 2`.
+
+The PHP half SKIPS with its reason when no `php` is on PATH (`LW_PHP` names one),
+so `npm test` stays green on a machine without PHP — and `tools/oracle-ran.mjs`
+(which fails on a skipped oracle test) now includes this file, so the
+`parity-oracle` CI job runs it for real instead of skipping green.
+
+### PHP 8's operator precedence reaches the APP path, and a declaration is inert
+
+The PHP 8 precedence fix for mixed `.`/`+ -`/`<< >>` chains (php-parser 3.7 still
+nests the PHP 7 tree, where `.` bound tighter than `+`) was applied on ONE parse
+entry — `parsePhpSource()` — while the paths that actually read an app used a raw
+`phpParser.parseCode()`: `loadConfig()` (the config fold), a `require`d config
+file, `returnExpr()`, the facade/route scans, and both `tools/routes-dump.mjs`
+and `tools/schedule-dump.mjs`. A config file writing `$x = 1 . 2 + 3;` therefore
+still folded to the integer `15` where PHP 8 answers the string `'15'` — a
+silently wrong value in `dist/src/config.generated.mjs`, with no drop and no
+error. `tools/static.mjs` now parses through one `phpParse8()` helper, exports
+`renestMixedChains()`, and the two dump tools re-associate their own trees.
+Pinned against the oracle by four new fixture cases, including `'a' . 1 << 2`
+(`'a4'`; the transpiler refuses `<<`/`>>` outright, so the shift form is
+fold-only).
+
+A bare DECLARATION in a config file (`function`, `class`, `interface`, `trait`,
+`enum`, or a file-level `const`) used to poison the whole group: PHP registers
+the name and runs nothing, but the statement walker refused the statement. A
+declaration is inert now — `fixtures/config-eval/app/config/declarations.php`
+folds byte-identically to what PHP `include`s — while USING what it declares
+still fails loud and by name (`refused-app/config/declared_call.php` reports
+`lw_call_helper()`), per the poison rule above.
+
 ### A signed number in an app config group reaches the edge again
 
 `tools/static.mjs` (`evalConfigExpr()`) never had a `unary` branch, and
@@ -44,6 +559,85 @@ stop (`would STOP: the schema cannot be verified`), the interactive prompt is
 unchanged, and a workflow that relied on the old silent skip adds `schema: skip`
 (its `--skip-schema`). The fake-Wrangler integration suite covers both the
 refusal (no config, state or deploy touched) and the `--skip-schema` escape.
+
+### `dist/schema.sql` ships the unique indexes, not just the tables
+
+Laravel's schema builder writes `->unique()` and `->index()` as **separate**
+`CREATE [UNIQUE] INDEX` statements, never as constraints inside the table DDL.
+`build.mjs` rendered `dist/schema.sql` from the snapshot's `table.sql` alone, so
+every deployed D1 got the tables and **none of the indexes**: `users.email` lost
+its `UNIQUE`, and nothing said so — the dump line, the READINESS footer and the
+deploy all counted tables only. A duplicate email inserted through the compiled
+worker would have been accepted where PHP's own database refuses it.
+
+`tools/schema-compile.php` now carries each named index's own statement into the
+snapshot (`index.sql`; it was already read for the build-time SQLite sandbox),
+and the render moved to `tools/schema-sql.mjs` — tables first, then the indexes
+(`d1 execute` runs the file statement by statement, so an index before its table
+aborts the apply). SQLite's own auto-index for a `UNIQUE`/`PRIMARY KEY` declared
+*inside* the table statement has no SQL of its own and is left out; emitting it
+again would fail with `index … already exists`. `tools/tests/schema-sql.test.mjs`
+pins both the emission and that exclusion. Verified on the 10-table fixture: 8
+index statements (2 UNIQUE) now travel with the 10 tables, and applying the file
+to a fresh SQLite creates all of them with no error.
+
+### `array_map()` over one array keeps PHP's keys in the config fold
+
+`tools/php-funcs.mjs` folded `array_map($cb, $arr)` to a plain JS list. PHP
+**preserves the source keys** when exactly one array is passed — probed on 8.3.30:
+`array_map($f, ['k' => 1, 'm' => 2])` is `{"k":2,"m":4}`, `array_map(null, [5 => 'a'])`
+is `{"5":"a"}`, and a mixed array keeps both the `0` and the string key in PHP's
+order. An associative config array folded through `array_map` therefore reached
+the edge **re-keyed** (and `array_map(null, $a)` renumbered a sparse one) with no
+drop and no error. It goes through the same `listOrObject()` idiom
+`phpArrayFilter()` already used; five corpus expressions pin the value and the
+key order against the PHP oracle.
+
+### A shell-shaped `LW_APP_ROOT`/`PHP_BIN` no longer dumps an empty artifact
+
+`tools/config-dump.mjs`, `tools/php-runtime.mjs` and `tools/vendor-lite.mjs`
+normalised the Git-Bash/MSYS path form (`/c/Users/me/app`) since #401/#417, but
+the other entry points that take `LW_APP_ROOT` read it raw: `join('/c/Users/me/app',
+'artisan')` resolves to `<cwd-drive>:\c\Users\...`, `existsSync` says no, and the
+dump came out **empty with exit 0**. Probed live before the fix on
+`tools/class-dump.mjs` — the same command with the native spelling printed the
+full class dump, the POSIX spelling printed `{"classes":{}}` and exited 0.
+
+One shared helper (`tools/native-path.mjs`) now does the mapping for every
+consumer — `class-dump`, `constants-dump`, `event-dump` (positional *and* env),
+`model-dump`, `policy-dump`, `routes-dump`, `schedule-dump`,
+`ascii-map-check`, `facade-count-check`, `validation-messages-check` — and the
+three tools that carried their own copy now import it. `/cygdrive/c/...` (MSYS2
+with the cygdrive prefix) is folded too, and `PHP_BIN` gets the same treatment in
+`check-syntax`, `make-html-entities`, the two oracle checks and the `verify`
+command, where a POSIX `PHP_BIN` used to die on `spawnSync ... ENOENT`.
+`tools/tests/native-path.test.mjs` pins the mapping and the app-root resolution.
+
+### The pack gate walks the import graph instead of a remembered list
+
+`tools/pack-gate.mjs` asserted that a hand-written 23-entry list was in the
+tarball. That list was **not closed under the import graph**: the two entry
+points the package actually runs (`build.mjs` and `bin/laravel-workers.mjs`)
+reach 61 modules, 38 of them unlisted, so the check could only ever confirm what
+somebody had already remembered. A module the build imports but
+`package.json.files` excludes would have shipped as a `MODULE_NOT_FOUND` in a
+real app — the failure the gate exists to prevent.
+
+The gate now derives what it checks: it walks relative imports and `require_once
+__DIR__ . '/x.php'` from the entry points, follows the files those name as
+literal `join(pkgDir, …)` paths (the PHP helpers and dump scripts the build
+spawns, and `src/worker.mjs`, which it copies), and requires every file it
+reaches — **104** of them today, up from 23 checked entries. Two rules keep it
+honest: a path anchored on the user's app (`join(appDir, …)`) is not this
+package's file, and a path inside an `existsSync()` probe is deliberately
+optional (deploy and doctor run their fixtures only when the repo has them).
+
+Evidence of the hole, on one tarball with `"!tools/order-json.mjs"` added to
+`files`: the previous gate printed `pack-gate OK: 23 build/CLI modules … shipped`
+and exited 0, the new one fails with `tools/order-json.mjs (loaded at runtime)`
+— a module `tools/config-dump.mjs` imports and the build spawns.
+`tools/tests/pack-gate.test.mjs` pins the walk, its two rules and the paths it
+must reach in this repo.
 
 ## v0.4.10 — a rendered view fetches its stylesheet from the app, and the brand surfaces go live (2026-11-06)
 

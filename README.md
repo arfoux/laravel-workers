@@ -250,7 +250,7 @@ When the D1 already has tables, `deploy` will **not** apply the schema silently.
 - `--skip-schema` always skips. `--schema=apply` always applies, even with tables; the two flags conflict.
 - A failed table-count query stops the run (exit 1) instead of assuming the D1 is empty.
 
-`dist/schema.sql` is generated `CREATE TABLE` DDL, not an idempotent migration: applying it to a database where those tables already exist can fail with `table "x" already exists`. The guard prevents silent re-application, not a data wipe.
+`dist/schema.sql` is generated `CREATE TABLE` DDL plus the `CREATE [UNIQUE] INDEX` statements Laravel declares separately (`->unique()` / `->index()`), not an idempotent migration: applying it to a database where those tables already exist can fail with `table "x" already exists`. The guard prevents silent re-application, not a data wipe.
 
 ### Level 4 — reuse one specific database, keep its data
 
@@ -326,7 +326,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 - Mode 2/3 with a `wrangler.jsonc` that has no bindable D1 entry (no `d1_databases` array, a placeholder without a `database_name`, or no entry for the resolved name) → fails before creating a database.
 - `wrangler.jsonc` is not valid JSONC, has a duplicate/ambiguous `name` or D1 entry, or an invalid `name` → stops before writing; the file is left untouched.
 - A database table count cannot be read → stops instead of assuming empty.
-- `--yes` with schema drift on a populated D1 → stops; choose `--skip-schema` or `--schema=apply`.
+- `--yes` with schema drift on a populated D1 → stops; choose `--skip-schema` (the D1 is current) or `--schema=apply` (re-run the snapshot deliberately — it is **CREATE-only**: it fails on a table that already exists and cannot add a column, so a `Schema::table` migration on a live D1 is applied by hand with `npx wrangler d1 execute DB --command "ALTER TABLE ..." --remote`).
 - `[C] paste database_id` with an empty id → `a database_id is required for [C]`.
 - `[B] list existing` with no databases on the account → `no D1 databases on the account — use [A] auto`.
 - `[B]` with an out-of-range pick → `invalid pick`.

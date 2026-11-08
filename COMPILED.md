@@ -112,25 +112,40 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   reads `$errors->getBag('default')`), `@method`/`method_field()`, `unset($a, $b)` (a
   plain variable becomes `undefined`; `isset()`/`??` follow; an element unset is
   refused), `session('k')` (the KEY — the bare form is the store), and Carbon's
-  `->copy()->locale('id')->translatedFormat('j M Y')` on a model date.
-- FormRequest: a **hook** (`prepareForValidation()`, `after()`, …) is refused at build
-  time — the class compiler refuses FormRequest subclasses, so the compiled lifecycle
-  could not call it; `authorize()` that only returns `true` is the parent's own answer
-  and needs no declaration (`return false;` or a condition stays a hook); `rules()`
-  that reads request state is refused too (the string form is evaluated at build time,
-  so `unique()->ignore($this->user()->id)` would bake a `NULL`). Static rules plus a
-  controller-side check compile; a real hook needs a port. A route that a **port**
+  `->copy()->locale('id')->translatedFormat('j M Y')` on a model date. The bag answers
+  the vendor's own surface: `$errors->first('email')`, `has`/`hasAny`/`missing`,
+  `any()`/`count()`/`isEmpty()` and `$errors->default` walk `ViewErrorBag::__call()`/
+  `__get()` — that is, **the `default` bag** — and a named bag is only visible through
+  `$errors->getBag('login')`; `(string) $errors` is the default bag's JSON and
+  `json_encode($errors)` is `{}` (the bags are protected in PHP). The same limit PHP
+  has: a second bag never shows up in the bare calls.
+- FormRequest: the app's own **hooks** — `prepareForValidation()`, `authorize()`,
+  `validationData()`, `withValidator()`, `after()`, `passedValidation()` — **are compiled**:
+  the build compiles the FormRequest class like any other app class and the runtime's
+  lifecycle calls those methods in Laravel's order, so a hook's outcome is Laravel's
+  (`authorize()` that denies answers 403, a `withValidator()`/`after()` failure answers
+  422, `passedValidation()` runs after the rules pass). `authorize()` that only returns
+  `true` is the parent's own answer and needs no declaration (`return false;` or a
+  condition stays a hook). Two things stay refused: the `validator()` hook (the edge has
+  one validator factory, so the app's would never run — LW003, `tools/formrequest-dump.php`)
+  and `rules()` that reads request state (the string form is evaluated at build time, so
+  `unique()->ignore($this->user()->id)` would bake a `NULL`). Static rules plus a
+  controller-side check compile; a custom validator needs a port. A route that a **port**
   owns is not transpiled at all (the port answers every verb), so it never reports a
   controller skip.
 - App config: `config('group.key')` compiles only when the group is declared in
-  `registry.json` `"config"`; the build refuses a compiled `config()` key the runtime
-  dump cannot answer.
+  `registry.json` `"config"`; the build refuses a LITERAL compiled `config()` key
+  the runtime dump cannot answer (the dump is a flat map of dotted paths and
+  `rt.config()` answers only an exact own key). A **computed** key
+  (`config('app.' . $x)`) cannot be checked at build time: the edge answers the
+  dump's value, or the caller's default when there is one, or throws
+  `config: missing key … with no default` — never a silent `null`.
 - Everything else fails loud (never a wrong compile)
 - FormRequest: static `rules()`/`messages()`/`attributes()` are dumped at build time and
   compiled into the handler — the request is validated *before* the method body and
   `validated()` returns the ruled attributes; a failure answers like Laravel's
-  `failedValidation()` (302 + flash for a web form, 422 for JSON). A hook is refused
-  (see above), and the `validator()` factory stays a build error (the edge has one
+  `failedValidation()` (302 + flash for a web form, 422 for JSON). The app's hooks compile
+  (see above); only the `validator()` factory stays a build error (the edge has one
   factory, so the app's would never run)
 - Out-of-subset class body → per-class build error (never a wrong compile)
 
@@ -159,8 +174,12 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   documented divergence, 0 unexplained** (22 steps over all 11 app routes, incl. the
   JSON error path and the object store — the compiled side writes to the D1 blob
   store, the real app to the local disk, and both read the object back); on the
-  Breeze-shaped fresh app: **10/10 byte-identical, 0
-  unexplained**.
+  Breeze-shaped fresh app: **16/16 byte-identical, 0
+  unexplained** — the login flow, the guarded dashboard, the post list/detail, the
+  nested API resources, the welcome/login snapshots and the FormRequest lifecycle
+  (the four `/hooked-request-demo` steps: the hooks run, `withValidator()` and
+  `after()` each refuse the flag with their own 422, and `authorize()` denies with
+  the 403 — `shadow/scenarios/fresh-app.mjs`).
 - The oracle is hardened against a step that explodes (M34): nothing but its JSON
   may reach stdout (`display_errors=0` + an output buffer), it runs with
   `app.debug=false` (whoops prints the debug error page and exits, which would
@@ -445,6 +464,40 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
     *(escape: compile the call / port a handler)*. `eachSpread`/`mapSpread` on a
     non-array item correctly raises PHP's own `Error` (`false`/`null` are
     coerced to a one-element array first) — that part is faithful.
+15. **A timestamp WRITE that cannot be read back** — `save()`/`restore()` runs
+    its `UPDATE` and the kernel throws `model update affected 0 rows` when the
+    statement matched nothing. Laravel answers `true` there (vendor
+    `Model::performUpdate()` :1542-1550 fires `updated` and returns `true`
+    without looking at the affected count), so a row that the app deleted — or
+    one the UPDATE's `where` no longer matches — is a *silent* no-op in PHP and
+    a loud `Error` here. Deliberate: a write that reached no row is a lost
+    update, and the build's own `update` rung cannot distinguish it from a
+    success *(escape: catch the error, or re-`find()` and branch)*.
+16. **An empty date string is NOT "now"** — `Carbon::parse('')` (and `'   '`)
+    answers the CURRENT wall clock, and so does `new DateTime('')`. The edge
+    fails loud with `InvalidFormatException` instead, because that answer
+    depends on the clock and the app's locale — the same reason the relative
+    parser (`next monday`, `+1 day`, `02/01/2024`) fails loud (#273). A form
+    that posts `date=''` is a 500 here and a timestamped-with-now row in PHP
+    *(escape: default the field before it reaches the model)*.
+17. **A field named like the error bag's own methods** — Laravel's
+    `MessageBag`/`Validator` expose `first()`, `get()`, `has()`, ...; an input
+    key with one of those names (a form field literally called `get`) collides
+    with the kernel's validator object, so the compiled rung fails loud instead
+    of answering the wrong value (`kernel/validator.mjs` — the guard, pinned by
+    `kernel/tests/validator-hooks.test.mjs`). PHP answers normally
+    *(escape: rename the field, or port the handler)*.
+18. **The response object a resource hook receives** — a compiled
+    `withResponse(Request $request, JsonResponse $response)` gets the response
+    the runtime built: the `JsonResponse` SUBSET in item 6 above
+    (`header()`/`withHeaders()`/`setStatusCode()`/`getStatusCode()`/
+    `setContent()`/`getContent()`/`getData()`/`setData()`), which mutate the
+    fields the worker reads. The rest of the object (`getOriginalContent()`,
+    `$response->original`, the cookie bag, the Symfony header bag's full API)
+    is not carried, and a call to one fails loud at request time - a build error
+    for the methods the transpiler can see it does not implement
+    *(escape: set the fields the subset exposes, or port the handler)*.
+
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
 ## 7. Order of attack (dependency-driven)
@@ -587,6 +640,18 @@ The comparison is constant-time, and the face mirrors the trigger exactly: the s
 *and* the D1 job queue drains (a hand-fired cron that skipped the drain would leave `lw_jobs`
 rows waiting for the next real trigger).
 
+##### `->lastDayOfMonth()` is baked at build time
+
+`Schedule::lastDayOfMonth()` splices `Carbon::now()->endOfMonth()->day` into the expression **every
+boot** (`ManagesFrequencies.php:579-584`), so Laravel's answer changes with the month. The dump
+runs at build time and writes a day NUMBER into the trigger, which the worker then keeps forever:
+a build in a 31-day month ships `0 0 31 * *`, an event that never fires in February, April, June,
+September or November, and a build in February ships `28`, which fires on the 28th of a 31-day
+month instead of the last day. `tools/schedule-dump.mjs` says this on stderr when it happens (the
+dump's stdout is the PHP oracle's byte-compared JSON, so it cannot carry a warning), and the fix is
+on the app side: schedule an explicit day, or guard inside the job. The parity gate cannot see it —
+the PHP oracle runs at build time too, so both sides bake the same number.
+
 ### The integrations (M68) — one verdict per page
 
 Generated from `tools/integrations.json`; `tools/docs-check.mjs` fails when a page loses its verdict, its refusal or its port.
@@ -674,7 +739,7 @@ behind a build rule.
 | The upload is stored (`$file->storeAs()`) | ✅ compiles | The object store (the D1 blob store on the free plan, R2 with a bucket of its own): the path is the disk-relative one Laravel returns (trim($path.'/'.$name, '/')). | M40 |
 | The upload is stored under a random name (`$file->store()`) | ✅ compiles | The name is a random hash (Str::random(40)) + the extension; the extension comes from the type the browser declared (Laravel sniffs the content with finfo). | M40 |
 | The content type of the upload (`$file->getMimeType()`) | ⛔ fails loud (`LW003`) | The content type is read from the file's bytes (finfo): the edge cannot sniff the content like PHP does, so the build stops (LW003). | M40 |
-| A `mimes`/`mimetypes` rule on an upload | ✅ compiles | PHP compares what finfo sniffs; the edge reads the image HEADER instead (kernel/image.mjs) and answers with the same `guessExtension()` map Symfony uses - so `mimes:jpg,png,webp` (and `mimetypes:image/jpeg,...`) answer Laravel's verdict, including the `guessExtension()` sharp edge (`mimes:jpeg` rejects a real JPEG in PHP too). A parameter naming any other content (pdf, svg, docx, bmp) still fails loud (`LW002`): that verdict would be a guess. | M40 |
+| A `mimes`/`mimetypes` rule on an upload | ✅ compiles | PHP compares what finfo sniffs; the edge reads the image HEADER instead (kernel/image.mjs) and answers with the same `guessExtension()` map Symfony uses - so `mimes:jpg,png,webp` (and `mimetypes:image/jpeg,...`) answer Laravel's verdict, including the `jpg`/`jpeg` merge: `guessExtension()` answers `jpg` for `image/jpeg` and the vendor adds BOTH names, so `mimes:jpeg` ACCEPTS a real JPEG (`ValidatesAttributes::validateMimes()` :1764-1766). A parameter naming any other content (pdf, svg, docx, bmp) still fails loud (`LW002`): that verdict would be a guess. | M40 |
 | A `mimes` rule naming a format the edge cannot sniff | ⛔ fails loud (`LW002`) | `mimes` compiles only for the formats the header read can name (jpg, jpeg, png, gif, webp, avif, heic, heif): a parameter naming any other content (pdf, svg, docx, bmp) stops the build (`LW002`) and NAMES the parameter, because the verdict PHP reaches comes from finfo. | M40 |
 | An `image`/`dimensions` rule on an upload | ✅ compiles | `image` and `dimensions` are getimagesize(), a HEADER read (ValidatesAttributes::validateImage/validateDimensions): the edge reads the same header (kernel/image.mjs) and applies the same named checks, so the verdict is Laravel's. A `mimes`/`mimetypes` parameter naming a format that read cannot sniff stays refused, like any other finfo rule. | M69 |
 | The files bag as a method (`$request->files()`) | ⛔ fails loud (`LW002`) | In Laravel `$request->files` is a property (Symfony's FileBag), not a method: the build stops (LW002) and points at `$request->file()` / `$request->allFiles()`. | M40 |
@@ -684,8 +749,8 @@ behind a build rule.
 | A rule object in a FormRequest | — documented (build level) | The FormRequest dump reads the rules Laravel itself builds and NORMALIZES a rule object to its string form (Laravel hands the validator the object and the validator reads that string): `Rule::in(['a','b'])` becomes `in:"a","b"` - which the kernel parses exactly like Laravel (M61a). A CONDITIONAL rule object is refused (the row below). | M43/M62 |
 | A conditional rule object in a FormRequest | — documented (build level) | A conditional rule object (`Rule::requiredIf(true)`, `Rule::when(...)`) is refused: its string form is the CONDITION evaluated at build time (`RequiredIf::__toString()` returns 'required' or ''), so the edge would bake the build-time branch into the rule - a request Laravel accepts could be rejected (or the other way round). The dump stops with that reason (LW003). | M62 |
 | `prepareForValidation()` (overridden) | — documented (build level) | The hook is COMPILED: the build compiles the FormRequest class (the dump registers it), the compiled handler runs the hook BEFORE the validation (Laravel's order - ValidatesWhenResolvedTrait::validateResolved), and the input the hook prepares is what the rules see. The compiled class extends the kernel's `kernel/form-request.mjs` - the request surface the hook uses (merge(), input(), all()). | M62d |
-| A FormRequest that overrides `after()` / `validationData()` / `passedValidation()` | — documented (build level) | All three hooks run in the compiled lifecycle, in Laravel's order: `validationData()` is the data source, `after()` registers its RETURN VALUE as a validator callback, and `passedValidation()` runs after the rules pass. Proven by the shadow (`POST /hooked-request-demo` 422/422 for the `after()` refusal and 200/200 carrying the `passedValidation` marker). | M62f |
-| A FormRequest that overrides `withValidator()` | — documented (build level) | Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled class carries the hook and the lifecycle calls it with the kernel's validator, in Laravel's order. Proven by the shadow (`POST /hooked-request-demo` 422/422 byte-identical when `withValidator()` refuses the flag) and by the compiled handler's `hooks: [...]` list. | M62f |
+| A FormRequest that overrides `after()` / `validationData()` / `passedValidation()` | — documented (build level) | All three hooks run in the compiled lifecycle, in Laravel's order: `validationData()` is the data source, `after()` registers its RETURN VALUE as a validator callback, and `passedValidation()` runs after the rules pass. Proven by the shadow (`POST /hooked-request-demo` 422/422 for the `after()` refusal and 200/200 carrying the `passedValidation` marker). The hook parameter needs its TYPE HINT (`Validator $validator`, and the same on the callbacks the hook registers through `$validator->after(...)`): an untyped parameter is LW002 (the class compiler cannot infer the validator), and the route that injects the class is then STOPPED with that reason instead of shipping a handler that answers 500 (audit #891). `after()` returns a single callable in the proven shape. | M62f |
+| A FormRequest that overrides `withValidator()` | — documented (build level) | Laravel calls the hook with the validator right after it is built (`Foundation/Http/FormRequest.php:110`), so the app's custom messages and its `after()` callbacks run. The compiled class carries the hook and the lifecycle calls it with the kernel's validator, in Laravel's order. Proven by the shadow (`POST /hooked-request-demo` 422/422 byte-identical when `withValidator()` refuses the flag) and by the compiled handler's `hooks: [...]` list. The hook parameter needs its TYPE HINT (`Validator $validator`, and the same on the callbacks the hook registers through `$validator->after(...)`): an untyped parameter is LW002 (the class compiler cannot infer the validator), and the route that injects the class is then STOPPED with that reason instead of shipping a handler that answers 500 (audit #891). `after()` returns a single callable in the proven shape. | M62f |
 | A listener that injects a service | ⛔ fails loud (`LW002`) | A service the build does not compile: the edge has no container and no file for it, so the constructor dependency is a build error (the build names the class). A service the build DOES compile is injected (the edge builds it) and a framework service is adapted (the worker hands the live one down). | M43 |
 | A queued listener (`ShouldQueue`) | ⛔ fails loud (`LW002`) | Laravel pushes a queued listener to the queue (it runs later); the edge's queue path runs a JOB class (`app/Jobs`) through the cron drain, and a queued listener is not compiled as one, so running it inline would be a different behaviour. The build stops and the route that dispatches the event names the reason. | M43 |
 | A listener that injects an app service the build compiles | ✅ compiles | The edge builds the service itself: the build compiles it (the class + the services it injects) and the runtime hands it to the listener. The dependency is recorded in the compiled class, so the edge never guesses. | M44 |
