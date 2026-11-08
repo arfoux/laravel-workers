@@ -351,16 +351,26 @@ function compileConstructor(fqcn, classNode, opts) {
       if (prop.value === undefined || prop.value === null) {
         if (prop.type) {
           // PHP does not initialise a TYPED property: `public int $sent;`
-          // stays uninitialized and READING it throws (php.net/manual/en/
-          // language.oop5.properties.php - a typed property "must not be
-          // accessed before initialization"). The compiled rung has no
-          // uninitialized state, so it would answer null and `$sent + 1`
-          // would render 1 where Laravel answers 500.
+          // stays uninitialized until something assigns it, and READING it
+          // before that throws (php.net/manual/en/language.oop5.properties.php
+          // - a typed property "must not be accessed before initialization").
+          // The compiled rung has no uninitialized state to model, so it would
+          // answer null and `$sent + 1` would render 1 where Laravel answers
+          // 500. NOTE the two PHP patterns this covers, and say which: a
+          // property the constructor never assigns really does throw on read
+          // (PHP 500), but one `__construct` DOES assign (`public string $who;`
+          // then `$this->who = ...`) is FINE in PHP - the compiled rung simply
+          // does not model ctor-assigned typed state, so the class (and every
+          // route through it) is skipped. The message must not claim PHP fails
+          // in the second case (#682).
           return {
             error:
-              'the typed property $' + pname + ' of ' + fqcn + ' has no default - PHP leaves it uninitialized and ' +
-              'reading it throws "Typed property ' + fqcn + '::$' + pname + ' must not be accessed before ' +
-              'initialization"; the compiled rung cannot model uninitialized state',
+              'the typed property $' + pname + ' of ' + fqcn + ' has no default. PHP leaves a typed property ' +
+              'uninitialized until it is assigned; reading it before that throws "Typed property ' + fqcn + '::$' +
+              pname + ' must not be accessed before initialization". The compiled rung has no uninitialized state ' +
+              'to model, and it does not model ctor-assigned typed properties either, so this class - and every ' +
+              'route through it - is skipped. If __construct assigns it, PHP itself is fine; declare a default ' +
+              "('" + "value'" + ') or drop the type so the compiled rung can carry it.',
             code: 'LW002',
           };
         }
