@@ -10,7 +10,7 @@
 // PSR-4/classmap/files autoloader. No composer, no composer-generated metadata.
 
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -19,25 +19,23 @@ import { resolveDependencies } from './composer-resolve.mjs';
 import { extractZip as extractZipJs } from './zip.mjs';
 import parser from 'php-parser';
 import { nodeName } from './static.mjs';
+import { toNativePath as normaliseShellPath } from './native-path.mjs';
 
 /** Same options as tools/static.mjs — positions are irrelevant here, docblocks are dropped. */
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// MSYS2/Git Bash passes POSIX-style paths ("/c/Users/...") that Node's fs APIs
-// on Windows resolve as "<cwd-drive>:\c\Users\..." — normalize them to real
-// Windows drive paths before any fs call touches them.
-function toNativePath(p) {
-  if (process.platform !== 'win32' || typeof p !== 'string') return p;
-  let s = p.replace(/\\/g, '/');
-  const m = s.match(/^\/([a-zA-Z])(?:\/|$)/);
-  if (m) s = `${m[1].toUpperCase()}:/${s.slice(3)}`;
-  return resolve(s);
-}
+// A shell-supplied path ("/c/Users/...") normalised to a real Windows drive
+// path AND made absolute: this module uses the result as a cache key, so the
+// same app reached by two spellings has to land on one key (audit #401/#417).
+const toNativePath = (p) => resolve(normaliseShellPath(p));
 
 export function cacheBase() {
-  if (process.env.XDG_CACHE_HOME) return join(process.env.XDG_CACHE_HOME, 'laravel-workers');
+  // `XDG_CACHE_HOME` arrives from the shell like any other path: `/c/Users/x`
+  // from Git-Bash would otherwise create the cache under `<drive>:\c\Users\x`
+  // (audit #803).
+  if (process.env.XDG_CACHE_HOME) return join(normaliseShellPath(process.env.XDG_CACHE_HOME), 'laravel-workers');
   if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
     return join(process.env.LOCALAPPDATA, 'laravel-workers', 'cache');
   }
@@ -176,45 +174,90 @@ function copyDir(src, dest) {
   }
 }
 
-function extractZip(zipPath, destDir) {
-  mkdirSync(destDir, { recursive: true });
+export function extractPackageZip(zipPath, destDir) {
+  // The archive is unpacked into a temp dir and then MOVED into place in one
+  // step, because `provision()` resumes on `existsSync(pkgDir)`: an existing
+  // package directory means "installed". A copy that died halfway (a locked
+  // file on Windows, a full disk) used to leave that directory behind, so every
+  // later build SKIPPED the package and the half-extracted tree stayed cached
+  // forever (#752). The staging dir is a sibling of `destDir` on the same
+  // volume, so the rename is the atomic one, and it is the only mutation of
+  // `destDir` — `mkdirSync(destDir)` up front used to create the very directory
+  // the resume check trusts.
+  const parent = dirname(destDir);
+  mkdirSync(parent, { recursive: true });
+  const staging = `${destDir}.lw-part-${process.pid}`;
+  rmSync(staging, { recursive: true, force: true }); // a crashed earlier run
   const tmp = mkdtempSync(join(tmpdir(), 'lw-vendor-zip-'));
   // The built-in reader runs first: a clean Windows box has no `unzip`, and
   // provisioning a vendor tree must not depend on one. The system binary is the
   // fallback for archives the reader refuses (ZIP64, another method); when both
   // fail the error names the reader's own reason (and whether `unzip` exists).
   try {
-    extractZipJs(zipPath, tmp);
-  } catch (e) {
-    // Fallback chain: `unzip` (POSIX), then `tar` — bsdtar ships on a clean
-    // Windows 10+ box and reads ZIP (incl. ZIP64), so a reader refusal never
-    // strands vendor provisioning on a machine without `unzip`.
-    const fails = [];
-    let ok = false;
-    for (const [cmd, args] of [
-      ['unzip', ['-o', zipPath, '-d', tmp]],
-      ['tar', ['-xf', zipPath, '-C', tmp]],
-    ]) {
-      const r = run(cmd, args, {});
-      if (!r.error && r.status === 0) { ok = true; break; }
-      fails.push(r.error ? `${cmd} (${r.error.code})` : `${cmd}: ${String(r.stderr || '').trim().slice(0, 200)}`);
+    try {
+      extractZipJs(zipPath, tmp);
+    } catch (e) {
+      // Fallback chain: `unzip` (POSIX), then `tar` — bsdtar ships on a clean
+      // Windows 10+ box and reads ZIP (incl. ZIP64), so a reader refusal never
+      // strands vendor provisioning on a machine without `unzip`.
+      const fails = [];
+      let ok = false;
+      for (const [cmd, args] of [
+        ['unzip', ['-o', zipPath, '-d', tmp]],
+        ['tar', ['-xf', zipPath, '-C', tmp]],
+      ]) {
+        const r = run(cmd, args, {});
+        if (!r.error && r.status === 0) { ok = true; break; }
+        fails.push(r.error ? `${cmd} (${r.error.code})` : `${cmd}: ${String(r.stderr || '').trim().slice(0, 200)}`);
+      }
+      if (!ok) {
+        throw new Error(
+          'the package zip could not be extracted: ' + e.message +
+            ' (no system extractor worked: ' + fails.join('; ') + ')'
+        );
+      }
     }
-    if (!ok) {
+    // The package root is the single top-level DIRECTORY every packagist and
+    // GitHub dist zip has. Anything else is refused by name instead of guessed:
+    // the old code took `top[0]` blindly, so a zip with two roots shipped only
+    // the first (silently incomplete) and a zip of bare files threw a
+    // confusing readdir error on a file path.
+    const top = readdirSync(tmp, { withFileTypes: true });
+    const dirs = top.filter((e) => e.isDirectory());
+    let srcDir = tmp;
+    if (dirs.length === 1 && top.length === 1) {
+      srcDir = join(tmp, dirs[0].name);
+    } else if (dirs.length !== 0) {
       throw new Error(
-        'the package zip could not be extracted: ' + e.message +
-          ' (no system extractor worked: ' + fails.join('; ') + ')'
+        `the package zip has ${top.length} top-level entries (${top.map((e) => e.name).join(', ')}) — ` +
+          'expected exactly one root directory (a packagist/GitHub dist archive)'
       );
     }
+    for (const e of readdirSync(srcDir, { withFileTypes: true })) {
+      const s = join(srcDir, e.name);
+      const d = join(staging, e.name);
+      if (e.isDirectory()) copyDir(s, d);
+      else { mkdirSync(dirname(d), { recursive: true }); copyFileSync(s, d); }
+    }
+    // An archive whose single root directory is EMPTY (a dist zip whose only
+    // entry is the directory itself) leaves the copy loop with nothing to
+    // create, and the swap below would then throw ENOENT on a missing staging
+    // source - naming the temp path instead of the package. An empty package is
+    // still an installed package (the old code pre-created `destDir`), so the
+    // staging directory exists before the swap (#820).
+    mkdirSync(staging, { recursive: true });
+    // A `destDir` can only be here if it was left by an OLDER release (this
+    // function never leaves one behind now) or by a caller that is redoing an
+    // entry: remove it, then swap. `renameSync` refuses an existing target on
+    // Windows, and the resume check in `provision()` trusts the name.
+    rmSync(destDir, { recursive: true, force: true });
+    renameSync(staging, destDir);
+  } catch (e) {
+    rmSync(staging, { recursive: true, force: true });
+    throw e;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
-  const top = readdirSync(tmp);
-  const srcDir = join(tmp, top[0]);
-  for (const e of readdirSync(srcDir, { withFileTypes: true })) {
-    const s = join(srcDir, e.name);
-    const d = join(destDir, e.name);
-    if (e.isDirectory()) copyDir(s, d);
-    else { mkdirSync(dirname(d), { recursive: true }); copyFileSync(s, d); }
-  }
-  rmSync(tmp, { recursive: true, force: true });
 }
 
 async function downloadFile(url, out, expectSha, label) {
@@ -224,10 +267,31 @@ async function downloadFile(url, out, expectSha, label) {
   // retry the recoverable ones, verify when the lock carries a shasum — the
   // code below becomes executed PHP, so a mismatched payload must never load.
   const attempts = 3;
+  // An explicit abort budget per attempt (#751). undici's own body/headers
+  // timeout is 300 s, but it belongs to the runtime: naming it here means a
+  // stalled connection aborts as `AbortError` and the retry loop below runs,
+  // instead of the fetch hanging on however the host is configured. A large
+  // package (tens of MB) over a slow link still fits: the budget is per
+  // attempt, not for all three.
+  // #879: a value the variable cannot mean must fail HERE, named. Anything but
+  // a positive finite number used to reach AbortSignal.timeout(), which throws
+  // a RangeError; the retry loop below then read it as a transport failure —
+  // three attempts, and the message named a "delay" instead of the variable.
+  const rawTimeout = process.env.LW_VENDOR_FETCH_TIMEOUT_MS;
+  const timeoutMs = rawTimeout === undefined || rawTimeout === '' ? 300_000 : Number(rawTimeout);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(
+      `LW_VENDOR_FETCH_TIMEOUT_MS must be a positive number of milliseconds (got ${JSON.stringify(rawTimeout)}) — ` +
+        'it is handed to AbortSignal.timeout(); unset it to use the default 300000'
+    );
+  }
   let lastErr = null;
   for (let i = 1; i <= attempts; i++) {
     try {
-      const res = await fetch(url, { headers: { 'user-agent': 'laravel-workers/vendor-lite' } });
+      const res = await fetch(url, {
+        headers: { 'user-agent': 'laravel-workers/vendor-lite' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
       if (res.ok) {
         const buf = Buffer.from(await res.arrayBuffer());
         if (expectSha) {
@@ -248,7 +312,14 @@ async function downloadFile(url, out, expectSha, label) {
       if (res.status !== 429 && res.status < 500) break; // 404/403 will not heal
     } catch (e) {
       if (String(e.message).includes('checksum mismatch')) { lastErr = e; break; } // never retry a bad payload
-      lastErr = new Error(`${label || 'package'}: ${e.cause?.code || e.message} fetching ${url}`);
+      // The abort from the `signal` above arrives as a DOMException (directly or
+      // as `cause`); name it as a timeout so the operator reads a duration, not
+      // "The operation was aborted".
+      const timedOut = e?.name === 'TimeoutError' || e?.cause?.name === 'TimeoutError';
+      const why = timedOut
+        ? `timed out after ${Math.round(timeoutMs / 1000)}s`
+        : e.cause?.code || e.message;
+      lastErr = new Error(`${label || 'package'}: ${why} fetching ${url}`);
     }
     if (i < attempts) await new Promise((r) => setTimeout(r, 700 * i));
   }
@@ -397,6 +468,16 @@ function buildAutoloadPhp(entries, appDir, rootDir) {
     for (const f of appAl['files']) files.push(join(appDir, String(f)));
   }
   const lines = [];
+  // Composer's ClassLoader walks a class name from its LAST namespace separator
+  // backwards, so the LONGEST matching prefix wins. The generated autoloader
+  // below scans this list front to back and takes the first prefix that matches
+  // (#800): with nested prefixes (`Foo\` and `Foo\Bar\`) and a file under both
+  // directories, an unsorted list loads the file Composer would not — the dump
+  // would then be built from a class `php artisan` never loads. Sorting by
+  // descending prefix length reproduces Composer's precedence; the sort is
+  // stable, so equal-length prefixes keep their declaration order (only one of
+  // them can match any given class anyway).
+  psr4.sort((a, b) => b.prefix.length - a.prefix.length);
   // NOTE: emit as a LIST of [prefix, dir] pairs — multiple dirs can share one
   // prefix (e.g. laravel/framework's Illuminate\Support\) and a PHP hash would
   // silently collapse them to the last entry.
@@ -446,8 +527,17 @@ return true;
 // build reads a lock like any other composer project and CI stops hitting
 // packagist. content-hash follows composer's own recipe — md5 of a ksorted
 // subset of composer.json encoded with php json_encode semantics (slashes and
-// non-ASCII escaped) — so `composer validate` stays green for teams that do
-// run composer.
+// non-ASCII escaped) — so the hash matches the composer.json it was written
+// from and `composer validate` does not call the lock stale.
+//
+// It is NOT a drop-in Composer lock: `resolveDependencies()` walks `require`
+// only, so `packages-dev` is empty BY DESIGN. For an app that declares
+// `require-dev` (every Laravel skeleton does) `composer validate` therefore
+// fails with `Required (in require-dev) package "…" is not present in the lock
+// file.` — probed against Composer 2.9.0 / PHP 8.3.30, exit 2 (audit #805).
+// The file exists to pin the PRODUCTION set vendor-lite installs; the written
+// `_readme`, the CLI notice and `docs/PLAN-VENDOR.md` §E say so. Resolving
+// require-dev here would fetch a test-only closure the build never loads.
 
 const STABILITY_FLAG_RANK = { dev: 1, alpha: 2, beta: 3, rc: 4, stable: 0 };
 
@@ -467,6 +557,10 @@ export function contentHashOf(root) {
 
 export function writeComposerLock(appDir, entries) {
   const root = JSON.parse(readFileSync(join(appDir, 'composer.json'), 'utf8'));
+  // The dev requires this lock cannot carry (see the block comment above). They
+  // are RETURNED, not just written into the file: the caller says them out loud,
+  // because the failure lands later, in the app's own `composer validate`.
+  const devRequires = Object.keys(root['require-dev'] || {});
   const stabilityFlags = {};
   for (const [n, c] of Object.entries({ ...(root.require || {}), ...(root['require-dev'] || {}) })) {
     const m = String(c).match(/@(stable|dev|alpha|beta|RC)$/i);
@@ -475,7 +569,13 @@ export function writeComposerLock(appDir, entries) {
   const doc = {
     _readme: [
       'Generated by laravel-workers vendor-lite --lock from a composer.json-only resolution.',
-      'Pins the package set so builds are reproducible with no composer involved.',
+      'Pins the PACKAGE SET VENDOR-LITE INSTALLS (production requires) so builds are reproducible with no composer involved.',
+      ...(devRequires.length
+        ? [
+            `It carries no require-dev packages (${devRequires.join(', ')}): vendor-lite never installs them.`,
+            '`composer validate` will therefore report them as missing from this lock — run `composer update` if Composer should own the file.',
+          ]
+        : []),
       'Regenerate with `composer update` if you would rather composer own this file.',
     ],
     'content-hash': contentHashOf(root),
@@ -499,6 +599,7 @@ export function writeComposerLock(appDir, entries) {
     'plugin-api-version': '2.6.0',
   };
   writeFileSync(join(appDir, 'composer.lock'), JSON.stringify(doc, null, 4) + '\n');
+  return { devRequires };
 }
 
 export async function ensureVendorLite(appDir, opts = {}) {
@@ -573,8 +674,13 @@ async function provision(appDir, dir, autoload, hash, opts) {
     }
     const zip = join(tmpdir(), `lw-vendor-${process.pid}-${Date.now()}-${e.pkg}.zip`);
     await downloadFile(fillDistUrl(e), zip, e.shasum, e.pkg);
-    extractZip(zip, pkgDir);
-    rmSync(zip, { force: true });
+    // The zip leaves nothing behind even when the extraction throws: a failed
+    // extraction used to keep a multi-MB archive in the system temp dir.
+    try {
+      extractPackageZip(zip, pkgDir);
+    } finally {
+      rmSync(zip, { force: true });
+    }
   }
   // `vendor/` exists only once a package was extracted, and a lock whose every
   // package is virtual (a metapackage, skipped above) extracts none — the
@@ -602,8 +708,16 @@ async function provision(appDir, dir, autoload, hash, opts) {
       ) + '\n'
     );
     if (opts.lock) {
-      writeComposerLock(appDir, entries);
-      if (!opts.silent) console.log(`vendor-lite --lock: wrote composer.lock with ${entries.length} package(s) — commit it to pin this build`);
+      const { devRequires } = writeComposerLock(appDir, entries);
+      if (!opts.silent) {
+        console.log(`vendor-lite --lock: wrote composer.lock with ${entries.length} package(s) — commit it to pin this build`);
+        if (devRequires.length) {
+          console.log(
+            `  note: it pins the production set only — no require-dev package (${devRequires.join(', ')}). ` +
+              '`composer validate` will report those as missing from this lock; run `composer update` if Composer should own the file.'
+          );
+        }
+      }
     }
   }
   return { dir, autoload, hash, hit: false, lockPackages: hasLock ? null : entries };
@@ -611,7 +725,11 @@ async function provision(appDir, dir, autoload, hash, opts) {
 
 // CLI: `node tools/vendor-lite.mjs [--force] [--json] [--lock]`
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  const appDir = resolve(process.env.LW_APP_ROOT || process.cwd());
+  // Normalise BEFORE resolve(): `resolve('/c/Users/app')` on Windows turns a
+  // Git-Bash path into `<drive>:\c\Users\app`, which no later normalisation can
+  // recognise — the CLI then reports "neither composer.lock nor composer.json"
+  // for an app that is right there (audit #803).
+  const appDir = toNativePath(process.env.LW_APP_ROOT || process.cwd());
   const flags = new Set(process.argv.slice(2));
   const json = flags.has('--json');
   const force = flags.has('--force');
