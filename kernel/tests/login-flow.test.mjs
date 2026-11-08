@@ -111,6 +111,12 @@ function buildFixture() {
     cwd: APP_ROOT,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
+    // The assertions below read the build's LOG. A warm build cache prints only
+    // "build cache: hit ... dist/ is current" (build.mjs), so the compile lines
+    // the test looks for are missing and the test would fail on the second run
+    // in the same checkout. The cache is a local convenience, not an input of
+    // this test: force the real build every time.
+    env: { ...process.env, LW_NO_BUILD_CACHE: '1' },
   });
   if (res.error) throw new Error(`fixture build failed to start: ${res.error.message}`);
   const log = `${res.stdout || ''}${res.stderr || ''}`;

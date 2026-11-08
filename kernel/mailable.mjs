@@ -108,7 +108,12 @@ export class Mailable {
     // silent 200 where Laravel answers 500.
     if (html == null && !view && !textView) throw new Error('Invalid view.');
     // The views: Laravel renders the mailable's view (and its text twin).
-    const data = copyOwn(publicProperties(this), viewData || {});
+    // Illuminate\Mail\Mailable::buildViewData() (:375-390) starts from
+    // `$this->viewData` and then OVERWRITES it with the mailable's PUBLIC
+    // properties (`$data[$property->getName()] = $property->getValue($this)`),
+    // so a public `$foo` beats `with(['foo' => ...])`. `copyOwn()` lets the LAST
+    // source win, so the public properties come second.
+    const data = copyOwn(viewData || {}, publicProperties(this));
     let renderedHtml = html;
     if (renderedHtml == null && view) {
       // Laravel's View::render() returns the RAW output (the HTTP response path

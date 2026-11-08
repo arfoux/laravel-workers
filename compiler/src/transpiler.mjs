@@ -3,7 +3,7 @@ import parser from 'php-parser';
 import { Collection } from '../../kernel/collections.mjs';
 import { STR_METHODS } from '../../kernel/str.mjs';
 import { ARR_METHODS } from '../../kernel/arr.mjs';
-import { ADAPTER_ASYNC } from '../../kernel/service-adapters.mjs';
+import { ADAPTER_ASYNC, ADAPTER_REFUSED } from '../../kernel/service-adapters.mjs';
 import { KNOWN_RULES, SNIFFED_EXTENSIONS, SNIFFED_MIME_TYPES } from '../../kernel/validator.mjs';
 // The number-literal canon (`0777` is OCTAL, `1_000` ignores the underscore):
 // the SAME reader the class/controller/view-name compilers use, so one literal
@@ -55,8 +55,9 @@ const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
 // The Mail facade methods that compile (the padanan is the mailer: log/noop/resend).
 // The methods that deliver are async at the edge — the compiled code awaits them.
 // The mailer's surface: the kernel's PendingMail implements to/cc/bcc/replyTo and
-// send() - the other methods (raw, html, queue, later) are NOT implemented, so
-// they must fail loud (a mail without its cc is a wrong answer).
+// send(). The rest (raw, html, queue, later) is refused by BOTH guards below and
+// by the kernel itself (`ADAPTER_REFUSED`, kernel/service-adapters.mjs) — a mail
+// without its body, or one that never leaves, is a wrong answer.
 const MAIL_SYNC = new Set(['to', 'cc', 'bcc']);
 // The Mailable's fluent surface (Laravel's Illuminate\Mail\Mailable): the
 // compiled mailable extends the kernel's base, so these methods exist there.
@@ -64,6 +65,17 @@ const MAILABLE_METHODS = new Set([
   'subject', 'view', 'with', 'from', 'to', 'cc', 'bcc', 'replyTo', 'text', 'html', 'build', 'envelope', 'content',
 ]);
 const MAIL_ASYNC = new Set(['send']);
+// Why a Mail method the edge does not implement is refused. ONE wording, used
+// by the facade guard and the injected-service guard, so the two can never tell
+// the operator different stories (and so neither claims the kernel "does not
+// implement" what it refuses on purpose).
+function mailRefusedWhy(meth) {
+  return (
+    'Laravel builds that message itself (raw/html) or hands it to a queue consumer the worker does not have ' +
+    '(queue/later), so at the edge the mail would leave without its body — or never leave at all. The compiled ' +
+    'mailer sends a compiled mailable (Mail::to($user)->send(new OrderMail())) or a payload { to, subject, html|text };'
+  );
+}
 // The FormRequest's surface (Laravel's Illuminate\Foundation\Http\FormRequest
 // IS a request): the compiled FormRequest extends the kernel's base, so these
 // methods exist there. The rest of the request surface is NOT compiled - it
@@ -2241,9 +2253,8 @@ function txCall(node) {
       }
       throw mkErr(
         'LW002',
-        'Mail::' + meth + '() is not supported — the compiled mailer sends a compiled mailable ' +
-          '(the kernel mailer implements to/cc/bcc and send(); raw, html, queue and later are not implemented, so a mail ' +
-          'would lose them) — allowed: ' + [...MAIL_SYNC, ...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
+        'Mail::' + meth + '() is not supported — ' + mailRefusedWhy(meth) +
+          ' allowed: ' + [...MAIL_SYNC, ...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
         node.loc,
         PORT_HINT
       );
@@ -2526,6 +2537,18 @@ function txCall(node) {
           ? inner.offset && inner.offset.name
           : null;
       const dep = prop ? CTX.injectedDeps.get(prop) : null;
+      // A method the edge does not implement (`$this->mailer->raw(...)`): the
+      // build refuses it here, so the operator gets one clear error instead of
+      // a 500 at request time.
+      if (dep && dep.adapter && ADAPTER_REFUSED[dep.adapter] && ADAPTER_REFUSED[dep.adapter].has(meth)) {
+        throw mkErr(
+          'LW002',
+          '$this->' + prop + '->' + meth + '() is not supported — ' + mailRefusedWhy(meth) +
+            ' allowed: ' + [...MAIL_SYNC, ...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
       const isAsync = dep
         ? dep.kind === 'class' || (dep.adapter && ADAPTER_ASYNC[dep.adapter] && ADAPTER_ASYNC[dep.adapter].has(meth))
         : false;
@@ -2567,7 +2590,8 @@ function txCall(node) {
       if (!MAIL_ASYNC.has(meth)) {
         throw mkErr(
           'LW002',
-          'the pending mail method ' + meth + '() is not supported — allowed: ' + [...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
+          'the pending mail method ' + meth + '() is not supported — ' + mailRefusedWhy(meth) +
+            ' allowed: ' + [...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
           node.loc,
           PORT_HINT
         );
