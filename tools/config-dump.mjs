@@ -21,22 +21,17 @@ import { join, resolve } from 'node:path';
 import { evalConfigExpr, parsePhpFile, configGet, loadConfig, readEnvFile, appMiddlewareState, returnExpr } from './static.mjs';
 import { serializeOrdered } from './order-json.mjs';
 import { deepMerge } from './deep-merge.mjs';
+import { toNativePath } from './native-path.mjs';
 
 // #401/#417: Git-Bash/MSYS hands over POSIX-style paths ("/c/Users/..."), which
-// `join()`/`existsSync` on Windows read as "<cwd-drive>:\c\Users\..." — the app
+// `join()`/`existsSync` on Windows read as "<cwd-drive>:\c\Users\..." - the app
 // then loaded NO config at all and the dump came out all-null with **exit 0**
 // (a build compiling an empty configuration, silently). Normalise the shell
-// form first, then refuse anything that is not a Laravel app root.
-function toNativePath(p) {
-  if (process.platform !== 'win32' || typeof p !== 'string') return p;
-  const s = p.replace(/\\/g, '/');
-  const m = s.match(/^\/([a-zA-Z])(?:\/|$)/);
-  return m ? `${m[1].toUpperCase()}:/${s.slice(3)}` : p;
-}
-
+// form first (shared helper, audit #803), then refuse anything that is not a
+// Laravel app root.
 const appDir = (() => {
-  const fromEnv = process.env.LW_APP_ROOT;
-  if (fromEnv) return toNativePath(fromEnv);
+  const fromEnv = toNativePath(process.env.LW_APP_ROOT);
+  if (fromEnv) return fromEnv;
   return existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null;
 })();
 
@@ -61,7 +56,59 @@ const phpPath = (p) => String(p || '').replace(/\\/g, '/');
 // that only lives in the shell (CI: CACHE_STORE, APP_URL, ...) would fold
 // differently from the app's own boot.
 const env = readEnvFile(appDir, process.env);
-const { config, error } = loadConfig(appDir, env);
+const { config, error, drops } = loadConfig(appDir, env);
+
+// ---------- the fold's DROP report (stderr) ----------
+// Every config value the build-time evaluator could NOT answer, named by group,
+// key, file and line with the reason that stopped it. This goes to stderr so the
+// JSON on stdout stays parseable. A refused KEY alone does not fail the dump —
+// the honest failure is at the app's own `config('x')`, which the compiled worker
+// answers null for (and the build's config gate reports) — but a refused
+// STATEMENT (a poisoned file, see loadConfig) does, and this report is what names
+// it. Before this report the entry was simply absent from the dump and nothing
+// said so.
+function reportDrops() {
+  if (!drops || !drops.length) return;
+  const rel = (p) => String(p || '?').replace(/\\/g, '/').replace(String(appDir).replace(/\\/g, '/') + '/', '');
+  const seen = new Set();
+  const lines = [];
+  for (const d of drops) {
+    const where = `${rel(d.file)}${d.line ? ':' + d.line : ''}`;
+    const key =
+      d.key === '<group>'
+        ? `${d.group || '?'} (the whole group)`
+        : d.key
+          ? `${d.group || '?'}.${d.key}`
+          : `${d.group || '?'}.<unknown key>`;
+    const line = `${key} — ${where}: ${d.reason}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    lines.push(line);
+  }
+  process.stderr.write(`config-fold: ${lines.length} value(s) could not be evaluated at build time:\n`);
+  for (const line of lines) process.stderr.write('  • ' + line + '\n');
+  process.stderr.write(
+    '  the compiled worker answers null for these keys; write the value literally in config/ ' +
+      '(or add the construct to tools/static.mjs) to fold it\n'
+  );
+}
+
+// A config file the fold could NOT answer is a hard failure, not a silent gap.
+// `error` used to be destructured and never read, so `loadConfig()` skipping a
+// group (a parse error, an unbounded loop, a construct the statement path does
+// not model — audit #774-#776) left the dump WITHOUT that group and the build
+// kept going: the compiled worker then answers Laravel's defaults where the real
+// app answers the file. Fail loud instead — the message names file, line and
+// reason, and the drop report below names the rest of the file.
+if (error) {
+  reportDrops();
+  process.stderr.write(`config-dump: ${error}\n`);
+  process.stderr.write(
+    '  the app\'s config/*.php could not be folded at build time; the compiled worker would boot ' +
+      'with different configuration than the app (write the value literally, or simplify the construct)\n'
+  );
+  process.exit(1);
+}
 const mwReport = {};
 const mw = appMiddlewareState(appDir, mwReport) || {};
 // `transformers` carries its own refusal (a skipWhen() callback or an
@@ -275,6 +322,8 @@ for (const group of process.argv.slice(2).map((g) => g.trim()).filter(Boolean)) 
   };
   if (!Object.prototype.hasOwnProperty.call(dump, group)) putTree(group, tree);
 }
+
+reportDrops();
 
 // `serializeOrdered` carries each value's PHP key order (`__lwOrder`, #416);
 // a plain JSON.stringify would drop the non-enumerable marker and reorder a

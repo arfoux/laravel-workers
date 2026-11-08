@@ -22,6 +22,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePhp } from './php-runtime.mjs';
+import { resolveAppRoot } from './native-path.mjs';
 import { classFile, parsePhpFile } from './static.mjs';
 import { studly, snake } from '../kernel/str.mjs';
 
@@ -194,17 +195,13 @@ export function defaultTable(fqcn) {
 // ---------------------------------------------------------------------------
 // CLI: thin pass-through to the PHP oracle, re-deriving the default table.
 // ---------------------------------------------------------------------------
-const appDir =
-  process.env.LW_APP_ROOT ||
-  (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+const appDir = resolveAppRoot();
 const isMain =
   process.argv[1] &&
   (process.argv[1] === fileURLToPath(import.meta.url) ||
     process.argv[1].replace(/\\/g, '/').endsWith('/tools/model-dump.mjs'));
 if (isMain) {
-  const appDir =
-    process.env.LW_APP_ROOT ||
-    (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+  const appDir = resolveAppRoot();
   if (!appDir) {
     process.stderr.write('model-dump.mjs: cannot find app root (set LW_APP_ROOT)\n');
     process.exit(1);

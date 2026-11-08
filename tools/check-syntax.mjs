@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toNativePath } from './native-path.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRIES = ['build.mjs', 'kernel', 'compiler/src', 'compiler/runtime', 'bin', 'tools', 'shadow', 'src'];
@@ -169,7 +170,7 @@ for (const file of files) {
 // the pass is SKIPPED with a note (the `test` CI job has PHP, the dev machine
 // usually does too). The file list is read from the tree, not typed.
 const phpFiles = collectPhp(path.join(repoRoot, 'tools'));
-const phpBin = process.env.PHP_BIN || 'php';
+const phpBin = toNativePath(process.env.PHP_BIN) || 'php';
 let phpNote = '';
 if (phpFiles.length) {
   const probe = spawnSync(phpBin, ['-v'], { encoding: 'utf8' });

@@ -20,12 +20,13 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toNativePath } from './native-path.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const OUT = join(ROOT, 'kernel', 'html-entities.mjs');
 
-const PHP = process.env.PHP_BIN || 'php';
+const PHP = toNativePath(process.env.PHP_BIN) || 'php';
 
 const phpCode = `
 $table = get_html_translation_table(HTML_ENTITIES, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML401, 'UTF-8');

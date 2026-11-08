@@ -6,9 +6,10 @@
 // Mirrors the PHP oracle's Reflection-based classification exactly.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { resolveAppRoot } from './native-path.mjs';
 import { classFile, parsePhpFile, evalConstantExpr, nodeName, appPsr4Dirs } from './static.mjs';
 
-const appDir = process.env.LW_APP_ROOT || (existsSync(join(process.cwd(), 'artisan')) ? process.cwd() : null);
+const appDir = resolveAppRoot();
 if (!appDir) { process.stderr.write('class-dump.mjs: cannot find app root\n'); process.exit(1); }
 
 const BUILTINS = new Set(['int', 'float', 'string', 'bool', 'array', 'callable', 'iterable', 'object', 'mixed', 'void', 'null', 'true', 'false']);
