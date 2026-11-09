@@ -320,8 +320,8 @@ export function buildRt(context, opts = {}) {
     }
     const key = String(name);
     if (key.indexOf('Illuminate\\Foundation\\Vite') !== -1 || key.indexOf('Illuminate/Foundation/Vite') !== -1) {
-      const invoke = viteCtx.invoke;
-      const fonts = viteCtx.fonts;
+      const invoke = absolutizeViteUrls(viteCtx.invoke);
+      const fonts = absolutizeViteUrls(viteCtx.fonts);
       const shim = (entries) => invoke;
       shim.fonts = () => fonts;
       return shim;
@@ -1123,6 +1123,28 @@ export function buildRt(context, opts = {}) {
   };
   // Runtime route() generation: name → uri pattern (built at build time). Only used
   // when args are passed or when the captured build-time value does not apply.
+  // ---- @vite asset URLs ----
+  // Laravel's @vite directive renders its tags through `asset()`, which prefixes
+  // the request's scheme + host AT REQUEST time (ASSET_URL unset → the captured
+  // HTML carries a root-relative URL, the response an absolute one). The build
+  // bakes the tags without a request host, so absolutize them here with the
+  // request's origin - otherwise every real app's `@vite` emits `/build/...`
+  // where PHP emits `http://host/build/...`.
+  //
+  // This is NOT a reversal of the build-time relativization
+  // (`writeContextModule` in build.mjs / `relativizeContextJson`): that step
+  // strips the DEV origin (`localhost`) the PHP compiler baked in, because a
+  // worker serving `http://localhost/build/...` would make the VISITOR's machine
+  // fetch the stylesheet. Here we re-add the REQUEST's own origin - the same
+  // thing PHP's `asset()` answers on the real host - so no dev origin ever
+  // leaks and the bytes match PHP. Already-absolute baked URLs and
+  // protocol-relative (`//`) ones are left alone; with no request origin
+  // (hostless render: email / error view) the baked form is kept as-is.
+  const absolutizeViteUrls = (html) => {
+    if (!origin || typeof html !== 'string') return html;
+    if (html.indexOf('="/') === -1 && html.indexOf("='/") === -1) return html;
+    return html.replace(/\s(href|src)=(["'])\/(?!\/)/g, (_m, attr, q) => ` ${attr}=${q}${origin}/`);
+  };
   const genUrl = (name, args) => {
     if (!routeMap || !Object.prototype.hasOwnProperty.call(routeMap, name)) return null;
     const uri = String(routeMap[name]);

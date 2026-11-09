@@ -1461,6 +1461,25 @@ async function renderException(error, request, ctx) {
   // platform answered "error code: 1101" where Laravel renders a 500. The
   // fail-loud contract above is for a render that itself failed (lwRenderFailed);
   // an *unrendered* app error is not that case.
+  //
+  // Illuminate\Foundation\Exceptions\Handler::report() also writes the throwable
+  // to the application log before render() answers. The compiled rung answered
+  // "Server Error" with nothing recorded anywhere - the same shape as this
+  // project's own deploy incident (`wrangler tail` said `outcome=ok` and no line
+  // anywhere named the cause). The Worker's log is the console, so the throwable
+  // goes there (`wrangler tail`); the response bytes below are untouched: parity
+  // is asserted on the response, and this is the only place the cause of a bare
+  // 500 can surface.
+  {
+    const name = (error && error.constructor && error.constructor.name) || typeof error;
+    const method = typeof request.method === 'function' ? request.method() : null;
+    const path = typeof request.path === 'function' ? request.path() : null;
+    const at = [method, path].filter(Boolean).join(' ');
+    console.error(
+      `laravel-workers: unhandled ${name}${at ? ` on ${at}` : ''}: ${error && error.message ? error.message : String(error)}`
+    );
+    if (error && error.stack) console.error(String(error.stack).split('\n').slice(0, 8).join('\n'));
+  }
   if (requestExpectsJson(request)) {
     return new HttpResponse({
       status: 500,

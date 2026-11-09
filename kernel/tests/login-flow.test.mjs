@@ -24,7 +24,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
@@ -212,10 +212,27 @@ function d1(sqlite) {
 // `cache` tables the database cache store backs `throttle:5,1` with. The user
 // row is seeded with the *oracle's* bcrypt hash so both sides check the same
 // digest.
+//
+// Beyond those four, the app's OWN schema is applied first (`dist/schema.sql`,
+// which `build.mjs` emits): a real app's login-adjacent routes may query its own
+// tables (a dashboard that lists the user's posts). Without the schema BOTH
+// rungs answer "no such table" for such a route, and the step comparison turns
+// into a 500-vs-Laravel-debug-page red that names nothing. The app tables are
+// created `IF NOT EXISTS` so the four fixture tables below keep their shape, and
+// the seed lands on the app's own `users` table when the app has one.
 function makeDb(passwordHash) {
   const sqlite = new DatabaseSync(':memory:');
+  const schemaPath = path.join(APP_ROOT, 'dist', 'schema.sql');
+  if (existsSync(schemaPath)) {
+    const schema = readFileSync(schemaPath, 'utf8')
+      // Idempotent: `dist/schema.sql` already guards some statements itself
+      // (the edge runtime's `lw_blobs`), so never double the clause.
+      .replace(/\bCREATE TABLE\b(?! IF NOT EXISTS)/g, 'CREATE TABLE IF NOT EXISTS')
+      .replace(/\bCREATE (UNIQUE INDEX|INDEX)\b(?! IF NOT EXISTS)/g, 'CREATE $1 IF NOT EXISTS');
+    sqlite.exec(schema);
+  }
   sqlite.exec(`
-    CREATE TABLE sessions (
+    CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       user_id INTEGER NULL,
       ip_address TEXT NULL,
@@ -223,7 +240,7 @@ function makeDb(passwordHash) {
       payload TEXT NOT NULL,
       last_activity INTEGER NOT NULL
     );
-    CREATE TABLE users (
+    CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY,
       name TEXT NULL,
       email TEXT UNIQUE,
@@ -233,8 +250,8 @@ function makeDb(passwordHash) {
       created_at TEXT NULL,
       updated_at TEXT NULL
     );
-    CREATE TABLE cache ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "expiration" INTEGER NOT NULL);
-    CREATE TABLE cache_locks ("key" TEXT PRIMARY KEY, "owner" TEXT NOT NULL, "expiration" INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS cache ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "expiration" INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS cache_locks ("key" TEXT PRIMARY KEY, "owner" TEXT NOT NULL, "expiration" INTEGER NOT NULL);
   `);
   sqlite
     .prepare(
@@ -375,6 +392,14 @@ function normJsonBody(parsed) {
   return out;
 }
 
+// Replace a side's own random CSRF token inside an HTML body with the shared
+// placeholder, so the markup compare ignores only the value that is random per
+// session (every other byte must match).
+function normBodyTokens(body, token) {
+  if (!token) return String(body);
+  return String(body).split(token).join(TOKEN);
+}
+
 function parseSetCookie(raw) {
   const parts = String(raw).split('; ');
   const first = parts[0];
@@ -486,15 +511,8 @@ test('Breeze login flow matches the PHP 8.3 oracle (compiled rung, E2E)', { skip
       `${where}: Set-Cookie name+attributes`
     );
 
-    // body
-    const ct = String(normHeaders(php.headers)['content-type'] || '');
-    if (ct.startsWith('application/json')) {
-      assert.deepEqual(normJsonBody(mine.parsed), normJsonBody(php.parsed), `${where}: JSON body`);
-    } else {
-      assert.equal(mine.body, php.body, `${where}: body`);
-    }
-
-    // session id / CSRF token: random on both sides, 40 chars, same shape
+    // session id / CSRF token: random on both sides, 40 chars, same shape.
+    // Read them before the body compare so the HTML body can be normalized.
     assert.ok(php.sessionPlain, `${where}: oracle must report session_plain`);
     assert.equal(String(php.sessionPlain).length, 40, `${where}: oracle session id length`);
     assert.equal(String(php.xsrfPlain).length, 40, `${where}: oracle CSRF token length`);
@@ -503,6 +521,15 @@ test('Breeze login flow matches the PHP 8.3 oracle (compiled rung, E2E)', { skip
     assert.equal(String(jsSid).length, 40, `${where}: compiled session id length`);
     assert.equal(String(jsXsrf).length, 40, `${where}: compiled CSRF token length`);
     seenSid.add(jsSid);
+
+    // body — the CSRF token is random on both sides, so compare with each
+    // side's OWN token replaced by a placeholder (every other byte must match).
+    const ct = String(normHeaders(php.headers)['content-type'] || '');
+    if (ct.startsWith('application/json')) {
+      assert.deepEqual(normJsonBody(mine.parsed), normJsonBody(php.parsed), `${where}: JSON body`);
+    } else {
+      assert.equal(normBodyTokens(mine.body, jsXsrf), normBodyTokens(php.body, php.xsrfPlain), `${where}: body`);
+    }
 
     // session row + payload bytes
     const mineRows = mine.rows.map((r) => normRow(r, jsXsrf));
