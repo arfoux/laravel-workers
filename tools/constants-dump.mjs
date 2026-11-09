@@ -50,7 +50,12 @@ for (const fqcn of fqcns) {
   const short = fqcn.split('\\').pop();
   const ns = fqcn.includes('\\') ? fqcn.slice(0, fqcn.lastIndexOf('\\')) : '';
   const clsNode = parsed.classes.find(
-    (c) => c.kind === 'class' && c.name && nodeName(c.name) === short && (parsed.namespace || '') === ns
+    // `enum` is a class-like declaration: PHP's `class_exists()` is true for it
+    // and `ReflectionClass::getConstants()` hands back its cases, so a file that
+    // declares one must be found here (#701). The cases themselves are enum
+    // INSTANCES - non-scalar, so PHP's dump drops them (`is_scalar() || null`)
+    // and this one reads only the `classconst` nodes, which is the same set.
+    (c) => (c.kind === 'class' || c.kind === 'enum') && c.name && nodeName(c.name) === short && (parsed.namespace || '') === ns
   );
   if (!clsNode) {
     // PHP's class_exists() is false for an interface/trait too, so the oracle

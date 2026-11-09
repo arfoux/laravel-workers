@@ -379,7 +379,7 @@ export function parsePhpFile(file) {
       for (const c of (n.children || [])) walk(c);
       return;
     }
-    if (n.kind === 'class' || n.kind === 'interface' || n.kind === 'trait') classes.push(n);
+    if (n.kind === 'class' || n.kind === 'interface' || n.kind === 'trait' || n.kind === 'enum') classes.push(n);
     for (const k of Object.keys(n)) {
       if (k === 'loc' || k === 'locend' || k === 'locstart' || k === 'leadingComments' || k === 'trailingComments' || k === 'comments' || k === 'raw') continue;
       if (k === 'use' || k === 'uses') continue;
@@ -494,6 +494,20 @@ export function evalConstantExpr(node, ctx, depth = 0, stack = []) {
       if (!what) return null;
       const kind = what.kind;
       const raw = what.raw || what.name || '';
+      // `\App\Enums\Status::class` (#700): `::class` is not a constant of the
+      // target class - it IS its FQCN. The config path already answered this
+      // (the sibling branch below); the constant path looked for a constant
+      // literally named `class`, found none, and DROPPED the entry - so an app
+      // constant such as `public const TYPE = Status::class;` went missing and
+      // every route reading it failed loud.
+      if (offset === 'class') {
+        if (kind === 'selfreference' || kind === 'self' || kind === 'static' || raw === 'self' || raw === 'static') {
+          return ctx.fqcn || ctx.className || null;
+        }
+        if (kind === 'parentreference' || raw === 'parent') return null;
+        if (!raw) return null;
+        return resolveClassName(raw, what, ctx);
+      }
       // self::/static:: — resolve through the enclosing class's map.
       if (kind === 'selfreference' || kind === 'self' || kind === 'static' || raw === 'self' || raw === 'static') {
         const map = ctx.selfConstantsMap || ctx.selfConstants || {};
@@ -591,19 +605,24 @@ function collectConstants(appDir, parsed, clsNode, file) {
       for (const c of (stmt.constants || [])) {
         const name = nodeName(c.name);
         if (!name || raw.has(name)) continue;
-        raw.set(name, { value: c.value, parsed: s.parsed });
+        // The declaring class's FQCN, so `self::class` / `static::class` inside a
+        // constant answers the same FQCN PHP's `ReflectionClass::getName()` does
+        // (#700) — without it the branch had nothing to return and the constant
+        // was dropped.
+        const fqcn = (s.parsed.namespace ? s.parsed.namespace + '\\' : '') + nodeName(s.node.name);
+        raw.set(name, { value: c.value, parsed: s.parsed, fqcn });
       }
     }
   }
   // Pass 1: literal values, so `self::OTHER` can be resolved in pass 2.
   const selfMap = {};
   for (const [name, rec] of raw) {
-    selfMap[name] = evalConstantExpr(rec.value, { appDir, parsed: rec.parsed });
+    selfMap[name] = evalConstantExpr(rec.value, { appDir, parsed: rec.parsed, fqcn: rec.fqcn });
   }
   const out = {};
   for (const [name, rec] of raw) {
     const val = evalConstantExpr(rec.value, {
-      appDir, parsed: rec.parsed, selfConstantsMap: selfMap, selfConstants: selfMap,
+      appDir, parsed: rec.parsed, fqcn: rec.fqcn, selfConstantsMap: selfMap, selfConstants: selfMap,
     });
     if (val === null && !isNullLiteral(rec.value)) continue;
     out[name] = val;

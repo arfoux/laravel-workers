@@ -2018,6 +2018,14 @@ writeTree(tmpRoot, {
   // at json_encode() time.
   'kernel/request-scope.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'request-scope.mjs'), 'utf8'),
   'kernel/php-serialize.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'php-serialize.mjs'), 'utf8'),
+  // The package primitives rt-from-context exposes (rt.token / rt.oauth /
+  // rt.webhook / rt.broadcast / rt.notify) — the same modules the build's
+  // cpSync copies wholesale from kernel/packages.
+  'kernel/packages/token.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'token.mjs'), 'utf8'),
+  'kernel/packages/oauth.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'oauth.mjs'), 'utf8'),
+  'kernel/packages/webhook.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'webhook.mjs'), 'utf8'),
+  'kernel/packages/broadcast.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'broadcast.mjs'), 'utf8'),
+  'kernel/packages/notify-http.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'notify-http.mjs'), 'utf8'),
   // model.mjs + the runtime share the localized month/day tables (a model date's
   // translatedFormat), and rt.view shares the session's ViewErrorBag.
   'kernel/date-names.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'date-names.mjs'), 'utf8'),

@@ -87,8 +87,13 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
 - Compile **any reachable class** from compiled roots (routes, listeners, jobs, middleware):
   services, actions, form requests, rules, mailables, notifications
 - Support: `$this`, constructors (resolved via 1.1), typed/readonly props, static calls inside
-  the compiled universe, traits/inheritance/interfaces/enums, union/nullable types, defaults,
+  the compiled universe, traits/inheritance/interfaces, union/nullable types, defaults,
   spread/variadics, closures, generators
+- `enum`: **recognized as a class-like declaration** (discovery, `Foo::class`, and its own
+  `const`s fold — audit #701), but an enum **case** is not a scalar in PHP
+  (`ReflectionClass::getConstants()` hands back an instance, `tools/constants-dump.php` drops
+  it), so a bare `State::ACTIVE` read fails loud (`LW002`) instead of inlining a string;
+  `State::ACTIVE->value` / `->name` / `::cases()` belong to a port
 - Output: one module per class + `classes.generated.mjs` registry (`new $x` / `make($x)`)
 - Multi-verb URIs: a URI compiles its primary GET/POST handler *and* any extra verb
   (separate module, e.g. `login--post.mjs`) — a `GET /login` view snapshot plus a

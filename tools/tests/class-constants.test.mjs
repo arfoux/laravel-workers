@@ -112,3 +112,56 @@ test('a bitwise or literal shape the fold refuses is dropped, never rounded', ()
     assert.equal(Object.prototype.hasOwnProperty.call(c, k), false, k + ' must stay out of the dump');
   }
 });
+
+// Audit #701: `enum` was not a recognized declaration kind in `parsePhpFile`
+// (`classes` held class/interface/trait only), so `constants-dump.mjs` answered
+// `class not found` for a real enum and every route reading one failed its build
+// with a false reason — while `extractController` reported the alias/FQCN fine.
+// PHP oracle (php 8.3.30 + the app's vendor autoloader) for the enum below:
+//   class_exists('App\Enums\State') -> true, enum_exists() -> true
+//   (new ReflectionClass('App\Enums\State'))->getConstants()
+//     -> ['Active' => enum(App\Enums\State::Active),
+//         'Inactive' => enum(App\Enums\State::Inactive),
+//         'DEFAULT_NAME' => 'inactive']
+// `tools/constants-dump.php` keeps only `is_scalar($value) || $value === null`,
+// so its JSON is {"DEFAULT_NAME":"inactive"} — the cases (enum INSTANCES) are not
+// constants this dump carries, and the JS reader sees exactly the `classconst`
+// node, which is the same set.
+test('an enum is class-like: its constants are found, its cases are not constants (#701)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lw-enum-'));
+  try {
+    mkdirSync(join(dir, 'app', 'Enums'), { recursive: true });
+    const file = join(dir, 'app', 'Enums', 'State.php');
+    writeFileSync(
+      file,
+      `<?php
+namespace App\\Enums;
+
+enum State: string
+{
+    case Active = 'active';
+    case Inactive = 'inactive';
+    const DEFAULT_NAME = 'inactive';
+}
+`
+    );
+    const parsed = parsePhpFile(file);
+    assert.equal(parsed.error, undefined, parsed.error);
+    assert.equal(parsed.classes.length, 1, 'the enum must be discovered');
+    assert.equal(parsed.classes[0].kind, 'enum');
+    const c = classConstants(dir, parsed, parsed.classes[0]).constants;
+    assert.deepEqual(c, { DEFAULT_NAME: 'inactive' }, 'the cases are enum instances, never scalars');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('`X::class` folds to the FQCN string in the constant path too (#700)', () => {
+  // The config path (`evalConfigExpr`) already answered `::class`; the constant
+  // path looked for a constant literally named `class`, found none and dropped
+  // the entry — so `public const TYPE = Status::class;` went missing from the
+  // dump and every route reading it failed loud.
+  const c = foldConstants(['  const TYPE = \\App\\Support\\Thing::class;', '  const SELF_TYPE = self::class;'].join('\n'));
+  assert.equal(c.TYPE, 'App\\Support\\Thing');
+  assert.equal(c.SELF_TYPE, 'App\\Foo', 'self::class is the declaring class');
+});

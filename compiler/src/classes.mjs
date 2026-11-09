@@ -301,6 +301,19 @@ function literalOf(node) {
       return n === null ? null : { js: String(n) };
     }
     case 'string': return { js: JSON.stringify(node.value) };
+    // `public $retries = -1;` / `= +1;` — the same branch the controller and
+    // tools/static.mjs already carry (#694): a class whose only sin is a
+    // negative default used to be refused with LW002, blocking every route
+    // that used it. The sign is applied to PHP's own reading of the literal,
+    // so `-017` is -15 and `-1_000` is -1000.
+    case 'unary': {
+      if (node.type !== '-' && node.type !== '+') return null;
+      const inner = node.what;
+      if (!inner || inner.kind !== 'number') return null;
+      const n = phpNumberLiteral(inner.value);
+      if (n === null) return null;
+      return { js: String(node.type === '-' ? -n : n) };
+    }
     case 'array': {
       const items = (node.items || []).filter((i) => i && i.kind !== 'comment');
       if (!items.length) return { js: '[]' };

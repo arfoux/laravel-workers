@@ -495,8 +495,16 @@ export function extractController(source, methodName) {
 
   // Classes read for a *constant* (e.g. RouteServiceProvider::HOME).
   const constantClasses = [...constantSet]
-    .filter((alias) => !NON_MODEL_STATICS.has(alias))
-    .map((alias) => ({ alias, fqcn: uses[alias] || (nsName ? nsName + '\\' + alias : alias) }))
+    // Same two rules as the `classes`/`newClasses` mappers above: strip the
+    // leading `\` before the NON_MODEL_STATICS lookup, and never prefix a
+    // namespace onto an alias that already carries one (#693: `\App\Enums\Status::ACTIVE`
+    // used to resolve to `App\Http\Controllers\\App\Enums\Status`).
+    .filter((alias) => !NON_MODEL_STATICS.has(String(alias).replace(/^\\/, '')))
+    .map((rawAlias) => {
+      const alias = String(rawAlias).replace(/^\\/, '');
+      const fqcn = uses[alias] || (alias.includes('\\') ? alias : nsName ? nsName + '\\' + alias : alias);
+      return { alias, fqcn };
+    })
     .sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
 
   // The kinds of the data the views receive: a Blade view carries no type

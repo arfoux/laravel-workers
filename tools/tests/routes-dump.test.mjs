@@ -38,10 +38,15 @@ Route::query('/q', fn () => 'q');
 Route::match($verbs, '/dynamic', fn () => 'd');
 `;
 
-function runTool(env = {}, routesSource = ROUTES) {
+function runTool(env = {}, routesSource = ROUTES, extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'lw-routes-'));
   mkdirSync(join(dir, 'bootstrap'), { recursive: true });
   mkdirSync(join(dir, 'routes'), { recursive: true });
+  for (const [rel, body] of Object.entries(extra)) {
+    const target = join(dir, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, body);
+  }
   writeFileSync(join(dir, 'artisan'), '<?php\n');
   writeFileSync(
     join(dir, 'bootstrap', 'app.php'),
@@ -274,6 +279,86 @@ Route::prefix('p')->name('n.')->middleware('auth')->get('u', fn () => 'a')->name
   const r = (entries || []).find((e) => e.uri === 'p/u');
   assert.equal(r.name, 'n.tail');
   assert.deepEqual(r.middleware, ['web', 'auth']);
+});
+
+test('a controller `$this->middleware()` with a chained ->except()/->only()/string value is honoured', () => {
+  // `ControllerMiddlewareOptions` (`Controller::middleware()` ->
+  // `new ControllerMiddlewareOptions($options)`): `$options['only']`/`['except']`
+  // are CAST to array (`(array) $options['only']` and a bare string is a single
+  // entry) and the chained `->only(...)`/`->except(...)` are VARIADIC
+  // (`func_get_args()`). The reader used to accept the array-literal options
+  // only, so `->except(['show'])` was dropped and the guard was attached to
+  // EVERY method — wider than PHP, which ships a middleware the app excluded
+  // (the mirror image: `->only()` narrowed away is a MISSING guard).
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use App\\Http\\Controllers\\ThingController;
+use Illuminate\\Support\\Facades\\Route;
+Route::get('a', [ThingController::class, 'index']);
+Route::get('b', [ThingController::class, 'show']);
+Route::get('c', [ThingController::class, 'other']);
+`,
+    {
+      'app/Http/Controllers/ThingController.php': `<?php
+namespace App\\Http\\Controllers;
+
+use Illuminate\\Routing\\Controller;
+
+class ThingController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth', ['except' => ['index']]);
+        $this->middleware('log')->only('index');
+    }
+
+    public function index() {}
+    public function show() {}
+    public function other() {}
+}
+`,
+    }
+  );
+  // The controller lives beside the route file in the same temp app.
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  // `$this->middleware('auth', ['except' => ['index']])` + `$this->middleware('log')->only('index')`
+  assert.deepEqual(by.get('a').middleware, ['web', 'log']);
+  assert.deepEqual(by.get('b').middleware, ['web', 'auth']);
+  assert.deepEqual(by.get('c').middleware, ['web', 'auth']);
+});
+
+test('a `$this->middleware()` nested in a guard SPEAKS (it cannot be evaluated)', () => {
+  const { res } = runTool(
+    {},
+    `<?php
+use App\\Http\\Controllers\\GuardedController;
+use Illuminate\\Support\\Facades\\Route;
+Route::get('g', [GuardedController::class, 'index']);
+`,
+    {
+      'app/Http/Controllers/GuardedController.php': `<?php
+namespace App\\Http\\Controllers;
+
+use Illuminate\\Routing\\Controller;
+
+class GuardedController extends Controller
+{
+    public function __construct()
+    {
+        if (config('app.env') === 'production') {
+            $this->middleware('auth');
+        }
+    }
+
+    public function index() {}
+}
+`,
+    }
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stderr, /\$this->middleware\(\.\.\.\) inside a if — not evaluated/);
 });
 
 test('withoutMiddleware subtracts from the gathered list (route and group level)', () => {
