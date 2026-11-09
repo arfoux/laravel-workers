@@ -1311,6 +1311,55 @@ test('emit: redirect()->back() compiles to rt.back; the argument form is refused
   assert.match(bad.errors[0].message, /redirect\(\)->back/);
 });
 
+// The facade dispatcher: Session/Config/URL/Redirect/View/Cookie compile to the
+// SAME rt.* surface their helper uses (so they are oracle-verified through the
+// helper), each gated on a per-method allowlist that refuses the rest by name.
+test('emit: Session/Config/URL/Redirect/View/Cookie facades compile to their rt.* surface', () => {
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n        return response(\'ok\');\n    }\n}\n';
+  const meta = { routeUri: '/x', routeParams: [], models: [], views: [] };
+  const compiles = (body) => {
+    const res = emitController(src(body), 'demo', meta);
+    assert.deepEqual(res.errors, [], body + ' -> ' + JSON.stringify(res.errors));
+    return res.code;
+  };
+  assert.match(compiles("Session::put('k', 'v');"), /rt\.session\(\)\.put\("k", "v"\)/);
+  assert.match(compiles("$s = Session::get('k');"), /rt\.session\(\)\.get\("k"\)/);
+  // Config::get passes an explicit null default when the app gave none, so a
+  // missing key answers null (Laravel) instead of rt.config throwing.
+  assert.match(compiles("$n = Config::get('app.name');"), /rt\.config\("app\.name", null\)/);
+  assert.match(compiles("$n = Config::get('app.name', 'def');"), /rt\.config\("app\.name", "def"\)/);
+  assert.match(compiles("$u = URL::to('/home');"), /rt\.url\("\/home"\)/);
+  assert.match(compiles("$u = URL::route('home');"), /rt\.route\("home"\)/);
+  assert.match(compiles("return Redirect::to('/x');"), /rt\.redirect\("\/x"\)/);
+  assert.match(compiles("return Redirect::back();"), /rt\.back\(\)/);
+  assert.match(compiles("return Redirect::intended('/dash');"), /rt\.redirect\(rt\.session\(\)\.pull\("url\.intended", "\/dash"\)\)/);
+  assert.match(compiles("$v = View::make('x', ['a' => 1]);"), /rt\.view\("x"/);
+  assert.match(compiles("$c = Cookie::make('c', 'v', 60);"), /rt\.cookie\("c", "v", 60\)/);
+});
+
+// The allowlists refuse the methods the rt.* surfaces do not have, by name -
+// never a silent wrong answer.
+test('emit: the new facades refuse unsupported methods by name (LW002)', () => {
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n        return response(\'ok\');\n    }\n}\n';
+  const meta = { routeUri: '/x', routeParams: [], models: [], views: [] };
+  const refuses = (body, needle) => {
+    const res = emitController(src(body), 'demo', meta);
+    assert.equal(res.code, null, body + ' should be refused');
+    assert.equal(res.errors[0].code, 'LW002');
+    assert.match(res.errors[0].message, needle);
+  };
+  refuses("Config::set('a', 1);", /Config::set/);
+  refuses("Session::getHandler();", /Session::getHandler/);
+  refuses("$u = URL::current();", /URL::current/);
+  refuses("return Redirect::refresh();", /Redirect::refresh/);
+});
+
 test('emit: a relation call on a model fails loud (LW003)', () => {
   const src = String.raw`<?php
 namespace App\Http\Controllers;

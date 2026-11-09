@@ -151,6 +151,23 @@ const NON_MODEL_STATICS = new Set([
   'Illuminate\\Support\\Facades\\Mail',
   'Queue',
   'Illuminate\\Support\\Facades\\Queue',
+  // These facades compile: the transpiler maps each to its rt.* surface (the
+  // same one the matching helper uses), so they must not be refused as "the X
+  // facade is not compiled". Each still fails loud per-method via its handler's
+  // allowlist. DB is deliberately NOT here (PR-B: it needs query-builder chain
+  // handling, not a one-call mapping).
+  'Session',
+  'Illuminate\\Support\\Facades\\Session',
+  'Config',
+  'Illuminate\\Support\\Facades\\Config',
+  'URL',
+  'Illuminate\\Support\\Facades\\URL',
+  'Redirect',
+  'Illuminate\\Support\\Facades\\Redirect',
+  'Cookie',
+  'Illuminate\\Support\\Facades\\Cookie',
+  'View',
+  'Illuminate\\Support\\Facades\\View',
 ]);
 
 function lwErr(code, message, loc, hint) {

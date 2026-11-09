@@ -840,6 +840,25 @@ const CACHE_ASYNC = new Set([
 ]);
 // Hash facade methods (bcrypt).
 const HASH_FACADE = new Set(['make', 'check', 'needsRehash', 'isHashed']);
+// The Session facade: the live session store's surface (rt.session(), the same
+// Store the session() helper reads). Synchronous on these methods.
+const SESSION_FACADE = new Set([
+  'get', 'put', 'has', 'forget', 'pull', 'flash', 'flush', 'keep', 'reflash',
+  'increment', 'decrement', 'push', 'exists', 'missing',
+]);
+// The Config facade: rt.config(key, default) is a GET only - there is no set.
+const CONFIG_FACADE = new Set(['get']);
+// The URL facade: rt.url(path) answers to()/asset(); rt.route(name, ...args)
+// answers route() (a URL string, not a redirect).
+const URL_FACADE = new Set(['to', 'asset']);
+// The Redirect facade: to/away -> rt.redirect(location[, status]);
+// back -> rt.back(); route -> rt.redirect(rt.route(...));
+// intended -> rt.redirect(the session's url.intended pull).
+const REDIRECT_FACADE = new Set(['to', 'away']);
+// The View facade: rt.view(name, data) - only make().
+const VIEW_FACADE = new Set(['make']);
+// The Cookie facade: rt.cookie(name, value, minutes, ...) - the make form.
+const COOKIE_FACADE = new Set(['make']);
 // The Storage facade: the compiled store's surface (the same methods, the same
 // return values as Laravel's FilesystemAdapter).
 const STORAGE_ASYNC = { put: 'put', get: 'getText', exists: 'exists', delete: 'delete' };
@@ -2423,6 +2442,91 @@ function txCall(node) {
         );
       }
       return txAwait('rt.storage().' + STORAGE_ASYNC[meth] + '(' + args + ')', node, 'Storage::' + meth + '()');
+    }
+    // Illuminate\Support\Facades\Session — the live session store (rt.session(),
+    // the same Store the session() helper reads). Synchronous on these methods.
+    if ((cls === 'Session' || cls === 'Illuminate\\Support\\Facades\\Session') && CTX && CTX.controller) {
+      if (!SESSION_FACADE.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Session::' + meth + '() is not supported — allowed: ' + [...SESSION_FACADE].join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.session().' + meth + '(' + args + ')';
+    }
+    // Illuminate\Support\Facades\Config — rt.config(key, default). GET only
+    // (rt.config reads; there is no set).
+    if ((cls === 'Config' || cls === 'Illuminate\\Support\\Facades\\Config') && CTX && CTX.controller) {
+      if (!CONFIG_FACADE.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Config::' + meth + '() is not supported — rt.config() reads the config; allowed: get — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      // Config::get($key) answers null for a missing key (Laravel), so pass an
+      // explicit null default when the app gave none — rt.config throws without one.
+      const cargs = node.arguments || [];
+      const cargsTx = cargs.map(tx).join(', ');
+      return cargs.length >= 2 ? 'rt.config(' + cargsTx + ')' : 'rt.config(' + cargsTx + ', null)';
+    }
+    // Illuminate\Support\Facades\URL — rt.url(path) answers to()/asset();
+    // rt.route(name, ...args) answers route() (a URL string, not a redirect).
+    if ((cls === 'URL' || cls === 'Illuminate\\Support\\Facades\\URL') && CTX && CTX.controller) {
+      if (meth === 'route') return 'rt.route(' + args + ')';
+      if (URL_FACADE.has(meth)) return 'rt.url(' + args + ')';
+      throw mkErr(
+        'LW002',
+        'URL::' + meth + '() is not supported — allowed: ' + [...URL_FACADE].join(', ') + ', route — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    // Illuminate\Support\Facades\Redirect — to/away -> rt.redirect(location[, status]);
+    // back -> rt.back(); route -> rt.redirect(rt.route(...)); intended -> the session
+    // url.intended pull (the same shape the redirect()->intended() helper compiles to).
+    if ((cls === 'Redirect' || cls === 'Illuminate\\Support\\Facades\\Redirect') && CTX && CTX.controller) {
+      if (meth === 'back') return 'rt.back()';
+      if (meth === 'route') return 'rt.redirect(rt.route(' + args + '))';
+      if (meth === 'intended') {
+        const rargs = node.arguments || [];
+        const def = rargs.length ? tx(rargs[0]) : '"/"';
+        return 'rt.redirect(rt.session().pull("url.intended", ' + def + '))';
+      }
+      if (REDIRECT_FACADE.has(meth)) return 'rt.redirect(' + args + ')';
+      throw mkErr(
+        'LW002',
+        'Redirect::' + meth + '() is not supported — allowed: to, away, back, route, intended — ' + PORT_HINT,
+        node.loc,
+        PORT_HINT
+      );
+    }
+    // Illuminate\Support\Facades\View — rt.view(name, data). Only make().
+    if ((cls === 'View' || cls === 'Illuminate\\Support\\Facades\\View') && CTX && CTX.controller) {
+      if (!VIEW_FACADE.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'View::' + meth + '() is not supported — allowed: make — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.view(' + args + ')';
+    }
+    // Illuminate\Support\Facades\Cookie — rt.cookie(name, value, minutes, ...). make().
+    if ((cls === 'Cookie' || cls === 'Illuminate\\Support\\Facades\\Cookie') && CTX && CTX.controller) {
+      if (!COOKIE_FACADE.has(meth)) {
+        throw mkErr(
+          'LW002',
+          'Cookie::' + meth + '() is not supported — allowed: make — ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      return 'rt.cookie(' + args + ')';
     }
     // Illuminate\Support\Facades\Hash — bcrypt, with the app's configured rounds.
     if ((cls === 'Hash' || cls === 'Illuminate\\Support\\Facades\\Hash') && CTX && CTX.controller) {

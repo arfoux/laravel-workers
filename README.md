@@ -33,7 +33,7 @@ What this is **not:** a Laravel runtime, or PHP-in-Worker. Your Laravel app is t
 
 <!-- readme-counts:start -->
 ```
-constructs   47 compile · 64 fail loud · 7 documented   (118 audited)
+constructs   53 compile · 58 fail loud · 7 documented   (118 audited)
 facades      47/47 classified (100%)
 blade corpus 55/55 byte-identical vs PHP 8.3
 docs         105/105 pages with a verdict

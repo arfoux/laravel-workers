@@ -982,12 +982,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\Config"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\Config::all();",
-      "expect": "fail",
-      "note": "The Config facade is not compiled at the edge (Laravel 13 lists 17 methods): the build refuses it with that reason - a port handler answers it.",
+      "php": "        Config::get('app.name');",
+      "expect": "ok",
+      "note": "The Config facade compiles to rt.config(key, default) - a GET only (there is no set; Config::set fails loud). A missing key answers null, like Laravel.",
       "batch": "M49",
       "status": "done",
-      "code": "LW002",
       "reason": "the Config facade is not compiled at the edge"
     },
     {
@@ -1010,12 +1009,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\Cookie"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\Cookie::getQueuedCookies();",
-      "expect": "fail",
-      "note": "The Cookie facade is not compiled at the edge (Laravel 13 lists 15 methods): the build refuses it with that reason - a port handler answers it.",
+      "php": "        Cookie::make('c', 'v', 60);",
+      "expect": "ok",
+      "note": "The Cookie facade compiles to rt.cookie(name, value, minutes, ...). Only make(); other methods fail loud LW002.",
       "batch": "M49",
       "status": "done",
-      "code": "LW002",
       "reason": "the Cookie facade is not compiled at the edge"
     },
     {
@@ -1326,12 +1324,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\Redirect"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\Redirect::back();",
-      "expect": "fail",
-      "note": "The Redirect facade is not compiled at the edge (Laravel 13 lists 19 methods): the build refuses it with that reason - a port handler answers it.",
+      "php": "        Redirect::to('/x');",
+      "expect": "ok",
+      "note": "The Redirect facade compiles: to/away -> rt.redirect(location[, status]); back -> rt.back(); route -> rt.redirect(rt.route(...)); intended -> the session url.intended pull.",
       "batch": "M49",
       "status": "done",
-      "code": "LW002",
       "reason": "the Redirect facade is not compiled at the edge"
     },
     {
@@ -1424,12 +1421,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\Session"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\Session::shouldBlock();",
-      "expect": "fail",
-      "note": "The Session facade is not compiled at the edge (Laravel 13 lists 70 methods): the build refuses it with that reason - a port handler answers it.",
+      "php": "        Session::get('k');",
+      "expect": "ok",
+      "note": "The Session facade has a compiled surface (rt.session(), the same Store the session() helper reads; allowlist: get/put/has/forget/pull/flash/flush/keep/reflash/increment/decrement/push/exists/missing). The probe uses a method that compiles; methods off the allowlist fail loud LW002.",
       "batch": "M49",
       "status": "done",
-      "code": "LW002",
       "reason": "the Session facade is not compiled at the edge"
     },
     {
@@ -1450,12 +1446,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\URL"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\URL::full();",
-      "expect": "fail",
-      "note": "The URL facade is not compiled at the edge (Laravel 13 lists 46 methods): the build refuses it with that reason - a port handler answers it.",
+      "php": "        URL::to('/home');",
+      "expect": "ok",
+      "note": "The URL facade compiles: to()/asset() -> rt.url(path); route() -> rt.route(name, ...args). Other methods fail loud LW002.",
       "batch": "M49",
       "status": "done",
-      "code": "LW002",
       "reason": "the URL facade is not compiled at the edge"
     },
     {
@@ -1478,12 +1473,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\View"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\View::incrementRender();",
-      "expect": "fail",
-      "note": "The View facade is not compiled at the edge (Laravel 13 lists 79 methods): the build refuses it with that reason - a port handler answers it.",
+      "php": "        View::make('x', ['a' => 1]);",
+      "expect": "ok",
+      "note": "The View facade compiles to rt.view(name, data). Only make(); other methods fail loud LW002.",
       "batch": "M49",
       "status": "done",
-      "code": "LW002",
       "reason": "the View facade is not compiled at the edge"
     },
     {
