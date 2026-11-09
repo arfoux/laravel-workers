@@ -101,4 +101,23 @@ for (const m of ['dot', 'wrap', 'first', 'last', 'get', 'only', 'has']) {
   assert.ok(ARR_METHODS.has(m), `ARR_METHODS is missing ${m}`);
 }
 
+// strtolower/strtoupper/mb_strtolower/mb_strtoupper cast with PHP's (string)
+// rules BEFORE case-folding (oracle PHP 8.3.30: null->'', false->'', true->'1',
+// 0->'0', 1.5->'1.5'). String() answered 'null'/'false'/'true' - the #6 divergence.
+assert.equal(rt.strtolower(null), '');
+assert.equal(rt.strtolower(false), '');
+assert.equal(rt.strtolower(true), '1');
+assert.equal(rt.strtolower(0), '0');
+assert.equal(rt.strtolower(1.5), '1.5');
+assert.equal(rt.strtolower('ABC'), 'abc');
+assert.equal(rt.strtoupper(null), '');
+assert.equal(rt.strtoupper(false), '');
+assert.equal(rt.strtoupper(true), '1');
+assert.equal(rt.strtoupper('abc'), 'ABC');
+assert.equal(rt.mb_strtolower(null), '');
+assert.equal(rt.mb_strtolower(false), '');
+assert.equal(rt.mb_strtolower(true), '1');
+assert.equal(rt.mb_strtoupper(null), '');
+assert.equal(rt.mb_strtoupper(true), '1');
+
 console.log('rt-str: PASS (' + 58 + ' assertions)');
