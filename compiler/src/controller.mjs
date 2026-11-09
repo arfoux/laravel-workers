@@ -457,7 +457,12 @@ export function extractController(source, methodName) {
   const uses = collectUses(children);
   const method = (classNode.body || []).find((n) => n.kind === 'method' && nodeName(n.name) === methodName);
   if (!method) {
-    return { ok: false, errors: [lwErr('LW004', `method ${methodName}() not found in ${fqcn}`, classNode.loc, PORT_HINT)] };
+    const body = classNode.body || [];
+    const hasMethod = (n) => body.some((m) => m && m.kind === 'method' && nodeName(m.name) === n);
+    const livewireHint = hasMethod('render') || hasMethod('mount')
+      ? ' - this class looks like a Livewire component: its edge entry is render() / mount() / the lifecycle hooks, not ' + methodName + '(); serve it through a port handler'
+      : '';
+    return { ok: false, errors: [lwErr('LW004', `method ${methodName}() not found in ${fqcn}${livewireHint}`, classNode.loc, PORT_HINT)] };
   }
 
   const params = analyzeParams(method, uses, nsName);
