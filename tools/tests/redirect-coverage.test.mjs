@@ -53,6 +53,13 @@ Route::redirect('/u/{id}', '/users/{id}/profile');
 // whole point of the cheap copy), and the rest are build/dev artifacts of the
 // source app that would either bloat the copy or leak a stale build state.
 const SKIP_DIRS = new Set(['vendor', 'node_modules', 'dist', '.cache', '.git']);
+// `registry.json` is the source app's ROUTE POLICY, and this copy replaces the
+// route set. An entry for a route the copy does not declare - a `static`
+// snapshot or a port - makes the build fail on a route this test never wrote,
+// which is what a source app with a prerendered page (`"/architecture":
+// "static"`) turned into "this test needs a redirect-only route set". The
+// premise under test is the route set, so the policy file goes with it.
+const SKIP_FILES = new Set(['registry.json']);
 
 function makeRedirectOnlyApp() {
   const dir = mkdtempSync(path.join(tmpdir(), 'lw-redirect-only-'));
@@ -61,7 +68,8 @@ function makeRedirectOnlyApp() {
     filter: (src) => {
       const rel = path.relative(APP_ROOT, src);
       if (!rel) return true;
-      return !SKIP_DIRS.has(rel.split(path.sep)[0]);
+      if (SKIP_DIRS.has(rel.split(path.sep)[0])) return false;
+      return !SKIP_FILES.has(path.basename(src));
     },
   });
   // A real `vendor/` inside the copy: `artisan` requires `__DIR__.'/vendor/autoload.php'`

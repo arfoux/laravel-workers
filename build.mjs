@@ -40,9 +40,11 @@ import { slugifyRoute } from './tools/route-slug.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
 import { compileView } from './compiler/blade.mjs';
+import { normalizeViewDumpFiles } from './compiler/src/livewire-markers.mjs';
 import { transpile } from './compiler/src/transpiler.mjs';
 import { provisionPhp } from './tools/php-provision.mjs';
 import { computeBuildCacheKey } from './tools/build-cache.mjs';
+import { syncScratchPhpCache } from './tools/scratch-php-cache.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import { mutatingMigrations, renderSchemaSql } from './tools/schema-sql.mjs';
 import {
@@ -122,6 +124,7 @@ let dbSandboxPath = null;
 // production render. A real environment variable always wins over .env in
 // Laravel, so these two override the app's .env; an operator who exported
 // APP_ENV/APP_DEBUG explicitly keeps their value.
+let scratchPhpCacheChecked = false;
 const childEnv = () => {
   // A `bootstrap/cache/packages.php` built against ANOTHER vendor tree (a
   // developer's `composer install`, which has require-dev) names providers
@@ -132,6 +135,21 @@ const childEnv = () => {
   // who exported these keeps their value.
   const phpCacheDir = join(cacheDir, 'php');
   mkdirSync(phpCacheDir, { recursive: true });
+  // Laravel only rebuilds these when they are missing, so the provider list a
+  // child boots would otherwise be frozen at the first build in this scratch dir
+  // (tools/scratch-php-cache.mjs has the measurement). An operator who exported
+  // the cache paths keeps their own file, untouched.
+  if (!scratchPhpCacheChecked) {
+    scratchPhpCacheChecked = true;
+    if (!process.env.APP_PACKAGES_CACHE && !process.env.APP_SERVICES_CACHE) {
+      const scratch = syncScratchPhpCache({ appDir, vendorDir, phpCacheDir });
+      if (scratch.invalidated && scratch.removed.length) {
+        console.log(
+          `  -> scratch provider cache stale (vendor identity changed) - dropped ${scratch.removed.join(', ')}, Laravel rebuilds it on the next boot`
+        );
+      }
+    }
+  }
   // Relative, because Laravel's normalizeCachePath() only treats '/' and '\' as
   // absolute prefixes: a Windows "C:\..." value would be joined onto basePath.
   const phpCacheRel = relative(appDir, phpCacheDir).split('\\').join('/') + '/';
@@ -1713,6 +1731,17 @@ const runViewJobs = (opts = {}) => {
     }
   }
   viewJobs.length = 0;
+  // Livewire's component-only Blade guards are not part of the edge's reference
+  // compile (compiler/src/livewire-markers.mjs): drop them before any reader
+  // compares `blade2php`'s output against the dump or transpiles it. A no-op for
+  // an app without Livewire.
+  const lwDumps = normalizeViewDumpFiles(cacheDir);
+  if (lwDumps.guards) {
+    console.log(
+      `  -> Livewire's component-only Blade markers dropped from ${lwDumps.files} reference compile(s) — ` +
+        'the edge never renders inside a Livewire component'
+    );
+  }
   return stderr;
 };
 // The batch's error line for one view (`view <name>: <error>`), or the tail of
