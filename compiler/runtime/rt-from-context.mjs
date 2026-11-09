@@ -1496,8 +1496,15 @@ export function buildRt(context, opts = {}) {
     }
     return out;
   };
-  rt.strtolower = (s) => String(s).toLowerCase();
-  rt.strtoupper = (s) => String(s).toUpperCase();
+  // PHP's strtolower/strtoupper cast their argument with PHP's (string) rules
+  // BEFORE lowercasing: `strtolower(null)` is '' (a Deprecated notice under
+  // Laravel's error handler, but the VALUE is ''), `strtolower(false)` is '',
+  // `strtolower(true)` is '1'. `String(s)` answered 'null'/'false'/'true' -
+  // PHP's string-cast canon (phpStrCast, the same one `(string)`/concat use)
+  // matches the oracle on every input (probed PHP 8.3.30: null/false->'',
+  // true->'1', 0->'0', 1.5->'1.5').
+  rt.strtolower = (s) => phpStrCast(s).toLowerCase();
+  rt.strtoupper = (s) => phpStrCast(s).toUpperCase();
   // PHP's mb_* string helpers, in CODE POINTS (`Array.from`), not UTF-16 units —
   // `mb_substr('😀', 0, 1)` is one character, as PHP answers with UTF-8.
   const codePoints = (s) => Array.from(String(s ?? ''));
@@ -1511,8 +1518,11 @@ export function buildRt(context, opts = {}) {
     const count = Number(len);
     return cp.slice(begin, count < 0 ? Math.max(begin, n + count) : begin + count).join('');
   };
-  rt.mb_strtoupper = (s, _enc) => String(s ?? '').toUpperCase();
-  rt.mb_strtolower = (s, _enc) => String(s ?? '').toLowerCase();
+  // mb_strtolower/mb_strtoupper cast with PHP's (string) rules too (the same
+  // oracle: null/false->'', true->'1'), so they share phpStrCast rather than
+  // `String(s ?? '')`, which answered 'false'/'true' for the bool inputs.
+  rt.mb_strtoupper = (s, _enc) => phpStrCast(s).toUpperCase();
+  rt.mb_strtolower = (s, _enc) => phpStrCast(s).toLowerCase();
   // rt.trim/ltrim/rtrim are defined with the string helpers below — PHP's trim
   // family takes a charlist (with '..' ranges) and its own default character
   // set, which JavaScript's String.prototype.trim() does not reproduce.
