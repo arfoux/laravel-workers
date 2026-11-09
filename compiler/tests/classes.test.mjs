@@ -1602,3 +1602,43 @@ class Typed
   assert.equal(bad.errors[0].code, 'LW002');
   assert.match(bad.errors[0].message, /typed property \$sent/);
 });
+
+// The EXCEPTION to the refusal above (#682): a typed property the __construct
+// ASSIGNS is fine in PHP — the ctor runs before any method reads it, so the
+// value is always initialised by the time the method body runs. The compiled
+// rung carries it as `undefined` and lets the ctor assignment fill it. Only a
+// typed property that is NEVER assigned stays refused (reading it before init
+// is the PHP 500). Both sides are pinned so the carry can't silently widen.
+test('classes: a TYPED property the ctor assigns is carried, not refused', () => {
+  const assigned = classFile('Assigned', `<?php
+namespace App\\Mail;
+class Assigned
+{
+    public string $who;
+    public function __construct() { $this->who = 'x'; }
+    public function who() { return $this->who; }
+}
+`);
+  const ok = compileClasses({ events: {}, classes: { 'App\\Mail\\Assigned': { file: assigned, kind: 'mailable' } } }, OPTIONS);
+  assert.equal(ok.errors.length, 0, JSON.stringify(ok.errors));
+  // The property declaration carries the field as `undefined` (the "not yet
+  // initialised" state) and the ctor's assignment fills it through the runtime
+  // setter — the two halves of the carry, both pinned.
+  assert.match(ok.code, /"who": undefined/);
+  assert.match(ok.code, /rt\.propSet\(__self, "who", "x"\)/);
+
+  // A typed property assigned only CONDITIONALLY is still a read-before-init
+  // risk, but a plain always-run ctor assignment is the sound case. A nested /
+  // compound assignment target is still collected by the ctor walk.
+  const nested = classFile('Nested', `<?php
+namespace App\\Mail;
+class Nested
+{
+    public array $bag;
+    public function __construct() { if (true) { $this->bag = []; } }
+    public function bag() { return $this->bag; }
+}
+`);
+  const okNested = compileClasses({ events: {}, classes: { 'App\\Mail\\Nested': { file: nested, kind: 'mailable' } } }, OPTIONS);
+  assert.equal(okNested.errors.length, 0, JSON.stringify(okNested.errors));
+});
