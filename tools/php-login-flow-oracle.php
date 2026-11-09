@@ -108,6 +108,22 @@ Schema::connection('lw_http')->create('cache_locks', function ($table) {
     $table->integer('expiration');
 });
 
+// The app's OWN tables come from the build's `dist/schema.sql`: a real app's
+// login-adjacent route may query them (a dashboard listing the user's posts).
+// Without them BOTH rungs answer "no such table" for that route, and the step
+// comparison turns into a 500-vs-Laravel-debug-page red that names nothing.
+// `CREATE TABLE|INDEX IF NOT EXISTS` keeps the four fixture tables above
+// authoritative for sessions/auth/cache (the app's own migration of the same
+// tables carries the same index names — `sessions_last_activity_index`).
+$schemaPath = $appRoot.'/dist/schema.sql';
+if (is_file($schemaPath)) {
+    DB::connection('lw_http')->getPdo()->exec(
+        // Idempotent: `dist/schema.sql` already guards some statements itself
+        // (the edge runtime's `lw_blobs`), so never double the clause.
+        (string) preg_replace('/\bCREATE (TABLE|UNIQUE INDEX|INDEX)\b(?! IF NOT EXISTS)/', 'CREATE $1 IF NOT EXISTS', (string) file_get_contents($schemaPath))
+    );
+}
+
 $userInput = $input['user'] ?? [];
 $passwordHash = $userInput['password_hash']
     ?? password_hash('secret', PASSWORD_BCRYPT, ['cost' => 12]);

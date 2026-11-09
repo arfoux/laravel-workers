@@ -2,6 +2,33 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased — the mail boundary is one source, `buildViewData()`'s order, a checkout that no longer keeps CRLF, a redirect-only app that builds clean, and a scratch dir that cannot freeze an app's providers
 
+### The `@vite` directive emits absolute asset URLs, like PHP
+
+`@vite` renders through Laravel's `asset()`, which prefixes the request's scheme +
+host **at request time**. The build bakes the tags without a request host, so the
+compiled view carried root-relative URLs (`/build/assets/app.js`) where PHP
+emitted absolute ones (`http://host/build/assets/app.js`) — every real app's
+first render diverged. `rt-from-context.mjs` now absolutizes the captured
+`vite.invoke`/`vite.fonts` HTML with the request's origin (already-absolute and
+protocol-relative URLs untouched), so the bytes match PHP.
+
+This was masked for a long time: `kernel/tests/login-flow.test.mjs` died earlier
+in the same step on `no such table: posts`, so the asset diff was never reached.
+
+### The login-flow fixture provisions the app's own schema
+
+The Breeze login-flow E2E (`kernel/tests/login-flow.test.mjs`) built its sqlite
+from four hand-written tables, so the moment its dashboard queried `posts` both
+the compiled rung and the PHP oracle (`tools/php-login-flow-oracle.php`) answered
+`no such table: posts` and the step compare turned into a 500-vs-Laravel-debug-
+page red that named nothing. Both sides now apply the build's `dist/schema.sql`
+(`CREATE TABLE|INDEX IF NOT EXISTS`, idempotent because `dist/schema.sql` already
+guards some statements itself, e.g. `lw_blobs`) before seeding the oracle user,
+so a real app's login-adjacent routes that touch its own tables render on both
+rungs. The HTML body compare also replaces each side's own random CSRF token with
+a placeholder (the session id/token shape asserts were already there). The test
+now passes against a real app for the first time, and the full suite is green.
+
 ### The four methods the mailer refuses are refused by the build the same way
 
 `Mail::raw()`, `Mail::html()`, `Mail::queue()` and `Mail::later()` were refused
@@ -84,7 +111,8 @@ generated `dist/src/routes.generated.mjs` back to pin the handler contract: `red
 `302`, `permanentRedirect()` answers `301` (its third argument, not the word "permanent"),
 `/u/{id}` → `/users/42/profile` substitutes from the request's route params, every declared verb
 answers the same `Location`, and the destination is emitted raw (Laravel never appends the query
-string). The test needs an app + PHP, so it skips in the `test` job; `tools/oracle-ran.mjs` runs it
+string — that assertion's request carries `?x=1&y=2`, so a handler that forwarded it answers
+`/new?x=1` and fails). The test needs an app + PHP, so it skips in the `test` job; `tools/oracle-ran.mjs` runs it
 in the job that has one and fails on a skip.
 
 ### A package installed after a build was not booted — the scratch provider caches follow Composer now
@@ -152,6 +180,92 @@ files it touched. Verified end to end on the app above once it booted Livewire f
 `controllers transpiled: 85/86`, `coverage: all 99 route(s) handled`, exit 0, no `LW003` and no
 divergence. `compiler/tests/livewire-markers.test.mjs` pins the six observed payloads, the unknown
 payload that must survive, idempotence and the dump-file walk.
+
+### The sweep's P3 batch (#693–#701) — an enum was not a class, two readers were narrower than Laravel, and the build cache called a gutted `dist/` current
+
+The sweep of `compiler/src`, `tools/` and `build.mjs` (playbook G.10) left six P3
+findings and three sweep-level INFOs open. Each one is a place where the build
+answered something Laravel does not, in the direction that silently ships the
+wrong thing.
+
+**An `enum` was not a class to `parsePhpFile` (#701).** `classes` collected
+`class`/`interface`/`trait` only, so `constants-dump.mjs` answered `class not
+found` for a real enum while `extractController` had already reported its
+alias/FQCN — every route reading `State::DEFAULT_NAME` then failed with a reason
+that named the wrong cause, and `COMPILED.md`'s enum claim looked false. PHP
+oracle (8.3.30, app autoloader): `class_exists('App\Enums\State')` is `true`,
+`enum_exists()` is `true`, and `ReflectionClass::getConstants()` hands back
+`Active`, `Inactive` (enum **instances**) plus the real `const`. `tools/constants-dump.php`
+keeps only `is_scalar($v) || $v === null`, so its JSON is `{"DEFAULT_NAME":"inactive"}` —
+exactly what the JS reader now prints, because it reads the `classconst` node and
+the cases are never constants.
+
+**`$this->middleware()` was half-read (#699).** `ControllerMiddlewareOptions`
+casts both spellings Laravel accepts — `middleware('auth', ['except' => ['index']])`
+and the chained `middleware('auth')->except('index')` — and the values may be a
+bare string (`(array) $options['only']`) or several (`func_get_args()`). The
+reader only saw an array-literal `['except' => [...]]`, so `->except('show')` was
+dropped and the guard was attached to **every** method: a middleware the app
+excluded, served. Verified on a real app: `/state` → `["web","throttle:9,1"]`,
+`/state/show` → `["web","auth"]`, matching PHP. A `$this->middleware()` nested in
+an `if`/`foreach`/`try` still cannot be evaluated, and now **speaks** instead of
+being skipped (the guard is then missing, which is the dangerous direction).
+
+**Two accessor maps guessed an ambiguous model alias (#698).** The route path and
+the emitted `models` map both refuse an ambiguous short name; the accessor and
+policy maps kept whichever `Post` came last, so `$p->published` could be compiled
+against the wrong model's casts.
+
+**Two readers were narrower than PHP (#700, #694).** `\App\Enums\Status::class`
+in a class constant resolved to a constant literally named `class` (none) and was
+dropped, so `public const TYPE = Status::class;` went missing and every route
+reading it failed loud; `::class` is now the FQCN, `self::class` the declaring
+class, and the declaring FQCN is threaded into the fold (`collectConstants`) so
+the constant path answers what the config path already did. In `classes.mjs`,
+a negative literal (`-1`, `-'5'`) lost the unary sign the controller path folds.
+
+**Three duplicated copies of a rule (#693, #695, #697).** `constantClasses` lacked
+the `alias.replace(/^\\/,'')` + `alias.includes('\\')` pair the sibling mappers
+have, so `\App\Enums\Status::ACTIVE` became `App\Http\Controllers\\App\Enums\Status`
+and a valid route was refused; `hasBinding()` read `wrangler.jsonc`'s
+`queues.producers` as if it were `config/queues.php`; and the numeric-
+`throttle:n[,m]` rule existed twice in `build.mjs` (the two copies were already
+diverging). Each is one definition now — and the merge had left the audit loop
+counting a throttled route **twice** (`throttleRoutes++` on both sides of the
+lookup), so the operator's `N route(s) use throttle middleware` note doubled;
+the duplicate increment is gone (measured: a probe app with one `throttle:5,1`
+route now prints `1 route(s)`, and `dist/src/routes.generated.mjs` carries one
+throttled entry).
+
+**A deleted registry module read as "`dist/` is current" (#696).** The three
+registry modules (`src/models.generated.mjs`, `src/policies.generated.mjs`,
+`src/classes.generated.mjs`) are written inside `if (prepared.length)`, so they
+cannot join the unconditional artifact list without forcing a rebuild on every
+0-controller app. They are checked separately now — a `dist/src` that exists
+without them is a cache MISS, not a clean hit.
+
+`tools/tests/class-constants.test.mjs`, `tools/tests/routes-dump.test.mjs` and
+`compiler/tests/classes.test.mjs` pin the enum dump, `::class`, both middleware
+spellings, the loud nested form and the negative property default, against the
+PHP oracle above. Suite: **1265 pass, 0 fail** (50 skipped, the environment-gated ones), measured with
+`env -u LW_LARAVEL_APP node tools/run-tests.mjs` — an ambient `LW_LARAVEL_APP` pointing at an app
+turns the oracle tests on and leaves **one** app-shape failure: `login-flow`, whose Breeze steps
+assume the app the CI `e2e-fresh-laravel` job builds for it (measured 1311 pass / 1 fail / 3 skip —
+before the control fix below it was 1310 / 2 / 3).
+
+### The `#647` control isolates the framework, not the app's own `lang/`
+
+The control in `tools/tests/vendor-dir.test.mjs` asserted `translations == {}` for a vendor-less copy
+of the app, reading "no framework" as "no translations at all". `tools/config-dump.mjs:171-176` reads
+the app's **own** `lang/` (or `resources/lang`) whether or not a vendor exists — that path needs no
+framework — so the control failed for any app that ships translations: measured against a copy of
+`lw-showcase`, which answers `['en','id']`. The invariant is now the framework's text: without a
+reachable vendor, no locale may carry a `validation.required` **sentence** (the framework's
+`validation` group lives under `Illuminate\Translation\lang`, and `FileLoader` merges
+framework-first / app-last, so the key echoes itself when nothing is loaded). Measured both ways: the
+vendor-less copy answers its own `showcase` group in `en` + `id` with no `validation` group (control
+passes, 3/3 with the sibling cases), and adding `LW_VENDOR_DIR` makes locale `en` carry the framework
+sentence — the predicate flags it, so the assertion still separates the two states.
 
 ### The redirect-only coverage test carries the route policy it declares
 
