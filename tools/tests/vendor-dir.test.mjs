@@ -108,14 +108,31 @@ test('config-dump: a vendor-less app resolves translations through LW_VENDOR_DIR
   }
 });
 
-test('config-dump: with no variable there is no reachable framework (control)', { skip: skipReason }, () => {
+test('config-dump: with no variable the FRAMEWORK is not reachable (control)', { skip: skipReason }, () => {
+  // The control has to isolate the framework, because the app's OWN `lang/`
+  // needs no vendor at all: `config-dump.mjs:171-176` reads `<app>/lang` (and
+  // `resources/lang`) unconditionally, so an app that ships translations
+  // answers its own locales here — and an earlier version of this test
+  // asserted `translations == {}`, which made a local `LW_LARAVEL_APP` pointing
+  // at such an app (measured: `['en','id']`) fail the control. The invariant
+  // that actually separates the two states is the framework's `validation`
+  // group: `Illuminate\Translation\lang` lives under the vendor dir, and
+  // `FileLoader` merges framework-first / app-last. Without a reachable
+  // framework the app's own group survives and `validation.required` is the
+  // bare KEY (or absent), never a sentence.
   const app = vendorlessApp();
   try {
     const dump = runDump(app, {});
+    const locales = Object.keys(dump.translations || {});
+    const withFrameworkMessage = locales.filter((l) => {
+      const required = dump.translations[l]?.validation?.required;
+      return typeof required === 'string' && required !== 'validation.required';
+    });
     assert.deepEqual(
-      Object.keys(dump.translations || {}),
+      withFrameworkMessage,
       [],
-      'no variable, no reachable framework -> the translations must be empty'
+      `no variable, no reachable framework -> no locale may carry the framework's validation text ` +
+        `(locales in the dump: ${locales.join(', ') || 'none'})`
     );
   } finally {
     rmSync(app, { recursive: true, force: true });

@@ -150,11 +150,24 @@ test('the emitted redirect handlers answer with the recorded status and destinat
     'the route table must record each redirect as its own kind, with its status and destination'
   );
 
-  const ctx = (params = {}) => ({ request: { routeParams: () => params } });
-  const answer = async (key, params) => {
+  // The kernel request's URL accessors (`Request::url()`, `fullUrl()`,
+  // `getQueryString()` — kernel/http.mjs:686-692), so a handler that forwarded
+  // the query string has the real seam to read it from.
+  const ctx = (params = {}, target = 'http://localhost/old?x=1&y=2') => {
+    const parsed = new URL(target);
+    return {
+      request: {
+        routeParams: () => params,
+        url: () => parsed.origin + parsed.pathname,
+        fullUrl: () => target,
+        getQueryString: () => parsed.search.replace(/^\?/, ''),
+      },
+    };
+  };
+  const answer = async (key, params, target) => {
     const handler = handlers[key];
     assert.equal(typeof handler, 'function', `no handler emitted for ${key}`);
-    const res = await handler(ctx(params));
+    const res = await handler(ctx(params, target));
     return { status: res.status, location: res.headers && res.headers.location };
   };
 
@@ -172,5 +185,11 @@ test('the emitted redirect handlers answer with the recorded status and destinat
   }
   // Trap 4 — the destination is emitted raw: Laravel's `RedirectController`
   // never appends the request's query string, and the kernel absolutises it.
-  assert.deepEqual(await answer('GET /old'), { status: 302, location: '/new' });
+  // The request below carries one, so a handler that forwarded it would answer
+  // `/new?x=1` and fail here.
+  assert.deepEqual(
+    await answer('GET /old', {}, 'http://localhost/old?x=1&y=2'),
+    { status: 302, location: '/new' },
+    'the query string must not be forwarded onto the destination'
+  );
 });

@@ -32,6 +32,22 @@ import { Model } from '../../kernel/model.mjs';
 import { ARR_METHODS, arr as arrHelpers } from '../../kernel/arr.mjs';
 import { Collection } from '../../kernel/collections.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
+import { PACKAGE_BINDINGS } from '../package-bindings.mjs';
+import * as kernelToken from '../../kernel/packages/token.mjs';
+import * as kernelOauth from '../../kernel/packages/oauth.mjs';
+import * as kernelWebhook from '../../kernel/packages/webhook.mjs';
+import * as kernelBroadcast from '../../kernel/packages/broadcast.mjs';
+import * as kernelNotifyHttp from '../../kernel/packages/notify-http.mjs';
+
+// The rt primitive each binding compiles to — the SAME modules buildRt exposes
+// as rt.token / rt.oauth / rt.webhook / rt.broadcast / rt.notify.
+const KERNEL_PRIMITIVES = {
+  token: kernelToken,
+  oauth: kernelOauth,
+  webhook: kernelWebhook,
+  broadcast: kernelBroadcast,
+  notify: kernelNotifyHttp,
+};
 
 const surfaceOf = (proto) => new Set(Object.getOwnPropertyNames(proto));
 
@@ -171,4 +187,38 @@ test('allowlist: every file method exists on the kernel uploaded file', () => {
   assert.ok(file, 'the uploaded file must be on the request');
   const missing = [...FILE_METHODS].filter((name) => typeof file[name] !== 'function');
   assert.deepEqual(missing, [], `the kernel uploaded file has no ${missing.join(', ')}() - the call would 500`);
+});
+
+// M3: every method a package binding allowlists must exist on the kernel
+// primitive the call compiles to (`rt.<primitive>.<method>`), and every method
+// the binding marks async must actually be an async function (so the `await`
+// the transpiler emits is not wrapping a sync value, which would break
+// `await`-ing code that reads a property off the result).
+test('allowlist: every package binding method exists on its kernel primitive', () => {
+  for (const binding of PACKAGE_BINDINGS) {
+    const primitive = KERNEL_PRIMITIVES[binding.primitive];
+    assert.ok(primitive, `binding ${binding.facade}: no kernel primitive '${binding.primitive}'`);
+    // `methods` maps the facade method (source) -> the primitive function name
+    // (emitted call); the VALUE must exist on the rt primitive.
+    const primitiveFns = Object.values(binding.methods);
+    const missing = primitiveFns.filter((name) => typeof primitive[name] !== 'function');
+    assert.deepEqual(
+      missing,
+      [],
+      `binding ${binding.facade} -> rt.${binding.primitive}: the kernel primitive has no ${missing.join(', ')}() - the call would 500`
+    );
+    const notAsync = binding.async.filter((name) => primitive[name]?.constructor?.name !== 'AsyncFunction');
+    assert.deepEqual(
+      notAsync,
+      [],
+      `binding ${binding.facade}: ${notAsync.join(', ')}() marked async but is not an async function - the emitted await would be wrong`
+    );
+    // Every name marked async must be one of the emitted primitive functions.
+    const unknownAsync = binding.async.filter((name) => !primitiveFns.includes(name));
+    assert.deepEqual(
+      unknownAsync,
+      [],
+      `binding ${binding.facade}: async lists ${unknownAsync.join(', ')} which is not an emitted method`
+    );
+  }
 });

@@ -22,6 +22,16 @@ import { FormRequest } from '../../kernel/form-request.mjs';
 import { JsonResource, ResourceCollection, resourceResponse, setResourceResolver } from '../../kernel/resources.mjs';
 import { setRequestProvider } from '../../kernel/request-scope.mjs';
 import { Collection } from '../../kernel/collections.mjs';
+// The package primitives (M3): each Laravel facade the compiler binds maps to
+// one of these kernel/package modules. They are exposed on rt under the SAME
+// name the transpiler emits (`rt.token.*`, `rt.oauth.*`, ...), so a facade call
+// the build cannot compile into a primitive still answers at the edge instead
+// of leaking "unknown class" to the worker.
+import * as pkgToken from '../../kernel/packages/token.mjs';
+import * as pkgOauth from '../../kernel/packages/oauth.mjs';
+import * as pkgWebhook from '../../kernel/packages/webhook.mjs';
+import * as pkgBroadcast from '../../kernel/packages/broadcast.mjs';
+import * as pkgNotifyHttp from '../../kernel/packages/notify-http.mjs';
 
 // The Collection marker: the runtime's Collection class is created per rt (a
 // view renders with its OWN rt - buildRt() runs again for it), so an
@@ -3294,6 +3304,18 @@ function makeCarbon(date, tz = APP_TZ) {
           : String(sub.__output).replace(/^[ \t\n\r\0\x0B]+/, ''),
     };
   };
+
+  // ---- package primitives (M3) ----
+  // Each is the kernel/package module itself, so the transpiler's facade guard
+  // can emit `rt.<primitive>.<method>(...)` and the method exists. These are
+  // async / dependency-injecting functions (they take env/fetch/ctx), so the
+  // compiler marks their calls `await`-ed; the method allowlist per facade lives
+  // in compiler/package-bindings.mjs.
+  rt.token = pkgToken;
+  rt.oauth = pkgOauth;
+  rt.webhook = pkgWebhook;
+  rt.broadcast = pkgBroadcast;
+  rt.notify = pkgNotifyHttp;
 
   return rt;
 }

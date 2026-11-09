@@ -60,7 +60,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { relativizeContextJson, relativizeSnapshotUrls } from './tools/snapshot-urls.mjs';
 
 const pkgDir = dirname(fileURLToPath(import.meta.url));
@@ -340,11 +340,33 @@ const cacheArtifactFiles = [
   'src/routes.generated.mjs',
   'src/config.generated.mjs',
   'src/guard-ports.generated.mjs',
+  // The three registry modules the build emits only when there is something to
+  // compile (`if (prepared.length)`): a worker imports them, so a dist/ that
+  // lost one is broken and the cache must not call it current (#696). They are
+  // guarded here by existence-checking the FILES only — in the 0-controller
+  // case the modules are legitimately absent, and `missingCacheArtifacts()`
+  // would then force a rebuild on every run. So the list stays as the
+  // unconditional set; the conditional three are covered by their own check
+  // below.
   'schema.json',
   'public/_routes.json',
 ];
 const missingCacheArtifacts = () =>
   cacheArtifactFiles.filter((file) => !existsSync(join(distFinal, file)));
+
+// The three registry modules are written inside `if (prepared.length)`, so a
+// legitimately-empty build has none of them: they cannot go in the list above
+// without forcing a rebuild every run. They are still artifacts a worker
+// imports — deleting one by hand must not be papered over with "dist/ is
+// current" (#696), and restoring the module without rebuilding would serve a
+// registry the app's sources no longer describe. So: whoever has the SOURCE for
+// it (i.e. `dist/src` exists) must have the module too. Runs only when the
+// unconditional set is intact (otherwise the build re-runs anyway).
+const conditionalCacheArtifacts = ['src/models.generated.mjs', 'src/policies.generated.mjs', 'src/classes.generated.mjs'];
+const conditionalArtifactsWhenBuilt = () =>
+  conditionalCacheArtifacts.filter(
+    (file) => existsSync(join(distFinal, 'src')) && !existsSync(join(distFinal, file))
+  );
 let buildCacheKey = null;
 let buildCacheInfo = null;
 try {
@@ -372,7 +394,7 @@ if (noCache) {
     /* no stamp or unreadable: miss */
   }
   if (stamp && stamp.version === 1 && stamp.key === buildCacheKey) {
-    const missing = missingCacheArtifacts();
+    const missing = [...missingCacheArtifacts(), ...conditionalArtifactsWhenBuilt()];
     if (!missing.length) {
       console.log(
         `• build cache: hit (${buildCacheInfo.files} input files unchanged; built with PHP ${stamp.phpVersion || '?'}) — dist/ is current`
@@ -884,6 +906,11 @@ const isHonouredMiddleware = (m) => {
   const spec = str.slice('throttle'.length).replace(/^:/, '');
   return spec === '' || /^\d+(,\d+)?$/.test(spec); // numeric spec only
 };
+// The one definition of "this route is throttled against the D1-backed cache":
+// `isHonouredMiddleware` already answers the numeric-spec question, so this is a
+// thin name for the audit that counted it separately (#697 - the two copies
+// could drift).
+const isNumericThrottle = (m) => String(m).split(':')[0] === 'throttle' && isHonouredMiddleware(m);
 
 const MIDDLEWARE_FIX = (m, route) => {
   const name = String(m).split(':')[0];
@@ -1561,6 +1588,40 @@ const bladeInstalled = (() => {
     return fw && fw.version ? String(fw.version).replace(/^v/, '') : null;
   } catch {
     return null;
+  }
+})();
+
+// M1 — the installed package set, split the way composer.lock splits it: the
+// `require` packages (`lock.packages`) and the `require-dev` packages
+// (`lock['packages-dev']`). Each is a Map of `name -> version` (the version as
+// composer.lock records it, `v` prefix and all). The compiler reads this to know
+// which package facades an app actually has installed, so a facade the app does
+// not depend on is refused rather than silently bound to a primitive the worker
+// would never import.
+//
+// Cache note: composer.lock is ALREADY a member of APP_FILES in
+// tools/build-cache.mjs, and `h.addFile(appDir, 'composer.lock')` folds the WHOLE
+// file's bytes into the build cache key — so any change to the dependency graph
+// (a new package, a version bump, a require <-> require-dev move) already
+// invalidates the cache and forces a rebuild. This detection therefore does not
+// need its own separate hash; it rides the existing composer.lock identity.
+const composerPkg = (() => {
+  const empty = { require: new Map(), requireDev: new Map(), all: new Map() };
+  try {
+    const lock = JSON.parse(readFileSync(join(appDir, 'composer.lock'), 'utf8'));
+    const pick = (list) => {
+      const m = new Map();
+      for (const p of list || []) {
+        if (p && typeof p.name === 'string') m.set(p.name, p.version ? String(p.version) : null);
+      }
+      return m;
+    };
+    const require = pick(lock.packages);
+    const requireDev = pick(lock['packages-dev']);
+    const all = new Map([...require, ...requireDev]);
+    return { require, requireDev, all };
+  } catch {
+    return empty; // no composer.lock / unreadable: an app with no locked deps
   }
 })();
 const bladeOff = process.env.LW_BLADE_JS === '0';
@@ -2742,7 +2803,12 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           const d = modelDump.get(fqcn);
           if (!d || !d.model) continue;
           accModelFqcns.add(fqcn);
-          accClassFqcns[alias] = fqcn;
+          // Two models sharing a short name must not be guessed (#698). The
+          // route path and the emitted `models` map both refuse an ambiguous
+          // alias; this map used to keep the LAST one, so an accessor could
+          // read the wrong model's casts/relations silently. The FQCN key is
+          // still recorded: it is unambiguous.
+          if (fqcns.size === 1) accClassFqcns[alias] = fqcn;
           accClassFqcns[fqcn] = fqcn;
           if (Array.isArray(d.notCompiled) && d.notCompiled.length) {
             accNotCompiled.set(alias, d.notCompiled);
@@ -2812,7 +2878,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           const d = modelDump.get(fqcn);
           if (!d || !d.model) continue;
           knownModelFqcnSet.add(fqcn);
-          modelClassFqcns[alias] = fqcn;
+          // Same rule as the accessor map (#698): a short name two models share
+          // is never guessed; the FQCN key stays.
+          if (fqcns.size === 1) modelClassFqcns[alias] = fqcn;
           modelClassFqcns[fqcn] = fqcn;
           if (Array.isArray(d.notCompiled) && d.notCompiled.length) {
             modelNotCompiled.set(alias, d.notCompiled);
@@ -3675,26 +3743,19 @@ for (const v of verbControllers) {
 }
 // kernel/http.mjs honours exactly this set. Anything else on a view / controller /
 // snapshot route would be bypassed at the edge — fail the build instead.
+// The set and the numeric-throttle rule live ONCE (above, at `isHonouredMiddleware`):
+// two copies of the same list drift silently (#697).
 {
-  const isNumericThrottle = (m) => {
-    const str = String(m);
-    if (str.split(':')[0] !== 'throttle') return false;
-    const spec = str.slice('throttle'.length).replace(/^:/, '');
-    return spec === '' || /^\d+(,\d+)?$/.test(spec);
-  };
-  const RUNTIME_MIDDLEWARE = new Set(['web', 'api', 'substitute_bindings', 'bindings', 'auth', 'auth.basic', 'guest']);
   const offenders = [];
   let throttleRoutes = 0;
   for (const entry of routeTable) {
     if (entry.kind !== 'view' && entry.kind !== 'controller' && entry.kind !== 'snapshot') continue;
-    const bad = (entry.middleware || []).filter(
-      (m) => !RUNTIME_MIDDLEWARE.has(String(m).split(':')[0]) && !isNumericThrottle(m)
-    );
+    if ((entry.middleware || []).some(isNumericThrottle)) throttleRoutes++;
+    const bad = (entry.middleware || []).filter((m) => !isHonouredMiddleware(m));
     if (bad.length) {
       offenders.push(`${entry.uri} [${bad.join(', ')}] (${entry.kind})`);
       for (const m of bad) note({ route: entry.uri, area: 'middleware', severity: BLOCK, cause: `runs the "${m}" middleware, which the compiled rung does not honour`, fix: MIDDLEWARE_FIX(m, entry.uri) });
     }
-    if ((entry.middleware || []).some(isNumericThrottle)) throttleRoutes++;
   }
   if (offenders.length) {
     fail(

@@ -144,6 +144,36 @@ class EmptyCtor
   // reachable (rt.newClass merges this object onto the kernel's Mailable).
   assert.equal(Object.prototype.hasOwnProperty.call(instance, 'view'), false);
 });
+test('classes: a negative property default compiles (the unary sign the controller path already folded, #694)', async () => {
+  // `public int $retries = -1;` is the `unary` node the controller path and
+  // tools/static.mjs already folded. `literalOf` had no `unary` case, so the
+  // property could not be inlined and the WHOLE class was refused with LW002 -
+  // blocking every route that used it, over a default PHP assigns happily
+  // (PHP 8.3.30: `-017` is -15, `-1_000` is -1000).
+  const file = classFile('Retrying', `<?php
+namespace App\\Mail;
+class Retrying
+{
+    public int $retries = -1;
+    public int $tries = 2;
+    public function __construct() {}
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Mail\\Retrying': { file, kind: 'mailable' } } },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  // The defaults land as PHP assigns them (`-017` would be -15, `-1_000` -1000);
+  // the fold is the point, not the property spelling.
+  assert.match(res.code, /"retries": -1/);
+  assert.match(res.code, /"tries": 2/);
+  const mod = await compiledModule(res.code);
+  const instance = mod.classes['App\\Mail\\Retrying'].ctor([], {});
+  assert.equal(instance.retries, -1);
+  assert.equal(instance.tries, 2);
+});
+
 test('classes: a legacy-octal property default is emitted as PHP\'s value, not the raw literal', async () => {
   // PHP 8.3.30: `public int $perm = 0777;` is 511, `= 017` is 15. The raw text
   // was emitted verbatim (`js: String(node.value)`), and `0777` is a LEGACY

@@ -9,6 +9,12 @@ import { KNOWN_RULES, SNIFFED_EXTENSIONS, SNIFFED_MIME_TYPES } from '../../kerne
 // the SAME reader the class/controller/view-name compilers use, so one literal
 // reads the same way everywhere.
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
+// The package facade → primitive table (M3): the facades that ARE a thin
+// HTTP/DB call map onto the kernel/package primitives on rt; everything else
+// still falls through to the catch-all LW003 and refuses loudly.
+import { buildPackageBindingIndex } from '../package-bindings.mjs';
+
+const PACKAGE_BINDING_INDEX = buildPackageBindingIndex();
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -2647,6 +2653,28 @@ function txCall(node) {
         node.loc,
         PORT_HINT
       );
+    }
+    // The package facades that ARE a thin call (M3): `Sanctum::create(...)`,
+    // `Socialite::exchangeCode(...)`, a webhook signature check, a broadcast
+    // channel auth, an outbound notification POST each map onto the kernel
+    // primitive on rt (`rt.token.*`, `rt.oauth.*`, ...). The method allowlist is
+    // the binding's own: an un-ported method is refused by name with the
+    // 'allowed: ...' message (the same shape the SESSION/STORAGE guards use),
+    // and a facade that is NOT in the table falls through to the catch-all
+    // LW003 below, so the substitution never silently swallows a real call.
+    const pkgBinding = PACKAGE_BINDING_INDEX.get(cls);
+    if (pkgBinding && CTX && CTX.controller) {
+      const primitiveFn = pkgBinding.methods.get(meth);
+      if (primitiveFn === undefined) {
+        throw mkErr(
+          'LW002',
+          cls + '::' + meth + '() is not supported — allowed: ' + pkgBinding.allowed.join(', ') + '; ' + PORT_HINT,
+          node.loc,
+          PORT_HINT
+        );
+      }
+      const call = 'rt.' + pkgBinding.primitive + '.' + primitiveFn + '(' + args + ')';
+      return pkgBinding.async.has(primitiveFn) ? txAwait(call, node, cls + '::' + meth + '()') : call;
     }
     // The facades whose work is a class the build cannot compile: the message
     // says why (the listeners / the mailable / the job), not "unknown class".

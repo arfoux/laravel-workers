@@ -1013,6 +1013,13 @@ function parse() {
     for (const st of stmts) {
       const raw = sourceSlice(parsed, st);
       if (!raw || !/\$this->middleware\s*\(/.test(raw)) continue;
+      // A `$this->middleware(...)` nested in `if`/`foreach`/`try` is not
+      // evaluated: the guard is then MISSING at the edge (the dangerous
+      // direction), so it speaks instead of being skipped silently (#699).
+      if (st.kind !== 'expressionstatement' && st.kind !== 'statement') {
+        note(`controller ${fqcn}: $this->middleware(...) inside a ${st.kind} — not evaluated (declare the middleware on the routes/ definition or in registry.json)`);
+        continue;
+      }
       let mw = null;
       const mStr = raw.match(/\$this->middleware\s*\(\s*(['"])(.+?)\1/);
       if (mStr) mw = [mStr[2]];
@@ -1024,11 +1031,31 @@ function parse() {
         note(`controller ${fqcn}: $this->middleware(...) with a dynamic argument — not evaluated (declare it in routes/ if it must run)`);
         continue;
       }
+      // Two spellings carry the per-method restriction, and Laravel honours both:
+      //   $this->middleware('auth', ['except' => ['index']])   // array options
+      //   $this->middleware('auth')->except('index')           // chained call
+      // Each value may be an array or a bare string (`(array) $options['only']`
+      // / `func_get_args()` in ControllerMiddlewareOptions), and the chained form
+      // is variadic. The old reader only saw the array form, so the middleware was
+      // attached to EVERY method — wider than PHP (#699).
       const grab = (key) => {
-        const m = raw.match(new RegExp(`['"]${key}['"]\\s*=>\\s*\\[(.*?)\\]`, 's'));
-        return m ? [...m[1].matchAll(/(['"])(.+?)\1/g)].map((x) => x[2]) : null;
+        const m = raw.match(new RegExp(`['"]${key}['"]\\s*=>\\s*(\\[[^\\]]*\\]|['"][^'"]*['"])`, 's'));
+        if (!m) return null;
+        const vals = [...m[1].matchAll(/(['"])(.+?)\1/g)].map((x) => x[2]);
+        return vals.length ? vals : null;
       };
-      entries.push({ mw, only: grab('only'), except: grab('except') });
+      const grabChain = (key) => {
+        const vals = [];
+        const re = new RegExp(`->\\s*${key}\\s*\\(([^;]*?)\\)`, 'gs');
+        let m;
+        while ((m = re.exec(raw))) vals.push(...[...m[1].matchAll(/(['"])(.+?)\1/g)].map((x) => x[2]));
+        return vals.length ? vals : null;
+      };
+      entries.push({
+        mw,
+        only: grab('only') || grabChain('only'),
+        except: grab('except') || grabChain('except'),
+      });
     }
     return entries;
   };
