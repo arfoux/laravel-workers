@@ -168,6 +168,11 @@ const NON_MODEL_STATICS = new Set([
   'Illuminate\\Support\\Facades\\Cookie',
   'View',
   'Illuminate\\Support\\Facades\\View',
+  // DB::table($name) compiles to the kernel query builder (rt.dbTable) and the
+  // fluent chain is emitted by the transpiler's db-table chain walker. The
+  // terminals (get/first/count/...) are async and awaited there.
+  'DB',
+  'Illuminate\\Support\\Facades\\DB',
 ]);
 
 function lwErr(code, message, loc, hint) {
