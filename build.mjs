@@ -2042,6 +2042,13 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
   };
   const targets = [];
   for (const { route } of needsPort) {
+    // A Route::redirect()/permanentRedirect() route is served by the redirect
+    // handler the route table emits for it (kind 'redirect'), not by a compiled
+    // controller: its action is the FRAMEWORK RedirectController, which
+    // resolvePsr4() cannot reach from the app's autoload map. Listing it here
+    // only printed a "cannot resolve ... via composer autoload" line that read
+    // like a gap the edge already covers.
+    if (redirectMap.has(route)) continue;
     if (!methodsOk(route)) continue;
     const action = actionForRoute(route);
     if (!action || action === 'Closure') continue;
@@ -3258,13 +3265,6 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           if (controllerRoutes.has(needsPort[i].route)) needsPort.splice(i, 1);
         }
       }
-      // A Route::redirect()/permanentRedirect() route is served by the redirect
-      // handler (the route table's 'redirect' kind), not a compiled controller -
-      // so it must not stay in needsPort as a "no handler" block.
-      for (let i = needsPort.length - 1; i >= 0; i--) {
-        if (redirectMap.has(needsPort[i].route)) needsPort.splice(i, 1);
-      }
-
       // A route a COMPILED controller serves is NOT a snapshot: the build-time
       // page is the fallback for a route the build could not compile. Keeping
       // both hid the controller (the shadow compared a page baked at build
@@ -3583,10 +3583,9 @@ const routeTable = routes.map((route) => {
   // (a Location response), so it is its own kind - not a controller to compile.
   // The handler substitutes the destination's {param}s from the request path
   // and answers the recorded status (301 for permanentRedirect, else 302).
-  // Only the COMPILED verbs get handlers (OPTIONS/QUERY are answered by the
-  // platform / are not compiled), so the methods are filtered to those - a
-  // redirect registered with any() carries OPTIONS/QUERY that would otherwise
-  // fail the strict build as "no handler".
+  // Every verb the route declares gets a handler: `redirect()` registers with
+  // `any()`, so OPTIONS/QUERY included. The extra-verb pass above skips this
+  // route (there is nothing "extra" to refuse - the handler covers those verbs).
   if (redirectMap.has(route)) {
     const { destination, status } = redirectMap.get(route);
     // ALL the route's verbs (redirect registers with any()) are answered by the
@@ -3815,6 +3814,17 @@ const unknown = [
   ]),
 ].filter((r) => !routes.includes(r));
 const stubPorts = findStubPorts(portsSrc);
+// A Route::redirect()/permanentRedirect() route is served by the redirect
+// handler emitted for it (kind 'redirect'), so it must not stay in needsPort as
+// a "no handler" block. The removal runs HERE, before the coverage verdict, and
+// not inside the controller-compile step: that step's cleanup is guarded by
+// `if (emittedCount)`, so an app whose routes are ALL redirects (nothing to
+// compile) never ran it and failed --strict on every route it serves. The
+// failure was conditional on unrelated routes - adding one controller made the
+// same app build clean - which is why it read as an app problem, not a build one.
+for (let i = needsPort.length - 1; i >= 0; i--) {
+  if (redirectMap.has(needsPort[i].route)) needsPort.splice(i, 1);
+}
 const runtimeBinding = needsPort.filter((n) => isRuntimeBindingError(n.reason));
 const blocked = (needsPort.length - runtimeBinding.length) > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0 || uncompiledExtraNonPost.length > 0;
 

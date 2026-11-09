@@ -1,6 +1,6 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
-## Unreleased — the mail boundary is one source, `buildViewData()`'s order, and a checkout that no longer keeps CRLF
+## Unreleased — the mail boundary is one source, `buildViewData()`'s order, a checkout that no longer keeps CRLF, and a redirect-only app that builds clean
 
 ### The four methods the mailer refuses are refused by the build the same way
 
@@ -56,6 +56,36 @@ The tree is pinned to LF now (`* text=auto eol=lf`, `*.png binary`, and the corp
 the directory that exists), so a clone, a `git worktree` and CI hand the byte-compare the same
 bytes. No blob changed: the history is already LF (`git grep -lI $'\r' HEAD` is empty), so this
 is a checkout rule, not a renormalisation.
+
+### A redirect-only app failed `--strict` on every route it served
+
+`Route::redirect()` routes are served by the edge itself (the route table's `redirect` kind), so
+the build emits a handler for them instead of compiling a controller. The build-time probe still
+answers `302` for each, which lands the route in `needsPort` — the *"no handler, write a port"*
+list `--strict` fails on — and the build then removes that finding, because it does emit a
+handler. That removal sat inside the controller-compile step, whose cleanup is guarded by
+`if (emittedCount)`: an app whose routes are **all** redirects has nothing to compile, so it never
+ran the removal and failed the coverage check on every route it served
+(`UNHANDLED /old: HTTP 302 -> /new`, `UNHANDLED /u/{id}: dynamic segment — needs a port`). The
+failure was conditional on unrelated routes — adding one controller route to the same app made it
+build clean — so it read as an app problem rather than a build one.
+
+The removal now runs before the coverage verdict is computed, and the redirect routes are no longer
+offered to the controller resolver, which printed a `cannot resolve
+Illuminate\Routing\RedirectController via composer autoload` line per redirect that looked like a
+gap the build had already covered. The route table's comment about the redirected verbs was
+corrected too (every verb gets a handler, `OPTIONS`/`QUERY` included — `redirect()` registers with
+`any()`; the extra-verb pass skips the route rather than refusing it).
+
+Pinned by `tools/tests/redirect-coverage.test.mjs`: it builds a redirect-only app (a temp copy of
+the CI app with `vendor/` symlinked and `routes/web.php` replaced) and asserts `--strict` exits 0
+with `controllers 0`, no `UNHANDLED` line, no `RedirectController` resolution — and then reads the
+generated `dist/src/routes.generated.mjs` back to pin the handler contract: `redirect()` answers
+`302`, `permanentRedirect()` answers `301` (its third argument, not the word "permanent"),
+`/u/{id}` → `/users/42/profile` substitutes from the request's route params, every declared verb
+answers the same `Location`, and the destination is emitted raw (Laravel never appends the query
+string). The test needs an app + PHP, so it skips in the `test` job; `tools/oracle-ran.mjs` runs it
+in the job that has one and fails on a skip.
 
 ## v0.4.11 — the line-by-line sweep: an honest `Schema::table` deploy path, Laravel's own FormRequest stub, and PHP's config semantics (2026-11-08)
 

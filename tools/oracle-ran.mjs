@@ -41,6 +41,13 @@ DEFAULT_FILES.push(path.join('tools', 'tests', 'vendor-dir.test.mjs'));
 // plain `node --test` in the wrong job is green while proving nothing, exactly
 // what this gate exists to catch.
 DEFAULT_FILES.push(path.join('tools', 'tests', 'config-eval.test.mjs'));
+// Same shape, different seam: `tools/tests/redirect-coverage.test.mjs` builds a
+// redirect-ONLY app (a temp copy of this job's app, `routes/web.php` replaced)
+// and asserts the strict build clears its own redirect findings. It self-skips
+// without an app, and the case it pins only becomes reachable when the route
+// set carries no compiled controller - which is exactly what the app-less
+// `test` job cannot show. The gate's `skipped !== 0` check keeps it honest.
+DEFAULT_FILES.push(path.join('tools', 'tests', 'redirect-coverage.test.mjs'));
 const files = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES;
 
 const app = oracleAppRoot();
