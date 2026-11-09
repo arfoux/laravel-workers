@@ -327,6 +327,33 @@ const MAILABLE_FIELDS = new Set([
   'text',
 ]);
 
+// Typed properties the __construct ASSIGNS (`$this->who = ...`) are fine in PHP
+// (the ctor runs before any method reads them). Collect their names so the
+// property loop below can CARRY them instead of refusing the whole class (#682).
+// Walks the whole ctor body so nested/compound (`+=`) assignments count too.
+function ctorAssignedProps(classNode) {
+  const assigned = new Set();
+  const ctor = findMethod(classNode, "__construct");
+  if (!ctor) return assigned;
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const n of node) visit(n); return; }
+    if (node.kind === "assign" && node.left && node.left.kind === "propertylookup") {
+      const recv = node.left.what;
+      const off = node.left.offset;
+      if (recv && recv.kind === "variable" && recv.name === "this" && off && off.kind === "identifier" && off.name) {
+        assigned.add(off.name);
+      }
+    }
+    for (const k of Object.keys(node)) {
+      if (k === "loc" || k === "attributes") continue;
+      visit(node[k]);
+    }
+  };
+  visit(ctor.body);
+  return assigned;
+}
+
 function compileConstructor(fqcn, classNode, opts) {
   const ctor = findMethod(classNode, '__construct');
   const props = [];
@@ -340,6 +367,7 @@ function compileConstructor(fqcn, classNode, opts) {
   // effect never happens - the mail is never sent).
   const ctorDeps = new Map();
   const declared = [];
+  const ctorAssigned = ctorAssignedProps(classNode);
   for (const member of classMembers(classNode)) {
     if (!member) continue;
     // A property statement (`public int $sent = 0;`) holds the properties.
@@ -350,6 +378,15 @@ function compileConstructor(fqcn, classNode, opts) {
       if (!pname) continue;
       if (prop.value === undefined || prop.value === null) {
         if (prop.type) {
+          // A typed property the __construct ASSIGNS (`$this->who = ...`) is fine in
+          // PHP: the ctor runs before any method reads it. Carry it as `undefined`
+          // (the "not yet initialised" state) and let the ctor assignment fill it -
+          // reading it before the ctor assignment still answers undefined, the same
+          // "must not be accessed before initialization" PHP throws (#682).
+          if (ctorAssigned.has(pname)) {
+            declared.push({ name: pname, js: "undefined" });
+            continue;
+          }
           // PHP does not initialise a TYPED property: `public int $sent;`
           // stays uninitialized until something assigns it, and READING it
           // before that throws (php.net/manual/en/language.oop5.properties.php
