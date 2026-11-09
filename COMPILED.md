@@ -403,7 +403,10 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   handler answers the same 500 as Laravel). An app class (`new App\Exceptions\Mine`)
   is not compiled - it fails loud with LW002, it never becomes a silent stub. The
   same goes for `throw_if()`/`throw_unless()` (they throw the given error)
-- HTTP client (`Http::get`): fetch mapping, retries/timeouts; streaming declares limits
+- HTTP client (`Http::*`): **not compiled** — the facade is refused at build time
+  (LW002 "the Http facade is not compiled at the edge"); there is no `fetch` mapping
+  behind it. An app that calls `Http::get()`/`post()` stops the build until a port is
+  written for that route (the edge can `fetch`, but no Http-client surface is wired)
 
 ## 6. The full mentok — compiled-rung boundary (permanent)
 
