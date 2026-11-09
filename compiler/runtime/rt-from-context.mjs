@@ -5,6 +5,7 @@ import * as hashMod from '../../kernel/hash.mjs';
 import { str as strHelpers } from '../../kernel/str.mjs';
 import { arr as arrHelpers } from '../../kernel/arr.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
+import { table as kernelTable } from '../../kernel/db.mjs';
 import {
   phpJsonEncode,
   phpJsonEncodeWithFlags,
@@ -3058,6 +3059,12 @@ function makeCarbon(date, tz = APP_TZ) {
     if (!binding) throw new Error('rt.db: no database binding (env.DB) available');
     return binding;
   };
+
+  // DB::table($name) -> the kernel query builder over the D1 binding. The
+  // builder's fluent methods (where/orderBy/limit/...) are synchronous; the
+  // terminals (get/first/count/pluck/value) are async (a D1 round trip), so the
+  // compiled chain awaits the terminal.
+  rt.dbTable = (name) => kernelTable(rt.db(), String(name));
 
   // rt.hash: the Hash facade (bcrypt). The rounds come from the app config
   // (hashing.bcrypt.rounds), baked in at build time.

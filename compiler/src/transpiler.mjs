@@ -1300,6 +1300,72 @@ function txModelChain(chain, node) {
   return expr;
 }
 
+// ---- DB::table($name)->...->get() — the query-builder chain ----
+// The kernel QueryBuilder surface the compiled rung models. The fluent methods
+// are synchronous; the terminals hit D1 and are async (awaited below).
+const DB_TABLE_BUILDER = new Set([
+  'where', 'orWhere', 'whereIn', 'whereNotIn', 'whereNull', 'whereNotNull',
+  'whereBetween', 'whereNotBetween', 'whereColumn', 'whereExists', 'whereNotExists',
+  'orderBy', 'orderByDesc', 'latest', 'oldest', 'limit', 'offset', 'select',
+  'distinct', 'groupBy', 'having', 'join', 'leftJoin', 'rightJoin', 'innerJoin',
+]);
+const DB_TABLE_TERMINAL = new Set(['get', 'first', 'firstOrFail', 'count', 'pluck', 'value', 'exists']);
+
+/**
+ * Detect `DB::table($name)->...` — the root is the DB facade's table() call and
+ * the rest are builder methods ending in a terminal. Returns
+ * { tableArgs, segments } or null when the chain is not a DB::table chain.
+ */
+function dbTableChain(node) {
+  if (!CTX || !CTX.controller) return null;
+  const segs = [];
+  let tableArgs = null;
+  let cur = node;
+  while (cur && cur.kind === 'call') {
+    const what = cur.what;
+    if (!what) return null;
+    if (what.kind === 'propertylookup') {
+      const name = what.offset && what.offset.name;
+      if (typeof name !== 'string') return null;
+      segs.unshift({ name, node: cur });
+      cur = what.what;
+    } else if (what.kind === 'staticlookup') {
+      const cls = what.what && what.what.name ? String(what.what.name).replace(/^\\/, '') : null;
+      const name = what.offset && what.offset.name;
+      if (typeof cls !== 'string' || typeof name !== 'string') return null;
+      if ((cls !== 'DB' && cls !== 'Illuminate\\Support\\Facades\\DB') || name !== 'table') return null;
+      tableArgs = (cur.arguments || []).map(tx).join(', ');
+      break;
+    } else {
+      return null;
+    }
+  }
+  if (tableArgs === null) return null;
+  return { tableArgs, segments: segs };
+}
+
+function txDbTableChain(chain, node) {
+  const { tableArgs, segments } = chain;
+  let expr = 'rt.dbTable(' + tableArgs + ')';
+  for (const seg of segments) {
+    const segArgs = (seg.node.arguments || []).map(tx).join(', ');
+    if (DB_TABLE_TERMINAL.has(seg.name)) {
+      expr = txAwait(expr + '.' + seg.name + '(' + segArgs + ')', seg.node);
+    } else if (DB_TABLE_BUILDER.has(seg.name)) {
+      expr = expr + '.' + seg.name + '(' + segArgs + ')';
+    } else {
+      throw mkErr(
+        'LW002',
+        'DB::table()->' + seg.name + '() is not compiled — the query-builder method is not modelled; allowed: ' +
+          [...DB_TABLE_BUILDER].join(', ') + ' (builders) and ' + [...DB_TABLE_TERMINAL].join(', ') + ' (terminals) — ' + PORT_HINT,
+        seg.node.loc,
+        PORT_HINT
+      );
+    }
+  }
+  return expr;
+}
+
 // redirect(...), redirect()->route(...), redirect()->to(...), response()->json(...)
 function txRedirectChain(node) {
   const what = node.what;
@@ -2006,6 +2072,10 @@ function txCall(node) {
     if (redir) return redir;
     const chain = modelChain(node);
     if (chain) return txModelChain(chain, node);
+    // DB::table($name)->...->get() — the query-builder chain (the DB facade's
+    // table() is the chain root, not a model, so modelChain() skips it).
+    const dbChain = dbTableChain(node);
+    if (dbChain) return txDbTableChain(dbChain, node);
     const reqCall = txRequestCall(node, args);
     if (reqCall) return reqCall;
   }

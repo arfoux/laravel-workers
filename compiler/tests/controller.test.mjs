@@ -1360,6 +1360,37 @@ test('emit: the new facades refuse unsupported methods by name (LW002)', () => {
   refuses("return Redirect::refresh();", /Redirect::refresh/);
 });
 
+// DB::table($name) -> the kernel query builder (rt.dbTable), with a fluent
+// builder chain and an async terminal that is awaited. The runtime half (real
+// SQL) is pinned in kernel/tests/sqlite-integration.test.mjs.
+test('emit: DB::table() compiles to the query-builder chain with the terminal awaited', () => {
+  const src = (body) =>
+    '<?php\nnamespace App\\Http\\Controllers;\nclass C\n{\n    public function demo()\n    {\n        ' +
+    body +
+    '\n        return response(\'ok\');\n    }\n}\n';
+  const meta = { routeUri: '/x', routeParams: [], models: [], views: [] };
+  const compiles = (body) => {
+    const res = emitController(src(body), 'demo', meta);
+    assert.deepEqual(res.errors, [], body + ' -> ' + JSON.stringify(res.errors));
+    return res.code;
+  };
+  // The terminal is awaited; the builders chain synchronously.
+  assert.match(
+    compiles("$rows = DB::table('users')->where('a', 1)->get();"),
+    /await rt\.dbTable\("users"\)\.where\("a", 1\)\.get\(\)/
+  );
+  assert.match(compiles("$n = DB::table('users')->count();"), /await rt\.dbTable\("users"\)\.count\(\)/);
+  assert.match(
+    compiles("$rows = DB::table('users')->orderBy('id')->limit(10)->get();"),
+    /rt\.dbTable\("users"\)\.orderBy\("id"\)\.limit\(10\)\.get\(\)/
+  );
+  // A builder method the compiled rung does not model fails loud by name.
+  const bad = emitController(src("$rows = DB::table('users')->someWeirdMethod()->get();"), 'demo', meta);
+  assert.equal(bad.code, null);
+  assert.equal(bad.errors[0].code, 'LW002');
+  assert.match(bad.errors[0].message, /DB::table\(\)->someWeirdMethod/);
+});
+
 test('emit: a relation call on a model fails loud (LW003)', () => {
   const src = String.raw`<?php
 namespace App\Http\Controllers;

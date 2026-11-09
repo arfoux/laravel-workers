@@ -167,6 +167,25 @@ test('sqlite: local scopes compose with real SQL', { skip }, async () => {
   assert.deepEqual(ids(await Post.query(db).orderBy('id').scope('published').get()), [1, 3]);
 });
 
+// DB::table($name) compiles to rt.dbTable(name) = table(db, name) - the raw
+// query builder (no Eloquent model, so no soft-delete scope). This pins the
+// builder chain the compiled DB::table surface emits, against real SQL.
+test('sqlite: DB::table() query builder runs where/get/first/count over real SQL', { skip }, async () => {
+  const db = fixture();
+  // where + get: only the unpublished post (the raw builder has no soft-delete
+  // scope). The raw builder answers PLAIN row objects (stdClass), not models.
+  const rows = await table(db, 'posts').where('published', 0).get();
+  assert.deepEqual(rows.map((r) => r.id), [2]);
+  // orderBy + limit.
+  const limited = await table(db, 'posts').orderBy('id').limit(2).get();
+  assert.deepEqual(limited.map((r) => r.id), [1, 2]);
+  // first() on a keyed filter.
+  const one = await table(db, 'posts').where('id', 2).first();
+  assert.equal(one.title, 'b');
+  // count() over the whole table (4 posts, soft deletes not applied here).
+  assert.equal(await table(db, 'posts').count(), 4);
+});
+
 test('sqlite: Model.create/find/save/delete round-trip', { skip }, async () => {
   const db = fixture();
   const created = await Post.create(db, { title: 'new', published: 1 });

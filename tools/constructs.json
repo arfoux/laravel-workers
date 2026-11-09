@@ -1036,12 +1036,11 @@
       "uses": [
         "Illuminate\\Support\\Facades\\DB"
       ],
-      "php": "        \\Illuminate\\Support\\Facades\\DB::connection();",
-      "expect": "fail",
-      "note": "The DB facade is not compiled at the edge (Laravel 13 lists 113 methods): the build refuses it with that reason - a port handler answers it.",
+      "php": "        $rows = DB::table('users')->where('a', 1)->get();",
+      "expect": "ok",
+      "note": "The DB facade compiles: DB::table($name) -> the kernel query builder (rt.dbTable), with a fluent chain (where/orderBy/limit/...) and async terminals (get/first/count/pluck/value) that are awaited. Methods off the builder allowlist fail loud LW002. DB::connection() (a raw connection handle) is not compiled - only the table() query-builder entry is.",
       "batch": "M49",
       "status": "done",
-      "code": "LW002",
       "reason": "the DB facade is not compiled at the edge"
     },
     {
