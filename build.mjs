@@ -788,6 +788,19 @@ for (const r of appRoutes) {
     if (!metaFor.has(key)) metaFor.set(key, { name: r.name ?? null, domain: r.domain ?? null, action: r.action ?? null, middleware: Array.isArray(r.middleware) ? r.middleware : null });
   }
 }
+// DB::table() aside, Route::redirect()/permanentRedirect() routes carry their
+// destination + status as route fields (captured in routes-dump.mjs). Build a
+// uri -> {destination, status} map so the route table can emit a redirect
+// handler for them. The first declaration wins (Laravel answers the first
+// matching route).
+const redirectMap = new Map();
+for (const r of appRoutes) {
+  if (!r.redirectDestination) continue;
+  const uri = normalize(r.uri);
+  if (!redirectMap.has(uri)) {
+    redirectMap.set(uri, { destination: r.redirectDestination, status: r.redirectStatus });
+  }
+}
 const otherMethods = (route) =>
   [...(methodsFor.get(route) || new Set())].filter((m) => m !== 'GET' && m !== 'HEAD');
 // first non-null name/domain/middleware across the route's methods (they share a
@@ -2057,6 +2070,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
     // there is nothing to transpile here - and no "skipped" line that would read
     // like a gap the port already covers.
     if (portEntries.some(([r]) => r === route)) continue;
+    // A redirect route's redirect handler answers EVERY verb it declares
+    // (redirect registers with any()), so there are no "extra" verbs to refuse -
+    // the extra-verb loop must skip it, or it would fail the strict build on the
+    // OPTIONS/QUERY verbs the redirect handler already covers.
+    if (redirectMap.has(route)) continue;
     for (const verb of extraVerbsFor(route)) {
       const meta = metaForVerb(route, verb);
       const action = meta && meta.action;
@@ -3240,6 +3258,12 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           if (controllerRoutes.has(needsPort[i].route)) needsPort.splice(i, 1);
         }
       }
+      // A Route::redirect()/permanentRedirect() route is served by the redirect
+      // handler (the route table's 'redirect' kind), not a compiled controller -
+      // so it must not stay in needsPort as a "no handler" block.
+      for (let i = needsPort.length - 1; i >= 0; i--) {
+        if (redirectMap.has(needsPort[i].route)) needsPort.splice(i, 1);
+      }
 
       // A route a COMPILED controller serves is NOT a snapshot: the build-time
       // page is the fallback for a route the build could not compile. Keeping
@@ -3555,6 +3579,23 @@ const routeTable = routes.map((route) => {
     const view = viewMap.find(([r]) => r === route)[1];
     return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'view', view, controller: slug };
   }
+  // Route::redirect()/permanentRedirect(): the edge serves the redirect itself
+  // (a Location response), so it is its own kind - not a controller to compile.
+  // The handler substitutes the destination's {param}s from the request path
+  // and answers the recorded status (301 for permanentRedirect, else 302).
+  // Only the COMPILED verbs get handlers (OPTIONS/QUERY are answered by the
+  // platform / are not compiled), so the methods are filtered to those - a
+  // redirect registered with any() carries OPTIONS/QUERY that would otherwise
+  // fail the strict build as "no handler".
+  if (redirectMap.has(route)) {
+    const { destination, status } = redirectMap.get(route);
+    // ALL the route's verbs (redirect registers with any()) are answered by the
+    // redirect handler, so they are ALL kept - baseMethodsFor() would filter the
+    // non-GET verbs out as "extras", leaving only GET|HEAD handlers. The
+    // extra-verb loop skips this route for the same reason.
+    const methods = [...(methodsFor.get(route) || new Set())];
+    return { uri: route, ...metaForRoute(route), methods, kind: 'redirect', destination, status };
+  }
   if (controllerRoutes.has(route)) {
     const info = controllerRoutes.get(route);
     return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'controller', controller: info.slug };
@@ -3671,6 +3712,31 @@ const handlersLines = controllerMap.flatMap(({ uri, methods, idx }) => {
   return m.map((verb) => `  ${JSON.stringify(verb + ' ' + uri)}: handler${idx},`);
 });
 
+// Route::redirect()/permanentRedirect() routes are their own handler (not a
+// compiled controller): the handler substitutes the destination's {param}s from
+// the request's route params and answers the recorded status with a Location.
+// Emitted INLINE per verb, matching the compiled-handler keys.
+const redirectHandlersLines = routeTable
+  .filter((e) => e.kind === 'redirect')
+  .flatMap(({ uri, methods, destination, status }) => {
+    const m = methods && methods.length ? methods : ['GET'];
+    const destLit = JSON.stringify(destination);
+    const statusLit = Number(status) || 302;
+    // The body is built INSIDE the verb map so `verb` is in scope (the same
+    // out-of-scope bug as the first redirect()->back() fix, which threw
+    // "verb is not defined").
+    return m.map((verb) => [
+      `  ${JSON.stringify(verb + ' ' + uri)}: async (ctx) => {`,
+      `    const params = (ctx && ctx.request && typeof ctx.request.routeParams === 'function') ? (ctx.request.routeParams() || {}) : {};`,
+      `    const dest = ${destLit}.replace(/\\{([^}]+)\\}/g, (__, k) => {`,
+      `      const v = Object.prototype.hasOwnProperty.call(params, k) ? params[k] : null;`,
+      `      return v === null || v === undefined ? '' : encodeURIComponent(String(v));`,
+      `    });`,
+      `    return { status: ${statusLit}, headers: { location: dest }, body: '' };`,
+      `  },`,
+    ].join('\n'));
+  });
+
 writeFileSync(
   join(dist, 'src', 'routes.generated.mjs'),
   [
@@ -3681,6 +3747,7 @@ writeFileSync(
     'export const routeNames = ' + JSON.stringify(routeNames, null, 2) + ';',
     'export const handlers = {',
     ...handlersLines,
+    ...redirectHandlersLines,
     '};',
     '',
   ].join('\n')

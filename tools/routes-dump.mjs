@@ -667,16 +667,26 @@ function parse() {
 
     let action = 'Closure';
     let path = null;
-    // A non-Closure action the ROUTE FILE declares is a controller action as far
-    // as the Router is concerned (`Router::actionReferencesController()`), and
-    // that is what makes the two group attributes apply - controller first, then
-    // namespace (`Router::convertToControllerAction()`, Router.php:621-641).
+    // For Route::redirect()/permanentRedirect(): the destination and status are
+    // stored as ROUTE PARAMETERS (RedirectController::__invoke reads
+    // $request->route()->parameters()), so the build needs both to emit a
+    // redirect handler. Captured here; null for every other route kind.
+    let redirectDestination = null;
+    let redirectStatus = null;
     let fromRouteFile = false;
     // Route::view($uri, $view, ...) / Route::redirect($uri, $dest, ...) register
     // a framework controller — NOT the app action the generic branch below would
     // read out of argument #1 (that one is the view NAME / the destination).
     if (vm === 'view') action = 'Illuminate\\Routing\\ViewController';
-    else if (vm === 'redirect' || vm === 'permanentredirect') action = 'Illuminate\\Routing\\RedirectController';
+    else if (vm === 'redirect' || vm === 'permanentredirect') {
+      action = 'Illuminate\\Routing\\RedirectController';
+      // Route::redirect($uri, $destination, $status = 302); permanentRedirect -> 301.
+      // The destination is argument #1 (actionArg); the status is argument #2.
+      redirectDestination = strArg(actionArg);
+      redirectStatus = vm === 'permanentredirect'
+        ? 301
+        : (verbStep.args[2] !== undefined ? (Number(strArg(verbStep.args[2])) || 302) : 302);
+    }
     else if (actionArg) {
       if (isClosureFn(actionArg)) {
         const line = verbStep.node.loc && verbStep.node.loc.start ? verbStep.node.loc.start.line : null;
@@ -746,6 +756,8 @@ function parse() {
       action,
       middleware,
       path,
+      redirectDestination,
+      redirectStatus,
     });
   };
 
