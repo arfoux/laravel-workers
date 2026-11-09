@@ -226,7 +226,7 @@ The escape hatch stays: **ports**.
 | Vite build | Unchanged | ✅ | already working | F |
 | Artisan | Local only; edge CLI (`build`/`ship`) | ✅ | | F |
 | PHPUnit | Local unchanged; parity suite added | ✅ | | F |
-| Livewire / Inertia / Filament | Out of v1; Inertia feasible (JSON port) phase 3; Livewire hard | 🔴* | documented, not promised | later |
+| Livewire / Inertia / Filament | Out of v1; Inertia feasible (JSON port) phase 3; Livewire hard | 🔴* | documented, not promised. A component renders through `$__env->startComponent()` and is a hand-written port; an app that merely has Livewire **installed** builds, because its page views compile to the flag-off Livewire bytes (the component-only morph guards are dropped at the dump boundary - `compiler/src/livewire-markers.mjs`) | later |
 | Telescope / Horizon / Debugbar | Local-only tools | ⛔ | N/A at edge | F |
 
 **Free vs Paid summary:** everything above runs on **Free with documented trades**; Paid buys headroom (30s CPU, bcrypt, 25B rows/mo, 10k subrequests, DO) — never a dependency for the demo path.

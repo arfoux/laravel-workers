@@ -1,6 +1,6 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
-## Unreleased — the mail boundary is one source, `buildViewData()`'s order, a checkout that no longer keeps CRLF, and a redirect-only app that builds clean
+## Unreleased — the mail boundary is one source, `buildViewData()`'s order, a checkout that no longer keeps CRLF, a redirect-only app that builds clean, and a scratch dir that cannot freeze an app's providers
 
 ### The four methods the mailer refuses are refused by the build the same way
 
@@ -86,6 +86,87 @@ generated `dist/src/routes.generated.mjs` back to pin the handler contract: `red
 answers the same `Location`, and the destination is emitted raw (Laravel never appends the query
 string). The test needs an app + PHP, so it skips in the `test` job; `tools/oracle-ran.mjs` runs it
 in the job that has one and fails on a skip.
+
+### A package installed after a build was not booted — the scratch provider caches follow Composer now
+
+The build keeps `APP_PACKAGES_CACHE`/`APP_SERVICES_CACHE` inside its scratch dir so that a
+developer's `bootstrap/cache/*.php` — built against a `composer install` with `require-dev` — cannot
+name providers the composer-free vendor tree does not ship. The cost of that was invisible until a
+real app hit it: `PackageManifest::getManifest()` rebuilds the compiled manifest **only when the
+file is missing** (`PackageManifest.php:101-113`, the services cache is written the same way), so
+the provider list every PHP child boots was decided by an artifact of the *first* build in that
+scratch dir, not by `vendor/composer/installed.json`.
+
+Measured on a real app: `livewire/livewire` entered `composer/installed.json` on 2026-11-09 while
+the scratch `packages.php` stayed frozen at 2026-11-05 — six providers, no Livewire. That machine
+built the app green (`coverage: all 96 route(s) handled`), and the identical sources refused 25
+views (13 `LW003`) as soon as the manifest came from a boot that had Livewire in the list. The same
+app therefore built differently on two machines, with nothing in the output naming the reason.
+
+`tools/scratch-php-cache.mjs` hashes Composer's identity — the same three files
+`tools/build-cache.mjs` hashes: `composer/installed.php`, `composer/installed.json`,
+`autoload.php` — into a stamp beside the caches, and `childEnv()` drops `packages.php` and
+`services.php` whenever the stamp moved, so the next boot rebuilds them from the vendor tree that
+is actually installed. Only the files the build owns are touched: an operator who exported
+`APP_PACKAGES_CACHE`/`APP_SERVICES_CACHE` keeps their own. Verified on the app above: the next
+build printed `scratch provider cache stale (vendor identity changed) - dropped packages.php,
+services.php`, booted Livewire, and the build after that (same vendor tree) touched nothing.
+`tools/tests/scratch-php-cache.test.mjs` pins the three cases: a package installed after the first
+build invalidates, an unchanged tree does not, and a tree that never had a `vendor/` does not churn.
+
+### Livewire's component-only Blade guards are removed, not compiled
+
+A Laravel app with Livewire installed boots
+`Features/SupportMorphAwareBladeCompilation`, whose Blade precompiler
+(`config('livewire.inject_morph_markers')` and `config('livewire.smart_wire_keys')`, both true by
+default) wraps every conditional and loop directive in a *runtime* guard:
+
+```php
+<?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?>
+<!--[if BLOCK]><![endif]-->
+<?php endif; ?>
+```
+
+`ExtendBlade` sets that flag only between `startLivewireRendering()`/`endLivewireRendering()`, i.e.
+only while a Livewire **component** renders — and a component is out of scope by design (its edge
+entry is a hand-written port). Measured on a real Livewire 4.4.8 app (PHP 8.3.30): at render time
+`isRenderingLivewireComponent()` is `false` and `[if BLOCK]` never reaches the HTML body. So the
+edge's reference compile is the compile with those flags off, and removing the guards is
+byte-for-byte the same thing: the precompiler only *inserts* the constant strings, it never rewrites
+the directive beside them (`crud.show`: guarded 1185 bytes → 918, byte-identical to the flag-off
+compile). Left in place they made the build fail twice over — `blade2php diverged from Laravel`
+(a BLOCK finding, since `blade2php` compiles the view source and knows no Livewire) and `LW003
+unknown class/static Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent`
+when the guarded PHP was handed to the transpiler — which skipped 13 views and, with them, the 12
+controllers whose views did not compile: 25 findings from a package the app installed, none of them
+about the app.
+
+`compiler/src/livewire-markers.mjs` removes them, and only them: the guard pair must wrap one of the
+14 payloads the four emitters can produce (one marker and/or one `SupportCompiledWireKeys` call,
+marker first), and anything else is left in place so a future Livewire release keeps failing loud
+with `LW003` instead of shipping a body that differs from the reference. `build.mjs`'s
+`runViewJobs()` normalizes every `*.compiled.json` in the scratch dir right after each
+`compile-view.php --batch`, before any reader compares or transpiles it; the build prints which
+files it touched. Verified end to end on the app above once it booted Livewire for real:
+`Livewire's component-only Blade markers dropped from 13 reference compile(s)` on both waves,
+`controllers transpiled: 85/86`, `coverage: all 99 route(s) handled`, exit 0, no `LW003` and no
+divergence. `compiler/tests/livewire-markers.test.mjs` pins the six observed payloads, the unknown
+payload that must survive, idempotence and the dump-file walk.
+
+### The redirect-only coverage test carries the route policy it declares
+
+`tools/tests/redirect-coverage.test.mjs` builds a temp copy of an app with `routes/web.php` replaced
+by three redirects, and the copy kept the source app's `registry.json`. A source app that declares a
+`static` entry for a route the copy does not have (`lw-showcase`: `"/architecture": "static"`) made
+the build prerender it, fail with `static route /architecture returned HTTP 404`, and never reach
+the assertion — the test could not run against any app that uses the feature, which is exactly where
+the four traps it locks matter. `registry.json` is now excluded with the other non-source artifacts,
+and against a real Livewire/Sanctum app the two tests pass (2/2, 5.4 s), pinning the emitted
+artifact: `redirect()` answers 302, `permanentRedirect()` answers 301 from its third argument, a
+`{param}` in the destination substitutes from the request's route params (`/u/42` →
+`/users/42/profile`), every compiled verb answers the same `Location`, and the destination is
+emitted raw (never with the request's query string). `kernel/tests/router.test.mjs:96` already pins
+the kernel side (`redirect()` → `302` + `location`, empty body).
 
 ## v0.4.11 — the line-by-line sweep: an honest `Schema::table` deploy path, Laravel's own FormRequest stub, and PHP's config semantics (2026-11-08)
 
