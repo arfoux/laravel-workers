@@ -2,6 +2,22 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased — the mail boundary is one source, `buildViewData()`'s order, a checkout that no longer keeps CRLF, a redirect-only app that builds clean, and a scratch dir that cannot freeze an app's providers
 
+### `route()` answers an absolute URL for a non-GET name on a shared path
+
+A path carrying two names — the idiomatic `Route::get('/login')->name('login')` plus
+`Route::post('/login')->name('login.store')` — used to leave `login.store` out of the
+runtime `route()` table. The route scan is deduped per path and the builder took only
+the first named verb's name, so a compiled Blade view calling `route('login.store')`
+fell through to the build-time URL map, whose value is root-relative (the dev origin is
+stripped), and emitted `action="/login"` where PHP emits
+`action="http://host/login"`.
+
+Found on a real app's login form (the shadow harness flagged the byte divergence;
+`GET /login` went from MISMATCH to match, and the canonical fresh-app run stayed
+16/16). The table is now built one entry per NAME across all verbs
+(`tools/route-map.mjs` + `tools/tests/route-map.test.mjs`), app-free so it runs in the
+app-less `test` job.
+
 ### The `@vite` directive emits absolute asset URLs, like PHP
 
 `@vite` renders through Laravel's `asset()`, which prefixes the request's scheme +
