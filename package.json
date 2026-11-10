@@ -38,6 +38,7 @@
     "build.mjs",
     "compiler/bin",
     "compiler/blade.mjs",
+    "compiler/package-bindings.mjs",
     "compiler/src",
     "compiler/runtime",
     "kernel",
