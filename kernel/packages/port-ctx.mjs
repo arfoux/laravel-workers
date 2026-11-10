@@ -1,0 +1,153 @@
+// kernel/packages/port-ctx.mjs — normalise the `ctx` a ROUTE PORT receives.
+//
+// The router hands a port (`kernel/router.mjs`, `dispatch`) a `ctx` whose
+// `request` is the compiled kernel Request — its accessors are METHODS:
+// `method()`, `pathInfo()`, `getQueryString()`, `header(name)`, `input()`,
+// `query()`, `json()`, `host()`. It also adds `ctx.params` (route segments),
+// `ctx.method` (the resolved verb as a string) and `ctx.db` (the binding).
+//
+// A port that reads `ctx.request.url`, `ctx.request.method`, `ctx.body` or
+// `ctx.query` as PROPERTIES gets `undefined` and silently falls back to its own
+// default — the bug the lw-showcase ports warn about by name. This helper
+// rewrites the ctx INTO the shape a port expects (`request.method` a string,
+// `request.url` a full URL string, `request.headers.get()`, `request.text()`,
+// plus `ctx.query`/`ctx.body`/`ctx.params`), so the same port code is correct on
+// the real kernel Request and on the plain object a unit test hand-builds.
+//
+// It is a no-op on the shape a test already passes (those fields are recomputed
+// from the same inputs), so a named export a test calls directly stays green.
+//
+//   export default async function handle(ctx, env) {
+//     ctx = normalizePortCtx(ctx);
+//     ...
+//   }
+//
+// `readPortContext(ctx)` is the same parse, returned as a flat view for ports
+// that prefer destructuring.
+
+function parse(ctx) {
+  const req = (ctx && ctx.request) || {};
+  const call = (name, ...args) => (typeof req[name] === 'function' ? req[name](...args) : undefined);
+  // A fetch `Request` (what a unit test hand-builds) and the kernel Request both
+  // expose `json()`/`text()`, but only the kernel's are synchronous and
+  // side-effect-free: reading a fetch Request's body consumes the stream, and
+  // calling `json()` on an empty one rejects. Only the kernel shape is read for
+  // the body; a fetch Request's body must come from `ctx.body` / `text()`.
+  const isFetchRequest = typeof Request === 'function' && req instanceof Request;
+
+  const method = String(
+    call('method') || (typeof req.method === 'string' ? req.method : '') || (ctx && ctx.method) || 'GET'
+  ).toUpperCase();
+
+  const raw = String(
+    call('pathInfo') || (typeof req.url === 'string' ? req.url : '') || req.path || (ctx && ctx.url) || '/'
+  );
+  let path;
+  let queryString;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    const u = new URL(raw);
+    path = u.pathname || '/';
+    queryString = u.search.replace(/^\?/, '');
+  } else {
+    path = raw.split('?')[0] || '/';
+    queryString = String(
+      call('getQueryString') || (raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '')
+    );
+  }
+
+  const host = (() => {
+    const h = call('host');
+    if (h) return String(h);
+    if (typeof req.host === 'string' && req.host) return req.host;
+    return 'port.local';
+  })();
+  const urlString = `https://${host}${path}${queryString ? '?' + queryString : ''}`;
+  const url = new URL(urlString);
+
+  const headerOf = (name) => {
+    const v = call('header', name);
+    if (v !== undefined && v !== null) return String(v);
+    const h = req.headers;
+    if (h && typeof h.get === 'function') {
+      const g = h.get(name);
+      return g === undefined || g === null ? null : String(g);
+    }
+    if (h && typeof h === 'object') {
+      const g = h[name] !== undefined ? h[name] : h[String(name).toLowerCase()];
+      return g === undefined || g === null ? null : String(g);
+    }
+    return null;
+  };
+
+  const query = (() => {
+    if (ctx && ctx.query && typeof ctx.query === 'object') return ctx.query;
+    const q = call('query');
+    if (q && typeof q === 'object') return q;
+    return Object.fromEntries(url.searchParams);
+  })();
+
+  const body =
+    ctx && ctx.body !== undefined && ctx.body !== null
+      ? ctx.body
+      : isFetchRequest || typeof req.json !== 'function'
+        ? {}
+        : (() => {
+            const j = call('json');
+            return j === undefined || j === null ? {} : j;
+          })();
+
+  const rawText = async () => {
+    if (isFetchRequest && typeof req.text === 'function') return String(await req.text());
+    if (typeof req.text === 'function' && typeof req.json !== 'function') return String(await req.text());
+    const j = call('json');
+    return j === undefined || j === null ? '' : JSON.stringify(j);
+  };
+
+  return { method, path, queryString, url, urlString, host, query, body, headerOf, rawText };
+}
+
+/** Rewrite `ctx` into the plain shape a port reads (`request.*` as data). */
+export function normalizePortCtx(ctx = {}) {
+  const p = parse(ctx);
+  return {
+    ...ctx,
+    method: p.method,
+    params: (ctx && ctx.params) || {},
+    query: p.query,
+    body: p.body,
+    request: {
+      method: p.method,
+      url: p.urlString,
+      path: p.path,
+      pathInfo: () => p.path,
+      getQueryString: () => p.queryString,
+      host: () => p.host,
+      headers: { get: (n) => p.headerOf(n) },
+      header: (n) => p.headerOf(n),
+      input: (k, d) => {
+        const v = p.query[k] !== undefined ? p.query[k] : p.body && p.body[k];
+        return v === undefined ? d : v;
+      },
+      json: () => p.body,
+      text: () => p.rawText(),
+    },
+  };
+}
+
+/** The same parse as a flat view, for ports that prefer destructuring. */
+export function readPortContext(ctx = {}) {
+  const p = parse(ctx);
+  return {
+    method: p.method,
+    path: p.path,
+    queryString: p.queryString,
+    url: p.url,
+    query: p.query,
+    body: p.body,
+    params: (ctx && ctx.params) || {},
+    headerOf: p.headerOf,
+    hostOf: () => p.host,
+    text: () => p.rawText(),
+    request: ctx && ctx.request,
+  };
+}

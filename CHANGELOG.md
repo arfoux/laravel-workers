@@ -282,6 +282,49 @@ artifact: `redirect()` answers 302, `permanentRedirect()` answers 301 from its t
 emitted raw (never with the request's query string). `kernel/tests/router.test.mjs:96` already pins
 the kernel side (`redirect()` → `302` + `location`, empty body).
 
+### The package ports are proven on the router's `ctx`, not a hand-built one
+
+Every `ports/packages/*.mjs` had a unit test that imported the module and called it
+with a hand-built ctx, so "green" proved the handler logic in isolation but not
+that it answers on what `kernel/router.mjs` actually passes a route port: the
+compiled kernel `Request`, whose accessors are METHODS (`method()`, `pathInfo()`,
+`header()`, `json()`), plus `ctx.params`/`ctx.method`. A port reading
+`ctx.request.url`/`ctx.request.method`/`ctx.body` as *properties* got `undefined`
+and silently used its own default — the trap `kernel/packages/port-ctx.mjs`
+(`normalizePortCtx`) exists to close.
+
+`tools/tests/packages-wiring.test.mjs` builds a real app (temp copy, `vendor`
+symlinked) with a representative subset wired — `spatie-sitemap`, `spatie-settings`
+(`{group}`), `activitylog` (`{id}`), `sluggable`, `spatie-data`,
+`scout-meilisearch`, `sanctum` (four routes, one module), `fortify-two-factor`
+(four routes, one module) — asserts the build is `--strict` green with 16 ports and
+no `UNHANDLED`, then imports the emitted `dist/src/ports/*.mjs` and calls each on
+the router's own ctx. It pins the dispatch fix directly: the four
+`fortify-two-factor` routes reach four different handlers (`User not found` /
+`Two-factor is not enabled` / `... for this account` / `No recovery codes`) where
+before they all fell through to `enable`. It skips without a Laravel app, like
+`redirect-coverage.test.mjs`; `tools/oracle-ran.mjs` turns that skip into a failure
+in the oracle job. The README gains the route-port contract (the accessor-is-a-
+method trap, `normalizePortCtx`, the `registry.json` `ports` shape).
+
+The same trap was still live in `ports/packages/fortify-confirmation.mjs`: its
+default export switched on `ctx.params.action`, which the router never fills (the
+four Fortify routes carry no `{action}` segment), so **all four routes answered
+`404 Unknown confirmation action ''`** on a real build — the unit test passed
+because it hands the module `params: { action: ... }` itself. It now dispatches on
+the request path (`/status` matched before its `/user/confirm-password` prefix) and
+the wiring test asserts each route reaches its own handler. Three port headers also
+documented registry keys the build cannot accept — `slug:action` values and
+`:param` patterns; the build uses the value verbatim as the file name
+(`export { default } from '../ports/<slug>.mjs'`) and matches the key against
+`route:list`, so both forms fail loud. They now show bare slugs and `{param}`.
+
+`registry.example.json` (+ `docs/PACKAGE-PORTS.md` for the secrets and the one
+route collision, `/broadcasting/auth` answered by both `pusher` and `reverb`) maps
+the whole fleet: 30 slugs → 61 route paths. Verified by building a temp app with
+those 61 routes and all 30 ports wired — `--strict` green, `ports 61`, coverage
+`all 61 route(s) handled`.
+
 ## v0.4.11 — the line-by-line sweep: an honest `Schema::table` deploy path, Laravel's own FormRequest stub, and PHP's config semantics (2026-11-08)
 
 ### The `Schema::table` deploy path is honest now
