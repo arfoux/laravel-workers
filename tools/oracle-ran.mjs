@@ -48,6 +48,15 @@ DEFAULT_FILES.push(path.join('tools', 'tests', 'config-eval.test.mjs'));
 // set carries no compiled controller - which is exactly what the app-less
 // `test` job cannot show. The gate's `skipped !== 0` check keeps it honest.
 DEFAULT_FILES.push(path.join('tools', 'tests', 'redirect-coverage.test.mjs'));
+// The package-port fleet's WIRING is app-dependent too. Every port's unit test
+// imports the module and calls it with a ctx it builds itself, which cannot
+// catch a port that reads `ctx.request.url`/`ctx.request.method`/`ctx.body` as
+// PROPERTIES — the ctx `kernel/router.mjs` actually hands a route port carries
+// METHOD accessors, so such a port answers `undefined` and silently uses its own
+// default. `tools/tests/packages-wiring.test.mjs` builds a real app, wires a
+// representative subset and drives the emitted ports on that ctx; without an app
+// it skips, so the gate runs it for real here.
+DEFAULT_FILES.push(path.join('tools', 'tests', 'packages-wiring.test.mjs'));
 const files = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES;
 
 const app = oracleAppRoot();

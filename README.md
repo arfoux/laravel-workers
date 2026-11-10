@@ -577,6 +577,69 @@ token unseals in JS, and the reverse), or use the provider's SDK. For sealed
 fail-closed `unsealOrNull`, rotation — in the `stateless-seal` recipe:
 [`docs/recipes/laravel-workers.md`](https://github.com/arfoux/stateless-seal/blob/main/docs/recipes/laravel-workers.md).
 
+### A route port, in practice (the recipe)
+
+A **route port** is the other half of the guard port: a route whose body the
+transpiler cannot compile (or that you simply prefer to write in JS) is answered
+by a module instead of a compiled handler. Declare it in `registry.json`:
+
+```json
+{ "ports": { "/reports/{id}": "reports", "/reports": "reports" } }
+```
+
+The value is a **slug**, resolved to `<LW_PORTS_DIR>/<slug>.mjs` (the build copies
+it verbatim into `dist/src/ports/`); `LW_PORTS_DIR` defaults to the app's `ports/`.
+One module may answer several routes — the router hands it the same `ctx` for each,
+so dispatch on `ctx.request.path()` (see below). `--strict` fails if a declared
+route is not in `route:list`, or if a slug's file is missing.
+
+**The request object is the compiled kernel `Request`, and its accessors are
+METHODS.** A port that reads `ctx.request.url`, `ctx.request.method` or `ctx.body`
+as *properties* gets `undefined` and silently falls back to its own default — the
+classic trap. Either read the methods:
+
+```js
+export default async function handler(ctx, env) {
+  const id    = ctx.params.id;               // {param} captures only
+  const m     = ctx.request.method();        // 'GET' | 'POST' | ...
+  const body  = await ctx.request.json();    // parsed JSON (or null)
+  const q     = ctx.request.query('q');      // one query-string value
+  return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, m }) };
+}
+```
+
+or call `normalizePortCtx(ctx)` (from `kernel/packages/port-ctx.mjs`) at the top,
+which maps `ctx.request.method/url/pathInfo/header/query/json` onto `ctx.method`,
+`ctx.path`, `ctx.query`, `ctx.header`, `ctx.body` so a port written against the
+simpler shape works unchanged:
+
+```js
+import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+export default async function handler(ctx, env) {
+  ctx = normalizePortCtx(ctx);
+  return { status: 200, headers: {}, body: JSON.stringify({ path: ctx.path }) };
+}
+```
+
+Handlers return `{ status, headers, body }` (async). `env` is the Worker's
+bindings (`env.DB`, `env.APP_KEY`, ...). A port that answers a Wrangler-bundled
+import must not rely on the path-segment form; `--scaffold` writes a `501` stub
+for every route that needs a port.
+
+The package ships **reference ports** for the popular packages under
+`ports/packages/*.mjs` (Sanctum, Socialite, Passport's OAuth routes, Fortify 2FA,
+spatie/sitemap, settings, activitylog, sluggable, data, scout, model-states,
+translatable, query-builder, tags, enum, Cashier/Stripe/Paddle/LemonSqueezy
+webhooks, sitemap, Excel export, mail transports, Pusher/Reverb...). Copy the ones
+you need into your app's ports dir and map their routes; each exports `ensureSchema`
+so `dist/schema.sql` can create its D1 tables. [`registry.example.json`](registry.example.json)
+maps the whole fleet (30 slugs → 61 route paths) and
+[`docs/PACKAGE-PORTS.md`](docs/PACKAGE-PORTS.md) lists the secrets each handler reads
+and the one route collision (`/broadcasting/auth`, answered by both `pusher` and
+`reverb`). `tools/tests/packages-wiring.test.mjs` builds a real app with a subset
+wired and drives those routes on the router's own `ctx` — the guard against a port
+that only passes its unit test.
+
 ---
 
 ## What's inside
