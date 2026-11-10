@@ -1,6 +1,6 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
-## Unreleased — the mail boundary is one source, `buildViewData()`'s order, a checkout that no longer keeps CRLF, a redirect-only app that builds clean, and a scratch dir that cannot freeze an app's providers
+## v0.5.0 — the package-port fleet, a package-aware compiler, route() parity fixes, and the mail/build foundations (2026-11-10)
 
 ### `route()` answers an absolute URL for a non-GET name on a shared path
 
