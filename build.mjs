@@ -37,6 +37,7 @@ import { compileClasses, compileOneMethod } from './compiler/src/classes.mjs';
 import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mjs';
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { slugifyRoute } from './tools/route-slug.mjs';
+import { buildRouteMap } from './tools/route-map.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
 import { compileView } from './compiler/blade.mjs';
@@ -2859,11 +2860,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         mapPairs.push(`${JSON.stringify(fqcn)}: ${classVarNames.get(fqcn)}`);
       }
       modelLines.push('export const models = { ' + mapPairs.join(', ') + ' };');
-      const routeMapObj = {};
-      for (const route of routes) {
-        const { name } = metaForRoute(route);
-        if (name && !(name in routeMapObj)) routeMapObj[name] = route.replace(/^\//, '');
-      }
+      const routeMapObj = buildRouteMap(routes, methodsFor, metaFor);
       modelLines.push('export const routeMap = ' + JSON.stringify(routeMapObj) + ';');
       modelLines.push('');
       writeFileSync(join(dist, 'src', 'models.generated.mjs'), modelLines.join('\n'));
