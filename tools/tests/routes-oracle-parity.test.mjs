@@ -47,6 +47,18 @@ const APP = oracleAppRoot();
 // a scan that misses anything ELSE is the failure this test exists for.
 const FRAMEWORK_ONLY = [
   {
+    why: 'health endpoint, registered by ApplicationBuilder::withRouting() as HealthCheck',
+    file: 'Illuminate/Foundation/Configuration/ApplicationBuilder.php',
+    // Matched by ACTION, not by URI alone: the framework's registration
+    // (`Route::get($health, HealthCheck::class)`) is not the only way `up` can
+    // exist. An app may declare the same URI itself (lw-showcase does, so the
+    // edge serves /up), and then the scan rightly sees `up#` — that is a second
+    // registration, not this entry going stale. `route:list --json` tells the
+    // two apart: the framework's action is Illuminate\Foundation\Http\HealthCheck,
+    // an app's is its own controller.
+    match: (r) => r.uri === 'up' && r.action === 'Illuminate\\Foundation\\Http\\HealthCheck',
+  },
+  {
     why: 'vendor file server, registered by FilesystemServiceProvider::serveFiles()',
     file: 'Illuminate/Filesystem/FilesystemServiceProvider.php',
     match: (r) => r.uri === 'storage/{path}',
