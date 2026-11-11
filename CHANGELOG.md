@@ -2,6 +2,23 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Fortify two-factor no longer takes the account from the request body
+
+`ports/packages/fortify-two-factor.mjs` resolved the user for **all four** endpoints from `body.email` and
+verified nothing, so an unauthenticated request could rotate (and receive) the TOTP secret and recovery codes of
+any account that knew the email, then be answered `authenticated: true` at the challenge. Reproduced with the
+port's real default export and an independent RFC 6238 oracle: `200` + secret + 8 recovery codes for an arbitrary
+email without credentials.
+
+The port now resolves the user the way Fortify does — the platform's guard (`ctx.user()`, kernel/http.mjs) or an id a
+`middlewarePorts` guard wrote onto `ctx` — and answers `401 Unauthenticated.` with no state touched when there is
+none. `body.email` no longer selects the account; a missing user is a `401`, not a `404` (which also removed an
+email-enumeration oracle).
+
+- Covered by `tools/tests/packages-fortify-2fa.test.mjs` (16/16): the RFC 6238 vectors, the four endpoints as the
+  authenticated user, no identity → 401 with nothing touched, and a body email that selects nothing for another
+  identity.
+
 ### `/oauth/authorize` no longer trusts `user_id` from the query string
 
 `ports/packages/passport-oauth.mjs` took the resource owner straight from the request — `?user_id=…`, else the

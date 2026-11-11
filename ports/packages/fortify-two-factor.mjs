@@ -20,6 +20,17 @@
 //   • recovery    = 8 `random10-random10` codes; consuming one removes it
 //   • confirm     = one valid TOTP flips two_factor_confirmed_at
 //
+// Identity (who the 2FA belongs to): in Laravel, Fortify's enable/confirm/disable
+// sit behind the `auth` middleware and act on `$request->user()`; the challenge
+// step resolves the user from the SESSION's pending login (`login.id`), and the
+// recovery step from the same session. None of them take an email from the body —
+// an email is not a credential and, at the edge, no caller-provided value may
+// select the account. `currentUser()` here mirrors the platform's own `ctx.user()`
+// (kernel/http.mjs: `user: () => auth.guard().user()`, awaited) or an id a
+// `middlewarePorts` guard wrote onto `ctx` (kernel/router.mjs) — the app hands
+// the pending login over the same seams a real Fortify flow would. No identity →
+// 401 `Unauthenticated.` with no state touched.
+//
 // Substitution (disclosed): Fortify encrypts `two_factor_secret` and the
 // recovery codes at rest with the app encrypter. This port stores the base32
 // secret and the recovery codes as PLAINTEXT JSON in D1 — the edge has no PHP
@@ -60,17 +71,35 @@ function json(status, payload) {
   return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };
 }
 
-async function findUser(env, email) {
-  if (!email) return null;
-  return env.DB.prepare('SELECT * FROM users WHERE email = ?1').bind(String(email)).first();
+async function userById(env, id) {
+  if (id == null) return null;
+  return env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(String(id)).first();
 }
 
-// POST enable — mint a secret + recovery codes and store them (unconfirmed).
+// Who the 2FA belongs to: the platform's own guard (`ctx.user()`, awaited — the
+// same accessor the Worker hands every port, kernel/http.mjs) or an id a
+// `middlewarePorts` guard wrote onto ctx (kernel/router.mjs). A caller-provided
+// email is never a source. No identity => null (the handler answers 401).
+async function currentUser(ctx, env) {
+  if (ctx.user_id != null && ctx.user_id !== '') {
+    const injected = Number(ctx.user_id);
+    if (Number.isFinite(injected)) return userById(env, injected);
+  }
+  try {
+    const u = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
+    return u && u.id != null ? await userById(env, Number(u.id)) : null;
+  } catch {
+    return null;
+  }
+}
+
+// POST enable — mint a secret + recovery codes for the AUTHENTICATED user.
+// Fortify's controller acts on `$request->user()`; an email from the body would
+// let anyone rotate the 2FA secret of any account (and receive the new one back).
 export async function handleEnable(ctx, env) {
   await ensureSchema(env);
-  const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
-  const user = await findUser(env, body.email);
-  if (!user) return json(404, { message: 'User not found.' });
+  const user = await currentUser(ctx, env);
+  if (!user) return json(401, { message: 'Unauthenticated.' });
 
   const secret = generateSecret();
   const codes = recoveryCodes(8);
@@ -86,12 +115,13 @@ export async function handleEnable(ctx, env) {
   });
 }
 
-// POST confirm — one valid TOTP marks 2FA confirmed.
+// POST confirm — one valid TOTP marks 2FA confirmed (for the AUTHENTICATED user).
 export async function handleConfirm(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
-  const user = await findUser(env, body.email);
-  if (!user || !user.two_factor_secret) return json(422, { message: 'Two-factor is not enabled.' });
+  const user = await currentUser(ctx, env);
+  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user.two_factor_secret) return json(422, { message: 'Two-factor is not enabled.' });
   if (typeof body.code !== 'string') return json(422, { errors: { code: ['The code field is required.'] } });
 
   const ok = await verifyTotp(user.two_factor_secret, body.code);
@@ -101,12 +131,14 @@ export async function handleConfirm(ctx, env) {
   return json(200, { confirmed: true });
 }
 
-// POST challenge — verify a TOTP code at login.
+// POST challenge — verify a TOTP code at login. The user is the pending login
+// the app handed over (session guard on ctx), NOT an email from the body.
 export async function handleChallenge(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
-  const user = await findUser(env, body.email);
-  if (!user || !user.two_factor_secret || !user.two_factor_confirmed_at) {
+  const user = await currentUser(ctx, env);
+  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user.two_factor_secret || !user.two_factor_confirmed_at) {
     return json(422, { message: 'Two-factor authentication is not enabled for this account.' });
   }
   if (typeof body.code !== 'string') return json(422, { errors: { code: ['The code field is required.'] } });
@@ -117,12 +149,13 @@ export async function handleChallenge(ctx, env) {
   return json(200, { authenticated: true, user: { id: user.id, email: user.email, name: user.name } });
 }
 
-// POST recovery — verify + consume a single recovery code.
+// POST recovery — verify + consume a single recovery code (session user only).
 export async function handleRecovery(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
-  const user = await findUser(env, body.email);
-  if (!user || !user.two_factor_secret || !user.two_factor_recovery_codes) {
+  const user = await currentUser(ctx, env);
+  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user.two_factor_secret || !user.two_factor_recovery_codes) {
     return json(422, { message: 'No recovery codes for this account.' });
   }
   if (typeof body.code !== 'string') return json(422, { errors: { code: ['The code field is required.'] } });

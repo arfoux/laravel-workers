@@ -248,11 +248,19 @@ test('the emitted ports answer on the router ctx (not a unit-test ctx)', { skip:
     '/user/two-factor-challenge',
     '/user/two-factor-challenge/recovery',
   ]) {
+    // No identity on ctx: every route must REFUSE (401) and reach its own handler
+    // (a dispatch bug would answer `Unknown 2FA action`, or leak a body-email
+    // selection). The email is not a credential — it selects nothing.
     const res = await twofa(kernelCtx({ method: 'POST', path: route, json: { email: 'a@b.test' } }), env);
     assert.doesNotMatch(String(res.body), /Unknown 2FA action/, `${route} fell through the dispatch:\n${res.body}`);
     answers.push(`${res.status} ${res.body}`);
   }
-  assert.equal(new Set(answers).size, 4, `the four 2FA routes must reach four handlers:\n${answers.join('\n')}`);
+  assert.equal(
+    new Set(answers).size,
+    1,
+    `the four 2FA routes must all reach their handlers and refuse without identity:\n${answers.join('\n')}`
+  );
+  assert.equal(answers[0], '401 {"message":"Unauthenticated."}');
 
   // Same trap, second module: `fortify-confirmation` dispatched on
   // `ctx.params.action`, which the router never fills (no `{action}` segment) —
