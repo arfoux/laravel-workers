@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-// compiler/tests/parity-collect.mjs — harness for rt.collect() (no PHP needed)
+// compiler/tests/parity-collect.test.mjs — harness for rt.collect() (no PHP needed)
+//
+// A `.test.mjs` name since 2026-11-11 (S2): auto-discovery in
+// `tools/run-tests.mjs` matches `*.test.mjs` only, so as `parity-collect.mjs`
+// this harness ran nowhere in CI.
 import { buildRt } from '../runtime/rt-from-context.mjs';
 
 const rt = buildRt({}, { strict: false });

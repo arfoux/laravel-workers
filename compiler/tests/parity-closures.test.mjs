@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-// compiler/tests/parity-closures.mjs — closure/arrow parity harness (transpiler pipeline)
+// compiler/tests/parity-closures.test.mjs — closure/arrow parity harness (transpiler pipeline)
+//
+// A `.test.mjs` name since 2026-11-11 (S2): the auto-discovery in
+// `tools/run-tests.mjs` finds `*.test.mjs` only, so as `parity-closures.mjs`
+// this harness sat in the repo, passed, and ran NOWHERE — CI never executed the
+// closure-parity check. `node --test` runs the file as one test and its
+// `process.exit(1)` below is the failure.
 import { transpile } from '../src/transpiler.mjs';
 import { buildRt } from '../runtime/rt-from-context.mjs';
 

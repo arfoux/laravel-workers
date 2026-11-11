@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-// compiler/tests/parity-now.mjs — harness byte-parity untuk rt.now()
+// compiler/tests/parity-now.test.mjs — harness byte-parity untuk rt.now()
 // Freeze date UTC 2024-02-29 15:04:05 UTC, bandingkan rt.now() output dengan ekspektasi PHP hardcode.
+//
+// A `.test.mjs` name since 2026-11-11 (S2): auto-discovery in
+// `tools/run-tests.mjs` matches `*.test.mjs` only, so as `parity-now.mjs` this
+// harness ran nowhere in CI.
 
 import { buildRt } from '../runtime/rt-from-context.mjs';
 

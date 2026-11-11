@@ -25,7 +25,7 @@ Laravel app (your dev machine)
   Cloudflare Workers  (V8 isolates — the same runtime as every other Worker)
 ```
 
-The edge is just a Worker. It boots in **microseconds** (V8 isolates, no PHP, no WASM), runs your Blade views, queries D1, manages sessions — all in ~**5 ms CPU** (p95 on the reference machine, measured by `kernel/tests/budget.test.mjs`; the numbers are wall-clock, so a slower machine scales them).
+The edge is just a Worker. It boots in **microseconds** (V8 isolates, no PHP, no WASM), runs your Blade views, queries D1, manages sessions — at **5 ms CPU p50** on the reference machine, with a **41 ms p95 tail** (both are the platform's own `cpuTime` numbers: `COMPILED.md` → benchmarks). The per-operation gate `kernel/tests/budget.test.mjs` is a different, wall-clock number (p95 ≤ 5 ms, D1/KV excluded), so a slower machine scales *that* one.
 
 What this is **not:** a Laravel runtime, or PHP-in-Worker. Your Laravel app is the source of truth in development; the edge runs compiled output that was verified byte-identical against PHP 8.3 during the build. Any construct the compiler cannot handle **fails the build** — no silently wrong answer ships.
 
@@ -52,7 +52,7 @@ PHP-in-Worker (WASM) boots Laravel per request: **~1000–2000 ms CPU** → 503 
 ```
 static      → 0 invocations (Cloudflare Static Assets)
 snapshot    → prerendered HTML for clean GET routes
-compiled    → router → controller → D1 (p95 ≤ 5 ms, see budget gate)
+compiled    → router → controller → D1 (kernel wall-clock p95 ≤ 5 ms per op, D1/KV excluded — `test:budget`)
 port        → escape-hatch hand-written JS for unsupported constructs
 ```
 
@@ -122,7 +122,7 @@ npx laravel-workers verify  # VERIFY-S0 15/15 (else SKIP — needs parent vendor
 
 ### The Cloudflare tiers we target (in order)
 
-1. **Free plan first** — Workers (10 ms CPU/req, 50 subrequests), D1 (100k writes/day, 5M reads/day), KV, the D1 blob store (`lw_blobs` — 1.5 MB/object, **no credit card**) as the default object store. The 1008–2018 ms CPU of PHP-in-Worker fails this budget; the compiled rung is p95 ≤ 5 ms.
+1. **Free plan first** — Workers (10 ms CPU/req, 50 subrequests), D1 (100k writes/day, 5M reads/day), KV, the D1 blob store (`lw_blobs` — 1.5 MB/object, **no credit card**) as the default object store. The 1008–2018 ms CPU of PHP-in-Worker fails this budget; the compiled rung's kernel measured **5 ms CPU p50 / 41 ms p95** on the reference machine (`COMPILED.md` → benchmarks).
 2. **R2 when the app really needs it** — a **named** disk, an object > 1.5 MB, or many objects. R2's free tier (10 GB-month, 1M Class A, 10M Class B) is generous, **but R2 asks for a payment method** — so the build never turns it on by itself: it prints the `wrangler.jsonc` snippet and the operator decides.
 3. **The paid plan, only when the free path cannot do it** — Dynamic Workers and the full Queues (billed per op) are the only paid-only features. The toolchain stays free-plan-shaped by default; no construct is blocked *because* the free plan is too small — the build fails loud only when the edge genuinely cannot answer like PHP.
 
@@ -148,10 +148,14 @@ laravel-workers php:ensure       # resolve or provision the PHP interpreter (CI 
 
 # developer tasks run through the package.json scripts (not the CLI):
 npm test                # the suite
+npm run test:fast       # the same discovery, minus the file measured to dominate
+                        # the suite (`schedule-utc.test.mjs`) — the pre-push loop
 npm run test:corpus     # the transpiler corpus
 npm run test:hash       # hash + encrypter only
 npm run test:sqlite     # in-memory SQLite integration
-npm run test:shadow     # the shadow harness (real PHP app vs compiled worker)
+npm run test:shadow     # the shadow harness (real PHP app vs compiled worker);
+                        # its "coverage" counts SCENARIO STEPS, not code lines
+npm run test:coverage   # node --experimental-test-coverage: the CODE coverage report
 npm run bench           # micro-bench p95 budget
 npm run check:docs      # the docs gate
 npm run gate:cpu        # the CPU gate: measures the real kernel hot paths on Cloudflare
@@ -813,7 +817,7 @@ PHP boots **only at S0** (build time). The edge (S1–S6) is pure JS.
 - `npm run check:docs` — the gate: the coverage index, the construct audit (COMPILED.md), and this README's counts (both generated — a hand-typed number here is a bug).
 - `npm run bench` — the local micro-bench (a Node proxy for CPU: a fast regression detector).
 - `npm run gate:cpu` — the platform's own numbers: deploys a probe worker running the real kernel hot paths, reads `cpuTime`/`outcome` back through `wrangler tail`, asserts a page-like load fits the Free budget **and** that a burn is caught, then deletes the worker. Outside `gate:ci` (it needs a logged-in wrangler).
-- `kernel/tests/budget.test.mjs` — p95 ≤ 5 ms hot, ≤ 30 ms for the encrypter.
+- `kernel/tests/budget.test.mjs` — wall-clock p95 ≤ 5 ms per hot operation, ≤ 30 ms for the encrypter (no D1/KV in the loop).
 - [docs/BRAND.md](docs/BRAND.md) — the mark's geometry and palette, the voice, the
   surface list, and the one thing never to do (a runtime response header).
 

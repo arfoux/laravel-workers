@@ -13,12 +13,8 @@ require_once __DIR__ . '/_root.php';
 // Values are tagged ({t:"int"|"float"|"str"|"bool"|"null"|"array", v:...}) so PHP
 // int/float/string distinctions survive JSON.
 
-$in = json_decode(stream_get_contents(STDIN), true);
-$root = $in['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-if (!is_string($root) || $root === '' || !is_file(rtrim($root, "/\\") . '/bootstrap/app.php') || !lw_has_vendor(rtrim($root, "/\\"))) {
-    fwrite(STDERR, "php-cache-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
-    exit(2);
-}
+$in = lw_oracle_input('php-cache-oracle');
+$root = lw_oracle_root('php-cache-oracle', $in);
 
 require lw_vendor_autoload_for($root);
 

@@ -8,38 +8,32 @@
 // PHP: foreach ([1] as $x) { switch ($x) { case 1: foreach ([7,8] as $y) { if
 // ($y==8) { break; } echo $y; } echo 'A'; break; } echo 'L'; } => 7AL
 // (the inner break leaves the inner foreach only).
+//
+// The test RUNS the snippet (audit #894). The old form asserted the emitted
+// TEXT (`assert.match(res.code, /break __l\d+/)` and "at least two labels"),
+// which proved only that a label was printed — never which loop the break left:
+// it would still pass if the break left the switch instead.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { emitController } from '../src/controller.mjs';
+import { runPhpSnippet } from './run-php-snippet.mjs';
 
-function compile(body) {
-  const src =
-    '<?php\nnamespace App\\Http\\Controllers;\nclass C {\n    public function demo()\n    {\n' +
-    body +
-    '\n        return response("ok");\n    }\n}\n';
-  return emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
-}
-
-test('rt-break: a break inside a loop nested in a switch breaks the loop', () => {
-  const res = compile(
-    '        $out = "";\n' +
-      '        foreach ([1] as $x) {\n' +
-      '            switch ($x) {\n' +
-      '                case 1:\n' +
-      '                    foreach ([7, 8] as $y) {\n' +
-      '                        if ($y == 8) { break; }\n' +
-      '                        $out = $out . $y;\n' +
-      '                    }\n' +
-      '                    $out = $out . "A";\n' +
-      '                    break;\n' +
+test('rt-break: a break inside a loop nested in a switch breaks the loop (PHP prints 7AL)', () => {
+  const out = runPhpSnippet(
+    '<?php\n' +
+      '$out = "";\n' +
+      'foreach ([1] as $x) {\n' +
+      '    switch ($x) {\n' +
+      '        case 1:\n' +
+      '            foreach ([7, 8] as $y) {\n' +
+      '                if ($y == 8) { break; }\n' +
+      '                $out = $out . $y;\n' +
       '            }\n' +
-      '            $out = $out . "L";\n' +
-      '        }'
+      '            $out = $out . "A";\n' +
+      '            break;\n' +
+      '    }\n' +
+      '    $out = $out . "L";\n' +
+      '}\n' +
+      'echo $out;'
   );
-  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
-  // The inner break leaves the inner foreach: the "A" echo still runs.
-  assert.match(res.code, /break __l\d+/);
-  // The loop carries its own label (not the switch's).
-  const labels = [...res.code.matchAll(/(__l\d+): for/g)].map((m) => m[1]);
-  assert.ok(labels.length >= 2, 'each loop has its own label: ' + JSON.stringify(labels));
+  assert.equal(out, '7AL');
 });

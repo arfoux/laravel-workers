@@ -14,9 +14,13 @@
 // by naming 98 paths by hand — and forgetting a new test file meant it silently
 // never ran in CI. Discovery removes that footgun; the exclusion is one line,
 // named, and commented.
+//
+// Two modes on top of the default suite (the flags at the bottom):
+//   --coverage  Node's built-in instrument; `npm run test:coverage`, CI runs it
+//   --fast      skip the measured-slow files; `npm run test:fast`
 
 import { readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -36,10 +40,56 @@ for (const dir of TEST_DIRS) {
 }
 files.sort();
 
+// --- modes ---------------------------------------------------------------
+//
+// `--coverage` (`npm run test:coverage`, run by CI) re-runs the suite under
+// Node's built-in coverage instrument. It answers a question the shadow
+// harness's `coverage` number does NOT answer: which lines does no test ever
+// execute (the shadow's `coverage` counts scenario STEPS — see `shadow/run.mjs`).
+// ONE file is dropped here: `budget.test.mjs` asserts WALL-CLOCK budgets
+// (`p95 ≤ 5 ms` hot, ≤ 30 ms for the encrypter) and the instrument slows every
+// line down, so under coverage it would measure the instrument instead of the
+// kernel. It still runs in the plain suite.
+//
+// `--fast` (`npm run test:fast`, the pre-push loop) skips the files measured to
+// dominate the suite. Measured 2026-11-11 on a 12-core Windows box:
+// `kernel/tests/schedule-utc.test.mjs` alone accounts for ~168 s of the ~245 s
+// the suite's files report, so it is the one file worth naming here. The full
+// suite (what CI runs) still executes everything.
+const argv = process.argv.slice(2);
+const COVERAGE_EXCLUDED = new Set(['budget.test.mjs']);
+const SLOW = new Set(['schedule-utc.test.mjs']);
+
+let selected = files;
+const nodeArgs = ['--test'];
+
+if (argv.includes('--coverage')) {
+  nodeArgs.push('--experimental-test-coverage');
+  selected = selected.filter((f) => !COVERAGE_EXCLUDED.has(basename(f)));
+  console.log(
+    `run-tests: coverage mode — ${selected.length} file(s); timing-sensitive excluded: ` +
+      `${[...COVERAGE_EXCLUDED].join(', ')} (they assert wall-clock budgets)`
+  );
+}
+
+if (argv.includes('--fast')) {
+  const before = selected.length;
+  selected = selected.filter((f) => !SLOW.has(basename(f)));
+  console.log(
+    `run-tests: fast mode — ${selected.length} file(s); skipped ${before - selected.length} slow file(s): ` +
+      `${[...SLOW].join(', ')}`
+  );
+}
+
+if (!selected.length) {
+  console.error('run-tests: no test files selected');
+  process.exit(1);
+}
+
 // Hand the discovered files to `node --test`, inheriting stdio and the
 // environment (the oracle tests read LW_LARAVEL_APP), and exit with its code so
 // CI sees a red suite as red.
-const res = spawnSync(process.execPath, ['--test', ...files], {
+const res = spawnSync(process.execPath, [...nodeArgs, ...selected], {
   stdio: 'inherit',
   env: process.env,
 });

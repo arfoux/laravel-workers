@@ -41,19 +41,9 @@ require_once __DIR__ . '/_root.php';
 //     "writes_count": N
 //   }
 
-$input = json_decode((string) stream_get_contents(STDIN), true);
+$input = lw_oracle_input('php-session-oracle');
 
-if (!is_array($input)) {
-    fwrite(STDERR, "php-session-oracle: invalid JSON input\n");
-    exit(2);
-}
-
-$appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-
-if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
-    fwrite(STDERR, "php-session-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
-    exit(2);
-}
+$appRoot = lw_oracle_root('php-session-oracle', $input);
 
 require lw_vendor_autoload_for($appRoot);
 
@@ -68,9 +58,7 @@ use Symfony\Component\HttpFoundation\Request;
 // from one exact second. Symfony's Cookie::__toString() still reads native
 // time() for Max-Age (and the deleted-cookie date), so lwCookieOut() reports
 // that native second as "render_now" next to the rendered header.
-if (isset($input['freeze_ms'])) {
-    \Carbon\Carbon::setTestNow(\Carbon\Carbon::createFromTimestamp(((int) $input['freeze_ms']) / 1000));
-}
+lw_oracle_freeze($input);
 
 class LWRecordingSessionHandler implements SessionHandlerInterface
 {

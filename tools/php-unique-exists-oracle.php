@@ -24,17 +24,13 @@ use Illuminate\Translation\Translator;
 use Illuminate\Validation\DatabasePresenceVerifier;
 use Illuminate\Validation\Factory;
 
-$input = json_decode((string) stream_get_contents(STDIN), true);
-if (!is_array($input) || !isset($input['cases'])) {
+$input = lw_oracle_input('php-unique-exists-oracle');
+if (!isset($input['cases'])) {
     fwrite(STDERR, "expected {\"cases\": [...]} on stdin\n");
     exit(2);
 }
 
-$appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
-    fwrite(STDERR, "php-unique-exists-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
-    exit(2);
-}
+$appRoot = lw_oracle_root('php-unique-exists-oracle', $input);
 
 require lw_vendor_autoload_for($appRoot);
 

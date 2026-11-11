@@ -206,3 +206,53 @@ function lw_app_psr4_dirs(string $root): array
     if (!$dirs) { $dirs[] = $key . '/app'; }
     return $cache[$key] = $dirs;
 }
+
+// ---------------------------------------------------------------------------
+// The prelude every PHP oracle in tools/ shares.
+//
+// Each `php-*-oracle.php` reads one JSON request on stdin, resolves the Laravel
+// app root it must boot, and (when the request asks for it) freezes the clock.
+// Those three steps were copy-pasted into every oracle and had drifted: the same
+// malformed-JSON condition answered "invalid JSON input" with exit 2 in one file
+// and "bad input json" with exit 1 in another. One spelling each.
+// ---------------------------------------------------------------------------
+
+/** The JSON request on stdin, or a loud exit naming the tool. */
+function lw_oracle_input(string $tool): array
+{
+    $decoded = json_decode((string) stream_get_contents(STDIN), true);
+    if (!is_array($decoded)) {
+        fwrite(STDERR, "{$tool}: invalid JSON input\n");
+        exit(2);
+    }
+
+    return $decoded;
+}
+
+/**
+ * The Laravel app root an oracle must boot: `app_root` from the request, else
+ * LW_LARAVEL_APP. Validated, because every oracle boots the real framework and a
+ * wrong root would otherwise fail somewhere deep inside Laravel.
+ */
+function lw_oracle_root(string $tool, array $input): string
+{
+    $root = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
+    $root = is_string($root) ? rtrim($root, "/\\") : '';
+    if ($root === '' || !is_file($root . '/bootstrap/app.php') || !lw_has_vendor($root)) {
+        fwrite(STDERR, "{$tool}: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
+        exit(2);
+    }
+
+    return $root;
+}
+
+/**
+ * Carbon::setTestNow() for a request carrying `freeze_ms`, so a parity run can
+ * assert exact expiries. A no-op when the request carries no freeze.
+ */
+function lw_oracle_freeze(array $input): void
+{
+    if (isset($input['freeze_ms'])) {
+        \Carbon\Carbon::setTestNow(\Carbon\Carbon::createFromTimestamp(((int) $input['freeze_ms']) / 1000));
+    }
+}

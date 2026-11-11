@@ -177,6 +177,20 @@ test('the emitted redirect handlers answer with the recorded status and destinat
   assert.deepEqual(await answer('GET /perm'), { status: 301, location: '/perm-dest' });
   // Trap 2 — the destination's `{param}` comes from the request's route params.
   assert.deepEqual(await answer('GET /u/{id}', { id: '42' }), { status: 302, location: '/users/42/profile' });
+  // ...substituted as ONE path SEGMENT, so a separator can never leak into the
+  // destination. Measured against the PHP oracle (Laravel 13, the redirect-only
+  // app, `Request::create($uri)` through the HTTP kernel):
+  //   /u/a%20b    -> 302 /users/a%20b/profile   (param 'a b')   — identical here
+  //   /u/a%25b    -> 302 /users/a%25b/profile   (param 'a%b')   — identical here
+  //   /u/a%252Fb  -> 302 /users/a%252Fb/profile (param 'a%2Fb') — identical here
+  //   /u/a%2Bb    -> 302 /users/a+b/profile     (param 'a+b')   — `+` only
+  // The `+` is the one byte that differs: Laravel's generator leaves it literal
+  // while `encodeURIComponent` emits `%2B`. Both Locations percent-decode to the
+  // same segment, and Laravel is the inconsistent side (it escapes a space and a
+  // `%` but not a `+`); the RFC 3986 form is the one emitted here.
+  assert.deepEqual(await answer('GET /u/{id}', { id: 'a/b' }), { status: 302, location: '/users/a%2Fb/profile' });
+  assert.deepEqual(await answer('GET /u/{id}', { id: 'a b' }), { status: 302, location: '/users/a%20b/profile' });
+  assert.deepEqual(await answer('GET /u/{id}', { id: 'a+b' }), { status: 302, location: '/users/a%2Bb/profile' });
   // Trap 3 — a redirect registers with `any()`, so every compiled verb answers
   // the same thing instead of falling through to a 404/405.
   for (const key of ['HEAD /old', 'POST /old', 'PUT /old', 'PATCH /old', 'DELETE /old', 'OPTIONS /old', 'QUERY /old']) {
