@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
 
+# One run per ref: without this, a second push to a branch leaves the first
+# run burning four runners (and a Laravel `create-project` in each e2e job) on a
+# commit nobody is waiting for. Cancelling is safe here — the newest commit is
+# the one being verified.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,6 +29,14 @@ jobs:
       # same script, so CI and a release can no longer drift apart.
       - name: Verify (npm run gate:ci)
         run: npm run gate:ci
+      # The CODE-coverage instrument (S12): Node's own, no dependency. The
+      # shadow harness's `coverage` counts scenario STEPS, not lines — this is
+      # the number that shows the kernel lines no test ever executes (measured
+      # 2026-11-02: ~83% line coverage over `kernel/tests`). `budget.test.mjs`
+      # is excluded from this run: it asserts wall-clock p95 budgets and the
+      # instrument would slow the kernel down enough to measure the instrument.
+      - name: Code coverage (the lines no test executes)
+        run: npm run test:coverage
 
   # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
   # Laravel app — the `test` job has none, so those tests skip there. This job
