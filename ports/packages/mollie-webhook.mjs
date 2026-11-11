@@ -152,7 +152,8 @@ export default async function handle(ctx, env) {
     let signatureOk = false;
     if (headerSig) {
       try {
-        signatureOk = timingSafeEqualBytes(base64Bytes(headerSig), await signatureFor(secret, rawBody));
+        const expected = await signatureFor(secret, rawBody);
+        signatureOk = timingSafeEqualBytes(base64Bytes(headerSig), base64Bytes(expected));
       } catch {
         signatureOk = false;
       }
