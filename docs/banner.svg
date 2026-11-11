@@ -35,7 +35,7 @@
 
   <text x="212" y="128" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="54" font-weight="700" fill="#f8fafc">laravel-workers</text>
   <text x="212" y="168" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="24" fill="#a9b6c8">Compile Laravel to a tiny JS bundle that runs on Cloudflare Workers.</text>
-  <text x="212" y="203" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="20" fill="#8593a6">No PHP at the edge · No WASM · No cold-start drama · pure V8 isolates, p95 ≤ 5 ms CPU</text>
+  <text x="212" y="203" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="20" fill="#8593a6">No PHP at the edge · No WASM · No cold-start drama · pure V8 isolates, 5 ms CPU p50</text>
   <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="19">
     <text x="212" y="245" fill="#e6edf6">Blade · PHP · Eloquent</text>
     <text x="500" y="245" fill="#ff2d20">→</text>

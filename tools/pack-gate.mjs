@@ -35,6 +35,13 @@ export const UNREACHABLE = ['shadow/fixture-app.mjs'];
 
 // Files the published README links to. A dead link in the npm page is a
 // documentation bug the same way a missing module is a build bug.
+//
+// The three dated audit records that used to sit here
+// (`AUDIT-2026-10-27.md`, `AUDIT-REAL-APPS.md`, `SWEEP-FINDINGS.md`) moved to
+// `docs/archive/`: the README never linked them, so requiring them here
+// demanded a file no reader could reach. Archived records still ship (the
+// `docs` entry in package.json `files` covers the whole directory) but are not
+// a README requirement — this list is about links that must not rot.
 export const REQUIRED_DOCS = [
   'README.md',
   'CHANGELOG.md',
@@ -45,9 +52,6 @@ export const REQUIRED_DOCS = [
   'docs/banner.png',
   'docs/PLAN-VENDOR.md',
   'docs/READINESS.md',
-  'docs/AUDIT-2026-10-27.md',
-  'docs/AUDIT-REAL-APPS.md',
-  'docs/SWEEP-FINDINGS.md',
   'docs/BRAND.md',
 ];
 

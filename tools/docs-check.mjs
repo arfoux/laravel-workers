@@ -28,8 +28,21 @@ const block = tallyIdx !== -1 ? text.slice(idx, tallyIdx) : text.slice(idx);
 const lines = block.split('\n');
 const rows = lines.filter(l => /^\| [a-z0-9][a-z0-9-]*\s*\|/.test(l) && !l.includes('Docs page'));
 
-const EXPECTED = 105;
-if (rows.length !== EXPECTED) fail(`coverage rows ${rows.length} != ${EXPECTED}`);
+// The expected count is MAP.md's OWN `**Tally: N/N pages` line — the declared
+// truth — not a second hand-typed copy of it (the same rule the README counts
+// follow; `tools/docs-counts.mjs` derives its copy from the same index). A
+// number typed twice drifts: the constant used to read `EXPECTED = 105`, so a
+// row added to MAP.md failed here while the MAP stayed internally consistent.
+const tallyMatch = /\*\*Tally:\s*(\d+)\/(\d+)\s+pages?\b/.exec(text);
+if (!tallyMatch) fail('MAP.md has no "**Tally: N/N pages" line to check the coverage index against');
+if (tallyMatch[1] !== tallyMatch[2]) fail(`MAP.md Tally is not closed: ${tallyMatch[1]}/${tallyMatch[2]} pages have a verdict`);
+const EXPECTED = Number(tallyMatch[1]);
+if (rows.length !== EXPECTED) {
+  fail(
+    `coverage rows ${rows.length} != the MAP.md Tally (${EXPECTED}) — ` +
+      'a row was added or removed without updating the Tally line'
+  );
+}
 
 const seen = new Set();
 for (const r of rows) {

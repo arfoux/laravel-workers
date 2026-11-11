@@ -855,6 +855,12 @@ async function main() {
       failed,
       // The byte-identical rate — a shape- or json-structural-verified step is
       // *not* byte-identical.
+      //
+      // This is STEP coverage of the scenario (the ratio below is taken over
+      // `scenario.steps.length`), never CODE coverage: a scenario can report
+      // 100% while whole kernel modules never execute. The code-coverage
+      // instrument is `node --experimental-test-coverage` (CI: the `coverage`
+      // step), not this number.
       coverage: scenario.steps.length ? (matched - shaped - structural) / scenario.steps.length : 1,
       // Every step is accounted for: identical, shape-verified, documented, or
       // unexplained.
@@ -911,8 +917,9 @@ async function main() {
       console.log(
         `\nshadow: ${matched - shaped - structural}/${scenario.steps.length} byte-identical, ${shaped} shape-verified, ` +
           `${structural} json-equivalent, ` +
-          `${diverged} documented divergence(s), ${failed} unexplained — coverage ` +
-          `${(report.coverage * 100).toFixed(0)}% (accounted ${(report.accounted * 100).toFixed(0)}%)`
+          `${diverged} documented divergence(s), ${failed} unexplained — byte-identical ` +
+          `step coverage ${(report.coverage * 100).toFixed(0)}% (accounted ${(report.accounted * 100).toFixed(0)}%) ` +
+          `[scenario steps, not code lines]`
       );
     }
     // The gate: a run that is "green" only because steps were silently
@@ -941,7 +948,7 @@ async function main() {
     const coverageOk = report.coverage >= minCoverage;
     if (!coverageOk) {
       process.stderr.write(
-        `shadow FAILED: byte-identical coverage ${(report.coverage * 100).toFixed(0)}% is below the floor ` +
+        `shadow FAILED: byte-identical step coverage ${(report.coverage * 100).toFixed(0)}% (scenario steps, not code lines) is below the floor ` +
           `${(minCoverage * 100).toFixed(0)}% — ${shaped} shape-verified, ${structural} json-equivalent, ` +
           `${diverged} documented divergence(s)\n`,
       );
