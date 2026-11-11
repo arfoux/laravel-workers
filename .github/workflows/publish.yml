@@ -5,6 +5,16 @@ on:
     tags:
       - "v*"
 
+# One run per ref (the ref here is a tag, so two different tags never collide).
+# `cancel-in-progress: false` on purpose: this workflow runs `npm publish`, and
+# cancelling a publish mid-flight is how a version gets wedged — the registry
+# keeps the version number while the release, the GPR copy and the attestation
+# never happen, and the re-run then dies with E409 "cannot publish over the
+# previously published versions". A second run on the same tag QUEUES instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 # Release = a tag, not a version edit: `npm version patch` (omit
 # --no-git-tag-version) writes package.json, commits and creates the `v*` tag in
 # one act, then `git push && git push --follow-tags`. Editing package.json by
@@ -54,8 +64,30 @@ jobs:
       - name: Shadow — real PHP app vs the compiled worker (byte-wise diff)
         run: node shadow/run.mjs --app shadow-app --scenarios shadow/scenarios/fresh-app.mjs --build
 
-  publish:
+  # ONE verify job for the release (S5): `publish` and `publish-gpr` each ran
+  # `npm run gate:ci`, so one release was verified twice — and the second copy
+  # could only ever block the job behind it. Both now `needs: verify`.
+  verify:
     needs: shadow
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm --prefix compiler install
+      # The same script CI runs on every push (package.json → `gate:ci`): the
+      # suite, the corpus, the docs gate, the benchmarks, the shipped sources
+      # parsing, and the tarball gate. Writing the steps out again per publish
+      # job is how the release gate drifted behind CI in the first place.
+      - name: Verify (npm run gate:ci)
+        run: npm run gate:ci
+
+  publish:
+    needs: [shadow, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -74,20 +106,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install
-      - run: npm --prefix compiler install
-      # The same script CI runs on every push (package.json → `gate:ci`): the
-      # suite, the corpus, the docs gate, the benchmarks, the shipped sources
-      # parsing, and the tarball gate. Writing the steps out again here is how
-      # the release gate drifted behind CI in the first place.
-      - name: Verify (npm run gate:ci)
-        run: npm run gate:ci
       - run: npm config delete '//registry.npmjs.org/:_authToken'
         continue-on-error: true
       - run: npm install -g npm@latest
       - run: npm publish --provenance --access public
   publish-gpr:
-    needs: shadow
+    needs: [shadow, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -96,15 +120,6 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm install
-      - run: npm --prefix compiler install
-      # The same verify script CI and the npm publish job run.
-      - name: Verify (npm run gate:ci)
-        run: npm run gate:ci
       - uses: actions/setup-node@v7
         with:
           node-version: 22
