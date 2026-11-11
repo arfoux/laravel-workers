@@ -17,8 +17,7 @@
 //   isSubscribed(listId, email, {apiKey, serverPrefix})
 //       -> GET /3.0/lists/{listId}/members/{hash}  -> status === "subscribed"
 // The subscriber `hash` is the lowercase MD5 of the email — the same
-// `md5(strtolower($email))` the package computes. `crypto.subtle.digest('MD5')`
-// is available in Workers and Node >= 16.
+// `md5(strtolower($email))` the package computes (via kernel/digest.mjs).
 //
 // Edge disclosure: none — a plain HTTPS JSON API, a 1:1 port. Not ported: the
 // async queue driver and the local `newsletter_subscribers` table (an Eloquent/
@@ -35,6 +34,7 @@ import {
   basicAuthHeader,
 } from './notify-http.mjs';
 import { normalizePortCtx } from './port-ctx.mjs';
+import { md5Hex } from '../digest.mjs';
 
 function baseUrl(serverPrefix) {
   return `https://${serverPrefix}.api.mailchimp.com/3.0`;
@@ -46,14 +46,10 @@ function authHeader(apiKey) {
 }
 
 // Lowercase MD5 hex of the email — the subscriber hash Mailchimp expects in the
-// path. Uses WebCrypto; Workers + Node 16 both expose crypto.subtle.
-async function subscriberHash(email) {
-  const data = new TextEncoder().encode(String(email).toLowerCase());
-  const digest = await crypto.subtle.digest('MD5', data);
-  const bytes = new Uint8Array(digest);
-  let hex = '';
-  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
-  return hex;
+// path. Same `md5(strtolower($email))` the package computes, via the repo's
+// PHP-compatible MD5 (kernel/digest.mjs); WebCrypto exposes no MD5.
+function subscriberHash(email) {
+  return md5Hex(String(email).toLowerCase());
 }
 
 function requireCredentials(opts, env) {
@@ -108,7 +104,7 @@ export async function unsubscribe(listId, email, opts = {}, env = {}) {
   if (!apiKey) return jsonPort({ error: 'missing Mailchimp credential: set apiKey or MAILCHIMP_API_KEY' }, 500);
   if (!serverPrefix) return jsonPort({ error: 'missing Mailchimp server prefix: set serverPrefix or MAILCHIMP_SERVER_PREFIX' }, 500);
 
-  const hash = await subscriberHash(email);
+  const hash = subscriberHash(email);
   const url = `${baseUrl(serverPrefix)}/lists/${encodeURIComponent(listId)}/members/${hash}`;
   const init = { ...baseInit(apiKey, 'PUT'), body: JSON.stringify({ status: 'unsubscribed' }) };
   try {
@@ -124,7 +120,7 @@ export async function isSubscribed(listId, email, opts = {}, env = {}) {
   if (!apiKey) return jsonPort({ error: 'missing Mailchimp credential: set apiKey or MAILCHIMP_API_KEY' }, 500);
   if (!serverPrefix) return jsonPort({ error: 'missing Mailchimp server prefix: set serverPrefix or MAILCHIMP_SERVER_PREFIX' }, 500);
 
-  const hash = await subscriberHash(email);
+  const hash = subscriberHash(email);
   const url = `${baseUrl(serverPrefix)}/lists/${encodeURIComponent(listId)}/members/${hash}`;
   const init = baseInit(apiKey, 'GET');
   try {
