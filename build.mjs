@@ -45,6 +45,7 @@ import { normalizeViewDumpFiles } from './compiler/src/livewire-markers.mjs';
 import { transpile } from './compiler/src/transpiler.mjs';
 import { provisionPhp } from './tools/php-provision.mjs';
 import { computeBuildCacheKey } from './tools/build-cache.mjs';
+import { scanConfigReads, configGateMissing } from './tools/config-gate.mjs';
 import { syncScratchPhpCache } from './tools/scratch-php-cache.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import { mutatingMigrations, renderSchemaSql } from './tools/schema-sql.mjs';
@@ -4231,31 +4232,35 @@ if (!bladeOff) {
 // question, so a compiled `config('x.y')` the dump cannot answer fails the build
 // instead of shipping a worker that answers null (a wrong value) or throws a 500.
 // A NON-LITERAL call (`config('app.' . $k)` compiles to
-// `rt.config(rt.concat("app.", v_k))`) cannot be checked here at all: the runtime
-// answers the dump's value, the caller's default if there is one, or throws
-// `config: missing key ... with no default` — never a silent null.
+// `rt.config(rt.concat("app.", v_k))`) cannot be resolved to ONE key here, but
+// the PREFIX it reads from can: a dynamic read under a prefix the dump carries
+// no key for throws `config: missing key ... with no default` for EVERY value of
+// $k, which is the same 500 the literal case above prevents (S25). A read whose
+// key is fully dynamic (`config($k)`) still cannot be checked — the runtime
+// answers the dump's value, the caller's default, or throws, never a silent null.
 {
-  const referenced = new Set();
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith('.mjs')) {
-        const text = readFileSync(full, 'utf8');
-        for (const m of text.matchAll(/rt\.config\((["'])([^"']+)\1\)/g)) referenced.add(m[2]);
-      }
-    }
-  };
-  walk(join(dist, 'src'));
-  const missing = [...referenced]
-    .filter((key) => !Object.prototype.hasOwnProperty.call(runtimeConfig, key))
-    .sort();
+  const { missing, uncovered } = configGateMissing(scanConfigReads(join(dist, 'src')), runtimeConfig);
   if (missing.length) {
     const groups = [...new Set(missing.map((k) => k.split('.')[0]))];
     fail(
       'the compiled code reads config key(s) the runtime dump does not carry: ' + missing.join(', ') +
         ' — at the edge those throw `config: missing key ... with no default` (a 500) where PHP\n' +
         '  answers the value (or null, for a key the app never set)\n' +
+        '  fix: add the group to registry.json "config" (e.g. "config": ' +
+        JSON.stringify(groups) + ') if the values are not credentials'
+    );
+  }
+  // A dynamic read can answer any key under its prefix, so "does the dump carry
+  // a key under this prefix at all" is what decides between a usable read and a
+  // guaranteed throw (`configGateMissing`). Only the group is named in the fix
+  // hint: that is what registry.json declares.
+  if (uncovered.length) {
+    const groups = [...new Set(uncovered.map((p) => p.split('.')[0]))];
+    fail(
+      'the compiled code reads config under prefix(es) the runtime dump carries no key for: ' +
+        uncovered.join(', ') +
+        ' — the key is built at request time (`config("app." . $k)`), so EVERY value throws\n' +
+        '  `config: missing key ... with no default` (a 500)\n' +
         '  fix: add the group to registry.json "config" (e.g. "config": ' +
         JSON.stringify(groups) + ') if the values are not credentials'
     );

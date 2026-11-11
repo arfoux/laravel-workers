@@ -27,30 +27,19 @@ require_once __DIR__ . '/_root.php';
 //   POST /__probe/logout  -> {ok, user, token}
 //   GET  /login           -> named `login` (the guest/auth redirect target)
 
-$input = json_decode(stream_get_contents(STDIN), true);
-if (!is_array($input)) {
-    fwrite(STDERR, "php-http-pipeline-oracle: bad input json\n");
-    exit(1);
-}
+$input = lw_oracle_input('php-http-pipeline-oracle');
 
-$appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
-    fwrite(STDERR, "php-http-pipeline-oracle: pass \"app_root\" or set LW_LARAVEL_APP (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
-    exit(2);
-}
+$appRoot = lw_oracle_root('php-http-pipeline-oracle', $input);
 
 require lw_vendor_autoload_for($appRoot);
 
-use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 $app = require $appRoot . '/bootstrap/app.php';
 
-if (isset($input['freeze_ms'])) {
-    Carbon::setTestNow(Carbon::createFromTimestamp(((int) $input['freeze_ms']) / 1000));
-}
+lw_oracle_freeze($input);
 
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 $kernel->bootstrap();

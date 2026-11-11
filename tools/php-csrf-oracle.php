@@ -44,19 +44,9 @@ require_once __DIR__ . '/_root.php';
 //   cookies: [cookieOut], should_add_cookie, excluded_paths, session_token,
 //   x_xsrf_sent }] }
 
-$input = json_decode((string) stream_get_contents(STDIN), true);
+$input = lw_oracle_input('php-csrf-oracle');
 
-if (!is_array($input)) {
-    fwrite(STDERR, "php-csrf-oracle: invalid JSON input\n");
-    exit(2);
-}
-
-$appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-
-if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
-    fwrite(STDERR, "php-csrf-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
-    exit(2);
-}
+$appRoot = lw_oracle_root('php-csrf-oracle', $input);
 
 require lw_vendor_autoload_for($appRoot);
 

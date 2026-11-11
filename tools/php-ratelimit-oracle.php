@@ -65,19 +65,9 @@ require_once __DIR__ . '/_root.php';
 //   { "mode": "hash", "strings": ["..."], "clean_keys": ["..."] }
 //   output: { "mode", "sha1": [...], "md5": [...], "clean": [...] }
 
-$input = json_decode((string) stream_get_contents(STDIN), true);
+$input = lw_oracle_input('php-ratelimit-oracle');
 
-if (!is_array($input)) {
-    fwrite(STDERR, "php-ratelimit-oracle: invalid JSON input\n");
-    exit(2);
-}
-
-$appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-
-if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
-    fwrite(STDERR, "php-ratelimit-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
-    exit(2);
-}
+$appRoot = lw_oracle_root('php-ratelimit-oracle', $input);
 
 require lw_vendor_autoload_for($appRoot);
 

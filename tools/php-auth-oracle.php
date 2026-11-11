@@ -42,24 +42,14 @@ require_once __DIR__ . '/_root.php';
 //   { "meta": {...}, "snapshots": [...], "final": {...} }.
 // Snapshots carry ret/threw/session/session_id/queued/db/events per op.
 
-$input = json_decode((string) stream_get_contents(STDIN), true);
-
-if (!is_array($input)) {
-    fwrite(STDERR, "php-auth-oracle: invalid JSON input\n");
-    exit(2);
-}
+$input = lw_oracle_input('php-auth-oracle');
 
 // Recaller::token()/hash() on short segment lists raise "Undefined array key"
 // warnings in PHP 8.3 (the values still come back as null); keep stdout pure
 // JSON for the parity harness.
 error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED);
 
-$appRoot = $input['app_root'] ?? (getenv('LW_LARAVEL_APP') ?: null);
-
-if (!is_string($appRoot) || !is_file($appRoot . '/bootstrap/app.php') || !lw_has_vendor($appRoot)) {
-    fwrite(STDERR, "php-auth-oracle: pass \"app_root\" or set LW_LARAVEL_APP to a Laravel app (a Laravel app root with an autoloader - set LW_VENDOR_DIR to reuse one)\n");
-    exit(2);
-}
+$appRoot = lw_oracle_root('php-auth-oracle', $input);
 
 require lw_vendor_autoload_for($appRoot);
 
@@ -80,9 +70,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Cookie;
 
-if (isset($input['freeze_ms'])) {
-    Carbon::setTestNow(Carbon::createFromTimestamp(((int) $input['freeze_ms']) / 1000));
-}
+lw_oracle_freeze($input);
 
 $mode = $input['mode'] ?? 'auth';
 
