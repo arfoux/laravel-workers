@@ -213,8 +213,18 @@ async function importRawP256(rawBytes) {
 // (IEEE P1363, 64 bytes for P-256) — the exact ES256 JWS form. A few older
 // engines returned ASN.1 DER instead; detect and convert those. No-op on the
 // already-raw form.
-function toRawSignature(sig) {
+//
+// LENGTH IS THE DISCRIMINATOR, and it has to be: a raw r||s signature starts
+// with a random byte, so 1 in 256 of them starts with 0x30 — the DER SEQUENCE
+// tag. Reading one of those as DER threw 'bad ECDSA sig' (which the webpush
+// port turns into a 500), or, when the following raw bytes happened to look
+// like DER integers, silently returned a truncated/garbage signature. A raw
+// P-256 signature is exactly 64 bytes and DER for the same curve is 70-72, so
+// `length === 64` is raw, full stop. (This is the flake behind the red
+// `ci` run on main 2026-11-11, run 43032251265: 1 failure in 2040 tests.)
+export function toRawSignature(sig) {
   const der = sig;
+  if (der.length === 64) return der; // the r||s form itself, whatever the bytes
   if (der.length >= 8 && der[0] === 0x30) {
     let idx = 2; // skip 0x30 + total len
     if (der[idx] !== 0x02) throw new Error('bad ECDSA sig');
@@ -224,9 +234,20 @@ function toRawSignature(sig) {
     if (der[idx] !== 0x02) throw new Error('bad ECDSA sig');
     idx += 1;
     const slen = der[idx]; idx += 1;
-    const s = der.slice(idx, idx + slen);
-    const rOut = new Uint8Array(32); rOut.set(r.slice(-32), 32 - r.length);
-    const sOut = new Uint8Array(32); sOut.set(s.slice(-32), 32 - s.length);
+    const s = der.slice(idx, idx + slen); idx += slen;
+    // Both integers consumed and nothing left over: a DER signature that does
+    // not add up is a broken signature, not something to decode best-effort.
+    if (r.length > 33 || s.length > 33 || idx !== der.length) {
+      throw new Error('bad ECDSA sig');
+    }
+    // Right-align each INTEGER's value in 32 bytes. The offset is measured from
+    // the SLICED value: a DER INTEGER that carried a 0x00 pad is 33 bytes, so
+    // `32 - r.length` was -1 and `set()` threw a RangeError for any r (or s)
+    // with the high bit set — half of all real signatures.
+    const rRaw = r.slice(-32);
+    const sRaw = s.slice(-32);
+    const rOut = new Uint8Array(32); rOut.set(rRaw, 32 - rRaw.length);
+    const sOut = new Uint8Array(32); sOut.set(sRaw, 32 - sRaw.length);
     return concatBytes(rOut, sOut);
   }
   return sig;
