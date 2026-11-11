@@ -19,6 +19,22 @@ email-enumeration oracle).
   authenticated user, no identity → 401 with nothing touched, and a body email that selects nothing for another
   identity.
 
+### Fortify password-confirmation / email-verification no longer trust the body email
+
+`ports/packages/fortify-confirmation.mjs` took the account from the request in three places: `/confirm-password`
+checked `body.password` against `body.email`'s hash (a remote password oracle for any account), `/confirm-password/status`
+answered for `?email=…` (existence + confirmation-state disclosure), and `/email/verification-notification` minted a
+valid signed verification link for any known email (user enumeration + a working link without owning the mailbox).
+
+All three now act on the authenticated user the way Fortify does — `$request->user()` behind `auth` — via the platform's
+`ctx.user()` (kernel/http.mjs) or an id a `middlewarePorts` guard wrote onto `ctx`, and answer `401 Unauthenticated.`
+with no state touched when there is none. The body email / email query no longer selects the account, which also
+removed the existence oracles. `/email/verify/{id}/{hash}` is unchanged: it is a signed URL, reachable without auth
+and bound to the account by the signature + sha1-email hash.
+
+- Covered by `tools/tests/packages-fortify-confirmation.test.mjs` (10 tests): both flows as the authenticated user,
+  a body email that selects nothing for another identity, and no identity → 401 with nothing stamped or minted.
+
 ### `/oauth/authorize` no longer trusts `user_id` from the query string
 
 `ports/packages/passport-oauth.mjs` took the resource owner straight from the request — `?user_id=…`, else the

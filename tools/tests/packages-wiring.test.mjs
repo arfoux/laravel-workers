@@ -264,15 +264,19 @@ test('the emitted ports answer on the router ctx (not a unit-test ctx)', { skip:
 
   // Same trap, second module: `fortify-confirmation` dispatched on
   // `ctx.params.action`, which the router never fills (no `{action}` segment) —
-  // every one of its routes answered `404 Unknown confirmation action ''`. Each
-  // must now reach its OWN handler, so the answers differ by route (the send /
-  // confirm pair share `User not found.` because both look the user up first:
-  // that is the handler's own 404, not the dispatcher's).
+  // every one of its routes once answered `404 Unknown confirmation action ''`.
+  // Each now reaches its OWN handler: the auth-gated routes refuse 401, and the
+  // signed /email/verify stays reachable (403 for a bogus link) — so the answers
+  // differ by handler, not by dispatcher.
   const confirmation = await load('fortify-confirmation');
+  // No identity on ctx: confirm/status/send must REFUSE (401) — the request
+  // carries no guard, and the email is not a credential (nothing is leaked,
+  // and no verification URL is minted for the body email). /email/verify is
+  // the signed URL, so it is reachable without auth (403 invalid link here).
   const confirmExpect = [
-    ['POST', '/user/confirm-password', 404, /User not found/],
-    ['GET', '/user/confirm-password/status', 200, /"confirmed"/],
-    ['POST', '/email/verification-notification', 404, /User not found/],
+    ['POST', '/user/confirm-password', 401, /Unauthenticated/],
+    ['GET', '/user/confirm-password/status', 401, /Unauthenticated/],
+    ['POST', '/email/verification-notification', 401, /Unauthenticated/],
     ['GET', '/email/verify/7/abc', 403, /Invalid verification link/],
   ];
   for (const [method, route, status, body] of confirmExpect) {

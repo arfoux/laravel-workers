@@ -69,14 +69,26 @@ function appKey(env) {
   return String(key).replace(/^base64:/, '');
 }
 
-async function findUser(env, email) {
-  if (!email) return null;
-  return env.DB.prepare('SELECT * FROM users WHERE email = ?1').bind(String(email)).first();
-}
-
 async function findUserById(env, id) {
   if (id == null) return null;
   return env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(String(id)).first();
+}
+
+// Who the action belongs to: the platform's own guard (ctx.user(), awaited —
+// the same accessor the Worker hands every port, kernel/http.mjs) or an id a
+// `middlewarePorts` guard wrote onto ctx (kernel/router.mjs). A caller-provided
+// email is never a source. No identity => null (the handlers answer 401).
+async function currentUser(ctx, env) {
+  if (ctx.user_id != null && ctx.user_id !== '') {
+    const injected = Number(ctx.user_id);
+    if (Number.isFinite(injected)) return findUserById(env, injected);
+  }
+  try {
+    const u = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
+    return u && u.id != null ? await findUserById(env, Number(u.id)) : null;
+  } catch {
+    return null;
+  }
 }
 
 function baseUrl(ctx, env, override) {
@@ -87,11 +99,14 @@ function baseUrl(ctx, env, override) {
 }
 
 // POST /user/confirm-password — verify the password, stamp the confirmation.
+// Fortify's controller sits behind `auth` and acts on `$request->user()`; the
+// password is checked against THAT user's hash. An email from the body would
+// make this a remote password oracle for any account.
 export async function handleConfirmPassword(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
-  const user = await findUser(env, body.email);
-  if (!user) return json(404, { message: 'User not found.' });
+  const user = await currentUser(ctx, env);
+  if (!user) return json(401, { message: 'Unauthenticated.' });
   if (typeof body.password !== 'string') return json(422, { errors: { password: ['The password field is required.'] } });
 
   const ok = user.password ? await bcrypt.compare(body.password, user.password) : false;
@@ -103,26 +118,29 @@ export async function handleConfirmPassword(ctx, env) {
 }
 
 // GET /user/confirm-password — has the session/user confirmed recently enough?
-// `maxAgeSeconds` (default 3h, Laravel's `password_timeout`) bounds it.
+// `maxAgeSeconds` (default 3h, Laravel's `password_timeout`) bounds it. Fortify
+// answers for `$request->user()` — there is no email query.
 export async function handleConfirmStatus(ctx, env) {
   await ensureSchema(env);
   const q = { ...(ctx.query || {}) };
-  const url = ctx.request && ctx.request.url ? new URL(ctx.request.url) : null;
-  if (url) for (const [k, v] of url.searchParams) if (!(k in q)) q[k] = v;
   const maxAge = Number(q.max_age ?? q.maxAge ?? 60 * 60 * 3);
-  const user = await findUser(env, q.email);
-  if (!user || !user.password_confirmed_at) return json(200, { confirmed: false });
+  const user = await currentUser(ctx, env);
+  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user.password_confirmed_at) return json(200, { confirmed: false });
 
   const age = (Date.now() - new Date(user.password_confirmed_at.replace(' ', 'T') + 'Z').getTime()) / 1000;
   return json(200, { confirmed: age <= maxAge, confirmed_at: user.password_confirmed_at, age_seconds: Math.floor(age) });
 }
 
 // POST /email/verification-notification — mint the signed verification URL.
+// Fortify's controller acts on `$request->user()` (auth middleware); the email
+// in the body must not select the account (user enumeration + minting a valid
+// link for a known account).
 export async function handleSendVerification(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
-  const user = await findUser(env, body.email);
-  if (!user) return json(404, { message: 'User not found.' });
+  const user = await currentUser(ctx, env);
+  if (!user) return json(401, { message: 'Unauthenticated.' });
   if (user.email_verified_at) return json(200, { already_verified: true, verification_url: null });
 
   let key;
