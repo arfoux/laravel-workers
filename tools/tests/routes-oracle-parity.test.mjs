@@ -47,11 +47,6 @@ const APP = oracleAppRoot();
 // a scan that misses anything ELSE is the failure this test exists for.
 const FRAMEWORK_ONLY = [
   {
-    why: 'health endpoint, registered by ApplicationBuilder::withRouting()',
-    file: 'Illuminate/Foundation/Configuration/ApplicationBuilder.php',
-    match: (r) => r.uri === 'up',
-  },
-  {
     why: 'vendor file server, registered by FilesystemServiceProvider::serveFiles()',
     file: 'Illuminate/Filesystem/FilesystemServiceProvider.php',
     match: (r) => r.uri === 'storage/{path}',
