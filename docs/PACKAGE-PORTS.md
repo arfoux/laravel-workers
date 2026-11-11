@@ -17,9 +17,9 @@ NOT matched and fails the build.
 | `passport-oauth` | `PASSPORT_PRIVATE_KEY` (RS256, WebCrypto) |
 | `cashier-stripe` | `STRIPE_WEBHOOK_SECRET` |
 | `cashier-paddle` | `PADDLE_WEBHOOK_SECRET` |
-| `lemonsqueezy` | `LEMON_SQUEEZY_SIGNING_SECRET` |
+| `lemonsqueezy` | `LEMON_SQUEEZY_WEBHOOK_SECRET` |
 | `scout-meilisearch` | `MEILISEARCH_HOST`, `MEILISEARCH_KEY` |
-| `scout-algolia` | `ALGOLIA_APP_ID`, `ALGOLIA_SEARCH_KEY` |
+| `scout-algolia` | `ALGOLIA_APP_ID`, `ALGOLIA_KEY` (fallback `ALGOLIA_API_KEY`) |
 | `pusher`, `reverb` | `PUSHER_APP_ID` / `PUSHER_APP_KEY` / `PUSHER_APP_SECRET` (Reverb uses its own app key/secret) |
 | `mailgun-mail` | `MAILGUN_DOMAIN`, `MAILGUN_SECRET` |
 | `postmark-mail` | `POSTMARK_TOKEN` |
@@ -27,11 +27,66 @@ NOT matched and fails the build.
 | `twilio-sms` | `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_FROM` |
 | `fortify-two-factor` | `APP_KEY` (TOTP secret encryption); D1 `two_factor_*` (via `ensureSchema`) |
 | `laravel-socialite-*` | per-provider client id/secret (`GITHUB_CLIENT_ID`, ...) |
+| `ai-sdk` | per-provider LLM key, chosen per model: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`; D1 `agent_conversations`, `agent_conversation_messages` (via `ensureSchema`, best-effort) |
+| `mcp` | no secret — `MCP_TOOLS` / `MCP_PROMPTS` bindings (the tool/prompt registries), optional `MCP_SERVER_NAME` / `MCP_SERVER_VERSION` / `MCP_PROTOCOL_VERSION` |
+| `pulse` | no secret; D1 `pulse_entries`, `pulse_aggregates` (via `ensureSchema`) |
+| `bugsnag` | `BUGSNAG_API_KEY` |
+| `webhook-client` | `WEBHOOK_CLIENT_SECRET` (optional `WEBHOOK_CLIENT_SIGNATURE_HEADER`); D1 `webhook_calls` (via `ensureSchema`) |
+| `webhook-server` | `WEBHOOK_SERVER_SECRET`; D1 `webhook_calls` (via `ensureSchema`) |
+| `site-search` | `MEILISEARCH_HOST` (+ optional `MEILISEARCH_KEY`/`MEILISEARCH_API_KEY`), optional `SITE_SEARCH_INDEX`/`SCOUT_INDEX` |
+| `telegram-notification` | `TELEGRAM_BOT_TOKEN` |
+| `discord-notification` | `DISCORD_WEBHOOK_URL` (Incoming Webhook) or `DISCORD_BOT_TOKEN` (+ `DISCORD_CHANNEL`) |
+| `expo-notification` | `EXPO_ACCESS_TOKEN` (optional — Bearer auth raises the rate limit) |
+| `fcm-notification` | `FCM_SERVICE_ACCOUNT_JSON` (raw or base64), `FCM_PROJECT_ID` (optional — falls back to the service account's `project_id`) |
+| `webpush-notification` | `WEBPUSH_VAPID_PRIVATE_KEY`, `WEBPUSH_VAPID_SUBJECT` (optional `WEBPUSH_TTL` / `WEBPUSH_URGENCY`); D1 `webpush_subscriptions` (via `ensureSchema`) |
+| `onesignal-notification` | `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY` (optional `ONESIGNAL_LANGUAGE`) |
+| `jwt-auth` | `JWT_SECRET` (HS256), optional `JWT_TTL`; D1 `users` (via `ensureSchema`) |
+| `firebase-php-jwt` | `FIREBASE_PROJECT_ID`, optional `FIREBASE_JWKS_URL` |
+| `auth0` | `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_REDIRECT_URI` (optional `AUTH0_AUDIENCE`) |
+| `glide` | `CF_IMAGE_RESIZING_ZONE`, optional `GLIDE_ORIGIN` |
 
 DB-backed ports create their tables through their exported `ensureSchema`, which `dist/schema.sql`
 folds in — apply the schema (`npx laravel-workers deploy` mode 2) before serving them.
 
+## Route seams — the paths the newer ports answer
+
+Each new port is one registry slug (one file); a slug may answer several paths when it dispatches
+on the resolved verb + path. All of these are already in `registry.example.json`.
+
+| Slug | Route(s) | Notes / substitution |
+|---|---|---|
+| `ai-sdk` | `POST /ai/chat` | Non-streaming `generate()` only — the SSE stream is a runtime gap (no ReadableStream body contract). Tools dispatch via `env.ai_tool_runners`. |
+| `mcp` | `POST /mcp` | JSON-RPC 2.0 (`initialize` / `tools/list` / `tools/call` / `prompts/list`). STDIO + SSE transports refused — a Worker has no child process and no stream body yet. |
+| `pulse` | `GET /pulse`, `POST /pulse/record` | Dashboard is a JSON aggregation over `pulse_entries` (`?range=<minutes>`), not the HTML UI. |
+| `bugsnag` | `POST /bugsnag/notify` | 1:1 transport swap of the notify API POST. |
+| `webhook-client` | `POST /webhooks/{name}` | Receiving side: HMAC-SHA256 verify (constant-time) before the D1 write; unverified calls are never stored. |
+| `webhook-server` | `POST /webhook-server/send` | Sending side: signs `base64(HMAC-SHA256(secret, rawBody))` + `webhook-timestamp` header. |
+| `site-search` | `GET /site-search` | Proxies Meilisearch `POST /indexes/{uid}/search`; indexing is out-of-band (Searchable/Scout sync is vendor code, LW002). |
+| `telegram-notification` | `POST /notify/telegram` | Token rides in the URL path (`/bot{TOKEN}/sendMessage`). |
+| `discord-notification` | `POST /notify/discord` | Webhook wins over the Bot API when both are configured. |
+| `expo-notification` | `POST /notify/expo` | `EXPO_ACCESS_TOKEN` is optional (sends unauthenticated without it). |
+| `fcm-notification` | `POST /notify/fcm` | FCM v1 HTTP API only; the deprecated legacy server-key path is not ported. |
+| `webpush-notification` | `POST /notify/webpush`, `POST /webpush/subscribe` | RFC 8291 encrypt + RFC 8292 VAPID; `subscribe` stores the browser subscription in D1. |
+| `onesignal-notification` | `POST /notify/onesignal` | REST API key as HTTP Basic (username, no password). |
+| `jwt-auth` | `POST /auth/jwt/login`, `GET /auth/jwt/user` | HS256 (the stateless `tymon/jwt-auth` default), not Passport's RS256; bcryptjs verifies Laravel's `$2y$`. |
+| `firebase-php-jwt` | `POST /auth/firebase/verify` | Verifies a Firebase ID token against Google's JWKS (RS256), `kid`-matched. |
+| `auth0` | `POST /auth/auth0/callback` | Stops at the `authorization_code` token exchange; compose with `firebase-php-jwt` for offline `id_token` verify. |
+| `glide` | `GET /img/{path}` | Transform delegated to Cloudflare Image Resizing (`/cdn-cgi/image`) — no GD/Imagick. `w` is required (422 without it). |
+
+The kernel-side helpers these ports lean on (`kernel/packages/`): `ai.mjs` (provider adapters +
+tool loop), `fcm-oauth.mjs` (service-account JWT → OAuth2 token), `webpush-crypto.mjs` (ECDH/HKDF/
+AES-128-GCM + VAPID), `notify-http.mjs` (shared `fetch`/auth/response mapping), `port-ctx.mjs`
+(the `normalizePortCtx` every handler starts with), and the page-composition helpers `menu.mjs`,
+`navigation.mjs`, `html.mjs`, `options.mjs`, `csp.mjs`, `response-cache.mjs`, `honeypot.mjs`,
+`seo.mjs`, `gtm.mjs`, `streaming-runtime.mjs` used by the compiled app rather than registered as
+routes. Those files are copied by the build — they are not registry slugs.
+
 ## Collisions — pick one per route, never ship two keys for the same path
+
+Route-pair collisions: none among the newer ports — `webhook-client` (`/webhooks/{name}`) and
+`webhook-server` (`/webhook-server/send`) answer different paths and can coexist; they only share
+the `webhook_calls` D1 table (each row is tagged by which port wrote it), which is a data-shape
+fact, not a route conflict.
 
 | Path | Ports that answer it | Note |
 |---|---|---|

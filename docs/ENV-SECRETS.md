@@ -1,0 +1,146 @@
+# Env vars & secrets — new port fleet
+
+Catalog of every `env.<NAME>` / `env['<NAME>']` read by the new ports
+(`ports/packages/*.mjs`) and new kernel packages (`kernel/packages/*.mjs`).
+Built by grepping both trees; required/optional is taken from each module's own
+guard (`if (!x) return 500 'not configured'`) or its documented "Config (env)"
+header — not guessed.
+
+Not in this table (they are Worker **bindings**, not env vars, but ports fail
+without them):
+
+| Binding | Used by | Note |
+|---|---|---|
+| D1 `env.DB` | `pulse`, `webhook-client`, `webhook-server`, `webpush-notification`, `jwt-auth` | `ensureSchema` folds the tables into `dist/schema.sql`; apply it (deploy mode 2) before serving these ports |
+
+Set secrets with `npx wrangler secret put <NAME>` (or the Workers dashboard) —
+never in `registry.example.json`.
+
+## Counts
+
+- **33 env vars** catalogued (17 wajib, 16 opsional)
+- Shared with already-documented ports: `MEILISEARCH_HOST`, `MEILISEARCH_KEY`/
+  `MEILISEARCH_API_KEY`, `SCOUT_INDEX` (see scout rows in
+  `PACKAGE-PORTS.md`); every other row is new to this fleet.
+
+## Wajib — set before deploy (the port 500s without it)
+
+| Env var | Port |
+|---|---|
+| `BUGSNAG_API_KEY` | `bugsnag` |
+| `WEBHOOK_CLIENT_SECRET` | `webhook-client` |
+| `WEBHOOK_SERVER_SECRET` | `webhook-server` |
+| `MEILISEARCH_HOST` | `site-search` |
+| `TELEGRAM_BOT_TOKEN` | `telegram-notification` |
+| `WEBPUSH_VAPID_PRIVATE_KEY` | `webpush-notification` |
+| `WEBPUSH_VAPID_SUBJECT` | `webpush-notification` |
+| `FCM_SERVICE_ACCOUNT_JSON` | `fcm-notification` (+ `fcm-oauth`) |
+| `ONESIGNAL_APP_ID` | `onesignal-notification` |
+| `ONESIGNAL_REST_API_KEY` | `onesignal-notification` |
+| `JWT_SECRET` | `jwt-auth` |
+| `FIREBASE_PROJECT_ID` | `firebase-php-jwt` |
+| `AUTH0_DOMAIN` | `auth0` |
+| `AUTH0_CLIENT_ID` | `auth0` |
+| `AUTH0_CLIENT_SECRET` | `auth0` |
+| `AUTH0_REDIRECT_URI` | `auth0` |
+| `CF_IMAGE_RESIZING_ZONE` | `glide` |
+
+## Notification
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | `telegram-notification` | Wajib | Bot token `<id>:<hash>` dari @BotFather | `123456789:AAAB-PLACEHOLDER-TOKEN` |
+| `DISCORD_WEBHOOK_URL` | `discord-notification` | Salah satu* | URL incoming webhook Discord | `https://discord.com/api/webhooks/123/PLACEHOLDER` |
+| `DISCORD_BOT_TOKEN` | `discord-notification` | Salah satu* | Bot token (butuh `to`/`channel` atau `DISCORD_CHANNEL`) | `MTk4PLACEHOLDER.TOKEN` |
+| `DISCORD_CHANNEL` | `discord-notification` | Opsional | Channel id numerik (default untuk bot path) | `123456789012345678` |
+| `EXPO_ACCESS_TOKEN` | `expo-notification` | Opsional | Bearer token Expo push (auth menaikkan rate limit) | `PLACEHOLDER-EXPO-TOKEN` |
+| `FCM_SERVICE_ACCOUNT_JSON` | `fcm-notification` (+ `fcm-oauth`) | Wajib | JSON service account Firebase, raw atau base64 (auto-detect) | `eyJ0eXBlIjoic2VydmljZV9hY2NvdW50IiwiLi4uIn0=` |
+| `FCM_PROJECT_ID` | `fcm-notification` (+ `fcm-oauth`) | Opsional | Project id GCP; fallback ke `project_id` di service account | `my-firebase-project` |
+| `WEBPUSH_VAPID_PRIVATE_KEY` | `webpush-notification` (+ `webpush-crypto`) | Wajib | Private scalar VAPID ES256, base64url 32-byte | `PLACEHOLDER-VAPID-PRIVATE-KEY` |
+| `WEBPUSH_VAPID_SUBJECT` | `webpush-notification` | Wajib | `mailto:` atau `https:` contact URI (RFC 8292) | `mailto:ops@example.com` |
+| `WEBPUSH_TTL` | `webpush-notification` | Opsional | Integer detik (default `2419200` = 28 hari) | `2419200` |
+| `WEBPUSH_URGENCY` | `webpush-notification` | Opsional | `very-low` / `low` / `normal` / `high` (default `normal`) | `normal` |
+| `ONESIGNAL_APP_ID` | `onesignal-notification` | Wajib | UUID app OneSignal | `00000000-0000-0000-0000-000000000000` |
+| `ONESIGNAL_REST_API_KEY` | `onesignal-notification` | Wajib | REST API key, dikirim sebagai `Authorization: Basic <key>` | `PLACEHOLDER-ONESIGNAL-KEY` |
+| `ONESIGNAL_LANGUAGE` | `onesignal-notification` | Opsional | Kode bahasa ISO (default `en`, kunci peta `contents`) | `id` |
+
+\* `discord-notification`: butuh `DISCORD_WEBHOOK_URL` **atau**
+`DISCORD_BOT_TOKEN` — tanpa salah satu port 500 ("missing Discord credential");
+bot path tambah butuh channel id.
+
+## Auth
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `JWT_SECRET` | `jwt-auth` | Wajib | Kunci HMAC simetris (importKey) | `PLACEHOLDER-JWT-HMAC-SECRET` |
+| `JWT_TTL` | `jwt-auth` | Opsional | Integer detik (default `3600`) | `3600` |
+| `FIREBASE_PROJECT_ID` | `firebase-php-jwt` | Wajib | Project id Firebase (dicek terhadap claim `aud`/`iss`) | `my-firebase-project` |
+| `FIREBASE_JWKS_URL` | `firebase-php-jwt` | Opsional | URL JWKS; default endpoint sertifikat Google | `https://www.googleapis.com/robot/v1/metadata/jwk/securetoken@system.gserviceaccount.com` |
+| `AUTH0_DOMAIN` | `auth0` | Wajib | Host tenant Auth0 (scheme path dipangkas otomatis) | `dev-abc123.us.auth0.com` |
+| `AUTH0_CLIENT_ID` | `auth0` | Wajib | Client id aplikasi Auth0 | `PLACEHOLDER-CLIENT-ID` |
+| `AUTH0_CLIENT_SECRET` | `auth0` | Wajib (confidential client) | Client secret aplikasi Auth0 | `PLACEHOLDER-CLIENT-SECRET` |
+| `AUTH0_REDIRECT_URI` | `auth0` | Wajib | Callback URL; harus persis sama dengan `authorize` | `https://app.example.com/auth/auth0/callback` |
+| `AUTH0_AUDIENCE` | `auth0` | Opsional | API identifier, dikirim sebagai `audience` | `https://api.example.com` |
+
+## Search
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `MEILISEARCH_HOST` | `site-search` | Wajib | Base URL Meilisearch (port 500 "not configured" tanpa ini) | `https://meili.example.com` |
+| `MEILISEARCH_KEY` | `site-search` | Opsional | Search/master key; dikirim sebagai Bearer (alias `MEILISEARCH_API_KEY`) | `PLACEHOLDER-MEILI-SEARCH-KEY` |
+| `MEILISEARCH_API_KEY` | `site-search` | Opsional | Alias dari `MEILISEARCH_KEY` (`??` fallback) | `PLACEHOLDER-MEILI-SEARCH-KEY` |
+| `SITE_SEARCH_INDEX` | `site-search` | Opsional | Index uid default (override per-request via `?index=`); fallback `SCOUT_INDEX`, lalu `pages` | `pages` |
+| `SCOUT_INDEX` | `site-search` | Opsional | Fallback index uid (dipakai bersama port `scout-*`) | `pages` |
+
+## Media
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `CF_IMAGE_RESIZING_ZONE` | `glide` | Wajib | Hostname zona Cloudflare yang mem-proxy image resizing | `images.example.com` |
+| `GLIDE_ORIGIN` | `glide` | Opsional | Origin upstream; default origin request saat ini | `https://cdn.example.com` |
+
+## Observability
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `BUGSNAG_API_KEY` | `bugsnag` | Wajib | Notifier API key Bugsnag (project settings) | `PLACEHOLDER-BUGSNAG-KEY` |
+
+## Webhook
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `WEBHOOK_CLIENT_SECRET` | `webhook-client` | Wajib | Shared secret HMAC untuk MENANDATANGANI outgoing call (500 tanpa ini) | `PLACEHOLDER-CLIENT-SIGNING-SECRET` |
+| `WEBHOOK_CLIENT_SIGNATURE_HEADER` | `webhook-client` | Opsional | Nama header signature (default `webhook-signature`) | `webhook-signature` |
+| `WEBHOOK_SERVER_SECRET` | `webhook-server` | Wajib | Shared secret HMAC untuk MEMVERIFIKASI incoming call (500 tanpa ini) | `PLACEHOLDER-SERVER-VERIFY-SECRET` |
+
+## AI / MCP
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `MCP_SERVER_NAME` | `mcp` | Opsional | Nama server di `initialize` (default `laravel-mcp`) | `my-app-mcp` |
+| `MCP_SERVER_VERSION` | `mcp` | Opsional | Versi server (default `1.0.0`) | `1.2.0` |
+| `MCP_PROTOCOL_VERSION` | `mcp` | Opsional | Versi protokol (default `2024-11-05`) | `2024-11-05` |
+| `MCP_TOOLS` | `mcp` | Opsional | Registry tool dari app terkompilasi — object `{ name: { call } }` atau array `{ name, call }`; kosong → `tools/list` `[]` | *(disediakan app, bukan secret)* |
+| `MCP_PROMPTS` | `mcp` | Opsional | Registry prompt, bentuk sama dengan `MCP_TOOLS` | *(disediakan app)* |
+| `ai_tool_runners` | `ai-sdk` | Opsional | Object `{ toolName: async (args) => result }` — executor untuk tool yang tidak punya `execute` sendiri. Bukan secret dan biasanya bukan string env; di-inject oleh app build. Tanpa ini tool tetap terdaftar, hanya tidak tereksekusi | *(disediakan app)* |
+
+## Config (non-secret) — middleware CSP & honeypot
+
+Dibaca dari `env` tapi berupa konfigurasi, bukan secret; aman di `wrangler.toml`
+`[vars]`.
+
+| Env var | Used by | Wajib? | Format | Contoh nilai (placeholder) |
+|---|---|---|---|---|
+| `CSP_POLICY` | `csp-middleware` | Opsional | Directive map JSON (bentuk `getDirectives()`), string atau object; fallback ke `ctx.body.policy` | `{"default-src":["'self'"],"frame-ancestors":["'none'"]}` |
+| `HONEYPOT_MIN_DELTA_MS` | `honeypot-middleware` | Opsional | Integer ms minimal sejak render (default `1000`) | `1000` |
+
+## Kernel packages — tidak membaca env
+
+`kernel/packages/honeypot.mjs`, `csp.mjs`, `response-cache.mjs`, `seo.mjs`,
+`gtm.mjs`, `menu.mjs`, `navigation.mjs`, `html.mjs`, `options.mjs`,
+`webpush-crypto.mjs` murni menerima config lewat parameter fungsi / options
+(`options.title`, `policy`, `gtmId`, `minDeltaMs`, …). Satu-satunya pembaca env
+di sisi kernel adalah `fcm-oauth.mjs` (`FCM_SERVICE_ACCOUNT_JSON`,
+`FCM_PROJECT_ID`), yang sudah tercantum di atas. `webpush-crypto.mjs` menerima
+kunci VAPID lewat argumen, bukan env — env vars-nya ada di
+`ports/packages/webpush-notification.mjs`.

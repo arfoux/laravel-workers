@@ -24,6 +24,20 @@
 | Observability & Dev | — | sentry-laravel | log-viewer | — | debugbar, clockwork, pail, telescope, tinker, ray |
 | Billing | — | cashier(Stripe), cashier-paddle, lemonsqueezy | — | spark | — |
 | HTTP & Integrasi | — | guzzle, stripe-php | aws-sdk-php(S3→R2) | — | Http facade |
+| AI & Agent | — | laravel/ai, laravel/mcp, prism-php/prism, openai-php/laravel | — | laravel/boost |
+| Frontend SPA | folio, wayfinder | inertia-laravel | — | prompts (dev-only) |
+| Observability dashboards | — | pulse, bugsnag-laravel | — | nightwatch |
+| Admin panels | — | — | — | nova, orchid, backpack, moonshine, encore |
+| Spatie HTTP middleware | blade-comments | responsecache, csp, honeypot | route-attributes (build-time) | — |
+| Spatie webhooks | — | webhook-client, webhook-server | — | — |
+| Spatie misc | — | menu, navigation, html, options, site-search, analytics | fractal | personal-data-export |
+| Spatie media extras | — | laravel-glide | — | browsershot, image-optimizer |
+| 2FA & security | — | bacon-qr (SVG) | google2fa, one-time-passwords | robthree/twofactorauth (dep) |
+| Notification channels | — | telegram, discord, expo, fcm, webpush, onesignal | — | — |
+| Auth extras | — | jwt-auth, firebase-php-jwt, auth0 | kreait-firebase | — |
+| Filament ecosystem | — | — | — | settings-plugin, shield, plugin-skeleton, media-plugin |
+| Livewire ecosystem | — | — | flux, wireui | livewire-alert, livewire-wizard |
+| SEO & URLs | — | seotools, googletagmanager | eloquent-sluggable | — |
 
 ## Catatan koreksi klaim repo (dari subagent)
 
@@ -36,6 +50,17 @@
 - Livewire: satu-satunya dukungan yang ADA = pembuangan guard Blade komponen
   (`compiler/src/livewire-markers.mjs`) agar app ber-Livewire tetap build hijau — **bukan** runtime
   Livewire. Tidak ada modul kernel `livewire`/`filament`/`volt`.
+- `PACKAGES-RESEARCH.md:95` ("2FA (TOTP) belum punya modul kernel") — **usang**: `kernel/packages/totp.mjs`
+  sudah ada (base32, HMAC-SHA1 WebCrypto, RFC 6238/4226, ±1 window, `otpauth://`, recovery codes),
+  diuji RFC test vector di `tools/tests/packages-fortify-2fa.test.mjs`; `fortify-two-factor.mjs`
+  melayani 4 route. Perbaiki kalimat itu saat eksekusi.
+- **Streaming belum ada di pipeline route port** (temuan kluster AI): `kernel/router.mjs:277-289`
+  `dispatch()` meng-*throw* `"handler returned invalid response shape"` untuk body port yang bukan
+  `string | Uint8Array | null`, dan `src/worker.mjs:81` `toResponse()` hanya meneruskan `res.body`.
+  Tidak ada `ReadableStream`/`text/event-stream`/SSE di repo (grep 0). Klaim M68 "streaming answer is
+  a ReadableStream ... native to a Worker" **belum benar untuk route ports** — runtime harus diperluas
+  dulu (kontrak body port + `dispatch`) sebelum port AI bisa streaming (`laravel/ai::stream()`,
+  `prism->stream()`, `openai-php createStreamed()`, SSE MCP). Prasyarat tunggal untuk semua streaming.
 
 ---
 
@@ -67,7 +92,7 @@
 ### laravel/fortify v1.41.0
 - verdict: **special** — alur berbentuk Fortify adalah controller TERKOMPILASI (klaim repo, `COMPILED.md:267`); paket Fortify sendiri = port/refuse.
 - edge: login/register/logout/forgot/reset/verify terkompilasi sebagai controller — validate → attempt → regenerate → intended, throttled via RateLimiter kernel, reset token di D1, kirim mail lewat outbox mailable kernel. Middleware `password.confirm` terkompilasi.
-- refusal: paket Fortify tak terkompilasi (provider-nya mengawat kelas action + closure `Fortify::authenticateUsing()`/`confirmPasswordsUsing()`). `Fortify\` → LW002. **2FA (TOTP) belum punya modul kernel** (tak ada simbol `totp`/`otp` di `kernel/`/`tools/`) — login ber-2FA harus lewat port atau fail loud.
+- refusal: paket Fortify tak terkompilasi (provider-nya mengawat kelas action + closure `Fortify::authenticateUsing()`/`confirmPasswordsUsing()`). `Fortify\` → LW002. **2FA (TOTP) sudah punya modul kernel** (`kernel/packages/totp.mjs`: base32, HMAC-SHA1 WebCrypto, RFC 6238/4226, ±1 window, `otpauth://`, recovery codes — diuji RFC test vector di `tools/tests/packages-fortify-2fa.test.mjs`); login ber-2FA melayani 4 route di `ports/packages/fortify-two-factor.mjs`.
 - port: `ports/fortify.mjs` untuk kustomisasi berbasis closure; route vendor Fortify dideklarasikan di `registry.json`.
 - test: `login-flow.test.mjs` + `auth.test.mjs` sudah membuktikan byte alur; tambah probe dump `features` Fortify yang menolak `twoFactorAuthentication` aktif tanpa port.
 
@@ -434,6 +459,584 @@ Port seam: `registry.json → "ports": { "<route>": "<slug>" }`, file `ports/<sl
 - Checkout: `fetch` POST API provider → 302 ke URL hosted. Portal: Stripe `billing_portal.sessions.create` / Paddle `customer_portal_sessions` / LS `urls.customer_portal` → redirect.
 - Proration: didelegasikan ke sisi server (Stripe `proration_behavior=create_prorations`; Paddle otomatis; LS `proration:true`). Disclosure: edge TIDAK PERNAH menghitung proration — matematika provider, fungsi 1:1; webhook `invoice.paid`/`subscription.updated` hasilnya hanya mencatat baris D1.
 - D1: diturunkan dari migrasi app oleh `tools/schema-compile.php` → `dist/schema.sql` (dibangun + diterapkan deploy mode 2), jadi tabel di atas mendarat di D1 tanpa diubah. Tambahan satu-satunya: tabel replay-guard (`lw_webhook_events`, PK event-id) untuk idempotensi.
+
+---
+
+## Spatie Tenancy & Health
+
+### spatie/laravel-multitenancy v4.3.1
+- verdict: **port** — resolusi tenant = lookup D1 per request + boot tenant context sebelum handler; sisanya mengalir lewat pipeline terkompilasi.
+- edge: `FindTenant`/`NeedsTenant` middleware → langkah pre-dispatch di kernel; `tenants()` morph map (class→table+id) = data statis; `currentTenant()`/`getTenantKey()` = helper state per request.
+- refusal: paket vendor (`MultitenancyServiceProvider`, trait `BelongsToTenant`, closure `makeCurrentTenantUsing`/`getTenantUsing`, task `afterTenantCreated`) → LW002. `Spatie\Multitenancy\` → LW002.
+- port: `ports/multitenancy.mjs` — `tenant` global middleware: baca `landlord` domain / header / subdomain (`kernel/router.mjs` domain `{sub}.example.com`, M18) → lookup D1 `landlord.tenants` (PK `id`, kolom `name`/`domain`/`database`) → simpan di `ctx.tenant`; `findForTenant()` helper untuk query ter-scope. Registry `registry.json → middleware["tenant"]`. `[INFERENCE]` nama kolom persis dari migrasi v4 default; verifikasi saat implementasi.
+- substitution: task `MakeTenantCurrent`/migrasi per-tenant → satu D1 shared dengan kolom `tenant_id` (SCOPING lewat `findForTenant`), BUKAN multi-database. Disclosure: edge = single-DB tenant-scoped, bukan DB-per-tenant Spatie.
+- test: unit — lookup domain→tenant dari D1; e2e probe — `GET /api/x` tanpa tenant → 404 (NeedsTenant), dengan tenant → handler menerima `ctx.tenant.id`.
+- free-tier: 1 baca D1 terindeks (domain unique) per request tenant-scoped — 100k/hari cukup.
+- evidence: GitHub releases (4.3.1, di atas 4.3.0 2026-10-26); repo `kernel/router.mjs` domain matching ada.
+
+### spatie/laravel-health v1.40.6
+- verdict: **compile** (routes terkompilasi) + **port** (check checker) — endpoint `Health::routes()` = route GET biasa → snapshot statis / handler terkompilasi; hasil check = daftar named results yang dijawab handler port.
+- edge: route register (`/health`, `/health/json`, `/health/{check}`) mendarat di `routeTable`; middleware `health` → deny saat not configured; format JSON/HTML = render terkompilasi.
+- refusal: paket vendor (`HealthServiceProvider`, facade `Health`, checker built-in yang menyentuh Redis/MySQL/phpredis socket/disk) → LW002. `Spatie\Health\` → LW002. Checker `UsedDiskSpace`, `RedisCheck`, `DatabaseCheck` (mysql/pgsql driver) edge-impossible (tanpa FS/socket/persist).
+- port: `ports/health.mjs` — `GET /health` handler: jalankan daftar check dari `config('health.checks')` → masing-masing check port (D1 ping via `kernel/db.mjs`, cache read/write via `kernel/cache.mjs`, schedule heartbeat via D1 `health_check_result_histories`) → agregat `ok`/`failed` + HTTP 200/503. Registry `/health` + `/health/json`.
+- substitution: checker Redis/phpredis → HTTP ping (atau skip + disclosure); UsedDiskSpace → R2 `head` size; DatabaseCheck → D1 ping. Disclosure: checker = port JS 1:1 semantik, bukan kode vendor.
+- test: unit — masing-masing check port → `{ok:true/false,label}`; e2e — `GET /health/json` jawab 200 `{ok:true}` saat semua sehat, 503 saat satu gagal (matikan D1 stub).
+- free-tier: hanya diakses probe monitor; 1 baca/tulis D1 per run — di bawah cap.
+- evidence: GitHub releases 1.40.6 (di atas 1.40.5 6d ago, 1.40.4 2026-10-26); repo sudah bilang `health:'/up'` framework route 404 di edge (`tools/routes-dump.mjs:407-420`, CHANGELOG #628) — port `/health` menutup gap itu.
+
+### spatie/laravel-onboard v2.6.3
+- verdict: **port** — onboarding steps = state per-user di D1; middleware `onboard` redirect bila belum selesai; trait `GetsOnboardingSteps` = kode app yang terkompilasi.
+- edge: `steps()`/`complete()`/`inProgressOrFinished()` dihitung dari kolom user; middleware `CheckOnboarding` membaca flag dan redirect.
+- refusal: paket vendor (`OnboardServiceProvider`, `OnboardingSteps` collection, config closure `configureUsing`) → LW002; trait di model user = kode vendor.
+- port: `ports/onboard.mjs` — middleware `onboard`: baca `user.onboarded_at` (atau kolom step di `lw_users`) → redirect `/onboarding/{next}` bila belum; handler port `GET /onboarding` render checklist + `POST /onboarding/{step}/complete` set flag di D1.
+- substitution: — (kolom flag di `lw_users`).
+- test: unit — `inProgressOrFinished()` true bila semua step flag set; e2e — user baru hit `/dashboard` → 302 `/onboarding`; selesaikan step → 200.
+- free-tier: 1 baca D1 per request user (sudah di-auth path), 1 tulis per step selesai — cukup.
+- evidence: GitHub CHANGELOG 2.6.3 (2026-02-26, "Add Laravel 13 compatibility"); Packagist.
+
+### spatie/laravel-welcome-notification v2.5.0
+- verdict: **port** — welcome mail = `Mail::to($user)->send(...)` lewat `kernel/mail.mjs` (sudah terkompilasi); tautan set-password = signed URL (`kernel/packages/signedurl.mjs`, pola `temporarySignedRoute`).
+- edge: `sendWelcomeNotification()` di controller/user creation → compiled call; `WelcomeNotification` mailable → compiled mailable + view Blade; route `{token}` set-password → handler port.
+- refusal: paket vendor (`WelcomeNotification` class extends `Notification` (queue channel), `WelcomeNotificationServiceProvider`, `sendWelcomeNotification` trait method bila di-trait vendor) → LW002. Notifikasi lewat `Notification::send()` (channel database/mail) = port notification cluster terpisah.
+- port: `ports/welcome-notification.mjs` — `POST /welcome/accept/{token}` (verify signed token → form set password → D1 update `password`+`welcome_valid_until` null); `kernel/packages/signedurl.mjs` untuk token HMAC + expiry.
+- substitution: — (mail + signed URL sudah kernel).
+- test: unit — token HMAC + expiry diverifikasi byte-identical dengan oracle `signedurl`; e2e — buat user → mail keluar (log transport outbox) → klik link → set password → login.
+- free-tier: 1 mail Resend/log per welcome (di luar cap D1), 1 update D1 saat set password — cukup.
+- evidence: Packagist 2.5.0 (2026-02-22); GitHub repo synced 2026-10-22.
+
+### Lintas-kluster: tenant context + health route + mail/signed-URL
+- Ketiganya menumpang infrastruktur yang SUDAH ADA di kernel: domain matching (M18), signed URL (Fortify email-verification port), compiled mailable (M5 mail budget), D1 lookup. Tak ada prasyarat baru.
+- Gap repo yang ditutup port health: `GET /up` framework-registered yang sampai #628 masih 404 di edge (`tools/routes-dump.mjs:407-420`). Port `/health` = cara idiomatik Spatie untuk menutup gap yang sama.
+- Multitenancy = satu-satunya paket di kluster ini yang MENYENTUH hot path (lookup per request). Health/onboard/welcome = cold path.
+
+**Rekomendasi prioritas eksekusi: spatie/laravel-health** — verdict compile+port paling murah, menutup gap `/up` yang sudah tercatat (#628) tanpa prasyarat baru, tak menyentuh hot path, dan bisa diverifikasi e2e (200/503) dalam satu handler port.
+
+---
+
+## AI & Agent
+
+### laravel/ai v1.3.0 (2026-10-19)
+- verdict: **port** — provider call = HTTPS `fetch`; prompt/messages = kode app terkompilasi.
+- edge: 1:1 untuk non-streaming generate (OpenAI/Anthropic/Gemini/Groq via `config/ai.php` dump + secret), **tool-use** (tools = compiled app classes; loop `tool_calls` → dispatch → lanjut), structured output, embeddings, conversation D1 (`agent_conversations`/`_messages`).
+- refusal: paket tak terkompilasi (`Ai::`/`agent()` → LW002); **`stream()` tak bisa 1:1 hari ini** — lihat catatan koreksi streaming.
+- port: `ports/packages/ai-sdk.mjs` + registry `/ai/*`; D1 tabel di atas; secrets `OPENAI_API_KEY` dkk.
+- test: probe e2e `POST /ai/chat` non-stream → paritas + D1 row; oracle JSON tool-call.
+- free-tier: 1 subrequest fetch + 0–2 D1 tulis; 10ms CPU OK (fetch menunggu I/O). muat (non-stream).
+- evidence: Packagist v1.3.0; laravel.com/docs/13.x/ai-sdk.md.
+
+### laravel/mcp v1.1.2 (2026-10-26)
+- verdict: **port** (web half); `local` = **refuse** (stdio).
+- edge: server web 1:1 — `initialize`/`tools/list`/`tools/call`/`prompts`/`resources` → JSON-RPC via route terkompilasi; tools = compiled app classes; auth OAuth/Sanctum via lapisan yang ada.
+- refusal: transport **stdio** (`local` server, `mcp:start` Artisan) = edge-impossible (tak ada child process). SSE transport ikut gap streaming.
+- port: `ports/packages/mcp.mjs` (router JSON-RPC → compiled tool registry); tanpa D1 wajib.
+- test: MCP Inspector / probe e2e `tools/call` argumen known.
+- free-tier: murni JSON + subrequest; muat.
+- evidence: Packagist v1.1.2; laravel.com/docs/13.x/mcp.md.
+
+### prism-php/prism v0.103.0 (2026-11-07)
+- verdict: **port** — `Prism::text()` = HTTPS fetch; tool-use = compiled classes; conversation = D1.
+- edge: non-streaming + function calling 1:1; structured output.
+- refusal: `->stream()` = ReadableStream → gap runtime (sama). Paket tak terkompilasi → LW002.
+- port: `ports/packages/prism.mjs`; D1 `prism_*`; secrets API key.
+- test: probe e2e non-stream + tool-call oracle.
+- free-tier: muat; streaming menunggu runtime-stream.
+- evidence: Packagist p2 v0.103.0.
+
+### openai-php/laravel v0.22.0 (2026-10-31)
+- verdict: **port** — wrapper `OpenAI::client()` di atas `openai-php/client` (Guzzle→fetch).
+- edge: non-streaming chat/completions, function calling (tool_calls loop), embeddings 1:1.
+- refusal: `createStreamed()`/SSE = gap streaming (sama); paket tak terkompilasi → LW002.
+- port: `ports/packages/openai-php.mjs`; tanpa D1 wajib; secret `OPENAI_API_KEY`.
+- test: probe e2e chat non-stream; unit decode tool_calls.
+- free-tier: muat.
+- evidence: Packagist v0.22.0.
+
+### laravel/boost v2.10.4 (2026-10-29)
+- verdict: **refuse** (**dev-only**) — alat AI dev, `require-dev`, CLI + MCP stdio + `symfony/process`.
+- refusal: seluruh permukaan di mesin dev (child process) — edge-impossible di Worker.
+- port: tak ada. MCP server Boost = local/stdio → ikut refusal MCP.
+- evidence: Packagist v2.10.4; MAP `boost ⛔`.
+
+**Prioritas: perluas dulu kontrak body port untuk `ReadableStream`** (prasyarat semua streaming), lalu `ports/packages/ai-sdk.mjs` (laravel/ai) — satu paket mencakup 4 provider + tool-use + D1.
+
+---
+
+## Frontend SPA
+
+### inertiajs/inertia-laravel v3.6.0 (2026-10-30)
+- verdict: **port**
+- edge: seluruh kontrak server Inertia 1:1 — `Inertia::render()` non-XHR = HTML shell (Blade terkompilasi), `X-Inertia` header = JSON `{component, props, url, version, ...}`; `share()` di-resolve saat build.
+- refusal: `inertia:start-ssr` (`inertia-node`) = edge-impossible (butuh Node child process); CSR jadi jalur.
+- port: `ports/packages/inertia.mjs` — set `X-Inertia`/`Vary: Accept`, `303` setelah X-Inertia PUT/PATCH/DELETE/QUERY, `409 + X-Inertia-Location` saat version mismatch; flag `frontend.inertia`; tanpa D1.
+- test: unit dump controller `inertia('Page', [...])` → JSON page-object vs PHP oracle; probe e2e version mismatch → 409.
+- free-tier: muat.
+- evidence: Packagist v3.6.0 (PR #925/#927); MAP.md:229 "Inertia feasible (JSON port) phase 3".
+
+### laravel/folio v1.2.0
+- verdict: **compile** (dump path→route) + **port** ringan (middleware per-path).
+- edge: Blade `views/pages/**` → route terkompilasi saat build (`Folio::path()->uri()->middleware()`, index, `[param]`/`{param}`, nested).
+- refusal: subdomain routing (`->domain()`) = edge-impossible di Workers single-zone [INFERENCE]; render-hook closure vendor tak terkompilasi.
+- port: generator `Folio::path` di dump fase routes; `ports/packages/folio-middleware.mjs` untuk middleware per-path.
+- test: `routes:list` Folio vs `dist/src/routes.generated.mjs`.
+- free-tier: netral.
+- evidence: Packagist v1.2.0; MAP `folio ⛔ NOT ported`.
+
+### laravel/wayfinder v0.1.23 (2026-10-16)
+- verdict: **compile** (build-time generator) — vendor tak pernah hidup di edge.
+- edge: output TypeScript dari route terkompilasi dihasilkan di build → artefak statis; `QUERY` method didukung.
+- refusal: `wayfinder:generate` = dev-only; `laravel/ranger`+`surveyor` butuh DB scan di build.
+- port: bukan runtime; `tools/wayfinder-dump.mjs` baca `dist/src/routes.generated.mjs` → emit `resources/js/wayfinder.ts`.
+- test: golden-file `routes.ts` vs referensi PHP.
+- free-tier: nol dampak runtime.
+- evidence: Packagist v0.1.23 (Beta/API unstable).
+
+**Prioritas: inertia-laravel dulu** (fase-3 MAP, permukaan terkecil, preseden untuk Jetstream/Breeze/Spark).
+
+---
+
+## Observability dashboards
+
+### laravel/pulse v2.x (di integrations.json sebagai 'pulse')
+- verdict: **port** — dashboard = route terkompilasi + D1 table + fetch ke sumber.
+- edge: rekaman data (recorders) → D1 writes; halaman dashboard → compiled view; filter/range → query param.
+- refusal: node stats (Octane/supervisor) = infra; tak relevan tanpa itu.
+- port: `ports/packages/pulse.mjs` + registry `/pulse/*`; D1 `pulse_aggregates`, `pulse_entries`.
+- test: probe e2e — tulis sample entry → halaman dashboard menampilkan agregasi.
+- free-tier: D1 writes muat (jauh di bawah 100k/hari); data ringkas.
+- evidence: laravel.com/docs/13.x/pulse.md; integrations.json M68.
+
+### laravel/nightwatch
+- verdict: **refuse** (**infra/daemon**) — agent terinstall di server asli, streaming telemetry ke layanan Nightwatch.
+- refusal: butuh server dengan agent; edge tak punya.
+- port: tak ada.
+- evidence: laravel.com/docs/13.x/nightwatch.md.
+
+### bugsnag/bugsnag-laravel
+- verdict: **port** — `Bugsnag::notifyException()` = POST JSON ke API Bugsnag (`notify.bugsnag.com`).
+- edge: exception → POST payload (error class, message, stacktrace ringkas) via fetch; `notify()` di compiled `catch`/error path.
+- refusal: native Breadcrumbs dari kernel events — sebagai port eksplisit saja.
+- port: `ports/packages/bugsnag.mjs` + `notify.bugsnag.com`; secret `BUGSNAG_API_KEY`; tanpa D1.
+- test: unit fake-fetch URL + payload shape; e2e — lempar error → request Bugsnag tercatat.
+- free-tier: 1 fetch/error; muat.
+- evidence: Packagist; api.bugsnag.com/docs.
+
+**Prioritas: pulse** — paling dipakai, menutup observability in-app tanpa dependensi eksternal.
+
+---
+
+## Admin panels
+
+### laravel/nova, orchid/platform, backpack/crud, moonshine, encore/laravel-admin
+- verdict: **refuse** (**edge-impossible**) untuk keseluruhan; sebagian kecil **compile/port** bila dipakai.
+- edge: resource/index/show/CRUD = pola app yang terkompilasi bila ditulis ulang; tapi tak ada yang memaksa ini.
+- refusal: masing-masing butuh: asset/Vite pipeline penuh + `Table`/`Form` builder runtime besar (orchid), scaffolding + konvensi kelas vendor luas (backpack), publisher asset + Blade liveview + `nova` CLI (Nova tertutup/licensed), enum/menu system (moonshine), asset + CRUD grid (encore). Semua memuat layer runtime yang edge tak bisa boot → degradasi senyap dihindari = refuse.
+- port: — (bukan port yang masuk akal; lebih baik app memakai compiled view + D1 langsung).
+- substitution: Filament (sudah port-pipeline) atau compiled Laravel table/form DIY.
+- free-tier: n/a (refuse).
+- evidence: Packagist masing-masing; MAP admin panel tak menandai.
+
+---
+
+## Spatie HTTP middleware
+
+### spatie/laravel-responsecache
+- verdict: **port** — cache full-page di D1 `cache_response` (path+query sebagai key), serve bila tidak expired; purge pada POST/PUT/PATCH/DELETE.
+- edge: middleware cache-before + cache-after + invalidation 1:1; `CacheResponse`/`DoNotCacheResponse` via penanda.
+- refusal: paket tak terkompilasi (middleware vendor) → LW002.
+- port: `kernel/packages/response-cache.mjs` + compiled middleware; D1 `cache_response` (`path, hash, body, headers, ttl`).
+- test: oracle — request kedua 200 + header `X-Cache: hit`; purge setelah POST.
+- free-tier: 1 D1 read/hit; muat.
+- evidence: Packagist; README.
+
+### spatie/laravel-csp
+- verdict: **port** — bangun `Content-Security-Policy` header dari config dump + compiled nonce.
+- edge: nonce per-request + `@cspNonce` directive terkompilasi; policy dari config.
+- refusal: paket tak terkompilasi (facade `Csp::` + middleware vendor).
+- port: `kernel/packages/csp.mjs` + compiled middleware; nonce di `dist` runtime; tanpa D1.
+- test: oracle — header CSP string identik + nonce berubah per request.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+### spatie/laravel-honeypot
+- verdict: **port** — render hidden field (name/timestamp) di form + validasi POST.
+- edge: `@honeypot` directive terkompilasi; `Honeypot::ensure` sebagai middleware compiled.
+- refusal: paket tak terkompilasi.
+- port: `kernel/packages/honeypot.mjs` + compiled middleware; tanpa D1 (cek delta timestamp).
+- test: oracle — POST tanpa field → 403; dengan field fresh → pass.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+### spatie/laravel-route-attributes
+- verdict: **special** (build-time) — baca `#[Route(...)]`/`#[Get]` di controller app saat dump fase routes → route terkompilasi.
+- edge: atribut di kelas app = kode app, dibaca build; tak ada runtime vendor.
+- refusal: paket PHP (spatie/phpunit-attributes, attribute parser) tidak dijalankan di edge.
+- port: `tools/route-attributes-dump.php` (pola `tools/*-dump.php`).
+- test: atribut → route:list identik.
+- free-tier: netral.
+- evidence: Packagist; README.
+
+### spatie/laravel-blade-comments
+- verdict: **compile** — precompiler komentar Blade `{{-- --}}` → hapus saat build (Blade parser sudah support `{{--`).
+- edge: tak ada runtime vendor; komentar dihapus saat kompilasi Blade.
+- refusal: paket tak terkompilasi.
+- port: tidak perlu — sudah didukung transpiler `{{--`/`--}}`.
+- test: view berkomentar → output tanpa komentar.
+- free-tier: netral.
+- evidence: Packagist; README.
+
+**Prioritas: response-cache** — paling dipakai, dampak free-tier terbesar (hemat origin).
+
+---
+
+## Spatie webhooks
+
+### spatie/laravel-webhook-client
+- verdict: **port**
+- edge: signature verification (HMAC SHA256 via WebCrypto) + event dispatch ke compiled handlers; D1 `webhook_calls` table.
+- refusal: paket tak terkompilasi (facade `WebhookClient`, job queue). Queue `webhook_calls` = sync/queue (drain terkompilasi).
+- port: `ports/packages/webhook-client.mjs` + `kernel/packages/webhook.mjs` (sudah ada untuk Stripe/Paddle/Lemon — dipakai ulang); D1 `webhook_calls` (`id, name, payload, exception, processed_at`).
+- test: oracle — payload + signature benar → processed; salah → 400.
+- free-tier: 1 D1 tulis + drain; muat.
+- evidence: Packagist; README.
+
+### spatie/laravel-webhook-server
+- verdict: **port**
+- edge: kirim webhook → `webhook_calls` + POST ke endpoint; retry via queue drain; signature HMAC.
+- refusal: paket tak terkompilasi (facade + job).
+- port: `ports/packages/webhook-server.mjs` + kernel helper; D1 `webhook_calls` (tabel sama).
+- test: unit fake-fetch — signature benar di header.
+- free-tier: 1 fetch + D1 tulis; muat.
+- evidence: Packagist; README.
+
+**Prioritas: webhook-client** — menutup verifikasi inbound yang sama dengan Stripe/Paddle (kernel/packages/webhook.mjs sudah ada).
+
+---
+
+## Spatie misc A
+
+### spatie/laravel-menu v4.2.2 (2026-02-21)
+- verdict: **port** — builder murni PHP → HTML; `->action()`/`->route()` 1:1 dengan URL terkompilasi; `setActiveFromRequest()` baca path request.
+- refusal: paket tak terkompilasi (`MenuServiceProvider` + alias `Menu` → LW003); macro `Menu::macro` di provider/closure.
+- port: `kernel/packages/menu.mjs` (builder fluent + renderer HTML) + dump definisi macro saat build; tanpa D1.
+- test: oracle — HTML menu path `/about` vs `/contact` (active state).
+- free-tier: 0 D1; muat.
+- evidence: Packagist p2 v4.2.2; 3.1M unduhan.
+
+### spatie/laravel-navigation v1.3.0 (2024-09-20)
+- verdict: **port** — **renderless** (output JSON: `tree()`, `breadcrumbs()`, `current()`); active dari URL.
+- refusal: facade `Navigation::` + provider = vendor → LW003.
+- port: `kernel/packages/navigation.mjs` (builder `add/addIf/section` → JSON); item di-dump build; branch `addIf` dievaluasi runtime.
+- test: oracle — `tree()` + `breadcrumbs()` untuk path identik.
+- free-tier: 0 D1; muat.
+- evidence: Packagist p2 v1.3.0.
+
+### spatie/laravel-html v3.13.0 (2026-02-22)
+- verdict: **port** — elemen immutable & deterministik; `old()` terkompilasi.
+- refusal: `Html` facade + helper `html()` (autoload files) = vendor → LW001/LW003.
+- port: `kernel/packages/html.mjs` — subset elemen (`span/div/input/email/select/...`) + runtime helper `html()`; tanpa D1.
+- test: oracle — string HTML + kasus old-value.
+- free-tier: 0 D1; muat.
+- evidence: Packagist p2 v3.13.0.
+
+### spatie/laravel-options v1.3.0 (2026-04-07)
+- verdict: **port** — transform murni → array `label`/`value` (`forEnum/forArray/forModels/forStates`, `sort/filter/append/nullable/only/except`, `toArray/toJson`, `toValidationRule`).
+- refusal: facade `Options::` + provider = vendor → LW003; `forEnum` butuh enum cases (dump build).
+- port: `kernel/packages/options.mjs` + enum cases di-dump; `forModels` lewat query D1; tanpa D1 sendiri.
+- test: unit — `forEnum->toArray()` + `nullable('Gandalf')` + `toValidationRule()`.
+- free-tier: muat.
+- evidence: Packagist p2 v1.3.0.
+
+### spatie/laravel-email — **TIDAK ADA**
+- verdict: **refuse** (bukan soal edge) — Packagist API `p2/spatie/laravel-email.json` → HTTP 404; tidak ada di daftar paket Spatie.
+- kandidat terdekat: `spatie/laravel-mailcoach-mailer` (**port**), `spatie/laravel-newsletter` (**port**), `spatie/laravel-database-mail-templates` (**port** tabel `mail_templates`).
+- **Prioritas: spatie/laravel-menu** (3.1M unduhan, terkandung, pola dump provider bisa dipakai ulang).
+
+---
+
+## Spatie misc B
+
+### spatie/laravel-personal-data-export
+- verdict: **refuse** (**edge-impossible**) [INFERENCE versi].
+- edge: paket ini menjadwalkan job yang membuat ZIP dari model user + media — butuh file-system + zip library + job; edge tanpa FS.
+- refusal: pembuatan ZIP + file output = edge-impossible; job async menulis file.
+- port: — (bisa port jalur download JSON darurat, tapi bukan paket penuh).
+- substitution: export JSON stream (R2) bila perlu.
+- free-tier: n/a.
+- evidence: Packagist; README.
+
+### spatie/laravel-site-search
+- verdict: **port** — index ke meilisearch/typesense (scout sudah port) + query route.
+- edge: `SiteSearch::index()` → push dokumen; `search()` → query scout (sudah ada).
+- refusal: paket tak terkompilasi (facade + model observer).
+- port: `ports/packages/site-search.mjs` + registry `/search`; D1 `site_search_indexes`.
+- test: unit — index → meili push; search → meili query.
+- free-tier: subrequest meili; muat.
+- evidence: Packagist; README.
+
+### spatie/laravel-analytics
+- verdict: **port** — fetch Google Analytics Reporting API v4 (OAuth service account) → laporan.
+- edge: auth service-account (JWT RS256, WebCrypto) + fetch GA4 API; route laporan compiled view.
+- refusal: paket tak terkompilasi; Google SDK `google/apiclient` berat.
+- port: `ports/packages/analytics.mjs` + `kernel/packages/google-auth.mjs` (JWT mint); secret service-account JSON.
+- test: unit fake-fetch — JWT header/klaim benar; response GA4 dipetakan.
+- free-tier: 1 fetch + D1 cache laporan; muat.
+- evidence: Packagist; GA4 API docs.
+
+### spatie/laravel-fractal
+- verdict: **substitute** — `Fractal::collection()` transformer → serialisasi JSON di compiled app (transformer = kode app).
+- edge: transformer bisa langsung dipanggil sebagai function app.
+- refusal: paket tak terkompilasi (facade).
+- port: tidak perlu; substitusi = app memanggil transformer → JSON.
+- substitution: `->collection($items, fn($x) => [...])` → compiled closure. Disclosure: kehilangan pagination/`?include` otomatis Fractal.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+**Prioritas: spatie/laravel-site-search** — memakai pipeline scout yang sudah port.
+
+---
+
+## Spatie media extras
+
+### spatie/browsershot
+- verdict: **refuse** (**edge-impossible**) — butuh headless Chrome/Puppeteer + FS.
+- refusal: subproses Chrome, rendering HTML→PNG/PDF, file output — semuanya tak ada di edge.
+- port: tak ada.
+- substitution: screenshot/PDF via layanan eksternal (Bannerbear, ApiFlash) → fetch.
+- free-tier: n/a.
+- evidence: Packagist; README.
+
+### spatie/laravel-glide
+- verdict: **port** — `GlideImage::render()` → URL gambar; server = route yang memproses param resize/crop.
+- edge: param transform → URL; server handler = port yang memproses via external image service (imgproxy/Cloudflare Image Resizing).
+- refusal: proses gambar lokal (intervention di `spatie/image` → sudah port/substitute).
+- port: `ports/packages/glide.mjs` + registry `/img/{path}`; substitusi ke Cloudflare Image Resizing (free 100k/mo).
+- test: probe e2e — `/img/x.jpg?w=200` → respons resized.
+- free-tier: CF Image Resizing free tier muat.
+- evidence: Packagist; README.
+
+### spatie/image-optimizer
+- verdict: **refuse** (**infra**) — butuh binari `jpegoptim`/`optipng`/`pngquant` (optimizer CLI) di build/server.
+- refusal: optimasi saat upload butuh subproses; edge tak bisa.
+- port: tak ada.
+- substitution: CF Image Resizing auto-optimize.
+- free-tier: n/a.
+- evidence: Packagist; README.
+
+**Prioritas: laravel-glide** — menutup URL transform, memakai CF Image Resizing gratis.
+
+---
+
+## 2FA & security
+
+### pragmarx/google2fa
+- verdict: **substitute** — TOTP sudah ada di `kernel/packages/totp.mjs` (base32, HMAC-SHA1 WebCrypto, RFC 6238/4226, ±1 window, `otpauth://`, recovery codes, diuji RFC test vector).
+- edge: generate/verify code 1:1.
+- refusal: paket tak terkompilasi (library PHP `paragonie/constant_time_encoding`).
+- port: tak perlu; `kernel/packages/totp.mjs` sudah cover.
+- test: RFC 6238 test vector (sudah di `tools/tests/packages-fortify-2fa.test.mjs`).
+- free-tier: n/a (murni CPU).
+- evidence: Packagist; RFC 6238.
+
+### bacon/bacon-qr-code
+- verdict: **port** (SVG) / **refuse** (PNG).
+- edge: QR data → SVG string (deterministik) bisa port; PNG butuh GD/image lib.
+- refusal: PNG render (GD, zlib) — tak ada di edge; pakai external API untuk PNG.
+- port: `kernel/packages/qrcode.mjs` — encoder QR (byte mode, error correction) → SVG; tanpa D1.
+- test: decode SVG dengan reader eksternal; compare data byte.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+### spatie/laravel-one-time-passwords
+- verdict: **substitute** — OTP via totp primitif + D1 `one_time_passwords` (`id, code, valid_until, used_at`).
+- edge: generate/validate code, TTL, one-time.
+- refusal: paket tak terkompilasi.
+- port: `kernel/packages/otp.mjs` + D1; atau reuse `kernel/packages/totp.mjs`.
+- test: unit — kode expire/used → reject.
+- free-tier: D1 writes muat.
+- evidence: Packagist; README.
+
+### robthree/twofactorauth
+- verdict: **refuse** (dependency) — library PHP dengan beberapa backend (Google2FA); konsumen sebaiknya pakai totp primitif.
+- refusal: paket PHP tak terkompilasi; tak ada nilai tambah di edge.
+- port: tak ada; gunakan `kernel/packages/totp.mjs`.
+- evidence: Packagist; README.
+
+**Koreksi sudah ditambahkan ke "Catatan koreksi klaim repo": 2FA SUDAH punya modul kernel (`totp.mjs`).**
+
+---
+
+## Notification channels
+
+### laravel-notification-channels/telegram v8.0.0
+- verdict: **port** — POST JSON ke `api.telegram.org/bot{TOKEN}/sendMessage` (chat_id, text, parse_mode, reply_markup); transport HTTP murni.
+- port: `ports/packages/telegram-notification.mjs`; env `TELEGRAM_BOT_TOKEN`; payload `{to|chat_id, body|text, parse_mode?, keyboard?}`; registry `/notify/telegram`.
+- test: unit fake-fetch — URL + body; 422 tanpa chat_id; 500 tanpa token; 0 fetch.
+- free-tier: 1 fetch/kirim; muat.
+- evidence: Packagist v8.0.0 (2026-09-04).
+
+### laravel-notification-channels/discord
+- verdict: **port** — (a) webhook URL verbatim `POST {webhookUrl}` JSON; (b) bot API `api/v10/channels/{id}/messages` + Bearer.
+- port: `ports/packages/discord-notification.mjs`; env `DISCORD_WEBHOOK_URL`/`DISCORD_BOT_TOKEN`; payload `{webhook|to, content|body, embeds?, username?, avatar_url?}`.
+- test: unit fake-fetch — webhook tanpa auth; bot path + Bearer.
+- free-tier: 1 fetch/kirim; muat.
+- evidence: laravel-notification-channels.com/discord.
+
+### laravel-notification-channels/expo v2.5.0
+- verdict: **port** — `POST exp.host/--/api/v2/push/send` JSON; opsional Bearer accessToken.
+- port: `ports/packages/expo-notification.mjs`; env `EXPO_ACCESS_TOKEN`; payload `{to|token, title?, body|text, ...}`; registry `/notify/expo`.
+- test: unit fake-fetch — status `ok` mapping; 429/4xx diteruskan.
+- free-tier: 1 fetch/kirim; muat.
+- evidence: Packagist v2.5.0 (2026-10-04).
+
+### laravel-notification-channels/fcm v6.2.0
+- verdict: **port** — FCM HTTP v1: JWT RS256 dari service-account JSON → OAuth2 token → `fcm.googleapis.com/v1/projects/{id}/messages:send`.
+- port: `ports/packages/fcm-notification.mjs` + `kernel/packages/fcm-oauth.mjs` (JWT mint + token cache); env `FCM_PROJECT_ID`, `FCM_SERVICE_ACCOUNT_JSON`.
+- substitution: `kreait/firebase-php` → 2 fetch sendiri. **Disclosure: satu-satunya yang mengganti dependensi vendor dengan kode kripto sendiri.**
+- test: unit dua tahap — mint (JWT header/klaim) + send (Bearer + URL); token expire → mint ulang.
+- free-tier: 2 subrequest (1 bila cache); muat.
+- evidence: Packagist v6.2.0; firebase docs auth-server.
+
+### laravel-notification-channels/webpush v13.0.1
+- verdict: **port** — RFC 8291 `aes128gcm` (ECDH P-256 + HKDF + AES-128-GCM) + RFC 8292 VAPID ES256 → `POST <endpoint>`.
+- port: `ports/packages/webpush-notification.mjs` + `kernel/packages/webpush-crypto.mjs`; env `VAPID_*`; **D1 `webpush_subscriptions`** (`id, endpoint UNIQUE, p256dh, auth`).
+- substitution: `minishlink/web-push` → helper WebCrypto. **Disclosure: enkripsi RFC 8291/8292 ditulis sendiri.**
+- test: unit — decrypt jalur penerima; VAPID JWT `aud`/`exp`; 410/403 diteruskan.
+- free-tier: 1 fetch + D1 read; muat.
+- evidence: Packagist v13.0.1; RFC 8291/8292.
+
+### laravel-notification-channels/onesignal v2.8.1
+- verdict: **port** — `POST api.onesignal.com/notifications` + `Authorization: Basic {REST_API_KEY}`.
+- port: `ports/packages/onesignal-notification.mjs`; env `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY`; payload `{to|playerIds|externalUserIds|segments, ...}`.
+- test: unit fake-fetch — header Basic + body app_id/include_player_ids/contents.en.
+- free-tier: 1 fetch/kirim; muat.
+- evidence: Packagist v2.8.1.
+
+**Prioritas: telegram** (paling kecil, preseden ketiga pola `/notify/*`); lalu discord → expo → onesignal → fcm → webpush (dua terakhir bawa helper + D1 baru).
+
+---
+
+## Auth extras
+
+### tymon/php-open-source-saver/jwt-auth
+- verdict: **port** — JWT (HS256/RS256) via WebCrypto (sama primitif passport).
+- edge: `JWTAuth::attempt()` → token; `auth:api` guard → parse token (header Bearer).
+- refusal: paket tak terkompilasi (facade + guard).
+- port: `ports/packages/jwt-auth.mjs` + `kernel/packages/token.mjs` (reuse); D1 `users` lookup; secret `JWT_SECRET`/`JWT_PRIVATE_KEY`.
+- test: unit — token mint → verify; expired → 401.
+- free-tier: muat (murni WebCrypto).
+- evidence: Packagist; README.
+
+### firebase/php-jwt
+- verdict: **port** — JWT encode/decode (RS256/HS256) via WebCrypto.
+- edge: verifikasi token dari Firebase/Auth0 → decode header/payload/signature.
+- refusal: paket PHP tak terkompilasi.
+- port: `kernel/packages/token.mjs` (reuse) — expose `jwtVerify`/`jwtSign`.
+- test: unit — token RFC → verify; signature salah → 401.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+### kreait/laravel-firebase
+- verdict: **substitute** — Firebase Auth/RDBMS via REST API + JWT mint (reuse `kernel/packages/token.mjs`).
+- edge: `auth()->signInWithEmailAndPassword()` → POST REST; FCM via `kernel/packages/fcm-oauth.mjs`.
+- refusal: paket tak terkompilasi (SDK besar).
+- substitution: fetch ke `identitytoolkit.googleapis.com` + JWT (service-account). Disclosure: kehilangan SDK admin helper.
+- test: unit fake-fetch — endpoint + payload.
+- free-tier: muat.
+- evidence: Packagist; Firebase REST docs.
+
+### auth0/auth0-php
+- verdict: **port** — universal login callback → token exchange (fetch) + JWT verify (WebCrypto).
+- edge: `auth0()->getUser()` → POST `/oauth/token` + decode JWT.
+- refusal: paket tak terkompilasi (SDK).
+- port: `ports/packages/auth0.mjs`; env `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID/SECRET`; D1 `users` lookup.
+- test: unit fake-fetch — token exchange + JWT verify.
+- free-tier: 1 fetch; muat.
+- evidence: Packagist; Auth0 docs.
+
+**Prioritas: jwt-auth** — reuse primitif passport/token yang sudah ada.
+
+---
+
+## Filament ecosystem
+
+### filament/spatie-laravel-settings-plugin, filament-shields, filament-plugin-skeleton, filament-spatie-media-library
+- verdict: **refuse** (**edge-impossible**) untuk plugin berbasis Livewire (semua plugin Filament berjalan di atas Livewire runtime yang tak ada).
+- edge: resource classes (form/table/schema) = kode app yang IDEALLY terkompilasi — tapi plugin meng-extend Livewire komponen vendor.
+- refusal: plugin memakai Livewire/`Filament` facade/`Asset` — tak bisa boot di edge; media-library plugin bergantung pada `spatie/laravel-medialibrary` (sudah port pipeline, tapi plugin Livewire-nya tak terkompilasi).
+- port: — (bukan port yang masuk akal; plugin = konfigurasi Filament).
+- substitution: Form/Table builder via compiled Laravel view (tidak lewat Livewire).
+- free-tier: n/a.
+- evidence: Packagist; Filament docs.
+
+---
+
+## Livewire ecosystem
+
+### wireui/wireui
+- verdict: **special** — komponen Livewire; pola yang sama seperti Livewire core (dump komponen → port tulis-tangan per komponen).
+- edge: komponen basic (button/input/badge) = Blade + kecil, bisa port tulis-tangan; yang kompleks (modal, notify) perlu runtime Livewire.
+- refusal: Livewire runtime tak ada → komponen yang bergantung wiring JS/Livewire tak bisa.
+- port: `ports/packages/wireui-*.mjs` per komponen yang dipakai; D1 tidak wajib.
+- substitution: Flux UI / Tailwind UI via Blade statis.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+### fluxui/flux
+- verdict: **special** — Flux = Tailwind + Blade components + Livewire; komponen basic port tulis-tangan, yang Livewire-aware tak bisa.
+- edge: `flux:button`, `flux:input` = Blade statis → compile.
+- refusal: `flux:modal`/`flux:toast` Livewire-backed → tak bisa.
+- port: per komponen yang dipakai.
+- free-tier: muat.
+- evidence: fluxui.com; README.
+
+### jantinnerezo/livewire-alert
+- verdict: **refuse** (**dev-only**/edge-impossible) — terikat runtime Livewire + dispatch browser event.
+- refusal: butuh Livewire event loop di browser; tak ada runtime.
+- port: tak ada.
+- substitution: Toast via inline JS/Blade.
+- free-tier: n/a.
+- evidence: Packagist; README.
+
+### andrewdwallo/laravel-livewire-wizard
+- verdict: **refuse** (**edge-impossible**) — wizard multi-step dengan Livewire state.
+- refusal: Livewire runtime.
+- port: tak ada.
+- substitution: step form via session state terkompilasi.
+- free-tier: n/a.
+- evidence: Packagist; README.
+
+---
+
+## SEO & URLs
+
+### artesaos/seotools
+- verdict: **port** — meta tags builder → string HTML dari config dump (`SEO::setTitle`, `setDescription`, `openGraph`).
+- edge: `{!! SEO::generate() !!}` → meta tags; setTitle/Description 1:1.
+- refusal: paket tak terkompilasi (facade + service provider).
+- port: `kernel/packages/seo.mjs` — builder meta + OG/JSON-LD; tanpa D1.
+- test: oracle — tag HTML identik.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+### spatie/laravel-googletagmanager
+- verdict: **port** — `@gtag` directive → script tag + dataLayer; consent mode.
+- edge: kode JS snippet = Blade partial terkompilasi; GTM id dari config.
+- refusal: paket tak terkompilasi (blade directive vendor).
+- port: `kernel/packages/gtm.mjs` (atau compiled Blade partial) + config dump; tanpa D1.
+- test: oracle — script src + dataLayer identik.
+- free-tier: muat.
+- evidence: Packagist; README.
+
+### cviebrock/eloquent-sluggable
+- verdict: **substitute** — generasi slug sudah ada di `ports/packages/sluggable.mjs` (sluggable port sudah cover).
+- edge: slug from title + unique suffix — sama.
+- refusal: paket tak terkompilasi (trait model).
+- port: tak perlu; `ports/packages/sluggable.mjs` + event `saving` terkompilasi.
+- substitution: hook model → `sluggable` port. Disclosure: kehilangan konfigurasi trait lanjutan (translatable slug, incrementing).
+- free-tier: muat.
+- evidence: Packagist; README.
+
+**Prioritas: seotools** — menutup meta/OG paling dipakai.
 
 ---
 

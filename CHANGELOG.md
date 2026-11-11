@@ -1,5 +1,52 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
+## Unreleased
+
+### The package-port fleet expands to 50+ handlers
+
+The `ports/packages/` fleet grew from a handful of broadcast/mail ports to a set
+that covers the edge surface a real Laravel app reaches for once it needs
+notifications, auth, search, security headers or a headless package backend. Each
+port answers one route the build maps through `registry.json`, ships as a single
+`ports/packages/<slug>.mjs` file an operator copies into `LW_PORTS_DIR`, and reads
+its credentials from Worker secrets (never from the registry) — the route→secret
+table and the collision pairs live in `docs/PACKAGE-PORTS.md`.
+
+The new ports:
+
+- **Notifications** — `telegram-notification` (`POST /notify/telegram`),
+  `discord-notification` (`POST /notify/discord`), `expo-notification`
+  (`POST /notify/expo`), `fcm-notification` (`POST /notify/fcm`),
+  `webpush-notification` (`POST /notify/webpush` + `POST /webpush/subscribe`)
+  and `onesignal-notification` (`POST /notify/onesignal`). The FCM port signs its
+  OAuth JWT through `kernel/packages/fcm-oauth.mjs`, and the Web Push port builds
+  its `Content-Encoding: aes128gcm` payloads through `kernel/packages/
+  webpush-crypto.mjs`, so neither depends on a Node-only crypto primitive.
+- **Auth** — `jwt-auth` (`POST /auth/jwt/login`, `GET /auth/jwt/user`),
+  `firebase-php-jwt` (`POST /auth/firebase/verify`) and `auth0`
+  (`POST /auth/auth0/callback`).
+- **Headless package backends** — `ai-sdk` (`POST /ai/chat`), `mcp`
+  (`POST /mcp`), `pulse` (`GET /pulse` + `POST /pulse/record`), `bugsnag`
+  (`POST /bugsnag/notify`), `webhook-client` (`POST /webhooks/{name}`),
+  `webhook-server` (`POST /webhook-server/send`) and `site-search`
+  (`GET /site-search`).
+- **Response shaping and security** — `response-cache`, `csp`, `honeypot`
+  (`kernel/packages/response-cache.mjs`, `csp.mjs`, `honeypot.mjs`) plus the
+  `seotools`/`gtm` kernel packages (`seo.mjs`, `gtm.mjs`) that render meta tags
+  and the GTM snippet the way the vendor packages do.
+- **Image and navigation surface** — `glide` (`GET /img/{path}`) and the
+  `menu`/`navigation`/`html`/`options` kernel packages (`menu.mjs`,
+  `navigation.mjs`, `html.mjs`, `options.mjs`) that turn a Laravel menu or
+  navigation tree into the markup the compiled views expect.
+
+The **streaming runtime gap is closed too**: `kernel/packages/streaming-runtime.mjs`
+dispatches a route whose handler returns a `ReadableStream` body by piping the
+stream through the Workers response instead of buffering it, so a streaming
+response no longer falls through to the kernel's "unsupported body" path.
+
+The full 125-package verdict matrix — what is ported, what the framework already
+covers, and what stays out of scope — is in `docs/PACKAGES-RESEARCH.md`.
+
 ## v0.5.0 — the package-port fleet, a package-aware compiler, route() parity fixes, and the mail/build foundations (2026-11-10)
 
 ### `route()` answers an absolute URL for a non-GET name on a shared path
