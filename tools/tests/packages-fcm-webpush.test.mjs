@@ -16,7 +16,7 @@ import { webcrypto } from 'node:crypto';
 
 import { buildServiceAccountJwt, mintFcmAccessToken } from '../../kernel/packages/fcm-oauth.mjs';
 import fcmPort from '../../ports/packages/fcm-notification.mjs';
-import { encryptAes128Gcm, buildVapidHeader, vapidPublicKeyBase64url } from '../../kernel/packages/webpush-crypto.mjs';
+import { encryptAes128Gcm, buildVapidHeader, vapidPublicKeyBase64url, toRawSignature } from '../../kernel/packages/webpush-crypto.mjs';
 import webpushPort from '../../ports/packages/webpush-notification.mjs';
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
@@ -304,6 +304,68 @@ test('webpush: roundtrip with a string authSecret and Uint8 payload', async () =
 });
 
 // ---- webpush VAPID ---------------------------------------------------------
+
+// A raw r||s (IEEE P1363) P-256 signature, wrapped as the ASN.1 DER SEQUENCE
+// that older WebCrypto engines emitted — the inverse of what the helper does.
+function rawToDer(sig) {
+  const r = sig.slice(0, 32);
+  const s = sig.slice(32);
+  const padIfHighBit = (b) => (b[0] & 0x80 ? [0, ...b] : [...b]);
+  const rDer = padIfHighBit(r);
+  const sDer = padIfHighBit(s);
+  return new Uint8Array([
+    0x30, 2 + rDer.length + 2 + sDer.length, 0x02, rDer.length, ...rDer, 0x02, sDer.length, ...sDer,
+  ]);
+}
+
+test('webpush: a 64-byte raw signature starting with 0x30 is NOT read as ASN.1 DER', () => {
+  // 1 in 256 raw r||s signatures begin with 0x30 — the DER SEQUENCE tag. The
+  // old test was `der[0] === 0x30`, so those were parsed as DER and either threw
+  // 'bad ECDSA sig' (the port turns that into a 500) or, when the next bytes
+  // happened to look like DER integers, returned a garbage signature. This is
+  // the flake behind the red `ci` push run on main 2026-11-11 (1 failure in
+  // 2040 tests: packages-fcm-webpush.test.mjs "sends encrypted body …", 500).
+  const notDer = new Uint8Array(64).fill(0x11);
+  notDer[0] = 0x30;
+  notDer[2] = 0x99; // 0x30 + a non-INTEGER byte: the case that threw
+  assert.deepEqual(toRawSignature(notDer), notDer);
+
+  const derShaped = new Uint8Array(64).fill(0x22);
+  derShaped[0] = 0x30;
+  derShaped[1] = 0x3e;
+  derShaped[2] = 0x02;
+  derShaped[3] = 0x3c; // DER-shaped prefix, raw length: the case that silently mis-decoded
+  assert.deepEqual(toRawSignature(derShaped), derShaped);
+});
+
+test('webpush: a real DER signature converts to the r||s the platform signs with', async () => {
+  const kp = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const msg = enc.encode('vapid:https://fcm.googleapis.com');
+  const raw = new Uint8Array(await webcrypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, kp.privateKey, msg));
+  // Node's WebCrypto must be returning the raw form: if a platform ever returned
+  // DER, this assert is the signal, and `rawToDer` below stops describing reality.
+  assert.equal(raw.length, 64, 'expected the raw r||s signature form');
+
+  const back = toRawSignature(rawToDer(raw));
+  assert.deepEqual(back, raw, 'the DER round-trip must reproduce the signature exactly');
+  assert.equal(
+    await webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, kp.publicKey, back, msg),
+    true,
+  );
+
+  // A DER INTEGER carrying the 0x00 pad is 33 bytes and must still right-align
+  // to 32: `set(value, 32 - length)` with the PADDED length was -1 and threw
+  // RangeError. Deterministic here, because a real signature only pads r/s when
+  // their high bit happens to be set.
+  const rPad = new Uint8Array(32).fill(0x01); rPad[0] = 0xfe;
+  const sPad = new Uint8Array(32).fill(0x02); sPad[0] = 0x7f;
+  const derPad = new Uint8Array([0x30, 71, 0x02, 33, 0x00, ...rPad, 0x02, 32, ...sPad]);
+  assert.deepEqual(toRawSignature(derPad), new Uint8Array([...rPad, ...sPad]));
+
+  // A DER-shaped buffer that does not add up is refused, not decoded best-effort.
+  const bad = new Uint8Array([0x30, 0x2a, 0x02, 0x20, ...new Uint8Array(32), 0x02, 0x04, 1, 2, 3, 4, 0xff]);
+  assert.throws(() => toRawSignature(bad), /bad ECDSA sig/);
+});
 
 // Generate a VAPID keypair (ECDH P-256) and return the base64url private scalar.
 async function makeVapidKey() {
