@@ -2,6 +2,29 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### `/oauth/authorize` no longer trusts `user_id` from the query string
+
+`ports/packages/passport-oauth.mjs` took the resource owner straight from the request — `?user_id=…`, else the
+client's own owner. Nothing verified the caller, so an unauthenticated request minted an authorization code for any
+user id and, through a public (secret-less) client plus PKCE, exchanged it at `/oauth/token` for an RS256 access token
+whose `sub` was that user. Reproduced with the port's real default export (an in-memory D1 stub and a real RSA
+keypair): `302` + a code stored for `user_id=999`, then `200` with `sub: "999"`.
+
+The port now resolves the caller the way the platform already does — `ctx.user()`, the accessor the Worker hands every
+port (`kernel/http.mjs`), or an id a `middlewarePorts` guard wrote onto `ctx` — and answers `401 access_denied` with
+**no code stored** when there is none. `?user_id=` and the client-owner fallback are gone: Laravel's endpoint sits
+behind the `auth` middleware, and so does this one.
+
+Same file: a malformed `Authorization: Basic` header reached `atob()` outside the handlers' `try`, so `/oauth/token`
+and `/oauth/refresh` answered a **500** — attacker-triggerable — instead of `401 invalid_client`; the helper now fails
+closed.
+
+- Covered by `tools/tests/packages-passport.test.mjs` (20/20): no user → 401 with no code, `?user_id=999` does not
+  authorize, a guard that resolves `null` or throws → 401 (never a fallback), the code belongs to the guard user and
+  not the client's owner, an identity a `middlewarePorts` guard put on `ctx`, three cases driven through the kernel
+  router's own `dispatch()` (kernel Request whose accessors are methods + `ctxExtra.user`), and the malformed-Basic
+  variants.
+
 ### Middleware ports — a port that runs *around* a handler
 
 `registry.json` gains `middlewarePorts`: a per-route list of port slugs that run
