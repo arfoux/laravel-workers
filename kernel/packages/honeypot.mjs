@@ -103,10 +103,14 @@ function parseRenderTime(raw) {
 
 // Validate a submitted body against the honeypot. Returns { valid, reason }:
 //   { valid: true,  reason: null }
-//   { valid: false, reason: 'missing_name_field' }  — the name field wasn't posted
-//   { valid: false, reason: 'filled' }              — the name field has a value
-//   { valid: false, reason: 'missing_time_field' }  — the time field wasn't posted
+//   { valid: false, reason: 'filled' }              — the name field has a value (bot)
+//   { valid: false, reason: 'missing_time_field' }  — the time field wasn't posted (honest typo)
 //   { valid: false, reason: 'time' }                — submitted faster than minDeltaMs
+//
+// When the NAME field is absent: the upstream `ProtectAgainstSpam` does
+// `$request->has($name) ? … : ''` — the check is SKIPPED, not invalid. A POST
+// whose form was never honeypot-protected is left through; a bot that fills
+// every field still catches on the name field check.
 //
 // body        — the parsed POST body (plain object). Anything else is treated as empty.
 // minDeltaMs  — minimum elapsed ms between render and submit (default 1000).
@@ -118,17 +122,17 @@ export function validateHoneypot(body, minDeltaMs = 1000, opts = {}) {
   const timeField = opts.timeFieldName || DEFAULT_TIME_FIELD;
   const min = Number.isFinite(minDeltaMs) ? minDeltaMs : 1000;
 
-  // 1. The honeypot name field must be present (it is always rendered) and empty.
+  // 1. The honeypot name field — if present it must be empty (a bot that fills it is caught).
   const nameKey = Object.keys(data).find(
     (k) => k === '_hp_name' || k.startsWith(NAME_PREFIX)
   );
-  if (nameKey === undefined) {
-    return { valid: false, reason: 'missing_name_field' };
+  if (nameKey !== undefined) {
+    const nameVal = data[nameKey];
+    if (nameVal !== undefined && nameVal !== null && String(nameVal).trim() !== '') {
+      return { valid: false, reason: 'filled' };
+    }
   }
-  const nameVal = data[nameKey];
-  if (nameVal !== undefined && nameVal !== null && String(nameVal).trim() !== '') {
-    return { valid: false, reason: 'filled' };
-  }
+  // Name absent → upstream skips it. Proceed to time check.
 
   // 2. The render timestamp must be present and old enough.
   const ts = parseRenderTime(data[timeField]);
