@@ -44,6 +44,7 @@ NOT matched and fails the build.
 | `firebase-php-jwt` | `FIREBASE_PROJECT_ID`, optional `FIREBASE_JWKS_URL` |
 | `auth0` | `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_REDIRECT_URI` (optional `AUTH0_AUDIENCE`) |
 | `glide` | `CF_IMAGE_RESIZING_ZONE`, optional `GLIDE_ORIGIN` |
+| `localization` (middleware) | no secret — plain Wrangler vars `LOCALES`, `DEFAULT_LOCALE`, `HIDE_DEFAULT_LOCALE_IN_URL` |
 
 DB-backed ports create their tables through their exported `ensureSchema`, which `dist/schema.sql`
 folds in — apply the schema (`npx laravel-workers deploy` mode 2) before serving them.
@@ -72,6 +73,7 @@ on the resolved verb + path. All of these are already in `registry.example.json`
 | `firebase-php-jwt` | `POST /auth/firebase/verify` | Verifies a Firebase ID token against Google's JWKS (RS256), `kid`-matched. |
 | `auth0` | `POST /auth/auth0/callback` | Stops at the `authorization_code` token exchange; compose with `firebase-php-jwt` for offline `id_token` verify. |
 | `glide` | `GET /img/{path}` | Transform delegated to Cloudflare Image Resizing (`/cdn-cgi/image`) — no GD/Imagick. `w` is required (422 without it). |
+| `localization` | `GET /localization` | **Middleware port**, not a route port: declare it under `middlewarePorts`. Returns `null` (continues to the route handler) for a prefixed or unprefixed path, setting `ctx.locale` on the way; the only response it produces is the `HIDE_DEFAULT_LOCALE_IN_URL` 302. |
 
 The kernel-side helpers these ports lean on (`kernel/packages/`): `ai.mjs` (provider adapters +
 tool loop), `fcm-oauth.mjs` (service-account JWT → OAuth2 token), `webpush-crypto.mjs` (ECDH/HKDF/
@@ -94,6 +96,26 @@ fact, not a route conflict.
 
 Route-key uniqueness is enforced by JSON: a duplicate key silently keeps the last one, so a bad
 registry fails at request time, not build time — keep the pairs in this table apart.
+
+## Middleware ports — the run-around seam
+
+A registry slug normally **owns** a route: the router dispatches to it and its response is the
+answer. A **middleware port** runs *before* the route's own handler instead, on the same `ctx`:
+
+```json
+{ "middlewarePorts": { "/localization": ["localization"] } }
+```
+
+The list is ordered (several ports chain). Returning `null`/`undefined` **continues** to the next
+port, then the route handler; any state written onto `ctx` (e.g. `ctx.locale`) is visible there.
+Returning `{ status, headers, body }` **short-circuits** — the handler never runs. The route must
+still have a request-time handler of its own (a compiled controller or a `ports` entry); the build
+refuses a `middlewarePorts` route without one, because a snapshot/unhandled route is answered by
+the asset bundle and the port would never run.
+
+Today the fleet's one middleware port is `localization` (mcamara/laravel-localization's
+`LaravelLocalizationRedirectFilter`); it is the template for a response-cache or a URL-normalising
+port.
 
 ## The shape a handler answers
 

@@ -26,6 +26,9 @@ export function normalizeTable(routes) {
     const entry = { uri, name, methods, domain };
     if (r.bindings != null) entry.bindings = r.bindings;
     if (r.middleware != null) entry.middleware = r.middleware;
+    // registry.json → "middlewarePorts": the ports that run BEFORE this route's
+    // handler (a `null` return continues, a response short-circuits).
+    if (r.middlewarePorts != null) entry.middlewarePorts = r.middlewarePorts;
 
     // later registration wins for same uri+methods
     let replaced = false;
@@ -223,11 +226,7 @@ export async function dispatch(req, table, handlers, env, options = {}) {
   if (!m) return null;
 
   const key = routeKey(m.route);
-  let handler = null;
-  if (handlers) {
-    if (typeof handlers.get === 'function') handler = handlers.get(key);
-    else if (Object.prototype.hasOwnProperty.call(handlers, key)) handler = handlers[key];
-  }
+  const handler = resolveHandler(handlers, key);
   if (typeof handler !== 'function') return null;
 
   // `method` and `db` are additive and exist for the ROUTE PORTS (an
@@ -271,12 +270,27 @@ export async function dispatch(req, table, handlers, env, options = {}) {
       ctx.models[name] = instance;
     }
   }
-  const res = await handler(ctx, env);
-  // The body is a string (every rendered body), OR the raw bytes (a request
-  // body and the storage adapter's payload are Uint8Array, so a handler that
-  // answers one must be able to pass through), OR a ReadableStream (an SSE /
-  // streaming port). `new Response(body)` (the worker's toResponse) accepts
-  // all three; a Buffer/ArrayBuffer is rejected loudly.
+  const res = await runRoute(ctx, m.route, handler, handlers, env);
+  const headers = {};
+  if (res.headers && typeof res.headers === 'object') {
+    for (const k of Object.keys(res.headers)) headers[String(k).toLowerCase()] = res.headers[k];
+  }
+  return { status: res.status, headers, body: res.body };
+}
+
+/** The handler registered under `key` in a handlers map or plain object. */
+function resolveHandler(handlers, key) {
+  if (!handlers) return null;
+  if (typeof handlers.get === 'function') return handlers.get(key) ?? null;
+  return Object.prototype.hasOwnProperty.call(handlers, key) ? handlers[key] : null;
+}
+
+// The body is a string (every rendered body), OR the raw bytes (a request body
+// and the storage adapter's payload are Uint8Array, so a handler that answers
+// one must be able to pass through), OR a ReadableStream (an SSE / streaming
+// port). `new Response(body)` (the worker's toResponse) accepts all three; a
+// Buffer/ArrayBuffer is rejected loudly.
+function assertResponseShape(res) {
   if (
     !res ||
     typeof res.status !== 'number' ||
@@ -290,11 +304,43 @@ export async function dispatch(req, table, handlers, env, options = {}) {
   ) {
     throw new Error('handler returned invalid response shape');
   }
-  const headers = {};
-  if (res.headers && typeof res.headers === 'object') {
-    for (const k of Object.keys(res.headers)) headers[String(k).toLowerCase()] = res.headers[k];
+  return res;
+}
+
+/**
+ * Run the route's `middlewarePorts` (registry.json → "middlewarePorts") before
+ * its handler, then the handler itself.
+ *
+ * A middleware port is a route port that may DECLINE to answer: returning
+ * `null`/`undefined` continues the chain (so a URL-locale or response-cache port
+ * can set state on `ctx` and let the route's own handler render), while a
+ * response short-circuits it (a `302` redirect, a cache hit). The ports share
+ * ONE `ctx` with the handler, so `ctx.locale = 'es'` in a middleware port is
+ * visible to the compiled controller behind it.
+ */
+async function runRoute(ctx, route, handler, handlers, env) {
+  const middlewarePorts = (route && route.middlewarePorts) || [];
+  for (const slug of middlewarePorts) {
+    const port = resolveHandler(handlers, 'MW ' + slug);
+    if (typeof port !== 'function') {
+      const err = new Error('unknown middleware port: ' + String(slug));
+      err.status = 500;
+      throw err;
+    }
+    const portRes = await port(ctx, env);
+    // `null`/`undefined` = "not mine, continue" — anything else is the response.
+    if (portRes !== null && portRes !== undefined) return assertResponseShape(portRes);
   }
-  return { status: res.status, headers, body: res.body };
+  // A middleware port that resolved a locale (`ctx.locale` — the URL-locale
+  // middleware) makes it THIS request's `app.locale`, so `__()` / `app()->getLocale()`
+  // in the handler behind it translate in that locale. Laravel's App::setLocale()
+  // is per request: the handler gets a SHALLOW COPY with the key overridden, never
+  // the shared dump one isolate reuses for every request.
+  if (ctx.locale !== null && ctx.locale !== undefined && ctx.config && typeof ctx.config === 'object') {
+    const locale = String(ctx.locale);
+    if (ctx.config['app.locale'] !== locale) ctx.config = { ...ctx.config, 'app.locale': locale };
+  }
+  return assertResponseShape(await handler(ctx, env));
 }
 
 export default { normalizeTable, routeKey, match, allowedMethods, dispatch };

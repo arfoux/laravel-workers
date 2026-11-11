@@ -321,3 +321,89 @@ await assert.rejects(
     }),
   /invalid response shape/
 );
+
+// dispatch: middleware ports (registry.json → "middlewarePorts"). A port that
+// returns null/undefined CONTINUES the chain (so it can set state on the shared
+// ctx and let the route's own handler render); a response SHORT-CIRCUITS it.
+const mwTable = normalizeTable([
+  { uri: '/wrapped', name: 'wrapped', methods: ['GET'], domain: null, middlewarePorts: ['locale'] },
+  { uri: '/blocked', name: 'blocked', methods: ['GET'], domain: null, middlewarePorts: ['guard'] },
+  { uri: '/chained', name: 'chained', methods: ['GET'], domain: null, middlewarePorts: ['a', 'b'] },
+]);
+
+// 1. null continues, and the ctx state the port set reaches the handler.
+let handled = 0;
+const mwHandlers = {
+  'GET /wrapped': async (ctx) => {
+    handled += 1;
+    return { status: 200, headers: {}, body: `locale=${ctx.locale}` };
+  },
+  'MW locale': async (ctx) => {
+    ctx.locale = 'es';
+    return null; // not mine — continue to the route handler
+  },
+  'GET /blocked': async () => {
+    throw new Error('the handler must NOT run when a middleware port answers');
+  },
+  'MW guard': async () => ({ status: 302, headers: { location: '/login' }, body: '' }),
+  'GET /chained': async (ctx) => ({ status: 200, headers: {}, body: ctx.order.join(',') }),
+  'MW a': async (ctx) => {
+    ctx.order = ['a'];
+    return undefined;
+  },
+  'MW b': async (ctx) => {
+    ctx.order.push('b');
+    return null;
+  },
+};
+const wrapped = await dispatch({ method: 'GET', path: '/wrapped' }, mwTable, mwHandlers);
+assert.equal(wrapped.status, 200);
+assert.equal(wrapped.body, 'locale=es', 'the middleware port must run before the handler and share ctx');
+assert.equal(handled, 1, 'the handler runs exactly once');
+
+// 2. a middleware port that answers short-circuits the route handler.
+const blocked = await dispatch({ method: 'GET', path: '/blocked' }, mwTable, mwHandlers);
+assert.equal(blocked.status, 302);
+assert.equal(blocked.headers.location, '/login');
+
+// 3. several middleware ports run in the declared order on one ctx.
+const chained = await dispatch({ method: 'GET', path: '/chained' }, mwTable, mwHandlers);
+assert.equal(chained.body, 'a,b');
+
+// 4. a declared middleware port with no handler is a build bug, not a 404.
+await assert.rejects(
+  () => dispatch({ method: 'GET', path: '/wrapped' }, mwTable, { 'GET /wrapped': mwHandlers['GET /wrapped'] }),
+  /unknown middleware port: locale/
+);
+
+// 4b. `ctx.locale` a middleware port resolved becomes THIS request's
+// `app.locale`, on a copy (Laravel's App::setLocale is per request) — so the
+// compiled handler's __() translates in the URL's locale.
+const sharedConfig = { 'app.locale': 'en', 'app.name': 'x' };
+const localeRes = await dispatch(
+  { method: 'GET', path: '/wrapped' },
+  mwTable,
+  {
+    'MW locale': async (ctx) => {
+      ctx.locale = 'es';
+      return null;
+    },
+    'GET /wrapped': async (ctx) =>
+      ({ status: 200, headers: {}, body: `${ctx.config['app.locale']}/${ctx.config['app.name']}` }),
+  },
+  {},
+  { ctxExtra: { config: sharedConfig } }
+);
+assert.equal(localeRes.body, 'es/x', 'the resolved locale must override app.locale for the handler');
+assert.equal(sharedConfig['app.locale'], 'en', 'the shared config dump must NOT be mutated (one isolate, many requests)');
+
+// 5. a middleware port answering a bogus shape is refused like any handler.
+await assert.rejects(
+  () =>
+    dispatch({ method: 'GET', path: '/wrapped' }, mwTable, {
+      'MW locale': async () => ({ body: 'no status' }),
+      'GET /wrapped': mwHandlers['GET /wrapped'],
+    }),
+  /invalid response shape/
+);
+console.log('MIDDLEWARE PORT TESTS: PASS');

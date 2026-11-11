@@ -302,6 +302,27 @@ if (lwPortsDir && !existsSync(lwPortsDir))
 const autoSnapshot = registry.autoSnapshot !== false;
 const staticMap = Object.entries(registry.static || {});
 const portEntries = Object.entries(registry.ports || {});
+// registry.json → "middlewarePorts": { "<route>": ["<slug>", ...] }. A middleware
+// port answers from BOTH sides of the route — it runs before the route's own
+// handler and continues on `null` (a response short-circuits). That is how a
+// header/cookie/URL-locale port (or a response cache) wraps a compiled
+// controller the build already serves, without copying that controller into a
+// port just to answer one cross-cutting concern. The slugs share `ports/` with
+// route ports; the values are a list so ordering is explicit.
+const middlewarePortsMap = new Map();
+{
+  const raw = registry.middlewarePorts;
+  if (raw != null && (typeof raw !== 'object' || Array.isArray(raw))) {
+    fail('registry.json "middlewarePorts" must be an object mapping a route to a list of port slugs, e.g. { "/localization": ["localization"] }');
+  }
+  for (const [route, value] of Object.entries(raw || {})) {
+    const slugs = Array.isArray(value) ? value : [value];
+    if (!slugs.length || slugs.some((s) => typeof s !== 'string' || !/^[A-Za-z0-9._-]+$/.test(s))) {
+      fail(`registry.json "middlewarePorts" for ${route} must name one or more port slugs (letters, digits, . _ -)`);
+    }
+    middlewarePortsMap.set(route, slugs);
+  }
+}
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
 // registry.json → "config": ["needs"] — the app's own config groups the
@@ -1108,6 +1129,7 @@ const uncompiledExtraNonPost = [];
 const handled = new Set([
   ...staticMap.map(([r]) => r),
   ...portEntries.map(([r]) => r),
+  ...middlewarePortsMap.keys(),
   ...viewMap.map(([r]) => r),
   ...ignoreMap.map(([r]) => r),
 ]);
@@ -3580,14 +3602,15 @@ let portsSrc = null;
 for (const p of portsCandidates) if (existsSync(p)) { portsSrc = p; break; }
 if (!portsSrc) portsSrc = join(pkgDir, 'src/ports');
 if (portsSrc === lwPortsDir) console.log(`• ports: LW_PORTS_DIR -> ${portsSrc}`);
-const missingPortFiles = portEntries
-  .map(([route, name]) => [route, String(name)])
-  .filter(([, slug]) => !existsSync(join(portsSrc, slug + '.mjs')));
+const missingPortFiles = [
+  ...portEntries.map(([route, name]) => [route, String(name)]),
+  ...[...middlewarePortsMap.entries()].flatMap(([route, slugs]) => slugs.map((s) => [route, s])),
+].filter(([, slug]) => !existsSync(join(portsSrc, slug + '.mjs')));
 if (missingPortFiles.length)
   fail(
     'port file(s) missing in ' + portsSrc + ': ' +
       missingPortFiles.map(([route, slug]) => `${route} -> ${slug}.mjs`).join(', ') +
-      ' — create them, fix the "ports" mapping in registry.json, or point LW_PORTS_DIR at the right directory'
+      ' — create them, fix the "ports"/"middlewarePorts" mapping in registry.json, or point LW_PORTS_DIR at the right directory'
   );
 const missingGuardPorts = guardEntries.filter(([, slug]) => !existsSync(join(portsSrc, slug + '.mjs')));
 if (missingGuardPorts.length)
@@ -3716,6 +3739,33 @@ for (const v of verbControllers) {
   });
 }
 
+// registry.json → "middlewarePorts": annotate the route a port wraps, and refuse
+// a route that has NO request-time handler. A middleware port runs inside the
+// Worker, so on a `snapshot`/`unhandled` route it would never run — the asset
+// bundle (or a 404) answers the request before any JS. That is a silent
+// no-op exactly like the bug this seam exists to close, so the build stops.
+for (const [route, slugs] of middlewarePortsMap) {
+  if (ignoreMap.some(([r]) => r === route)) {
+    fail(
+      `registry.json declares ${route} in BOTH "middlewarePorts" and "ignore" — the middleware cannot wrap a route the edge does not serve.`
+    );
+  }
+  const entry = routeTable.find((e) => e.uri === route);
+  if (!entry) {
+    fail(
+      `registry.json "middlewarePorts" names ${route}, but the route table has no such route — the path must match route:list exactly.`
+    );
+  }
+  if (entry.kind === 'snapshot' || entry.kind === 'unhandled' || entry.kind === 'ignore') {
+    fail(
+      `registry.json "middlewarePorts" wraps ${route}, but that route has no request-time handler (kind '${entry.kind}').\n` +
+        '  A middleware port runs in the Worker, so the route needs a compiled controller or a "ports" handler behind it: ' +
+        'give it one, or drop the "middlewarePorts" entry.'
+    );
+  }
+  entry.middlewarePorts = slugs;
+}
+
 // ---------- 5a. middleware audit ----------
 // The app's own GLOBAL stack: anything the compiled kernel does not run is
 // written to `middleware.prevented` by config-dump and would 500 on every
@@ -3789,6 +3839,18 @@ for (const [key, meta] of metaFor) {
   if (meta.name) routeNames[meta.name] = key.slice(key.indexOf(' ') + 1);
 }
 
+// Middleware ports (registry.json → "middlewarePorts"): a route port that may
+// DECLINE to answer. Imported straight from dist/src/ports/<slug>.mjs (no
+// controller shim — they are not a route's own handler) and keyed "MW <slug>",
+// the key kernel/router.mjs dispatch() resolves by slug before the handler.
+const middlewarePortImports = [];
+const middlewarePortHandlers = [];
+for (const slug of [...new Set([...middlewarePortsMap.values()].flat())]) {
+  const idx = middlewarePortHandlers.length;
+  middlewarePortImports.push(`import mw${idx} from './ports/${slug}.mjs';`);
+  middlewarePortHandlers.push(`  ${JSON.stringify('MW ' + slug)}: mw${idx},`);
+}
+
 const handlersLines = controllerMap.flatMap(({ uri, methods, idx }) => {
   const m = methods && methods.length ? methods : ['GET'];
   // ONE KEY PER VERB: a route may declare GET+POST (Breeze's /login) and the
@@ -3828,12 +3890,14 @@ writeFileSync(
   [
     '// generated by build.mjs — do not edit',
     ...controllerImports,
+    ...middlewarePortImports,
     `export const builtAt = ${JSON.stringify(builtAt)};`,
     'export const routeTable = ' + JSON.stringify(routeTable, null, 2) + ';',
     'export const routeNames = ' + JSON.stringify(routeNames, null, 2) + ';',
     'export const handlers = {',
     ...handlersLines,
     ...redirectHandlersLines,
+    ...middlewarePortHandlers,
     '};',
     '',
   ].join('\n')
@@ -3896,6 +3960,7 @@ const unknown = [
   ...new Set([
     ...staticMap.map(([r]) => r),
     ...portEntries.map(([r]) => r),
+    ...middlewarePortsMap.keys(),
     ...viewMap.map(([r]) => r),
     ...ignoreMap.map(([r]) => r),
   ]),

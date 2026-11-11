@@ -2,6 +2,35 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Middleware ports — a port that runs *around* a handler
+
+`registry.json` gains `middlewarePorts`: a per-route list of port slugs that run
+**before** the route's own handler, on the same `ctx`. A port that returns
+`null`/`undefined` continues the chain (it can set state and let the handler
+render); anything else short-circuits it. This is the seam for the middleware the
+transpiler cannot compile — and the fix for `ports/packages/localization.mjs`,
+which could not be installed at all: the only documented slot (`ports`) makes it
+the route's *controller*, so its normal pass-through `null` reached the router's
+"invalid response shape" and answered **500** (observed in production on
+`lw-showcase`).
+
+- `build.mjs` parses the slot, annotates the route table entry and emits the
+  ports as `MW <slug>` handlers. A declared route with no request-time handler
+  behind it (a snapshot, an unhandled route) is refused: the asset bundle answers
+  it before the Worker, so the port would never run — a silent no-op.
+- `kernel/router.mjs` runs the chain, then — the part that makes the feature real
+  — a resolved `ctx.locale` becomes **that request's** `app.locale` (a shallow
+  copy of the config dump, never the shared object an isolate reuses), so a
+  compiled controller behind the middleware translates `__()`/`app()->getLocale()`
+  in the URL's locale.
+- Showcase wiring: `GET /localization` (200, default locale), `GET
+  /es/localization` (200, `locale=es`, `app_locale=es`) and `GET
+  /en/localization` (302 → `/localization` with `HIDE_DEFAULT_LOCALE_IN_URL`).
+- Covered by `kernel/tests/router.test.mjs` (continue / short-circuit / declared
+  order / unknown slug / per-request `app.locale` on a copy) and
+  `tools/tests/packages-wiring.test.mjs` (the built artifact end-to-end, and the
+  build refusal above).
+
 ### The package-port fleet expands to 50+ handlers
 
 The `ports/packages/` fleet grew from a handful of broadcast/mail ports to a set

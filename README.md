@@ -637,6 +637,30 @@ and `reverb`). `tools/tests/packages-wiring.test.mjs` builds a real app with a
 subset wired and drives those routes on the router's own `ctx` — the guard against
 a port that only passes its unit test.
 
+#### A middleware port (runs around a handler)
+
+A **middleware port** is a route port that runs BEFORE the route's own handler
+instead of replacing it — the seam for a cross-cutting concern the transpiler
+cannot compile (a URL-locale redirect, a response cache). Declare it under
+`middlewarePorts`:
+
+```json
+{ "middlewarePorts": { "/localization": ["localization"] } }
+```
+
+The value is a **list of slugs** (ordering is explicit), resolved the same way
+`ports` slugs are. Each runs in order on the SAME `ctx` the handler receives, so
+state a port sets (`ctx.locale = 'es'`) is visible to the compiled controller
+behind it. A port that returns `null`/`undefined` **continues** the chain; a
+response (`{ status, headers, body }`) **short-circuits** it — the `localization`
+port's `302` fires before the route handler ever runs, and a response-cache port
+answers a cache hit the same way.
+
+The route still needs a request-time handler of its own (a compiled controller or
+a `ports` entry). `--strict` refuses a `middlewarePorts` route with none: a port
+declared for a snapshot or unhandled route would never run (the asset bundle
+answers first), which is the silent no-op the seam exists to erase.
+
 #### The fleet, by category
 
 | Category | Ports (`ports/packages/*.mjs`) |
