@@ -70,6 +70,7 @@ Route::post('/user/confirm-password', fn () => '')->name('password.confirm');
 Route::get('/user/confirm-password/status', fn () => '')->name('password.confirmation');
 Route::post('/email/verification-notification', fn () => '')->name('verification.send');
 Route::get('/email/verify/{id}/{hash}', fn () => '')->name('verification.verify');
+Route::get('/wrapped', fn () => '')->name('wrapped');
 `;
 
 const PORTS = {
@@ -93,8 +94,11 @@ const PORTS = {
   '/user/confirm-password/status': 'fortify-confirmation',
   '/email/verification-notification': 'fortify-confirmation',
   '/email/verify/{id}/{hash}': 'fortify-confirmation',
+  '/wrapped': 'wrapped-port',
 };
-const SLUGS = [...new Set(Object.values(PORTS))];
+// Fleet slugs copied from ports/packages — `wrapped-port` is the app-local
+// handler this test writes itself, so it is not copied.
+const SLUGS = [...new Set([...Object.values(PORTS).filter((s) => s !== 'wrapped-port'), 'localization'])];
 
 const SKIP_DIRS = new Set(['vendor', 'node_modules', 'dist', '.cache', '.git']);
 
@@ -112,12 +116,27 @@ function makeApp() {
   });
   symlinkSync(path.join(APP_ROOT, 'vendor'), path.join(dir, 'vendor'), process.platform === 'win32' ? 'junction' : 'dir');
   writeFileSync(path.join(dir, 'routes', 'web.php'), ROUTES);
-  writeFileSync(path.join(dir, 'registry.json'), JSON.stringify({ autoSnapshot: false, ports: PORTS }, null, 2));
+  writeFileSync(
+    path.join(dir, 'registry.json'),
+    JSON.stringify({ autoSnapshot: false, ports: PORTS, middlewarePorts: { '/wrapped': ['localization'] } }, null, 2)
+  );
   // The fleet ports, flat under the app's own ports dir, so LW_PORTS_DIR=ports
   // makes `<slug>.mjs` resolve and the ports' `../../kernel/packages/*` imports
   // resolve inside dist/ (the build copies kernel/ to dist/kernel).
   mkdirSync(path.join(dir, 'ports'), { recursive: true });
   for (const slug of SLUGS) cpSync(path.join(PORTS_DIR, slug + '.mjs'), path.join(dir, 'ports', slug + '.mjs'));
+  // A minimal route port that the `localization` MIDDLEWARE port wraps: the
+  // middleware sets ctx.locale and continues; this handler reports it.
+  writeFileSync(
+    path.join(dir, 'ports', 'wrapped-port.mjs'),
+    [
+      "export default async function handle(ctx) {",
+      "  const config = ctx.config && typeof ctx.config === 'object' ? ctx.config : {};",
+      "  return { status: 200, headers: { 'content-type': 'text/plain' }, body: 'locale=' + String(ctx.locale || '') + ' app=' + String(config['app.locale'] || '') };",
+      "}",
+      '',
+    ].join('\n')
+  );
   return dir;
 }
 
@@ -178,6 +197,13 @@ class FakeD1 {
       first: async () => null,
       run: async () => ({ success: true, meta: { changes: 0 } }),
     };
+  }
+  // The session/cache stores drive `batch`/`exec` through the worker entry.
+  async batch() {
+    return [];
+  }
+  async exec() {
+    return { count: 0, duration: 0 };
   }
 }
 
@@ -247,4 +273,56 @@ test('the emitted ports answer on the router ctx (not a unit-test ctx)', { skip:
     assert.equal(res.status, status, `${method} ${route} answered ${res.status}:\n${res.body}`);
     assert.match(String(res.body), body, `${method} ${route} answered the wrong handler:\n${res.body}`);
   }
+});
+
+// registry.json → "middlewarePorts": the port runs BEFORE the route's handler
+// through the REAL emitted wiring (dist/src/routes.generated.mjs + dist/kernel/
+// router.mjs), not a hand-built table — so a build that drops the middlewarePorts
+// annotation or the "MW <slug>" handler key fails here, not in production.
+test('a middleware port wraps the route handler in the built artifact', { skip: noApp }, async () => {
+  const { status, dir } = build();
+  assert.equal(status, 0, 'the build must succeed before the artifacts can be read');
+  const { routeTable, handlers } = await import(
+    pathToFileURL(path.join(dir, 'dist', 'src', 'routes.generated.mjs')).href
+  );
+  const { dispatch } = await import(pathToFileURL(path.join(dir, 'dist', 'kernel', 'router.mjs')).href);
+
+  const entry = routeTable.find((r) => r.uri === '/wrapped');
+  assert.ok(entry, 'the built route table must carry /wrapped');
+  assert.deepEqual(entry.middlewarePorts, ['localization'], 'the middlewarePorts annotation was dropped');
+  assert.equal(typeof handlers['MW localization'], 'function', 'the "MW <slug>" handler key is missing');
+
+  const env = { DB: new FakeD1(), APP_KEY: 'x'.repeat(32) };
+  const res = await dispatch({ method: 'GET', path: '/wrapped' }, routeTable, handlers, env, {
+    db: new FakeD1(),
+    ctxExtra: { config: { 'app.locale': 'en' } },
+  });
+  assert.equal(res.status, 200, `the wrapped route must answer 200:\n${JSON.stringify(res)}`);
+  // `localization` sets ctx.locale for a path with no locale prefix and returns
+  // null; the route handler behind it must see the value on the SAME ctx.
+  assert.equal(res.body, 'locale=en app=en', 'the middleware port state did not reach the handler');
+});
+
+// The fail-loud contract: a middleware port runs INSIDE the Worker, so a route
+// with no request-time handler (a snapshot / an unhandled route) would answer
+// from the asset bundle and the port would never run — the exact silent no-op
+// this seam exists to close. The build must refuse it, not ship it.
+test('a middleware port on a route with no request-time handler fails the build', { skip: noApp }, () => {
+  const dir = makeApp();
+  // The same route, but with NO `ports` handler behind it: the closure cannot
+  // compile and autoSnapshot is off, so the route resolves to 'unhandled'.
+  writeFileSync(
+    path.join(dir, 'registry.json'),
+    JSON.stringify({ autoSnapshot: false, ports: {}, middlewarePorts: { '/wrapped': ['localization'] } }, null, 2)
+  );
+  const res = spawnSync(process.execPath, [BUILD, '--strict'], {
+    cwd: dir,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, LW_NO_BUILD_CACHE: '1', LW_PORTS_DIR: 'ports', PHP_BIN: PHP },
+  });
+  rmSync(dir, { recursive: true, force: true });
+  const log = `${res.stdout || ''}${res.stderr || ''}`;
+  assert.notEqual(res.status, 0, `the build must fail:\n${log}`);
+  assert.match(log, /no request-time handler/, `the refusal must name the reason:\n${log}`);
 });
