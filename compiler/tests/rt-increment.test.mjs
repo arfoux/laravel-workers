@@ -7,11 +7,15 @@
 // (a ReferenceError at request time), and the increment on a string answered
 // NaN where PHP bumps the last byte.
 //
-// The expectations come from PHP 8.3 itself.
+// The expectations come from PHP 8.3 itself — and the two that used to be
+// asserted against the emitted TEXT (audit #894) now RUN the snippet: a
+// `break __sw` in the output said nothing about the loop's output, and
+// `/rt\.inc\(/` said nothing about the value it answered.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { emitController } from '../src/controller.mjs';
 import { buildRt } from '../runtime/rt-from-context.mjs';
+import { runPhpSnippet } from './run-php-snippet.mjs';
 
 function compile(body) {
   const src =
@@ -24,21 +28,21 @@ function compile(body) {
 test('rt-increment: a continue inside a switch leaves the switch (PHP 8: a warning, a break)', () => {
   // PHP: foreach ([1,2] as $x) { switch ($x) { case 1: continue; default: echo 'D'; }
   // echo 'K'; } => KDK - the continue leaves the switch, the loop continues.
-  const res = compile(
-    '        foreach ([1, 2] as $x) {\n' +
-      '            switch ($x) {\n' +
-      '                case 1:\n' +
-      '                    continue;\n' +
-      '                default:\n' +
-      '                    $out = $out . "D";\n' +
-      '            }\n' +
-      '            $out = $out . "K";\n' +
-      '        }'
+  const out = runPhpSnippet(
+    '<?php\n' +
+      '$out = "";\n' +
+      'foreach ([1, 2] as $x) {\n' +
+      '    switch ($x) {\n' +
+      '        case 1:\n' +
+      '            continue;\n' +
+      '        default:\n' +
+      '            $out = $out . "D";\n' +
+      '    }\n' +
+      '    $out = $out . "K";\n' +
+      '}\n' +
+      'echo $out;'
   );
-  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
-  // The continue becomes a break of the switch (not a bare JS continue).
-  assert.doesNotMatch(res.code, /^\s*continue;/m);
-  assert.match(res.code, /break __sw\d+;/);
+  assert.equal(out, 'KDK');
 });
 
 test('rt-increment: an increment on a property fails loud (a ReferenceError at request time)', () => {
@@ -69,8 +73,7 @@ test('rt-increment: the increment follows PHP (a number, a string, a bool)', () 
   assert.equal(rt.dec(2), 1);
 });
 
-test('rt-increment: the statement form uses the PHP increment', () => {
-  const res = compile('        $s = "a";\n        $s++;');
-  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
-  assert.match(res.code, /rt\.inc\(/);
+test('rt-increment: a statement `$s++` answers PHP\'s bump (a = "b")', () => {
+  const out = runPhpSnippet('<?php\n$s = "a";\n$s++;\necho $s;');
+  assert.equal(out, 'b');
 });
