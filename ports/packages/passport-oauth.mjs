@@ -16,6 +16,15 @@
 //   • PKCE S256     = challenge == base64url(sha256(code_verifier)), RFC 7636
 //   • /oauth/jwks   = public half exported as a JWK (RFC 7517), offline verify
 //
+// Identity (who the code is issued FOR): in Laravel the authorize endpoint sits
+// behind the `auth` middleware, so the resource owner comes from the SESSION —
+// never from the request. Same here: `resolveUserId()` reads the platform's own
+// guard (`ctx.user()`, kernel/http.mjs) or an id a `middlewarePorts` guard wrote
+// onto `ctx` (kernel/router.mjs). No identity → 401 `access_denied`, no code
+// stored. `?user_id=` is deliberately NOT a source: an authorization request is
+// client-supplied, so honouring it let any caller mint a code — and then a
+// token — for any user.
+//
 // Keys never live in code — env secrets:
 //   PASSPORT_PRIVATE_KEY (PKCS#8 PEM, "-----BEGIN PRIVATE KEY-----")
 //   PASSPORT_PUBLIC_KEY  (SPKI PEM,   "-----BEGIN PUBLIC KEY------")
@@ -111,7 +120,15 @@ function basicClient(ctx) {
   const h = (ctx.request && ctx.request.headers && ctx.request.headers.get('authorization')) || '';
   const m = /^Basic\s+(.+)$/i.exec(h.trim());
   if (!m) return {};
-  const raw = atob(m[1]);
+  let raw;
+  try {
+    raw = atob(m[1]);
+  } catch {
+    // Not base64: no client credentials. `authenticateClient` then answers 401 -
+    // a malformed header must not escape this helper as a 500 (it is called
+    // OUTSIDE the token/refresh handlers' try/catch).
+    return {};
+  }
   const i = raw.indexOf(':');
   return i === -1 ? {} : { id: raw.slice(0, i), secret: raw.slice(i + 1) };
 }
@@ -130,6 +147,34 @@ async function authenticateClient(env, clientId, clientSecret) {
     if (!clientSecret || !timingSafeEqual(String(client.secret), String(clientSecret))) return null;
   }
   return client;
+}
+
+// --- caller identity ---------------------------------------------------------
+// Who the authorization code belongs to. Like Laravel - where this endpoint sits
+// behind the `auth` middleware - the resource owner comes from the platform's own
+// guard, never from the request. Sources, in order:
+//   1. `ctx.user()` — the accessor the worker hands every port
+//      (kernel/http.mjs: `user: () => auth.guard().user()`); async, so awaited.
+//   2. `ctx.user_id` / `ctx.user.id` — an identity a `middlewarePorts` guard wrote
+//      onto ctx before this handler ran (kernel/router.mjs).
+// No identity => 401 `access_denied`, no code stored. `?user_id=` is deliberately
+// NOT a source: an authorization request is client-supplied, so trusting it let
+// any caller mint a code - and then a token - for any user id.
+async function resolveUserId(ctx) {
+  if (ctx.user_id != null && ctx.user_id !== '') {
+    const injected = Number(ctx.user_id);
+    if (Number.isFinite(injected)) return injected;
+  }
+  try {
+    const user = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
+    if (user && user.id != null) {
+      const id = Number(user.id);
+      if (Number.isFinite(id)) return id;
+    }
+  } catch {
+    // No guard / no session on this route: the request is simply unauthenticated.
+  }
+  return null;
 }
 
 async function issueTokens(env, { userId, clientId, scopes, privatePem, pub, kid, ttlSeconds = 3600, refreshTtlSeconds = 60 * 60 * 24 * 14 }) {
@@ -194,10 +239,14 @@ export async function handleAuthorize(ctx, env) {
     return json(400, { error: 'invalid_request', message: 'redirect_uri is not registered for this client.' });
   }
 
-  // The resource-owner id rides in `user_id` (the login step ahead of this
-  // route); fall back to the client's owner for a first-party client.
-  const userId = q.user_id != null ? Number(q.user_id) : (client.user_id != null ? Number(client.user_id) : null);
-  if (userId == null) return json(401, { error: 'invalid_request', message: 'No authenticated user for the authorization.' });
+  // Who is authorizing: the platform's own guard (`ctx.user()`), or an identity a
+  // middleware port wrote onto ctx. NOT `user_id` from the query string - an
+  // authorization request is client-supplied, so trusting it let any caller mint
+  // a code, and then a token, for any user id.
+  const userId = await resolveUserId(ctx);
+  if (userId == null) {
+    return json(401, { error: 'access_denied', message: 'No authenticated user for the authorization.' });
+  }
 
   if (challenge && method !== 'S256') {
     return json(400, { error: 'invalid_request', message: 'Only code_challenge_method=S256 is supported.' });
