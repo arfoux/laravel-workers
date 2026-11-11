@@ -54,7 +54,11 @@ test('renderHoneypot: emits a hidden name input and a _hp_time hidden input', ()
 
 test('renderHoneypot: defaults the name field to a generated unique name', () => {
   const html = renderHoneypot({ now: 1700000000000 });
-  assert.match(html, /name="_hp_name_[0-9a-z]+"/);
+  // The generator's contract: base36 render time, plus a `.<seq>` counter when
+  // two calls land in the same millisecond (kernel/packages/honeypot.mjs). The
+  // counter is part of the name, so the pattern must allow it — otherwise this
+  // passes or fails on whether the test runner crossed a millisecond boundary.
+  assert.match(html, /name="_hp_name_[0-9a-z]+(\.[0-9a-z]+)?"/);
 });
 
 // ---- validateHoneypot: valid ----------------------------------------------
