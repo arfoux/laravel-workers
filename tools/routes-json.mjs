@@ -68,6 +68,54 @@ export function routeToPatterns(uri) {
   return [...new Set(out)];
 }
 
+/**
+ * Collapse include patterns that share a first path segment into one
+ * `/segment/*` rule until the include+exclude total fits `cap`. Cloudflare
+ * routes a `/segment/*` include to the Worker, whose own router still picks the
+ * exact handler by path — so collapsing only widens WHICH requests reach the
+ * Worker, never which handler answers them. It is cap-aware: it fires only when
+ * the flat list exceeds the limit (a fleet of package ports on one app blows
+ * past Cloudflare's 100 combined rules), and it collapses the largest groups
+ * first so a small app keeps its exact per-path rules.
+ *
+ * Root (`/`) and already-wildcarded top segments are left alone.
+ */
+function collapseIncludesToCap(includeList, cap) {
+  let rules = [...includeList];
+  const collapseOnce = (list) => {
+    // Group literal-first-segment patterns by that segment.
+    const groups = new Map();
+    for (const rule of list) {
+      const seg = rule.split('/')[1];
+      if (!seg || seg === '*') continue; // root or top-level wildcard: skip
+      if (!groups.has(seg)) groups.set(seg, []);
+      groups.get(seg).push(rule);
+    }
+    // Pick the collapsible group (>=2 rules) with the biggest reduction.
+    let bestSeg = null;
+    let bestSaving = 1; // need to save at least 1 rule to bother
+    for (const [seg, members] of groups) {
+      const saving = members.length - 1;
+      if (saving > bestSaving) {
+        bestSaving = saving;
+        bestSeg = seg;
+      }
+    }
+    if (!bestSeg) return null;
+    const dropped = new Set(groups.get(bestSeg));
+    const next = list.filter((r) => !dropped.has(r));
+    next.push('/' + bestSeg + '/*');
+    return [...new Set(next)].sort();
+  };
+  let guard = 0;
+  while (rules.length > cap && guard++ < 500) {
+    const next = collapseOnce(rules);
+    if (!next) break; // nothing left to collapse
+    rules = next;
+  }
+  return rules;
+}
+
 export function buildRoutesJson(routeTable, opts = {}) {
   const publicDirs = opts.publicDirs || [];
   const extraInclude = opts.extraInclude || [];
@@ -81,12 +129,28 @@ export function buildRoutesJson(routeTable, opts = {}) {
     if (!SERVED.has(entry.kind)) continue;
     for (const p of routeToPatterns(entry.uri)) include.add(p);
   }
-  const includeList = [...include].sort();
+  let includeList = [...include].sort();
   const excludeList = publicDirs
     .map((d) => '/' + String(d).replace(/^\/+|\/+$/g, '') + '/*')
     .sort();
   // Cloudflare reads ONE cap for the two lists together: checking them apart let
   // a 120-rule file through, and Cloudflare then ignored the file in silence.
+  // Over the cap, merge sibling patterns under a common first segment into one
+  // `/segment/*` rule (the Worker's router still answers each exact path) rather
+  // than failing the build — a fleet of package ports on one app legitimately
+  // needs more paths than Cloudflare's flat 100-rule `_routes.json` allows.
+  const cap = MAX_RULES - excludeList.length;
+  if (includeList.length > cap) {
+    const merged = collapseIncludesToCap(includeList, cap);
+    if (merged.length !== includeList.length) {
+      console.log(
+        `  _routes.json: ${includeList.length} include patterns exceed Cloudflare's ` +
+          `${MAX_RULES}-rule combined cap -> merged sibling prefixes down to ${merged.length} ` +
+          `(Worker still answers each exact path)`
+      );
+    }
+    includeList = merged;
+  }
   const combined = includeList.length + excludeList.length;
   if (combined > MAX_RULES) {
     throw new Error(

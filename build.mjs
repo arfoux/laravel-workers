@@ -4054,8 +4054,50 @@ if (strict && blocked) {
 // to the dispatching Controller - `GET /jobs` in lw-showcase. When it does, the
 // queue cause below is set DECLARED (it shows in the verdict and the route
 // ships) instead of BLOCK.
+// Cron triggers the operator declared DIRECTLY in wrangler.jsonc/toml
+// (`triggers.crons`), as opposed to the ones the build derives from the app's
+// own schedule. A deployed Worker drains the D1 `lw_jobs` table from whichever
+// trigger fires, so a push is only a silent no-op when NEITHER source has a
+// trigger. lw-showcase, for one, registers no schedule on purpose and relies on
+// its wrangler cron (`*/5 * * * *`) to drain — the schedule-only check below
+// would refuse that push even though the deployed trigger runs it.
+function wranglerCronTriggers(appRoot) {
+  const jsonc = join(appRoot, 'wrangler.jsonc');
+  if (existsSync(jsonc)) {
+    try {
+      const cfg = jsoncValue(parseJsonc(readFileSync(jsonc, 'utf8')));
+      const crons = cfg && cfg.triggers && cfg.triggers.crons;
+      if (Array.isArray(crons)) return crons.filter(Boolean).map(String);
+    } catch {
+      /* an unparseable wrangler.jsonc is not a trigger we can rely on */
+    }
+  }
+  const toml = join(appRoot, 'wrangler.toml');
+  if (existsSync(toml)) {
+    try {
+      const text = readFileSync(toml, 'utf8');
+      // `[triggers]` table -> the `crons = [ ... ]` array on the following lines.
+      const m = /\[triggers\]([\s\S]*?)(?:\n\[|$)/.exec(text);
+      const crons = m && /crons\s*=\s*\[([^\]]*)\]/.exec(m[1]);
+      if (crons) {
+        return crons[1]
+          .split(',')
+          .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+          .filter(Boolean);
+      }
+    } catch {
+      /* an unreadable wrangler.toml is not a trigger we can rely on */
+    }
+  }
+  return [];
+}
+const deployedCronTriggers = wranglerCronTriggers(appDir);
 const queueCronSecret = !!process.env.LW_CRON_SECRET;
-if (queuePushes.length && !(cronTriggers && cronTriggers.length)) {
+if (
+  queuePushes.length &&
+  !(cronTriggers && cronTriggers.length) &&
+  !deployedCronTriggers.length
+) {
   const queuePaths = [
     { tier: 'free', what: 'expose the HTTP cron face: set LW_CRON_SECRET and call `POST /__lw/cron` with `X-LW-Cron` - it runs the schedule AND drains lw_jobs (the same drain the deployed trigger runs)' },
     { tier: 'free', what: 'add `[triggers] crons = ["*/1 * * * *"]` to wrangler.toml - the compiled rung writes the job to the D1 lw_jobs table and the cron trigger drains it (free accounts get 5 triggers)' },
