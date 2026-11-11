@@ -627,18 +627,96 @@ import must not rely on the path-segment form; `--scaffold` writes a `501` stub
 for every route that needs a port.
 
 The package ships **reference ports** for the popular packages under
-`ports/packages/*.mjs` (Sanctum, Socialite, Passport's OAuth routes, Fortify 2FA,
-spatie/sitemap, settings, activitylog, sluggable, data, scout, model-states,
-translatable, query-builder, tags, enum, Cashier/Stripe/Paddle/LemonSqueezy
-webhooks, sitemap, Excel export, mail transports, Pusher/Reverb...). Copy the ones
-you need into your app's ports dir and map their routes; each exports `ensureSchema`
-so `dist/schema.sql` can create its D1 tables. [`registry.example.json`](registry.example.json)
-maps the whole fleet (30 slugs → 61 route paths) and
-[`docs/PACKAGE-PORTS.md`](docs/PACKAGE-PORTS.md) lists the secrets each handler reads
-and the one route collision (`/broadcasting/auth`, answered by both `pusher` and
-`reverb`). `tools/tests/packages-wiring.test.mjs` builds a real app with a subset
-wired and drives those routes on the router's own `ctx` — the guard against a port
-that only passes its unit test.
+`ports/packages/*.mjs`. Copy the ones you need into your app's ports dir and map
+their routes; each DB-backed port exports `ensureSchema` so `dist/schema.sql` can
+create its D1 tables. [`registry.example.json`](registry.example.json) maps the
+whole fleet — **47 route-port slugs → 81 route paths** — and
+[`docs/PACKAGE-PORTS.md`](docs/PACKAGE-PORTS.md) lists the secrets each handler
+reads and the route collisions (`/broadcasting/auth`, answered by both `pusher`
+and `reverb`). `tools/tests/packages-wiring.test.mjs` builds a real app with a
+subset wired and drives those routes on the router's own `ctx` — the guard against
+a port that only passes its unit test.
+
+#### The fleet, by category
+
+| Category | Ports (`ports/packages/*.mjs`) |
+|---|---|
+| **Auth & identity** | `sanctum`, `sanctum-spa-cookie`, `passport-oauth`, `fortify-confirmation`, `fortify-two-factor`, `laravel-socialite-redirect`, `laravel-socialite-callback`, `jwt-auth` (`/auth/jwt/login`, `/auth/jwt/user`), `firebase-php-jwt` (`/auth/firebase/verify`), `auth0` (`/auth/auth0/callback`) |
+| **spatie** | `spatie-sitemap`, `spatie-settings`, `spatie-data`, `spatie-query-builder`, `spatie-translatable`, `spatie-enum`, `spatie-model-states`, `sluggable`, `tags`, `permission`, `activitylog` |
+| **Search** | `scout-meilisearch`, `scout-algolia`, `site-search` (`GET /site-search`) |
+| **Billing webhooks** | `cashier-stripe`, `cashier-paddle`, `lemonsqueezy` |
+| **Realtime** | `pusher`, `reverb` |
+| **Notifications** | `mailgun-mail`, `postmark-mail`, `slack-notification`, `twilio-sms`, `telegram-notification`, `discord-notification`, `expo-notification`, `fcm-notification`, `webpush-notification`, `onesignal-notification` |
+| **AI & agents** | `ai-sdk` (`POST /ai/chat` — the `laravel/ai` Prism chat/tool-loop path), `mcp` (`POST /mcp` — Model Context Protocol server) |
+| **Observability & ops** | `pulse` (`GET /pulse` dashboard + `POST /pulse/record`), `bugsnag` (`POST /bugsnag/notify`), `webhook-client` (`POST /webhooks/{name}`), `webhook-server` (`POST /webhook-server/send`) |
+| **Media & export** | `glide` (`GET /img/{path}`), `maatwebsite-excel` |
+| **Kernel-level (wired by the build, not the registry)** | `csp` (CSP headers), `honeypot` (bot trap), `response-cache`, `menu`, `navigation`, `html`, `options`, `seo`, `gtm`, `fcm-oauth`, `webpush-crypto`, `streaming-runtime` |
+
+Beyond the route ports above, `kernel/packages/*.mjs` carries the shared building
+blocks the fleet composes (`port-ctx`, `notify-http`, `ai`, `oauth`, `socialite`,
+`broadcast`, `token`, `totp`, `signedurl`, `webhook`, `validate`, …).
+
+#### Three ports in practice
+
+**Telegram notification** — `POST /notify/telegram`, a direct transport swap of
+`laravel-notification-channels/telegram`'s Guzzle call to the Bot API. Secret:
+`TELEGRAM_BOT_TOKEN`.
+
+```js
+// registry.json
+{ "ports": { "/notify/telegram": "telegram-notification" } }
+
+// the client POSTs the generic notification shape; `to` is the target chat_id
+const res = await fetch(`${worker}/notify/telegram`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ to: 123456789, text: 'Deploy finished', parse_mode: 'Markdown' }),
+});
+// → Telegram's own {"ok":true,...} envelope, mapped 1:1 to {status,headers,body}
+```
+
+**AI chat** — `POST /ai/chat`, the non-streaming `generate()`/`chat()` path of
+`laravel/ai` (the Prism SDK) including the tool-call loop. The provider key is
+chosen per model (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` /
+`GROQ_API_KEY`); the conversation is persisted best-effort to D1. Streaming (SSE)
+is **not** ported — that is the recorded runtime gap.
+
+```js
+// registry.json
+{ "ports": { "/ai/chat": "ai-sdk" } }
+
+const res = await fetch(`${worker}/ai/chat`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: 'Summarise this changelog…' }],
+    tools: [{ name: 'search_docs', description: '…', parameters: { /* JSON schema */ } }],
+  }),
+});
+// → the completion; tool_calls are dispatched to the compiled tool classes and
+//   fed back until the model finalises
+```
+
+**Pulse** — `GET /pulse` renders the dashboard summary, `POST /pulse/record`
+records one entry, both over the D1 `pulse_entries`/`pulse_aggregates` tables the
+port's `ensureSchema` creates.
+
+```js
+// registry.json
+{ "ports": { "/pulse": "pulse", "/pulse/record": "pulse" } }
+
+// record (a recorder, or your own middleware):
+await fetch(`${worker}/pulse/record`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ type: 'request', path: '/posts', status: 200, duration_ms: 12 }),
+});                                        // → 201 { entry: { id, ... } }
+
+// dashboard:
+const dash = await (await fetch(`${worker}/pulse?range=60`)).json();
+// → { requests_count, errors_count, avg_duration, top_routes, per_minute }
+```
 
 ---
 

@@ -62,6 +62,26 @@
     "/notify/mailgun": "mailgun-mail",
     "/notify/postmark": "postmark-mail",
     "/notify/slack": "slack-notification",
-    "/notify/twilio": "twilio-sms"
+    "/notify/twilio": "twilio-sms",
+    "/ai/chat": "ai-sdk",
+    "/mcp": "mcp",
+    "/pulse": "pulse",
+    "/pulse/record": "pulse",
+    "/bugsnag/notify": "bugsnag",
+    "/webhooks/{name}": "webhook-client",
+    "/webhook-server/send": "webhook-server",
+    "/site-search": "site-search",
+    "/notify/telegram": "telegram-notification",
+    "/notify/discord": "discord-notification",
+    "/notify/expo": "expo-notification",
+    "/notify/fcm": "fcm-notification",
+    "/notify/webpush": "webpush-notification",
+    "/webpush/subscribe": "webpush-notification",
+    "/notify/onesignal": "onesignal-notification",
+    "/auth/jwt/login": "jwt-auth",
+    "/auth/jwt/user": "jwt-auth",
+    "/auth/firebase/verify": "firebase-php-jwt",
+    "/auth/auth0/callback": "auth0",
+    "/img/{path}": "glide"
   }
 }
