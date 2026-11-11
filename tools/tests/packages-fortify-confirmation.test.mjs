@@ -32,48 +32,56 @@ async function seedUser(env, email, password = 'correct-horse', { verified = fal
   return env.DB.prepare('SELECT * FROM users WHERE email = ?1').bind(email).first();
 }
 
-const confirmCtx = (body) => ({ params: { action: 'confirm-password' }, body, query: {} });
-const statusCtx = (query) => ({ params: { action: 'confirm-status' }, body: {}, query });
-const sendCtx = (body) => ({ params: { action: 'send-verification' }, body, query: {} });
+const confirmCtx = (body, identity) => ({ params: { action: 'confirm-password' }, body, query: {}, ...identity });
+const statusCtx = (query, identity) => ({ params: { action: 'confirm-status' }, body: {}, query, ...identity });
+const sendCtx = (body, identity) => ({ params: { action: 'send-verification' }, body, query: {}, ...identity });
 const verifyCtx = (id, hash, query) => ({ params: { action: 'verify', id, hash }, body: {}, query });
+
+// The authenticated identity the app hands over (the accessor the Worker gives
+// every port, kernel/http.mjs: `user: () => auth.guard().user()`), or an id a
+// `middlewarePorts` guard wrote onto ctx. An email from the body must never
+// select the account.
+const guardUser = (email, id) => async () => ({ id, email, name: 'Ada' });
+const asUser = (id) => ({ user_id: id });
 
 test('fortify-confirmation: correct password confirms and stamps password_confirmed_at', async () => {
   const env = makeEnv();
-  await seedUser(env, 'ada@example.com');
-  const res = await fortifyConfirmation(confirmCtx({ email: 'ada@example.com', password: 'correct-horse' }), env);
+  const ada = await seedUser(env, 'ada@example.com');
+  // The body email is a different account: it must NOT select who is checked.
+  const res = await fortifyConfirmation(confirmCtx({ email: 'someone-else@example.com', password: 'correct-horse' }, { user: guardUser('ada@example.com', ada.id) }), env);
   assert.equal(res.status, 200);
   const body = JSON.parse(res.body);
   assert.equal(body.confirmed, true);
   assert.ok(body.confirmed_at);
 
-  const user = await env.DB.prepare('SELECT * FROM users WHERE email = ?1').bind('ada@example.com').first();
-  assert.equal(user.password_confirmed_at, body.confirmed_at);
+  const after = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(ada.id).first();
+  assert.equal(after.password_confirmed_at, body.confirmed_at);
 });
 
 test('fortify-confirmation: wrong password is a 422 and does not stamp', async () => {
   const env = makeEnv();
-  await seedUser(env, 'ada@example.com');
-  const res = await fortifyConfirmation(confirmCtx({ email: 'ada@example.com', password: 'wrong' }), env);
+  const ada = await seedUser(env, 'ada@example.com');
+  const res = await fortifyConfirmation(confirmCtx({ email: 'ada@example.com', password: 'wrong' }, { user: guardUser('ada@example.com', ada.id) }), env);
   assert.equal(res.status, 422);
-  const user = await env.DB.prepare('SELECT * FROM users WHERE email = ?1').bind('ada@example.com').first();
-  assert.ok(user.password_confirmed_at == null);
+  const after = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(ada.id).first();
+  assert.ok(after.password_confirmed_at == null);
 });
 
 test('fortify-confirmation: status is false before confirm and true after', async () => {
   const env = makeEnv();
-  await seedUser(env, 'ada@example.com');
-  const before = JSON.parse((await fortifyConfirmation(statusCtx({ email: 'ada@example.com' }), env)).body);
+  const ada = await seedUser(env, 'ada@example.com');
+  const before = JSON.parse((await fortifyConfirmation(statusCtx({}, { user: guardUser('ada@example.com', ada.id) }), env)).body);
   assert.equal(before.confirmed, false);
 
-  await fortifyConfirmation(confirmCtx({ email: 'ada@example.com', password: 'correct-horse' }), env);
-  const after = JSON.parse((await fortifyConfirmation(statusCtx({ email: 'ada@example.com' }), env)).body);
+  await fortifyConfirmation(confirmCtx({ password: 'correct-horse' }, { user: guardUser('ada@example.com', ada.id) }), env);
+  const after = JSON.parse((await fortifyConfirmation(statusCtx({}, { user: guardUser('ada@example.com', ada.id) }), env)).body);
   assert.equal(after.confirmed, true);
 });
 
 test('fortify-confirmation: send-verification mints a Laravel-shaped signed URL', async () => {
   const env = makeEnv();
   const user = await seedUser(env, 'ada@example.com');
-  const res = await fortifyConfirmation(sendCtx({ email: 'ada@example.com', base_url: 'https://app.test' }), env);
+  const res = await fortifyConfirmation(sendCtx({ email: 'someone-else@example.com', base_url: 'https://app.test' }, { user: guardUser('ada@example.com', user.id) }), env);
   assert.equal(res.status, 200);
   const { verification_url } = JSON.parse(res.body);
   assert.match(verification_url, /^https:\/\/app\.test\/email\/verify\/\d+\/[0-9a-f]{40}\?expires=\d+&signature=[0-9a-f]{64}$/);
@@ -85,7 +93,7 @@ test('fortify-confirmation: the minted URL verifies and flips email_verified_at'
   const env = makeEnv();
   const user = await seedUser(env, 'ada@example.com');
   const { verification_url } = JSON.parse(
-    (await fortifyConfirmation(sendCtx({ email: 'ada@example.com', base_url: 'https://app.test' }), env)).body
+    (await fortifyConfirmation(sendCtx({ email: 'someone-else@example.com', base_url: 'https://app.test' }, { user: guardUser('ada@example.com', user.id) }), env)).body
   );
   const u = new URL(verification_url);
   const [, , , id, hash] = u.pathname.split('/');
@@ -103,7 +111,7 @@ test('fortify-confirmation: a tampered signature is rejected (403), no verificat
   const env = makeEnv();
   const user = await seedUser(env, 'ada@example.com');
   const { verification_url } = JSON.parse(
-    (await fortifyConfirmation(sendCtx({ email: 'ada@example.com', base_url: 'https://app.test' }), env)).body
+    (await fortifyConfirmation(sendCtx({ email: 'someone-else@example.com', base_url: 'https://app.test' }, { user: guardUser('ada@example.com', user.id) }), env)).body
   );
   const u = new URL(verification_url);
   const [, , , id, hash] = u.pathname.split('/');
@@ -134,11 +142,11 @@ test('fortify-confirmation: an expired link is rejected (403 expired)', async ()
 
 test('fortify-confirmation: a link for a different account is rejected (403)', async () => {
   const env = makeEnv();
-  await seedUser(env, 'ada@example.com');
+  const ada = await seedUser(env, 'ada@example.com');
   await seedUser(env, 'mallory@example.com');
   // mint for ada, then present it against mallory's id
   const { verification_url } = JSON.parse(
-    (await fortifyConfirmation(sendCtx({ email: 'ada@example.com', base_url: 'https://app.test' }), env)).body
+    (await fortifyConfirmation(sendCtx({ email: 'someone-else@example.com', base_url: 'https://app.test' }, { user: guardUser('ada@example.com', ada.id) }), env)).body
   );
   const mallory = await env.DB.prepare('SELECT * FROM users WHERE email = ?1').bind('mallory@example.com').first();
   const u = new URL(verification_url);
@@ -155,9 +163,23 @@ test('fortify-confirmation: already-verified user is idempotent (200)', async ()
   const env = makeEnv();
   const user = await seedUser(env, 'ada@example.com', 'correct-horse', { verified: true });
   const { verification_url, already_verified } = JSON.parse(
-    (await fortifyConfirmation(sendCtx({ email: 'ada@example.com', base_url: 'https://app.test' }), env)).body
+    (await fortifyConfirmation(sendCtx({ email: 'someone-else@example.com', base_url: 'https://app.test' }, { user: guardUser('ada@example.com', user.id) }), env)).body
   );
   assert.equal(already_verified, true);
   assert.equal(verification_url, null);
   void user;
+});
+
+test('fortify-confirmation: no identity is a 401 and touches nothing (the body email is not a credential)', async () => {
+  const env = makeEnv();
+  const ada = await seedUser(env, 'ada@example.com', 'correct-horse');
+  const before = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(ada.id).first();
+  // confirm-password: 401, and the password is never checked/stamped
+  assert.equal((await fortifyConfirmation(confirmCtx({ email: 'ada@example.com', password: 'correct-horse' }), env)).status, 401);
+  // status: 401 (there is no email query)
+  assert.equal((await fortifyConfirmation(statusCtx({ email: 'ada@example.com' }), env)).status, 401);
+  // send-verification: 401, and no verification URL is leaked for the email
+  assert.equal((await fortifyConfirmation(sendCtx({ email: 'ada@example.com', base_url: 'https://app.test' }), env)).status, 401);
+  const after = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(ada.id).first();
+  assert.equal(after.password_confirmed_at, before.password_confirmed_at);
 });
