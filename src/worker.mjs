@@ -72,6 +72,11 @@ function makeQueue(env) {
   return createQueue({ binding: env && env.QUEUE ? env.QUEUE : null });
 }
 
+// A ReadableStream body (an SSE / streaming port) is passed straight through:
+// `new Response(stream)` on the Workers runtime streams the chunks without
+// buffering them, so the handler can `enqueue` while the response is already
+// on the wire. A HEAD request still nulls the body (headers only), stream or
+// not - the stream is left unconsumed.
 function toResponse(res, method) {
   const headers = new Headers();
   for (const [k, v] of Object.entries(res.headers || {})) {
@@ -80,6 +85,8 @@ function toResponse(res, method) {
   for (const cookie of res.setCookie || []) headers.append('set-cookie', cookie);
   return new Response(method === 'HEAD' ? null : res.body, { status: res.status, headers });
 }
+
+export { toResponse };
 
 // The Cloudflare Cron Trigger: the app's dumped schedule fires here, and every
 // due event is queued for the app runtime that still exists (the edge triggers,
