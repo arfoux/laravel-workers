@@ -13,8 +13,10 @@
 //              when it touches no table
 //   secrets  — the env secrets/bindings the handler reads (`env.<NAME>`)
 //
-// `validateManifest()` is the cheap guard: every slug resolves to an existing
-// file and every `registry.example.json` route is covered here. The build's own
+// `validateManifest()` is the cheap structural guard (every entry has the right
+// shape); `missingManifestFiles()` is the one that checks the `file` slot
+// resolves on disk, helpers included. `missingRegistryRoutes()` checks the other
+// direction: every `registry.example.json` route is covered here. The build's own
 // checks (route not in `route:list`, slug with no file) stay authoritative for
 // a real deploy — this manifest is the map, not the enforcer.
 //
@@ -28,113 +30,6 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
-// Registry routes covered by the example app (`registry.example.json`). One
-// entry per PATH; `methods` lists every verb the port dispatches to.
-const REGISTRY_ENTRIES = {
-  // -- spatie / misc -------------------------------------------------------
-  '/sitemap.xml': { slug: 'spatie-sitemap', methods: ['GET'] },
-  '/sitemap': { slug: 'spatie-sitemap', methods: ['GET', 'POST', 'DELETE'] },
-  '/settings/{group}': { slug: 'spatie-settings', methods: ['GET', 'PUT'] },
-  '/activity': { slug: 'activitylog', methods: ['GET', 'POST'] },
-  '/activity/{id}': { slug: 'activitylog', methods: ['GET'] },
-  '/slug': { slug: 'sluggable', methods: ['GET', 'POST'] },
-  '/data': { slug: 'spatie-data', methods: ['POST'] },
-  '/posts': { slug: 'spatie-query-builder', methods: ['GET'] },
-  '/translatable': { slug: 'spatie-translatable', methods: ['GET', 'POST'] },
-  '/translatable/{id}': { slug: 'spatie-translatable', methods: ['GET', 'PUT'] },
-  '/enums': { slug: 'spatie-enum', methods: ['GET'] },
-  '/enums/{class}': { slug: 'spatie-enum', methods: ['GET'] },
-  '/enums/{class}/from': { slug: 'spatie-enum', methods: ['POST'] },
-  '/enums/{class}/tryFrom': { slug: 'spatie-enum', methods: ['POST'] },
-  '/enums/{class}/random': { slug: 'spatie-enum', methods: ['GET'] },
-  '/state-models': { slug: 'spatie-model-states', methods: ['GET', 'POST'] },
-  '/state-models/{id}': { slug: 'spatie-model-states', methods: ['GET'] },
-  '/state-models/{id}/transition': { slug: 'spatie-model-states', methods: ['POST'] },
-  '/state-models/{id}/transitions': { slug: 'spatie-model-states', methods: ['GET'] },
-
-  // -- scout / search ------------------------------------------------------
-  '/search': { slug: 'scout-meilisearch', methods: ['GET'] },
-  '/indexes/{uid}/search': { slug: 'scout-meilisearch', methods: ['GET'] },
-  '/indexes/{uid}/settings': { slug: 'scout-meilisearch', methods: ['GET'] },
-  '/1/indexes/{name}/query': { slug: 'scout-algolia', methods: ['POST'] },
-
-  // -- sanctum / fortify ---------------------------------------------------
-  '/sanctum/token': { slug: 'sanctum', methods: ['POST'] },
-  '/sanctum/verify': { slug: 'sanctum', methods: ['GET'] },
-  '/sanctum/tokens': { slug: 'sanctum', methods: ['GET', 'DELETE'] },
-  '/sanctum/tokens/{id}': { slug: 'sanctum', methods: ['DELETE'] },
-  '/sanctum/csrf-cookie': { slug: 'sanctum-spa-cookie', methods: ['GET'] },
-  '/sanctum/spa/login': { slug: 'sanctum-spa-cookie', methods: ['POST'] },
-  '/sanctum/spa/user': { slug: 'sanctum-spa-cookie', methods: ['GET'] },
-  '/sanctum/spa/logout': { slug: 'sanctum-spa-cookie', methods: ['POST'] },
-  '/user/confirm-password': { slug: 'fortify-confirmation', methods: ['POST', 'GET'] },
-  '/user/confirm-password/status': { slug: 'fortify-confirmation', methods: ['GET'] },
-  '/email/verification-notification': { slug: 'fortify-confirmation', methods: ['POST'] },
-  '/email/verify/{id}/{hash}': { slug: 'fortify-confirmation', methods: ['GET'] },
-  '/user/two-factor-authentication': { slug: 'fortify-two-factor', methods: ['POST'] },
-  '/user/two-factor-authentication/confirm': { slug: 'fortify-two-factor', methods: ['POST'] },
-  '/user/two-factor-challenge': { slug: 'fortify-two-factor', methods: ['POST'] },
-  '/user/two-factor-challenge/recovery': { slug: 'fortify-two-factor', methods: ['POST'] },
-
-  // -- social / oauth / billing -------------------------------------------
-  '/auth/{provider}/redirect': { slug: 'laravel-socialite-redirect', methods: ['GET'] },
-  '/auth/{provider}/callback': { slug: 'laravel-socialite-callback', methods: ['GET'] },
-  '/oauth/authorize': { slug: 'passport-oauth', methods: ['GET'] },
-  '/oauth/token': { slug: 'passport-oauth', methods: ['POST'] },
-  '/oauth/refresh': { slug: 'passport-oauth', methods: ['POST'] },
-  '/oauth/jwks': { slug: 'passport-oauth', methods: ['GET'] },
-  '/stripe/webhook': { slug: 'cashier-stripe', methods: ['POST'] },
-  '/paddle/webhook': { slug: 'cashier-paddle', methods: ['POST'] },
-  '/lemon-squeezy/webhook': { slug: 'lemonsqueezy', methods: ['POST'] },
-
-  // -- realtime / permission / tags ---------------------------------------
-  '/broadcast': { slug: 'pusher', methods: ['POST'] },
-  // Route collision (docs/PACKAGE-PORTS.md): pusher AND reverb both answer it;
-  // the example maps this path to reverb and `/broadcast` to pusher.
-  '/broadcasting/auth': { slug: 'reverb', methods: ['POST'] },
-  '/model/{modelType}/{modelKey}/has-role': { slug: 'permission', methods: ['GET'] },
-  '/model/{modelType}/{modelKey}/has-permission': { slug: 'permission', methods: ['GET'] },
-  '/model/{modelType}/{modelKey}/has-any': { slug: 'permission', methods: ['GET'] },
-  '/model/{modelType}/{modelKey}/roles/{action}': { slug: 'permission', methods: ['POST'] },
-  '/model/{modelType}/{modelKey}/permissions/{action}': { slug: 'permission', methods: ['POST'] },
-  '/model/{modelType}/{modelKey}/tags': { slug: 'tags', methods: ['GET', 'POST'] },
-
-  // -- export / notify-http ------------------------------------------------
-  '/export': { slug: 'maatwebsite-excel', methods: ['GET'] },
-  '/notify/mailgun': { slug: 'mailgun-mail', methods: ['POST'] },
-  '/notify/postmark': { slug: 'postmark-mail', methods: ['POST'] },
-  '/notify/slack': { slug: 'slack-notification', methods: ['POST'] },
-  '/notify/twilio': { slug: 'twilio-sms', methods: ['POST'] },
-
-  // -- new fleet: ai / mcp / observability --------------------------------
-  '/ai/chat': { slug: 'ai-sdk', methods: ['POST'] },
-  '/mcp': { slug: 'mcp', methods: ['POST'] },
-  '/pulse': { slug: 'pulse', methods: ['GET'] },
-  '/pulse/record': { slug: 'pulse', methods: ['POST'] },
-  '/bugsnag/notify': { slug: 'bugsnag', methods: ['POST'] },
-
-  // -- new fleet: webhooks / search ---------------------------------------
-  '/webhooks/{name}': { slug: 'webhook-client', methods: ['POST'] },
-  '/webhook-server/send': { slug: 'webhook-server', methods: ['POST'] },
-  '/site-search': { slug: 'site-search', methods: ['GET'] },
-
-  // -- new fleet: notification channels -----------------------------------
-  '/notify/telegram': { slug: 'telegram-notification', methods: ['POST'] },
-  '/notify/discord': { slug: 'discord-notification', methods: ['POST'] },
-  '/notify/expo': { slug: 'expo-notification', methods: ['POST'] },
-  '/notify/fcm': { slug: 'fcm-notification', methods: ['POST'] },
-  '/notify/webpush': { slug: 'webpush-notification', methods: ['POST'] },
-  '/webpush/subscribe': { slug: 'webpush-notification', methods: ['POST'] },
-  '/notify/onesignal': { slug: 'onesignal-notification', methods: ['POST'] },
-
-  // -- new fleet: auth extras / media -------------------------------------
-  '/auth/jwt/login': { slug: 'jwt-auth', methods: ['POST'] },
-  '/auth/jwt/user': { slug: 'jwt-auth', methods: ['GET'] },
-  '/auth/firebase/verify': { slug: 'firebase-php-jwt', methods: ['POST'] },
-  '/auth/auth0/callback': { slug: 'auth0', methods: ['POST'] },
-  '/img/{path}': { slug: 'glide', methods: ['GET'] },
-};
 
 // Ports that answer NO fixed path — the registry maps them to a slug with no
 // route key (middleware/header helpers, the Inertia page renderer). Kept here
@@ -249,7 +144,7 @@ export const PORT_MANIFEST = {
   '/img/{path}': { slug: 'glide', methods: ['GET'], file: 'ports/packages/glide.mjs', d1: null, secrets: ['CF_IMAGE_RESIZING_ZONE', 'GLIDE_ORIGIN'] },
 
   // -- non-route ports (helpers / page renderer), keyed by slug ------------
-  ...Object.fromEntries(Object.entries(NON_ROUTE_PORTS).map(([slug, entry]) => [slug, entry])),
+  ...NON_ROUTE_PORTS,
 };
 
 export const REGISTRY_EXAMPLE_PATH = 'registry.example.json';
@@ -271,8 +166,10 @@ export function missingRegistryRoutes(registry) {
  * @returns {{ route: string, file: string }[]}
  */
 export function missingManifestFiles(repoRoot = REPO_ROOT) {
+  // Every entry is checked, helpers included: a helper carries `methods: []` but
+  // still names a `file`, so gating on methods would let a helper whose handler
+  // moved keep a stale `file` slot uncounted.
   return Object.entries(PORT_MANIFEST)
-    .filter(([, entry]) => entry.methods.length > 0)
     .filter(([, entry]) => !existsSync(resolve(repoRoot, entry.file)))
     .map(([route, entry]) => ({ route, file: entry.file }));
 }
@@ -294,7 +191,7 @@ export function validateManifest() {
     }
     if (entry.d1 !== null && !Array.isArray(entry.d1)) problems.push(`${label}: d1 must be an array or null`);
     if (!Array.isArray(entry.secrets)) problems.push(`${label}: secrets is not an array`);
-    if (entry.methods.length > 0 && !/^ports\/packages\/[a-z0-9-]+\.mjs$/.test(entry.file)) {
+    if (!/^ports\/packages\/[a-z0-9-]+\.mjs$/.test(entry.file)) {
       problems.push(`${label}: file is not a ports/packages slug file`);
     }
   }
