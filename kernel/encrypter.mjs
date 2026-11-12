@@ -1,6 +1,8 @@
 // kernel/encrypter.mjs - Encrypter (AES-256-CBC, Laravel-compatible)
 // Uses only web-standard globals: crypto.subtle, atob/btoa, TextEncoder/TextDecoder.
 
+import { bytesToHex } from './digest.mjs';
+
 /**
  * Illuminate\Contracts\Encryption\DecryptException. Every decryption failure
  * (bad base64, malformed JSON envelope, missing field, bad MAC) answers this
@@ -28,12 +30,6 @@ function b64DecodeToBytes(b64) {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
-}
-
-function bytesToHex(bytes) {
-  let h = '';
-  for (let i = 0; i < bytes.length; i++) h += bytes[i].toString(16).padStart(2, '0');
-  return h;
 }
 
 function hexToBytes(hex) {

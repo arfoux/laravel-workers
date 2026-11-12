@@ -38,6 +38,7 @@ import bcrypt from 'bcryptjs';
 import { signPath, verifyPath } from '../../kernel/packages/signedurl.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { bytesToHex } from '../../kernel/digest.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -60,7 +61,7 @@ function json(status, payload) {
 
 async function sha1hex(text) {
   const d = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(String(text)));
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(new Uint8Array(d));
 }
 
 function appKey(env) {

@@ -1,5 +1,6 @@
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 import { jsonPort } from '../../kernel/packages/notify-http.mjs';
+import { bytesToHex } from '../../kernel/digest.mjs';
 
 // ports/packages/midtrans-webhook.mjs — port of midtrans/midtrans-php inbound
 // notification handling (Snap/VT-Web "HTTP notification").
@@ -29,10 +30,7 @@ import { jsonPort } from '../../kernel/packages/notify-http.mjs';
 // SHA-512 in lowercase hex (WebCrypto digest; matches PHP `hash('sha512', …)`).
 async function sha512Hex(input) {
   const digest = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(String(input)));
-  const bytes = new Uint8Array(digest);
-  let hex = '';
-  for (let i = 0; i < bytes.length; i += 1) hex += bytes[i].toString(16).padStart(2, '0');
-  return hex;
+  return bytesToHex(new Uint8Array(digest));
 }
 
 // Compare two (hex) strings without short-circuiting on the first mismatch, so

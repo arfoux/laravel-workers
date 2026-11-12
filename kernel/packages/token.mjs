@@ -9,6 +9,7 @@
 // `randomString(40)` uses Laravel's Str::random (alphanumeric, [A-Za-z0-9]).
 
 import { timingSafeEqual } from './webhook.mjs';
+import { bytesToHex } from '../digest.mjs';
 
 const ALPHANUMERIC = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -29,7 +30,7 @@ export function randomString(length = 40, randomBytes = defaultRandomBytes) {
 
 async function sha256Hex(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(new Uint8Array(digest));
 }
 
 // Mint a token for `userId` with the given `abilities`. Returns the plaintext

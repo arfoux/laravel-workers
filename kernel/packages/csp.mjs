@@ -26,6 +26,8 @@
 // Directive order is stable (sorted by name) so the header is deterministic for
 // a given policy + nonce, which makes caching and tests predictable.
 
+import { bytesToHex } from '../digest.mjs';
+
 /** A fresh per-response nonce in the CSP `nonce-<value>` form. */
 export function generateNonce() {
   const c = globalThis.crypto;
@@ -35,7 +37,7 @@ export function generateNonce() {
     c && typeof c.getRandomValues === 'function'
       ? Array.from(c.getRandomValues(new Uint8Array(16)))
       : Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
-  const hex = bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+  const hex = bytesToHex(bytes);
   return `nonce-${hex}`;
 }
 

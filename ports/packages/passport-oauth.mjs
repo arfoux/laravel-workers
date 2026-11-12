@@ -52,6 +52,7 @@ import { signJwt, jwks as jwksExport, verifyPkce } from '../../kernel/packages/p
 import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { bytesToHex } from '../../kernel/digest.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -102,7 +103,7 @@ export async function ensureSchema(env) {
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const sha256hex = async (text) => {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(new Uint8Array(d));
 };
 
 function json(status, payload) {

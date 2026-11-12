@@ -11,6 +11,8 @@
 // (storage.mjs) — and had already drifted (one copy used `globalThis.crypto`
 // and skipped the `String()` coercion). A second copy drifts silently (#697).
 
+import { bytesToHex } from './digest.mjs';
+
 const enc = new TextEncoder();
 
 /**
@@ -28,7 +30,7 @@ export async function hmacSha256Hex(secret, message) {
     ['sign']
   );
   const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(new Uint8Array(sig));
 }
 
 export default { hmacSha256Hex };
