@@ -807,7 +807,11 @@ const MODEL_LACKS = {
     '(Illuminate\\Database\\Eloquent\\Model.php:2902) and the builder throws a BadMethodCallException (a 500 in Laravel) — ',
 };
 
-const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
+// The one hint every "this route is outside the compiled subset" refusal ends
+// with. controller.mjs imports it (it emits the same hint from its own
+// refusals) — one copy, so the two files cannot tell the operator different
+// stories.
+export const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
 
 // The methods an ERROR view may call on `$exception`: Laravel's framework error
 // views use `getMessage()` (the 403/500 pages), and the kernel's error object
