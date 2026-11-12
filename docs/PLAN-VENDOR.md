@@ -174,15 +174,18 @@ what catches it (it fails loudly rather than silently). Tracked in §5.
 A lock-less app (the stock `laravel/laravel` skeleton ships none) resolves its
 production requires from packagist on every cold cache. `--lock` writes a
 `composer.lock` for that resolved set so the *next* build reads a lock instead.
-It is a **pinning file for vendor-lite**, not a Composer-authored lock:
-`resolveDependencies()` walks `require` only, so the written `packages-dev` is
-empty by design and `composer validate` reports every `require-dev` package as
-missing (`Required (in require-dev) package "…" is not present in the lock file.`,
-Composer 2.9.0 / PHP 8.3.30, exit 2). `content-hash` is Composer's own recipe over
-the same `composer.json`, so the lock is not called stale — the dev-package
-complaint is the only one. Resolving `require-dev` here would fetch a test-only
-closure (PHPUnit, Pint, …) the build never loads; an app that wants a Composer
-lock should run `composer update`.
+It is a **pinning file for vendor-lite**, not a Composer-authored lock.
+`packages` carries the production closure vendor-lite installs; `packages-dev`
+carries the dev closure resolved for the lock only (`includeDev`), minus every
+name already in `packages` — that is what keeps `composer validate` green on a
+skeleton. Before that, `packages-dev: []` made it exit 2 with `Required (in
+require-dev) package "..." is not present in the lock file.` (Composer 2.9.0 /
+PHP 8.3.30, audit #805). Nothing dev is ever installed: `readLockPackages()` reads
+`packages` only, so a lock that lists Pint or PHPUnit in `packages-dev` still
+installs none of them. `content-hash` is Composer's own recipe over the same
+`composer.json`, so the lock is not called stale. An app that wants a
+Composer-authored lock, with Composer's own solver and its own pinning rules,
+should still run `composer update`.
 
 ### F. Rejected: ship a bundled framework
 

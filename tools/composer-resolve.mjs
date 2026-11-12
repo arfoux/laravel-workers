@@ -370,7 +370,12 @@ export async function resolveDependencies(appDir, opts = {}) {
   const supplied = new Map();    // covered name -> provider name (replace/provide)
   const queue = [];
 
-  for (const [n, c] of Object.entries(root.require || {})) {
+  // `--lock` pins the DEV set as well (audit #805): `composer validate` checks
+  // the root `require-dev` names against the lock, so a lock whose
+  // `packages-dev` is empty fails on every Laravel skeleton. Off by default —
+  // the install path must never walk a dev closure.
+  const rootRequire = { ...(root.require || {}), ...(opts.includeDev ? root['require-dev'] || {} : {}) };
+  for (const [n, c] of Object.entries(rootRequire)) {
     if (isPlatformKey(n)) continue; // root php/ext are the build's resolvePhp job
     queue.push([n, String(c), 'composer.json (root require)', null]);
   }
@@ -473,7 +478,7 @@ export async function resolveDependencies(appDir, opts = {}) {
   // package (its only requirer changed version). Orphans are dropped — but
   // only AFTER verifying that nothing reachable depends on an orphan's
   // provide/replace suppression, which would leave a hole.
-  const rootNames = Object.keys(root.require || {}).filter((n) => !isPlatformKey(n));
+  const rootNames = Object.keys(rootRequire).filter((n) => !isPlatformKey(n));
   const reachable = new Set();
   const stack = rootNames.filter((n) => selected.has(n));
   while (stack.length) {
