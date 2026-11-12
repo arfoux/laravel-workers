@@ -67,7 +67,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { relativizeContextJson, relativizeSnapshotUrls } from './tools/snapshot-urls.mjs';
 
 const pkgDir = dirname(fileURLToPath(import.meta.url));
