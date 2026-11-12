@@ -114,6 +114,78 @@ assert.throws(
   /must be the last segment/,
 );
 
+// The compiled pattern grammar is Symfony's RouteCompiler::compilePattern()
+// transcribed, not a "a segment is either '{name}' or literal text" rule. Every
+// expectation below is what `preg_match($route->compile()->getRegex(), ...)`
+// answers for the same uri against Laravel 13's UriValidator (rtrim(path, '/') ?:
+// '/', then rawurldecode). A segment holding a variable among TEXT is the case
+// the old whole-segment rule turned into a literal - the route then 404'd on
+// every real request while PHP served it.
+const hit = (uri, path) => {
+  const t = normalizeTable([{ uri, name: null, methods: ['GET'], domain: null }]);
+  const m = match(t, { method: 'GET', path });
+  return m ? m.params : null;
+};
+// text before a variable inside one segment
+assert.deepEqual(hit('/enc-suffix-{id}', '/enc-suffix-42'), { id: '42' });
+assert.deepEqual(hit('/a{id}b', '/a42b'), { id: '42' });
+assert.equal(hit('/enc-suffix-{id}', '/enc-suffix'), null);
+// a variable's char class forbids the separator that FOLLOWS it, so the last
+// variable is the only greedy one
+assert.deepEqual(hit('/a/{id}-{slug}', '/a/x-y'), { id: 'x', slug: 'y' });
+assert.deepEqual(hit('/a/{id}-{slug}', '/a/x-y-z'), { id: 'x', slug: 'y-z' });
+assert.deepEqual(hit('/{a}-{b}', '/1-2'), { a: '1', b: '2' });
+assert.deepEqual(hit('/{a}-{b}', '/a-b-9'), { a: 'a', b: 'b-9' });
+assert.deepEqual(hit('/{id}-suffix', '/9-suffix'), { id: '9' });
+// adjacent variables: the first forbids nothing (no separator follows it)
+assert.deepEqual(hit('/x/{a}{b}', '/x/12'), { a: '1', b: '2' });
+assert.equal(hit('/x/{a}{b}', '/x12'), null);
+// multi-token optional runs nest, and a `{x?}` that is NOT in the trailing run
+// is required ('/a/{id?}/b' answers '/a/<id>/b' only - Laravel rewrites the '?'
+// away and hands the name over as a default)
+assert.deepEqual(hit('/a/{id?}.{fmt?}', '/a/1.txt'), { id: '1', fmt: 'txt' });
+assert.deepEqual(hit('/a/{id?}.{fmt?}', '/a/1'), { id: '1' });
+assert.deepEqual(hit('/a/{id?}.{fmt?}', '/a'), {});
+// ...but the empty form only exists right after a separator: a leading segment
+// variable that is skipped before TEXT ('/a/.json' for '/a/{id?}.{fmt?}',
+// '/b/.json' for '/b/{id?}.json') is a 404 in Laravel too - measured with
+// Laravel's own matcher: $router->getRoutes()->match('/a/.json') throws
+// NotFoundHttpException while match('/a/1.json') answers {"id":"1","fmt":"json"}
+assert.equal(hit('/a/{id?}.{fmt?}', '/a/.json'), null);
+assert.equal(hit('/b/{id?}.json', '/b/.json'), null);
+assert.deepEqual(hit('/b/{id?}.json', '/b/1.json'), { id: '1' });
+// text before an optional variable keeps it optional (Laravel: '/c/pre' answers
+// {} and '/c/prex' answers {"id":"x"})
+assert.deepEqual(hit('/c/pre{id?}', '/c/pre'), {});
+assert.deepEqual(hit('/c/pre{id?}', '/c/prex'), { id: 'x' });
+// at the root the first optional is preceded by the separator itself, so
+// '/.json' DOES match - and Laravel hands over {"fmt":"json"} with no empty
+// 'id' key (raw preg_match would keep id => ''; the matcher does not)
+assert.deepEqual(hit('/{id?}.{fmt?}', '/.json'), { fmt: 'json' });
+assert.deepEqual(hit('/a/{id?}', '/a'), {});
+assert.deepEqual(hit('/p/{page?}', '/p'), {});
+assert.deepEqual(hit('/a/{id?}/{b?}', '/a/1'), { id: '1' });
+assert.deepEqual(hit('/a/{id?}/{b?}', '/a'), {});
+assert.deepEqual(hit('/a/{id?}/b', '/a/1/b'), { id: '1' });
+assert.equal(hit('/a/{id?}/b', '/a/b'), null);
+// only `{name}` and `{name?}` are placeholders: a Symfony inline requirement is
+// literal text for Laravel too (`preg_match_all('#\{(!)?([\w\x80-\xFF]+)\}#')`),
+// and '{!id}' is Symfony's "important" variable - not optional, even as the last
+// token of a run
+assert.deepEqual(hit('/a/{id:[0-9]+}', '/a/{id:[0-9]+}'), {});
+assert.equal(hit('/a/{id:[0-9]+}', '/a/42'), null);
+assert.equal(hit('/a/{!id?}', '/a'), null);
+// a variable name may not repeat: Symfony's RouteCompiler throws (the app cannot
+// boot, so the edge fails loud instead of answering one of two possible routes)
+assert.throws(
+  () => hit('/a/{id}/{id}', '/a/1/2'),
+  /cannot reference variable name "id" more than once/,
+);
+// the path preparation is UriValidator's `rtrim($path, '/') ?: '/'`: a path of
+// slashes only is '/'
+assert.deepEqual(hit('/', '//'), {});
+assert.deepEqual(hit('/', '/'), {});
+
 // domain enforcement + domain param capture
 const dtable = normalizeTable([
   { uri: '/', name: 'root', methods: ['GET'], domain: null },

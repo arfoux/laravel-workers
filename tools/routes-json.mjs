@@ -49,13 +49,22 @@ export function routeToPatterns(uri) {
   // static path that does not belong answers the Worker's 404), so the pattern
   // only has to be at least as WIDE as the route — `/users/*` for
   // `/users/{user}/posts/{post}`, `/posts/*` for `/posts/{post}`.
-  const isDynamic = (s) => /^\{[^}]+\}$/.test(s) || s === '*';
-  const literal = (s) => (isDynamic(s) ? '*' : s);
+  // A variable need not fill the whole segment (`/enc-suffix-{id}` is a real
+  // Laravel uri — Symfony compiles it to `/enc\-suffix\-(?P<id>[^/]++)`), so a
+  // segment is dynamic when it CONTAINS a placeholder, and the rule keeps the
+  // literal text that precedes it (`/enc-suffix-*`; `/a{id}/b` widens to `/a*`,
+  // the only expressible rule — one trailing `*`, no mid-rule wildcard).
+  const isDynamic = (s) => /\{[^}]*\}/.test(s) || s === '*';
+  const textBeforeVariable = (s) => {
+    const at = s.indexOf('{');
+    return at === -1 ? s : s.slice(0, at);
+  };
   const firstDyn = segs.findIndex(isDynamic);
   // A static route keeps its exact path (one rule, no wildcard).
   if (firstDyn === -1) return ['/' + segs.join('/')];
-  const prefix = segs.slice(0, firstDyn).map(literal);
-  const glob = '/' + prefix.concat('*').join('/');
+  const prefix = segs.slice(0, firstDyn);
+  const dynText = textBeforeVariable(segs[firstDyn]);
+  const glob = (prefix.length ? '/' + prefix.join('/') + '/' : '/') + dynText + '*';
   const out = [glob];
   // An optional segment (`{page?}`) may be ABSENT, and a trailing one makes the
   // bare prefix a path of its own (`/posts` matches `/posts/{page?}`): the

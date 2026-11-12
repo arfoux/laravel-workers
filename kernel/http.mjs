@@ -966,8 +966,13 @@ export class HttpResponse {
     }
     // Symfony's Response constructor always sets Cache-Control
     // (ResponseHeaderBag::computeCacheControlValue) unless one was provided.
+    // Track whether THIS constructor injected it: Symfony's RedirectResponse
+    // removes exactly the computed default again for a 301 (and must never
+    // remove a header the app set itself).
+    this.injectedCacheControl = false;
     if (!Object.prototype.hasOwnProperty.call(this.headers, 'cache-control')) {
       this.headers['cache-control'] = 'no-cache, private';
+      this.injectedCacheControl = true;
     }
     this.body = body;
     this.cookies = cookies instanceof ResponseCookies ? cookies : new ResponseCookies();
@@ -1538,13 +1543,14 @@ function escapeHtmlText(value) {
     .replace(/'/g, '&#039;');
 }
 
-function symfonyRedirectBody(url) {
+export function symfonyRedirectBody(url) {
   const escaped = String(url)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+
   return (
     '<!DOCTYPE html>\n' +
     '<html>\n' +
@@ -2010,6 +2016,13 @@ export async function handleHttp(raw, options = {}) {
 
   // --- response phases (StartSession → AddQueuedCookiesToResponse → EncryptCookies)
   withDefaultCacheControl(response);
+  // Symfony's RedirectResponse removes the computed default Cache-Control for a
+  // 301 (RedirectResponse::__construct: `301 == $status && !array_key_exists('cache-control', $headers)`),
+  // so the header injected by the constructor has to be told apart from one the
+  // app set itself — only the injected one is removed.
+  if (response.status === 301 && response.headers.location !== undefined && response.injectedCacheControl) {
+    delete response.headers['cache-control'];
+  }
   if (csrfPassed && csrf.shouldAddXsrfTokenCookie()) {
     await csrf.addCookieToResponse(request, response);
   }
