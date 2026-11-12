@@ -15,14 +15,9 @@
 // string, with the raw URL preserved.
 
 import { timingSafeEqual } from './webhook.mjs';
+import { b64url } from './b64url.mjs';
 
 const enc = new TextEncoder();
-
-function b64url(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
 
 // Sign the given `url` for `expiresSeconds` from now. Returns the signed URL.
 export async function sign(url, expiresSeconds, secret) {

@@ -13,24 +13,10 @@
 // appears in code or in the signed output — only the HMAC does.
 
 import { timingSafeEqual } from './webhook.mjs';
+import { b64url, b64urlToBytes } from './b64url.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-
-function b64url(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 async function hmacHex(secret, message) {
   const key = await crypto.subtle.importKey(

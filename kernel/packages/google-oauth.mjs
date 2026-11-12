@@ -18,26 +18,10 @@
 // Config: the service-account JSON is read from the env var named by `jsonEnv`
 // (default `GA4_SERVICE_ACCOUNT_JSON`), either raw or base64.
 import { resolveFetch } from './notify-http.mjs';
+import { b64url as b64urlFromBytes, b64urlToBytes } from './b64url.mjs';
 
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const GA4_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly';
-
-// --- base64url --------------------------------------------------------------
-
-function b64urlFromBytes(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 // Same auto-detect as fcm-oauth.mjs: raw JSON always starts with `{`; a base64
 // blob (how GCP tooling commonly stores key files) is decoded. Exported so
