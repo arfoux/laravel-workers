@@ -1138,13 +1138,22 @@ const uncompiledExtraNonPost = [];
 // Track E (prerender-batch): the render set is decided BEFORE the boot —
 // every filter below only reads build state, then one batch covers the
 // static entries and the auto-snapshots.
-const handled = new Set([
-  ...staticMap.map(([r]) => r),
-  ...portEntries.map(([r]) => r),
-  ...middlewarePortsMap.keys(),
-  ...viewMap.map(([r]) => r),
-  ...ignoreMap.map(([r]) => r),
-]);
+// The routes the build already accounts for outside the compiled-controller
+// path: static files, ports, middleware ports, views and ignored routes. Two
+// readers need the SAME list — the snapshot set below (a route here is not
+// snapshotted) and the coverage report's `unknown` set (a route here is not
+// "unknown"). One source, so a new edge mechanism cannot be added to one and
+// forgotten in the other.
+const handledRoutes = () => [
+  ...new Set([
+    ...staticMap.map(([r]) => r),
+    ...portEntries.map(([r]) => r),
+    ...middlewarePortsMap.keys(),
+    ...viewMap.map(([r]) => r),
+    ...ignoreMap.map(([r]) => r),
+  ]),
+];
+const handled = new Set(handledRoutes());
 // Why a route is NOT snapshotted, or null when it is. Kept pure (no side
 // effects) so the set can be collected before the single prerender batch.
 const snapshotSkip = (route) => {
@@ -3934,15 +3943,7 @@ console.log(`  -> dist/public/_routes.json (${(routesJson.include || []).length}
 // stays here and is passed in.
 
 // ---------- 6. coverage report ----------
-const unknown = [
-  ...new Set([
-    ...staticMap.map(([r]) => r),
-    ...portEntries.map(([r]) => r),
-    ...middlewarePortsMap.keys(),
-    ...viewMap.map(([r]) => r),
-    ...ignoreMap.map(([r]) => r),
-  ]),
-].filter((r) => !routes.includes(r));
+const unknown = handledRoutes().filter((r) => !routes.includes(r));
 const stubPorts = findStubPorts(portsSrc);
 // A Route::redirect()/permanentRedirect() route is served by the redirect
 // handler emitted for it (kind 'redirect'), so it must not stay in needsPort as
