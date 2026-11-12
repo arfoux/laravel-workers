@@ -50,6 +50,7 @@ import { provisionPhp } from './tools/php-provision.mjs';
 import { computeBuildCacheKey } from './tools/build-cache.mjs';
 import { scanConfigReads, configGateMissing } from './tools/config-gate.mjs';
 import { syncScratchPhpCache } from './tools/scratch-php-cache.mjs';
+import { SKIP_REASONS, RUNTIME_REASONS, needsPortFix } from './tools/route-gaps.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import { mutatingMigrations, renderSchemaSql } from './tools/schema-sql.mjs';
 import {
@@ -1146,10 +1147,10 @@ const handled = new Set([
 // Why a route is NOT snapshotted, or null when it is. Kept pure (no side
 // effects) so the set can be collected before the single prerender batch.
 const snapshotSkip = (route) => {
-  if (!autoSnapshot) return 'unhandled (autoSnapshot: false)';
+  if (!autoSnapshot) return SKIP_REASONS.autoSnapshotOff();
   const methods = methodsFor.get(route) || new Set();
-  if (!methods.has('GET')) return `no GET (${[...methods].join(', ') || '?'})`;
-  if (route.includes('{')) return 'dynamic segment — needs a port';
+  if (!methods.has('GET')) return SKIP_REASONS.noGet([...methods].join(', '));
+  if (route.includes('{')) return SKIP_REASONS.dynamic();
   // A controller route of the APP is compiled, not snapshotted: the build-time
   // page is the fallback for a route the build cannot compile. Snapshotting
   // it answered a stale page for anything the request decides (a query
@@ -1163,7 +1164,7 @@ const snapshotSkip = (route) => {
   const action = actionForRoute(route);
   const actionClass = action && action.includes('@') ? action.slice(0, action.lastIndexOf('@')) : action;
   if (actionClass && actionClass !== 'Closure' && !/^Illuminate\\/.test(actionClass)) {
-    return 'a controller serves it — compiled, not snapshotted';
+    return SKIP_REASONS.controller();
   }
   return null;
 };
@@ -1211,11 +1212,11 @@ for (const route of routes) {
     console.log(`• snapshot ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
     if (others.length) partials.push({ route, methods: others });
   } else if (res.status >= 200 && res.status < 300) {
-    needsPort.push({ route, reason: `HTTP ${res.status} non-HTML (${res.content_type || '?'})` });
+    needsPort.push({ route, reason: RUNTIME_REASONS.nonHtml(res.status, res.content_type) });
   } else {
     const to = res.location ? ` -> ${res.location}` : '';
     const why = res.error ? `: ${res.error}` : '';
-    needsPort.push({ route, reason: `HTTP ${res.status}${to}${why}` });
+    needsPort.push({ route, reason: RUNTIME_REASONS.http(res.status, to, why) });
   }
 }
 
@@ -3962,36 +3963,12 @@ const routesJson = buildRoutesJson(
 writeFileSync(join(dist, 'public', '_routes.json'), JSON.stringify(routesJson, null, 2) + '\n');
 console.log(`  -> dist/public/_routes.json (${(routesJson.include || []).length} include, ${(routesJson.exclude || []).length} exclude)`);
 
-// The action for an unhandled route. The reason already says WHY; this says
-// WHAT TO DO, and the four cases are genuinely different (a dynamic segment is
-// a five-minute port; a route that answers 500 at build time is a bug in the
-// app that the build just found for free).
-const needsPortFix = (n) => {
-  const reason = String(n.reason || '');
-  const ignore = `{"ignore": {"${n.route}": "<why>"}}`;
-  if (reason.startsWith('dynamic segment')) return `write a port — the worker router matches dynamic segments and hands them to the handler as ctx.params (build --scaffold creates the file), or ${ignore}`;
-  if (reason.startsWith('no GET')) return `the route has no GET to snapshot — write a port for the verb(s) it does answer, or ${ignore}`;
-  if (reason.startsWith('unhandled (autoSnapshot: false)')) return `registry.json sets "autoSnapshot": false, so nothing is snapshotted — write a port, or set autoSnapshot back to true`;
-  if (reason.startsWith('a controller serves it')) return 'the controller did not compile — the reason is on its `controller ... skipped` line above; fix that, or write a port';
-  if (reason.startsWith('HTTP 5')) {
-    // #310: a 5xx whose cause is a build-ENVIRONMENT database gap (the app's
-    // default connection is not the sqlite the build can sandbox, so the
-    // prerender hits an unreachable DB). Telling the operator to "fix the
-    // route" sends them hunting an app bug that does not exist; name the real
-    // cause instead.
-    if (isRuntimeBindingError(reason)) {
-      return `the route needs a reachable database the build does not have (${reason}) — a build-ENVIRONMENT gap, not an app bug: give the build a local sqlite fallback (config/database.php) or make DB_CONNECTION/DB_DATABASE point at a database with data, then rebuild; at the edge the route gets a live D1 connection`;
-    }
-    const dbHint = /no such table/i.test(reason)
-      ? ' — the database is missing tables: run `php artisan migrate` first (a fresh clone starts with an empty database)'
-      : '';
-    return `the route throws when the app boots at build time (${reason}) — this is a bug the build found for free; fix the route, then rebuild${dbHint}`;
-  }
-  if (reason.startsWith('HTTP 3')) return `the route redirects (${reason}) — a redirect needs a handler: write a port that returns it, or ${ignore}`;
-  if (reason.startsWith('HTTP 4')) return `the route answers ${reason} for a bare GET — it probably needs a parameter or auth; write a port, or ${ignore}`;
-  if (reason.startsWith('HTTP')) return `the response is not an HTML page (${reason}) — write a port that returns it (a JSON or file body), or ${ignore}`;
-  return `write a port (build --scaffold), or ${ignore}`;
-};
+// `needsPortFix(n)` (tools/route-gaps.mjs) turns the reason a route was not
+// handled into WHAT TO DO. It lives beside `SKIP_REASONS`/`RUNTIME_REASONS` —
+// the constructors this file uses to BUILD those reasons — so a message edit
+// cannot silently drop the readiness line to the generic fallback
+// (tools/tests/route-gaps.test.mjs pins the pairing). The DB-gap classifier
+// stays here and is passed in.
 
 // ---------- 6. coverage report ----------
 const unknown = [
@@ -4045,7 +4022,7 @@ for (const n of needsPort) {
   if (isRuntimeBindingError(n.reason)) {
     note({ route: n.route, area: 'route', severity: DECLARED, cause: `needs a runtime binding (auto-gap): ${n.reason}`, fix: 'the build cannot prerender a route that needs a live connection -- give the build a reachable database (a sqlite fallback via config/database.php is the free path) or declare the binding in wrangler.jsonc (d1_databases) / set the env at deploy time; the edge then serves the route' });
   } else {
-    note({ route: n.route, area: 'route', severity: BLOCK, cause: `no handler: ${n.reason}`, fix: needsPortFix(n) });
+    note({ route: n.route, area: 'route', severity: BLOCK, cause: `no handler: ${n.reason}`, fix: needsPortFix(n, isRuntimeBindingError) });
   }
   // A route that never became a snapshot or a controller skips the middleware
   // audit above (that one walks the route TABLE), so its middleware is never
