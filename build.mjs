@@ -1607,39 +1607,6 @@ const bladeInstalled = (() => {
   }
 })();
 
-// M1 — the installed package set, split the way composer.lock splits it: the
-// `require` packages (`lock.packages`) and the `require-dev` packages
-// (`lock['packages-dev']`). Each is a Map of `name -> version` (the version as
-// composer.lock records it, `v` prefix and all). The compiler reads this to know
-// which package facades an app actually has installed, so a facade the app does
-// not depend on is refused rather than silently bound to a primitive the worker
-// would never import.
-//
-// Cache note: composer.lock is ALREADY a member of APP_FILES in
-// tools/build-cache.mjs, and `h.addFile(appDir, 'composer.lock')` folds the WHOLE
-// file's bytes into the build cache key — so any change to the dependency graph
-// (a new package, a version bump, a require <-> require-dev move) already
-// invalidates the cache and forces a rebuild. This detection therefore does not
-// need its own separate hash; it rides the existing composer.lock identity.
-const composerPkg = (() => {
-  const empty = { require: new Map(), requireDev: new Map(), all: new Map() };
-  try {
-    const lock = JSON.parse(readFileSync(join(appDir, 'composer.lock'), 'utf8'));
-    const pick = (list) => {
-      const m = new Map();
-      for (const p of list || []) {
-        if (p && typeof p.name === 'string') m.set(p.name, p.version ? String(p.version) : null);
-      }
-      return m;
-    };
-    const require = pick(lock.packages);
-    const requireDev = pick(lock['packages-dev']);
-    const all = new Map([...require, ...requireDev]);
-    return { require, requireDev, all };
-  } catch {
-    return empty; // no composer.lock / unreadable: an app with no locked deps
-  }
-})();
 const bladeOff = process.env.LW_BLADE_JS === '0';
 const blade = { checked: 0, diverged: 0, failed: 0 };
 
