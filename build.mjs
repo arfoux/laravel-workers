@@ -4172,6 +4172,12 @@ if (!bladeOff) {
 // key is fully dynamic (`config($k)`) still cannot be checked — the runtime
 // answers the dump's value, the caller's default, or throws, never a silent null.
 {
+  // The fix hint both config-gate failures end with: name the group(s) so the
+  // reader knows what to add to registry.json. One copy — the two failures
+  // differ in their cause, not in what the reader must do.
+  const configFixHint = (groups) =>
+    '  fix: add the group to registry.json "config" (e.g. "config": ' +
+    JSON.stringify(groups) + ') if the values are not credentials';
   const { missing, uncovered } = configGateMissing(scanConfigReads(join(dist, 'src')), runtimeConfig);
   if (missing.length) {
     const groups = [...new Set(missing.map((k) => k.split('.')[0]))];
@@ -4179,8 +4185,7 @@ if (!bladeOff) {
       'the compiled code reads config key(s) the runtime dump does not carry: ' + missing.join(', ') +
         ' — at the edge those throw `config: missing key ... with no default` (a 500) where PHP\n' +
         '  answers the value (or null, for a key the app never set)\n' +
-        '  fix: add the group to registry.json "config" (e.g. "config": ' +
-        JSON.stringify(groups) + ') if the values are not credentials'
+        configFixHint(groups)
     );
   }
   // A dynamic read can answer any key under its prefix, so "does the dump carry
@@ -4194,8 +4199,7 @@ if (!bladeOff) {
         uncovered.join(', ') +
         ' — the key is built at request time (`config("app." . $k)`), so EVERY value throws\n' +
         '  `config: missing key ... with no default` (a 500)\n' +
-        '  fix: add the group to registry.json "config" (e.g. "config": ' +
-        JSON.stringify(groups) + ') if the values are not credentials'
+        configFixHint(groups)
     );
   }
 }
