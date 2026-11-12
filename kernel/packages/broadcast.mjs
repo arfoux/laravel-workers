@@ -13,19 +13,7 @@
 // WebCrypto's HMAC is async; every exported signer is therefore async.
 
 import { timingSafeEqual } from './webhook.mjs';
-
-async function hmacSha256Hex(secret, message) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(String(secret)),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
+import { hmacSha256Hex } from '../hmac.mjs';
 
 // A channel is subscribable only when it is private or presence — public
 // channels need no auth token (the SDK returns null for them).

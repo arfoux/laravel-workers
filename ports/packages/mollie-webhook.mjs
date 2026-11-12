@@ -32,6 +32,7 @@
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, mapProviderResponse } from '../../kernel/packages/notify-http.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
+import { hmacSha256Hex as signatureFor } from '../../kernel/hmac.mjs';
 
 // Constant-time compare comes from kernel/packages/webhook.mjs (the one
 // `hash_equals()` mirror the other webhook verifiers use).
@@ -41,18 +42,6 @@ import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 // SignatureValidator (`mollie/mollie-api-php`,
 // `src/Webhooks/SignatureValidator.php::createSignature`), which the
 // `X-Mollie-Signature` header carries (optionally prefixed `sha256=`).
-async function signatureFor(secret, rawBody) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(String(secret)),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(rawBody)));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 function json(status, payload) {
   return {
