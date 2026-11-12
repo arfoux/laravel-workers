@@ -2111,6 +2111,18 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
     // of them (the platform answers the CORS preflight).
     return COMPILABLE_METHODS.has(main);
   };
+  // One rule for "the action string names a compilable controller method":
+  // `Fqcn@method` (or a bare invokable class -> __invoke), and both halves must
+  // be plain identifiers. The main-verb loop and the extra-verb loop used to
+  // write it twice — one copy, so a route cannot compile under one and not the
+  // other.
+  const parseActionTarget = (action) => {
+    const at = action.lastIndexOf('@');
+    const fqcn = at >= 0 ? action.slice(0, at) : action;
+    const method = at >= 0 ? action.slice(at + 1) : '__invoke';
+    if (!/^[A-Za-z_][A-Za-z0-9_\\]*$/.test(fqcn) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(method)) return null;
+    return { fqcn, method };
+  };
   const targets = [];
   for (const { route } of needsPort) {
     // A Route::redirect()/permanentRedirect() route is served by the redirect
@@ -2129,11 +2141,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       console.log(`  skip controller ${route}: middleware [${blocking.join(', ')}] not transpiled — write a port`);
       continue;
     }
-    const at = action.lastIndexOf('@');
-    const fqcn = at >= 0 ? action.slice(0, at) : action;
-    const method = at >= 0 ? action.slice(at + 1) : '__invoke';
-    if (!/^[A-Za-z_][A-Za-z0-9_\\]*$/.test(fqcn) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(method)) continue;
-    targets.push({ route, verb: mainVerbFor(route), fqcn, method });
+    const parsed = parseActionTarget(action);
+    if (!parsed) continue;
+    targets.push({ route, verb: mainVerbFor(route), fqcn: parsed.fqcn, method: parsed.method });
   }
 
   // Extra verbs on a uri whose main verb is already handled by a snapshot / view /
@@ -2172,11 +2182,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         console.log(`  skip ${verb} ${route}: middleware [${blocking.join(', ')}] not transpiled — write a port`);
         continue;
       }
-      const at = action.lastIndexOf('@');
-      const fqcn = at >= 0 ? action.slice(0, at) : action;
-      const method = at >= 0 ? action.slice(at + 1) : '__invoke';
-      if (!/^[A-Za-z_][A-Za-z0-9_\\]*$/.test(fqcn) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(method)) continue;
-      extraTargets.push({ route, verb, fqcn, method });
+      const parsed = parseActionTarget(action);
+      if (!parsed) continue;
+      extraTargets.push({ route, verb, fqcn: parsed.fqcn, method: parsed.method });
     }
   }
   for (const t of extraTargets) {
