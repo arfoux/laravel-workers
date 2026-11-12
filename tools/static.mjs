@@ -998,14 +998,16 @@ export const FRAMEWORK_TRIM_EXCEPT = ['current_password', 'password', 'password_
  * transformers it runs (see buildRequest) and the deferred callbacks the app
  * never observes on a request path.
  *
- * `ValidatePathEncoding` is listed here but NOT reproduced — measured (2026-11-12,
- * ledger S40): `GET /letters/a%FF` reaches the worker and the edge answers the
- * fallback with **200** where Laravel's `ValidatePathEncoding::handle()` throws
- * `MalformedUrlException` and the response is **400** (`rawurldecode($path)` is
- * not valid UTF-8). The platform does NOT reject the escape, so the "the
- * platform decodes the path before the worker sees it" reasoning this entry used
- * to carry was wrong. It stays in this set so the build does not report a
- * middleware the edge is known not to run until the check is implemented (S40).
+ * `ValidatePathEncoding` IS reproduced (ledger S40, 2026-11-12): the kernel runs
+ * it as the FIRST step of `handleHttp()`, before the router and before the
+ * session/CSRF layer, so a path whose `rawurldecode()` is not valid UTF-8 is a
+ * 400 ('Malformed URL.') even when no route matches (measured on Laravel 13.37:
+ * `GET /nope%FF` -> 400, not the 404 the path would otherwise get, and no
+ * `Set-Cookie`). The platform does NOT reject the escape - the request reaches
+ * the worker, so the check has to happen here. The app's own global stack
+ * decides whether it runs: `middleware.validate_path_encoding` is false for an
+ * app that removed it from its stack (config-dump writes it), and the kernel
+ * skips the guard then.
  */
 export const MW_IMPLEMENTED_BY_KERNEL = new Set([
   'TrimStrings',
@@ -1207,6 +1209,11 @@ function transformerSpec(ast, state, phpParser) {
   return {
     trim: trimInStack,
     emptyToNull: emptyInStack,
+    // `Illuminate\Http\Middleware\ValidatePathEncoding` is FIRST in the
+    // framework's global stack and the kernel reproduces it; an app that dropped
+    // it from its own stack must be reported or the edge would answer 400 where
+    // Laravel routes the request.
+    validatePathEncoding: inStack('ValidatePathEncoding'),
     // The framework's own list (`TrimStrings::$except`) plus the strings the
     // app added (`TrimStrings::except()`, STATIC and accumulating).
     trimExcept: [...FRAMEWORK_TRIM_EXCEPT, ...(state.trimExcept || [])],

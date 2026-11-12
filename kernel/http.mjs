@@ -1619,6 +1619,85 @@ export function validationMessagesOf(config) {
 }
 
 /**
+ * `Illuminate\Http\Middleware\ValidatePathEncoding::handle()`: the FIRST
+ * middleware in the app's global stack, so it runs before the router — a
+ * `rawurldecode()`d path that is not valid UTF-8 is a `MalformedUrlException`
+ * (400, 'Malformed URL.') even when no route matches (measured on Laravel 13.37:
+ * `GET /nope%FF` answers 400, not the 404 that path would otherwise get).
+ *
+ * The check cannot be `decodeURIComponent()` + try/catch: a `%` that is not
+ * followed by two hex digits is left LITERAL by PHP's `rawurldecode()`, so
+ * `/letters/%zz` stays valid UTF-8 and answers the route, while
+ * `decodeURIComponent` throws on it. The path is therefore decoded BYTE-wise
+ * (PHP's rule) and the bytes are validated as UTF-8 (RFC 3629: no overlong form,
+ * no surrogate, nothing above U+10FFFF), which is what `mb_check_encoding($d,
+ * 'UTF-8')` answers. Measured table (a PHP 8.3 probe, pinned in
+ * kernel/tests/http.test.mjs): `%FF`, `%C3`, `%E9`, `%80`, `%C0%AF`,
+ * `%ED%A0%80`, `%F5%80%80%80`, `%FE%FF`, `%F0%9F%98` are malformed;
+ * `%C3%A9`, `%F0%9F%98%80`, `%41%42`, `%2F`, `%zz`, `%`, `%2`, `café` are not.
+ */
+function isValidUtf8Path(path) {
+  const bytes = [];
+  for (let i = 0; i < path.length; ++i) {
+    const c = path[i];
+    if (c === '%' && i + 2 < path.length && isHexDigit(path[i + 1]) && isHexDigit(path[i + 2])) {
+      bytes.push(parseInt(path.slice(i + 1, i + 3), 16));
+      i += 2;
+      continue;
+    }
+    const cp = path.codePointAt(i);
+    if (cp < 0x80) {
+      bytes.push(cp);
+      continue;
+    }
+    // A raw non-ASCII character: the worker's path is already a JS string, so it
+    // is a valid code point — PHP sees the UTF-8 bytes it encodes to.
+    if (cp > 0xffff) ++i;
+    for (const b of new TextEncoder().encode(String.fromCodePoint(cp))) bytes.push(b);
+  }
+  return utf8BytesAreValid(bytes);
+}
+
+function isHexDigit(c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+function utf8BytesAreValid(bytes) {
+  for (let i = 0; i < bytes.length; ) {
+    const b = bytes[i];
+    let extra;
+    let cp;
+    if (b < 0x80) {
+      ++i;
+      continue;
+    } else if (b >= 0xc2 && b <= 0xdf) {
+      extra = 1;
+      cp = b & 0x1f;
+    } else if (b >= 0xe0 && b <= 0xef) {
+      extra = 2;
+      cp = b & 0x0f;
+    } else if (b >= 0xf0 && b <= 0xf4) {
+      extra = 3;
+      cp = b & 0x07;
+    } else {
+      // 0x80-0xC1 (a stray continuation byte or an overlong lead), 0xF5-0xFF.
+      return false;
+    }
+    if (i + extra >= bytes.length) return false; // truncated sequence
+    for (let k = 1; k <= extra; ++k) {
+      const cb = bytes[i + k];
+      if ((cb & 0xc0) !== 0x80) return false;
+      cp = (cp << 6) | (cb & 0x3f);
+    }
+    if (cp > 0x10ffff) return false;
+    if (cp >= 0xd800 && cp <= 0xdfff) return false; // a UTF-16 surrogate
+    if (cp < (extra === 1 ? 0x80 : extra === 2 ? 0x800 : 0x10000)) return false; // overlong
+    i += extra + 1;
+  }
+  return true;
+}
+
+/**
  * Run one request through the compiled pipeline.
  *
  * @param {object} raw        { method, url, headers, body }
@@ -1679,6 +1758,48 @@ export async function handleHttp(raw, options = {}) {
   // $request->validate() / validateWithBag() — compiled controllers call these
   // through rt.request(); the rule engine gets the D1 binding for unique/exists.
   installValidation(request, { db, defaultMessages: validationMessagesOf(config) });
+
+  // --- ValidatePathEncoding (the FIRST middleware of the global stack) -----
+  // Laravel runs it before the router, so a malformed path is a 400 even when no
+  // route matches, and it never reaches the session/CSRF layer (no Set-Cookie).
+  // `middleware.validate_path_encoding` is false only for an app that removed the
+  // middleware from its own global stack (written by config-dump).
+  if (
+    config['middleware.validate_path_encoding'] !== false &&
+    !isValidUtf8Path(request.pathInfo())
+  ) {
+    const message = 'Malformed URL.';
+    // The exception goes through the app's handler: an `errors/400` view when the
+    // app ships one (the build compiles it like every other error view), else the
+    // framework's page - a framework asset the compiled side replaces with its
+    // minimal page, exactly as the 405 branch above does.
+    const rendered =
+      typeof options.renderErrorView === 'function'
+        ? options.renderErrorView(400, request, null, { status: 400, message })
+        : null;
+    if (rendered != null) {
+      return {
+        status: 400,
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache, private' },
+        setCookie: [],
+        body: String(rendered),
+      };
+    }
+    if (requestExpectsJson(request)) {
+      return {
+        status: 400,
+        headers: { 'content-type': 'application/json', 'cache-control': 'no-cache, private' },
+        setCookie: [],
+        body: phpJsonEncodeWithFlags({ message }, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+      };
+    }
+    return {
+      status: 400,
+      headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache, private' },
+      setCookie: [],
+      body: '<html><body><h1>400</h1><p>Malformed URL.</p></body></html>',
+    };
+  }
 
   const matchReq = {
     method: request.realMethod(),

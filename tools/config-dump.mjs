@@ -255,6 +255,14 @@ $put('transform.trim.except', transform && Array.isArray(transform.trimExcept)
 // implement (TrustHosts, HandleCors, TrustProxies, an app class, ...). Every
 // request fails loud in the worker; the build reports them.
 $put('middleware.prevented', transform && Array.isArray(transform.prevented) ? transform.prevented : []);
+// `Illuminate\Http\Middleware\ValidatePathEncoding` is FIRST in the framework's
+// global stack: a path whose `rawurldecode()` is not valid UTF-8 answers 400
+// ('Malformed URL.') before the router, and the kernel mirrors it. An app that
+// REMOVED the middleware from its own stack has to say so, or the edge would
+// answer 400 where Laravel routes the request. `transformers` is null for an app
+// whose stack shape this dump cannot read, and the framework default (present)
+// applies then.
+$put('middleware.validate_path_encoding', transform ? transform.validatePathEncoding !== false : true);
 $put('cookies.serialize', false);
 
 // ---------- csrf (PreventRequestForgery) ----------
