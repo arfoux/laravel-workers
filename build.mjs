@@ -2304,14 +2304,17 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           aliasToFqcns.set(c.alias, set);
         }
       }
-      // FormRequest candidates (a class-typed parameter that is not a plain
-      // Request). The PHP dump decides whether it really is a FormRequest.
-      const formRequestFqcns = new Set();
+      // The class-typed parameters (a parameter that is not a plain Request):
+      // a FormRequest (injected like a Request) or a model (Laravel's implicit
+      // route-model binding). The PHP dump decides which one it is. One rule —
+      // the FormRequest candidates and the model-bound parameters are the same
+      // set, so it is collected once.
+      const classTypedParamFqcns = new Set();
       for (const p of prepared) {
         for (const param of p.meta.params || []) {
           if (param.inject === 'request') continue;
           if (!param.typeFqcn) continue;
-          formRequestFqcns.add(param.typeFqcn);
+          classTypedParamFqcns.add(param.typeFqcn);
         }
       }
       // Class constants (e.g. RouteServiceProvider::HOME) are dumped too — the
@@ -2320,22 +2323,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       for (const p of prepared) {
         for (const c of p.meta.constants || []) constantFqcns.add(c.fqcn);
       }
-      // The class-typed parameters: a FormRequest (injected like a Request) or a
-      // model (Laravel's implicit route-model binding). The model dump decides
-      // which one it is.
-      const paramTypeFqcns = new Set();
-      for (const p of prepared) {
-        for (const param of p.meta.params || []) {
-          if (param.inject === 'request') continue;
-          if (!param.typeFqcn) continue;
-          paramTypeFqcns.add(param.typeFqcn);
-        }
-      }
       const allFqcns = [...new Set([...aliasToFqcns.values()].flatMap((s) => [...s]))];
       // The model-bound parameters (Laravel's implicit route-model binding:
       // `show(Post $post)`): the type must be dumped too — the model and the key
       // it binds on.
-      for (const fqcn of paramTypeFqcns) {
+      for (const fqcn of classTypedParamFqcns) {
         if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
       }
       // One rule for "an fqcn joins the generated registry": its short name is
@@ -2354,7 +2346,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       const modelDump = new Map();
       let policyDump = { globals: { before: 0, after: 0, abilities: [], definitions: {} }, models: [] };
       const formRequestDump = new Map();
-      const formRequestList = [...formRequestFqcns];
+      const formRequestList = [...classTypedParamFqcns];
 
       // One PHP boot for every metadata oracle: model reflection (recursive
       // relation closure), Gate/policy inspection and FormRequest rule
