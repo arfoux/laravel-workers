@@ -48,6 +48,7 @@ import { provisionPhp } from './tools/php-provision.mjs';
 import { computeBuildCacheKey } from './tools/build-cache.mjs';
 import { scanConfigReads, configGateMissing } from './tools/config-gate.mjs';
 import { syncScratchPhpCache } from './tools/scratch-php-cache.mjs';
+import { envString } from './tools/env-file.mjs';
 import { commitDist, discardStaging } from './compiler/src/dist-swap.mjs';
 import { mutatingMigrations, renderSchemaSql } from './tools/schema-sql.mjs';
 import {
@@ -471,7 +472,9 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
 {
   const envPath = join(appDir, '.env');
   let envText = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
-  const hasKeyInEnvFile = /^APP_KEY=[ \t]*\S/m.test(envText);
+  // Read the FILE alone (`extra = {}`): a key the operator exported is checked
+  // separately below, so seeding the repository here would hide "the file has none".
+  const hasKeyInEnvFile = !!envString(appDir, 'APP_KEY', '', {});
   const hasKeyInProcess = !!(process.env.APP_KEY && String(process.env.APP_KEY).trim());
   if (!hasKeyInEnvFile && !hasKeyInProcess) {
     if (!existsSync(envPath)) {
@@ -664,19 +667,12 @@ console.log('\u2022 compiling migrations \u2192 schema (D1 SQLite dialect, in-me
 mkdirSync(cacheDir, { recursive: true });
 const schemaPath = join(cacheDir, 'schema.json');
 {
-  // Read the app's DB setting the way its own config does (env() → .env). Only a
-  // SQLite database that is actually absent is shadowed; an existing file (with
-  // data) or a differently-configured database is respected — the build never
-  // points the app at a database it did not find.
-  const envPath = join(appDir, '.env');
-  const envText = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
-  const envVal = (name, dflt) => {
-    const m = envText.match(new RegExp('^' + name + '=[ \\t]*(.*)$', 'm'));
-    const v = String(process.env[name] ?? (m ? m[1] : '')).trim();
-    return v || dflt;
-  };
-  const dbConn = envVal('DB_CONNECTION', 'sqlite');
-  const dbDatabase = envVal('DB_DATABASE', 'database/database.sqlite');
+  // Read the app's DB setting the way its own config does (`env()` → .env, an
+  // exported value winning). A QUOTED file value needs the same stripping
+  // Laravel's Dotenv does, or `DB_CONNECTION="sqlite"` reads as `"sqlite"` and
+  // the build-time sandbox is skipped for an app that did want it.
+  const dbConn = envString(appDir, 'DB_CONNECTION', 'sqlite');
+  const dbDatabase = envString(appDir, 'DB_DATABASE', 'database/database.sqlite');
   const dbFile = resolve(appDir, dbDatabase);
   // A file that exists but has never been migrated (the classic
   // `touch database/database.sqlite`) holds no schema either, so it counts as
@@ -974,14 +970,11 @@ if (skippedRoutes.length) {
 // as much a dev origin — keeping it absolute ships dead links to the edge.
 // External origins (laravel.com, fonts, APIs) are never touched.
 const appUrlOrigin = (() => {
-  let raw = process.env.APP_URL || '';
-  try {
-    const envPath = join(appDir, '.env');
-    if (existsSync(envPath)) {
-      const m = readFileSync(envPath, 'utf8').match(/^APP_URL=[ \t]*(.*)$/m);
-      if (m && m[1].trim()) raw = m[1].trim();
-    }
-  } catch { /* keep whatever process.env said */ }
+  // `env('APP_URL')`: an exported value wins over the file, and a quoted file
+  // value is stripped the way Dotenv strips it (`APP_URL="https://app.test"`),
+  // so the origin is not silently dropped for a quoted config.
+  const raw = envString(appDir, 'APP_URL', '');
+  if (!raw) return '';
   try {
     const u = new URL(raw);
     return u.host ? u.protocol + '//' + u.host : '';
