@@ -87,15 +87,16 @@ test('validateHoneypot: name field with undefined value counts as empty', () => 
   assert.equal(res.reason, null);
 });
 
-test('validateHoneypot: totally absent name field is invalid (missing_name_field)', () => {
+// Upstream ProtectAgainstSpam skips the name check when absent ($request->has($name) ? … : '').
+// A POST with no honeypot fields is left through (time check applies below).
+test('validateHoneypot: absent name field skips the name check (time check applies)', () => {
   const now = 1700000000000;
   const res = validateHoneypot(
     { [TIME_FIELD]: (now - 5000).toString(36) },
     1000,
     { now }
   );
-  assert.equal(res.valid, false);
-  assert.equal(res.reason, 'missing_name_field');
+  assert.equal(res.valid, true, 'name absent but time present + valid → valid');
 });
 
 // ---- validateHoneypot: invalid (filled) -----------------------------------
