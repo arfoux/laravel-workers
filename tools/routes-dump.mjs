@@ -275,11 +275,25 @@ const whereNames = (arg) => {
   return argStrList(arg);
 };
 
+// A short, safe description of a php-parser node for a note ("variable $k",
+// "call (2 argument(s))") — enough to name what the scan could not read without
+// echoing the source back.
+const nodeKind = (node) => {
+  if (!node || typeof node !== 'object') return 'a non-literal';
+  const kind = typeof node.kind === 'string' ? node.kind : 'node';
+  if (kind === 'variable' && typeof node.name === 'string') return 'variable $' + node.name;
+  const args = Array.isArray(node.arguments) ? node.arguments.length : Array.isArray(node.items) ? node.items.length : 0;
+  return args ? `${kind} (${args} argument(s))` : kind;
+};
+
 /**
- * Apply ONE chain step's requirements to `target.wheres`, in source order (the
- * caller walks the chain in source order, so a later call wins per name — PHP's
- * `$this->wheres[$name] = $expression`). Returns true when the step was a
- * requirements step (whatever it carried), so a caller can tell "step seen".
+ * Apply ONE chain step's requirements to `target.wheres`.
+ *
+ * The verb path calls this once per chain step in SOURCE order, so a later call
+ * wins per name (PHP's `$this->wheres[$name] = $expression`). The resource path
+ * calls it with a FRESH target per step instead, because
+ * `PendingResourceRegistration::where()` REPLACES the whole map — see
+ * collectModifiers.
  *
  * Shapes, all measured against Laravel 13.37:
  *   - `->where($name, $expression)`     a Route method (after the verb)
@@ -295,27 +309,45 @@ const whereNames = (arg) => {
  *                                       metacharacter: probed, '/twoxv' matches)
  *   - `->whereIn($p, [])`               `''` — Symfony then refuses the
  *                                       requirement, so the BUILD stops on it
+ *   - `->whereIn($p, $values)`          `''` too (the value cannot be read at
+ *                                       build time) — reported through `warn`,
+ *                                       never invented and never dropped
  */
 const applyWhereStep = (method, args, afterVerb, target, warn) => {
   const sm = String(method == null ? '' : method).toLowerCase();
   if (WHERE_HELPERS[sm] || sm === 'wherein') {
     const names = whereNames(args[0]);
-    if (!names) return true;
+    if (!names) return;
     let expr;
     if (sm === 'wherein') {
-      // A non-array second argument is not `whereIn` at all; leave the route
-      // unconstrained rather than inventing an expression PHP never had.
-      if (!args[1]) return true;
-      expr = (argStrList(args[1]) || (args[1].kind === 'array' ? [] : null) || []).join('|');
+      // The second argument must be an array. `whereIn($p, [])` records `''` —
+      // PHP's own value, which Symfony then refuses, so the BUILD stops on it
+      // (the route is never served unconstrained). A value the scan cannot read
+      // is recorded the SAME way and said out loud: it is never turned into an
+      // invented expression, and never dropped (dropping it would serve paths
+      // Laravel rejects).
+      if (!args[1]) return;
+      const list = argStrList(args[1]);
+      if (list) {
+        expr = list.join('|');
+      } else {
+        expr = '';
+        if (args[1].kind !== 'array' && warn) {
+          warn(
+            '`whereIn()` with a value the static scan cannot read (' + nodeKind(args[1]) + ') — the ' +
+              "requirement is recorded as '' (PHP's value for an empty list), which makes the build stop on it"
+          );
+        }
+      }
     } else {
       expr = WHERE_HELPERS[sm];
     }
     for (const n of names) target.wheres = { ...(target.wheres || {}), [n]: expr };
-    return true;
+    return;
   }
-  if (sm !== 'where') return false;
+  if (sm !== 'where') return;
   const map = stringEntryMap(args[0]);
-  if (map) { target.wheres = { ...(target.wheres || {}), ...map }; return true; }
+  if (map) { target.wheres = { ...(target.wheres || {}), ...map }; return; }
   const name = strArg(args[0]);
   const expr = args.length > 1 ? strArg(args[1]) : null;
   if (!afterVerb) {
@@ -326,10 +358,9 @@ const applyWhereStep = (method, args, afterVerb, target, warn) => {
     if (name != null && warn) {
       warn('`Route::where($name, $expression)` BEFORE the verb is not a RouteRegistrar attribute (it takes an array map) and throws on boot in Laravel 13 — the requirement for "' + name + '" is not applied here');
     }
-    return true;
+    return;
   }
-  if (name != null && expr != null) { target.wheres = { ...(target.wheres || {}), [name]: expr }; return true; }
-  return true;
+  if (name != null && expr != null) target.wheres = { ...(target.wheres || {}), [name]: expr };
 };
 
 /**
@@ -673,10 +704,36 @@ function parse() {
       if (sm === 'name') { const n = strArg(st.args[0]); if (n != null) modifiers.name = n; }
       if (sm === 'middleware') { const m = middlewareList(st.args[0]); if (m && m.length) modifiers.middleware = m; }
       if (sm === 'can') modifiers.can = true;
-      // `->where(...)` / `->whereNumber(...)` / `->whereIn(...)`: the
-      // requirements, read by applyWhereStep (shared with the verb path — the
-      // resource path is the only caller of collectModifiers).
-      applyWhereStep(sm, st.args, true, modifiers, note);
+      // `->where(...)` / `->whereNumber(...)` / `->whereIn(...)`: the resource
+      // chain's requirements. `PendingResourceRegistration::where()` REPLACES
+      // the whole map (`$this->options['wheres'] = $wheres`) and every helper
+      // (`whereNumber`, `whereAlpha`, ...) routes through that same setter with
+      // a built map — measured on Laravel 13.37:
+      // `->where(['album' => '[a-z]+', 'x' => '[0-9]+'])->whereNumber('album')`
+      // answers `{"album":"[0-9]+"}`; the `x` key is GONE. `steps` is
+      // outermost-first (see mergeRouteAttrs), so the FIRST where-step seen here
+      // is the LAST in source order — keep that one and ignore the rest.
+      if (WHERE_HELPERS[sm] || sm === 'wherein' || sm === 'where') {
+        if (modifiers.wheres === undefined) {
+          if (sm === 'where' && !stringEntryMap(st.args[0]) && st.args.length > 1) {
+            // `where($wheres)` takes ONE argument, so the second is dropped and
+            // the option becomes the STRING; Laravel then throws when the
+            // resource registers (probed on 13.37: `array_merge(): Argument #2
+            // must be of type array, string given`). Report it instead of
+            // inventing a requirement the app cannot boot with.
+            note(
+              '`->where($name, $expression)` on a `Route::resource()` chain is not a map — ' +
+                '`PendingResourceRegistration::where()` takes the array only, and Laravel throws ' +
+                '`array_merge(): Argument #2 must be of type array, string given` when the resource ' +
+                'registers (verified on 13.37) — the requirement is not applied here'
+            );
+          } else {
+            const step = {}; // a FRESH target: the step replaces, it does not merge
+            applyWhereStep(sm, st.args, true, step, note);
+            if (step.wheres) modifiers.wheres = step.wheres;
+          }
+        }
+      }
       // Resource shape comes in two forms: `->only([...])` (a chain step) and
       // `Route::resource(..., ['only'=>...])` (the options argument) — both count.
       if (sm === 'only') { const l = argStrList(st.args[0]); if (l) modifiers.only = l; }
@@ -1310,6 +1367,17 @@ function parse() {
       .filter(([a]) => !except || !except.includes(a));
 
     const g = now();
+    // The GROUP's requirements are the BASE of every action's map, and the
+    // resource's own `->where([...])` overrides per name — the same merge the
+    // verb path does (`{ ...g.wheres, ...attrs.wheres }`). `RouteGroup` carries
+    // its `where` into `$options['where']` when the group runs
+    // (`RouteGroup::merge()` -> `RouteRegistrar::resource()` ->
+    // `getResourceAction()` copies it onto every action), so a resource inside
+    // `->where(['album' => '[a-z]+'])->group(...)` answers PHP's requirement on
+    // all seven routes. Dropping it here left the edge serving paths PHP
+    // answers 404 for (measured against Laravel 13.37: the group's map lands in
+    // the action's `where` AND the route's `$this->wheres`).
+    const resourceWheres = { ...g.wheres, ...(modifiers.wheres || {}) };
     const group = g.group || baseGroupFor(file);
     const excluded = (modifiers.excluded || []).concat(g.excluded);
     for (const [action, http, uriRaw] of plan) {
@@ -1353,7 +1421,10 @@ function parse() {
         // ones included (probed: `photos` and `photos/create` carry
         // `{"photo":"[0-9]+"}` although their URI has no such segment; the
         // compiler ignores a requirement for a name the pattern never uses).
-        ...(Object.keys(modifiers.wheres || {}).length ? { wheres: modifiers.wheres } : {}),
+        // The GROUP's requirements ride along as the base (`resourceWheres`),
+        // so a resource inside `->where([...])->group(...)` carries the group's
+        // map on every action, exactly like PHP.
+        ...(Object.keys(resourceWheres).length ? { wheres: resourceWheres } : {}),
       });
     }
   };

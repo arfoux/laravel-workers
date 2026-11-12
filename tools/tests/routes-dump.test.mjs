@@ -946,6 +946,109 @@ Route::resource('photos', 'PhotoController')->where(['photo' => '[0-9]+']);
   }
 });
 
+test('a GROUP where() applies to a resource inside the group, like route:list', () => {
+  // Measured on a booted Laravel 13.37 app (PHP 8.3.30) by reading `$route->wheres`
+  // off the router: `Route::group(['where' => ['album' => '[a-z]+']], fn =>
+  // Route::resource('albums', C))` carries `{"album":"[a-z]+"}` on ALL seven
+  // actions — `albums` and `albums/create` included, whose uri has no such
+  // segment — while the resource's own `->where([...])` overrides the group per
+  // name (`albums2` => `{"album":"[0-9]+"}`, not `[a-z]+`). Dropping the group's
+  // map left the edge serving `/albums/9` where PHP answers 404.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::where(['album' => '[a-z]+'])->group(function () {
+    Route::resource('albums', 'App\\\\Http\\\\Controllers\\\\AlbumController');
+});
+Route::group(['where' => ['album' => '[a-z]+']], function () {
+    Route::resource('albums2', 'App\\\\Http\\\\Controllers\\\\AlbumController')->where(['album' => '[0-9]+']);
+});
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  for (const uri of ['albums', 'albums/create', 'albums/{album}', 'albums/{album}/edit']) {
+    assert.deepEqual((by.get(uri) || {}).wheres, { album: '[a-z]+' }, `the group's where for ${uri}`);
+  }
+  // the resource's own map wins per name (PHP: array_merge of the two, own last)
+  for (const uri of ['albums2', 'albums2/create', 'albums2/{albums2}']) {
+    assert.deepEqual((by.get(uri) || {}).wheres, { album: '[0-9]+' }, `the resource's own where for ${uri}`);
+  }
+});
+
+test('a resource where() chain REPLACES the map, like PendingResourceRegistration', () => {
+  // Measured on a booted Laravel 13.37 app (PHP 8.3.30) by reading
+  // `$route->wheres` off the router:
+  //   Route::resource('albums4', C)->where(['album' => '[a-z]+', 'x' => '[0-9]+'])->whereNumber('album')
+  // answers `{"album":"[0-9]+"}` — the `x` key is GONE.
+  // `PendingResourceRegistration::where()` assigns `$this->options['wheres']`
+  // (it does not merge) and every helper routes through that same setter, so the
+  // LAST call in source order wins whole. A per-name merge here invented `x` on
+  // all seven actions — a requirement the route never had, which made the edge
+  // refuse paths PHP answers 200.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::resource('albums4', 'App\\\\Http\\\\Controllers\\\\AlbumController')->where(['album' => '[a-z]+', 'x' => '[0-9]+'])->whereNumber('album');
+Route::resource('albums5', 'App\\\\Http\\\\Controllers\\\\AlbumController')->whereNumber('album')->where(['album' => '[a-z]+', 'y' => '[0-9]+']);
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  for (const uri of ['albums4', 'albums4/create', 'albums4/{albums4}', 'albums4/{albums4}/edit']) {
+    assert.deepEqual((by.get(uri) || {}).wheres, { album: '[0-9]+' }, `wheres for ${uri}`);
+  }
+  for (const uri of ['albums5', 'albums5/create', 'albums5/{albums5}']) {
+    assert.deepEqual((by.get(uri) || {}).wheres, { album: '[a-z]+', y: '[0-9]+' }, `wheres for ${uri}`);
+  }
+});
+
+test('a resource where() with a string argument is reported, not invented', () => {
+  // `PendingResourceRegistration::where($wheres)` takes ONE argument, so
+  // `->where('album', '[0-9]+')` stores the STRING and Laravel throws when the
+  // resource registers — probed on 13.37:
+  // `TypeError: array_merge(): Argument #2 must be of type array, string given`.
+  // The scan must not pretend those routes carry a requirement.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::resource('albums6', 'App\\\\Http\\\\Controllers\\\\AlbumController')->where('album', '[0-9]+');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stderr, /array_merge\(\): Argument #2 must be of type array, string given/);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  assert.equal(by.get('albums6').wheres, undefined);
+});
+
+test('a verb-chain where() takes the LAST call per name, like Route::where()', () => {
+  // Measured on 13.37: `->where('id', '[0-9]+')->where('id', '[a-z]+')` answers
+  // `{"id":"[a-z]+"}` — Route::where() assigns `$this->wheres[$name]` as the
+  // chain is built, so a later call wins per name while the keys of an earlier
+  // map survive.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get('chain1/{id}', fn () => 'x')->where('id', '[0-9]+')->where('id', '[a-z]+');
+Route::get('chain2/{a}/{b}', fn () => 'x')->where(['a' => '[0-9]+', 'b' => '[0-9]+'])->where('a', '[a-z]+');
+Route::get('chain3/{id}', fn () => 'x')->where('id', '[a-z]+')->whereNumber('id');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  assert.deepEqual((by.get('chain1/{id}') || {}).wheres, { id: '[a-z]+' });
+  assert.deepEqual((by.get('chain2/{a}/{b}') || {}).wheres, { a: '[a-z]+', b: '[0-9]+' });
+  assert.deepEqual((by.get('chain3/{id}') || {}).wheres, { id: '[0-9]+' });
+});
+
 test('a where() before the verb with a string is reported, not silently applied', () => {
   // RouteRegistrar takes a MAP for `where`; `Route::where('id', '[0-9]+')->get(...)`
   // is a boot TypeError in Laravel 13 (RouteGroup::formatWhere -> array_merge).
