@@ -9,6 +9,8 @@
 // only difference is that WebCrypto's sign() is async, which is fine — a webhook
 // route is never hot.
 
+import { hmacSha256Hex } from '../hmac.mjs';
+
 //Constant-time string compare (mirrors PHP `hash_equals()`): compares every
 // byte and only then folds, so length and content both influence timing as
 // little as possible. Returns true iff `a` and `b` are equal-length and equal.
@@ -19,19 +21,6 @@ export function timingSafeEqual(a, b) {
   let diff = 0;
   for (let i = 0; i < sa.length; i += 1) diff |= sa.charCodeAt(i) ^ sb.charCodeAt(i);
   return diff === 0;
-}
-
-async function hmacSha256Hex(secret, message) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(String(secret)),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // Stripe: header `Stripe-Signature: t=<unix>,v1=<hex>`. The signed payload is

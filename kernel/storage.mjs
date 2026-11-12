@@ -8,13 +8,7 @@
 //   - memory          — tests only; the worker never falls back to it (the
 //                        runtime fails loud instead of losing writes).
 import { timingSafeEqual } from './encrypter.mjs';
-
-async function hmacHex(secret, message) {
-  const enc = new TextEncoder();
-  const key = await globalThis.crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(message));
-  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
-}
+import { hmacSha256Hex as hmacHex } from './hmac.mjs';
 
 // The D1 blob store: one row per object.
 export const BLOB_TABLE = 'lw_blobs';
