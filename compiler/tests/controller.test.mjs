@@ -2026,6 +2026,8 @@ writeTree(tmpRoot, {
   'kernel/packages/webhook.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'webhook.mjs'), 'utf8'),
   'kernel/packages/broadcast.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'broadcast.mjs'), 'utf8'),
   'kernel/packages/notify-http.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'notify-http.mjs'), 'utf8'),
+  // webhook.mjs / broadcast.mjs sign through the shared HMAC primitive.
+  'kernel/hmac.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'hmac.mjs'), 'utf8'),
   // model.mjs + the runtime share the localized month/day tables (a model date's
   // translatedFormat), and rt.view shares the session's ViewErrorBag.
   'kernel/date-names.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'date-names.mjs'), 'utf8'),
