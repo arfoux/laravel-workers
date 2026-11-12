@@ -2,6 +2,31 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A `--lock` file pins the app's `require-dev` names, so `composer validate` accepts it
+
+`--lock` wrote `'packages-dev': []` — `resolveDependencies()` walked `require` only, and the header
+comment called that by design. On a Laravel skeleton (Pint, Pail, PHPUnit live in `require-dev`) that
+made `composer validate` exit **2** with `Required (in require-dev) package "..." is not present in the
+lock file.` (Composer 2.9.0 / PHP 8.3.30, audit #805): a lock file this tool writes, rejected by the
+ecosystem it is written for.
+
+| change | why |
+|---|---|
+| `resolveDependencies(appDir, { includeDev: true })` walks the root `require-dev` as well, and the reachability check uses that same root set (`rootRequire`); the flag defaults to **false** | the install path must never walk — let alone install — a dev closure; only the lock wants it |
+| `writeComposerLock(appDir, entries, devEntries)` writes the dev closure into `packages-dev` through the same `lockEntry()` mapper as `packages`, and returns the `require-dev` names it still has no entry for | composer reads both lists the same way; the leftovers are what the caller says out loud, because that failure lands later, in the app's own `composer validate` |
+| the CLI `--lock` path resolves the dev closure too (`includeDev`, silent) and drops every name already in `packages` | a package can be a production *and* a dev requirement; it must appear once |
+| `readLockPackages()` is untouched — it reads `packages` | the lock now *lists* dev packages; the installed tree must still never contain them |
+
+Evidence: a skeleton-shaped app (3 `require` + 3 `require-dev`) resolved **74 production + 28 dev-only**
+packages, and the written lock passes `composer validate --no-check-publish` with **exit 0** and no
+`not present in the lock file` line (the same probe exited 2 before this change). The CLI flow itself —
+`ensureVendorLite(dir, { lock: true })` on a composer.json-only app needing `psr/log` — writes
+`packages=1 / packages-dev=1`, keeps `laravel/pint` out of the vendor cache, and validates exit 0.
+`tools/tests/composer-lock.test.mjs` pins the writer: the dev set into `packages-dev`, the production set
+into `packages`, `content-hash` over the app's `composer.json`, and a `require-dev` name with no entry
+returned to the caller and named inside the lock. `npm test` 2079 tests / 0 fail (54 skipped), the three
+new writer tests included.
+
 ### A malformed path is a 400 before routing, as `ValidatePathEncoding` answers
 
 Cloudflare does **not** reject a malformed percent-escape: `GET /letters/a%FFb` reached the Worker, and
