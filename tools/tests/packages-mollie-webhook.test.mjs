@@ -305,3 +305,52 @@ test('mollie: ensureSchema creates the payments table', async () => {
   // The CREATE TABLE ran without throwing; the stub accepts any SQL.
   assert.equal(typeof db.prepare, 'function');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The production shape: the ctx comes from a REAL kernel Request, not a
+// hand-built one. `okCtx` above hands the port `text: async () => rawBody`, which
+// hid the bug this test exists for: the kernel Request had no raw-body accessor,
+// so `ctx.request.text()` answered JSON.stringify(parsed) — a re-serialised body
+// the provider's signature cannot match. Verified by probe before the fix: a
+// genuinely signed, pretty-printed payload was answered 401.
+// ─────────────────────────────────────────────────────────────────────────────
+test('mollie: a genuinely signed webhook over a real kernel Request reaches the reconcile', async () => {
+  const { buildRequest } = await import('../../kernel/http.mjs');
+  const { normalizePortCtx } = await import('../../kernel/packages/port-ctx.mjs');
+
+  // Pretty-printed on purpose: the raw bytes differ from JSON.stringify(parsed).
+  const rawBody = '{\n  "id": "tr_7UhSN1zuXS",\n  "status": "paid"\n}';
+  const kernReq = buildRequest({
+    method: 'POST',
+    url: 'https://app.test/webhooks/mollie',
+    headers: { 'content-type': 'application/json', 'x-mollie-signature': sign(SECRET, rawBody) },
+    body: rawBody,
+  });
+  const ctx = normalizePortCtx({ method: 'POST', params: {}, query: {}, request: kernReq });
+
+  assert.equal(await ctx.request.text(), rawBody, 'the port must see the bytes as they arrived');
+
+  const payment = { id: 'tr_7UhSN1zuXS', status: 'paid', amount: { value: '10.00', currency: 'EUR' } };
+  const fetchImpl = makeFetch(200, payment);
+  const db = makeDb();
+  const res = await handler(ctx, { fetchImpl, DB: db, MOLLIE_WEBHOOK_SECRET: SECRET, MOLLIE_API_KEY: API_KEY });
+
+  assert.equal(res.status, 200);
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(db.rows.length, 1);
+
+  // The re-serialised body is exactly what must NOT be signed.
+  const reparsed = JSON.stringify(JSON.parse(rawBody));
+  const wrong = await handler(
+    normalizePortCtx({
+      method: 'POST', params: {}, query: {},
+      request: {
+        header: () => sign(SECRET, rawBody),
+        json: () => JSON.parse(rawBody),
+        text: () => reparsed,
+      },
+    }),
+    { fetchImpl: makeFetch(200, payment), DB: makeDb(), MOLLIE_WEBHOOK_SECRET: SECRET, MOLLIE_API_KEY: API_KEY },
+  );
+  assert.equal(wrong.status, 401, 'a signature over re-serialised bytes stays rejected');
+});

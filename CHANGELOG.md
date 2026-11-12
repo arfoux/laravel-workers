@@ -2,6 +2,30 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Webhook signatures: the verifiers can see the raw body again
+
+`kernel/http.mjs` built a `Request` with no raw-body accessor, so
+`kernel/packages/port-ctx.mjs`'s `rawText()` fell through to `JSON.stringify(json())` — a
+re-serialisation of the parsed body. Every port that verifies a provider signature HMACs the bytes
+as they arrived, so on the kernel path (the real one) all five compared against a different
+message: **a genuinely signed, pretty-printed payload was answered `401`.** Reproduced with a probe
+before the fix (`buildRequest` → `normalizePortCtx` → `mollie-webhook`: raw bytes in, re-serialised
+bytes out, `401` on a valid `X-Mollie-Signature`), and the same probe answers `200` after it.
+
+| change | why |
+|---|---|
+| `Request::getContent()` (`kernel/http.mjs`) — the raw body string, Symfony parity; `text()` as the awaited alias a port written against a fetch `Request` reads | the body was held as a string but never exposed; a provider's signature is over the bytes, not over a parse/stringify round-trip |
+| `rawText()` precedence: fetch `Request` → `getContent()` → `text()` → `JSON.stringify(json())` | the old `text() && !json()` branch could never fire on the kernel shape (it has `json()` and had no `text()`), so the fallback was the only reachable outcome |
+
+Affected ports (unchanged code, they already call `ctx.request.text()`): `cashier-stripe`,
+`cashier-paddle`, `lemonsqueezy`, `mollie-webhook`, `webhook-client`. Covered by
+`kernel/tests/http.test.mjs` (raw bytes verbatim for JSON/form, `''` for GET) and
+`tools/tests/packages-mollie-webhook.test.mjs` (a real kernel `Request` carrying a pretty-printed,
+genuinely signed body → `200`, while a signature over the re-serialised bytes stays `401`).
+
+This also closes the caveat on the Mollie entry below: that fix made the scheme right, but a real
+webhook still could not be verified until the raw body was reachable.
+
 ### A security decision read from the request, and a credential check that failed open
 
 Four ports took an authorization/identity decision from request data, or skipped the check they
@@ -17,8 +41,9 @@ test:
 
 Also recorded, not changed here: `auth0` never validates the OAuth `state` it documents, and
 `laravel-socialite-callback` accepts a state from the D1 store when the cookie binding fails —
-both need a decision on the state store, and `webhook-client` signs a re-serialised body on the
-kernel path rather than the raw bytes. They are in the extensibility ledger, not silently dropped.
+both need a decision on the state store. (`webhook-client` belonged to this list as well, for
+signing a re-serialised body on the kernel path rather than the raw bytes; that turned out to be a
+kernel-wide gap, fixed by the entry above.)
 
 ### Mollie webhook: the signature check matches Mollie's own, and an unsigned webhook is accepted
 
