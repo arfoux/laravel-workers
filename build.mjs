@@ -2555,6 +2555,13 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
         }
       };
+      // One rule for "this view failed to compile": mark it failed and print
+      // the `skipped` line. Two sites reach it (the wave loop and the recursive
+      // batch) — one copy, so the failure bookkeeping cannot drift.
+      const failView = (view, detail) => {
+        failedViews.add(view);
+        console.log(`  view ${view}: skipped — ${String(detail).slice(0, 300)}`);
+      };
       // The mailable's views (the dump carries them): a mailable's view is not
       // reached from a route, so the build compiles it here.
       const mailViews = Array.isArray(classesDump.mailViews) ? classesDump.mailViews : [];
@@ -2654,8 +2661,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             writeContextModule(view, dump.context);
             markCompiled(view, dump.compiled);
           } catch (e) {
-            failedViews.add(view);
-            console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
+            failView(view, String(e.stderr || e.message || '').trim());
           }
         }
 
@@ -2687,8 +2693,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             const dump = emitViewModule(view, dumpPath, viewModulePath, viewDataKinds[view]);
             markCompiled(view, dump.compiled);
           } catch (e) {
-            failedViews.add(view);
-            console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
+            failView(view, String(e.stderr || e.message || '').trim());
           }
         }
       }
