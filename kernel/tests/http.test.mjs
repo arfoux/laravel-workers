@@ -1780,3 +1780,99 @@ test('Request::getContent() returns the raw bytes, not a re-serialisation', asyn
   const getReq = buildRequest({ method: 'GET', url: 'https://app.test/hook?a=1', headers: {} });
   assert.equal(getReq.getContent(), '');
 });
+
+// `Illuminate\Http\Middleware\ValidatePathEncoding` (the FIRST middleware of the
+// global stack): a `rawurldecode()`d path that is not valid UTF-8 raises
+// `MalformedUrlException` (400, 'Malformed URL.') and it happens BEFORE the
+// router - so a malformed path answers 400 even when no route matches, and no
+// session/CSRF layer runs (no Set-Cookie).
+//
+// Every expectation below is PHP 8.3's own answer for the same string
+// (`rawurldecode()` then `mb_check_encoding($d, 'UTF-8')`), measured on the
+// oracle app; a malformed ESCAPE is not a malformed encoding, which is why the
+// check cannot be `decodeURIComponent()` + try/catch (`%zz` throws there but PHP
+// leaves it literal and answers the route).
+test('ValidatePathEncoding: a path whose rawurldecode() is not UTF-8 is a 400 before routing', async () => {
+  const { db } = makeDb();
+  const options = {
+    table: normalizeTable(ROUTES),
+    handlers,
+    config: baseConfig(),
+    env: { DB: db },
+    db,
+    models: { LWOracleUser },
+    clock: () => FREEZE_S,
+    clientIp: CLIENT_IP,
+  };
+  const call = (uri, headers) =>
+    handleHttp(
+      { method: 'GET', url: BASE + uri, headers: { host: 'localhost', ...(headers || {}) }, body: '' },
+      options
+    );
+
+  // Malformed: a stray byte, a truncated sequence, an overlong form, a surrogate,
+  // an out-of-range lead byte - and a path with NO matching route (the middleware
+  // runs first, so PHP answers 400 and not the platform's 404).
+  const malformed = [
+    '/letters/a%FFb',
+    '/letters/%FF',
+    '/letters/%C3',
+    '/letters/%E9',
+    '/letters/%80',
+    '/letters/%C0%AF',
+    '/letters/%ED%A0%80',
+    '/letters/%F5%80%80%80',
+    '/letters/%FE%FF',
+    '/letters/%F0%9F%98',
+    '/letters/%C3%25A9',
+    '/nope%FF',
+  ];
+  for (const uri of malformed) {
+    const res = await call(uri);
+    assert.equal(res.status, 400, `${uri} must be a 400`);
+    assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal(res.headers['cache-control'], 'no-cache, private');
+    assert.equal(res.body, '<html><body><h1>400</h1><p>Malformed URL.</p></body></html>');
+    assert.deepEqual(res.setCookie, [], `${uri} must not start a session (PHP sends no Set-Cookie)`);
+  }
+
+  // Valid: ASCII, a real UTF-8 sequence, an emoji, and the cases where PHP's
+  // rawurldecode() leaves the escape alone. None of these routes exists in the
+  // synthetic table, so the pipeline answers "no route" (null) - the point is
+  // that it is NOT a 400.
+  const valid = ['/letters/plain', '/letters/%C3%A9', '/letters/café', '/letters/%F0%9F%98%80', '/letters/%41%42', '/letters/%2F', '/letters/%zz', '/letters/%', '/letters/%2', '/letters/%25FF', '/letters/%2541', '/letters/%25'];
+  for (const uri of valid) {
+    const res = await call(uri);
+    assert.equal(res, null, `${uri} must not be a 400`);
+  }
+
+  // An expectsJson request gets Laravel's JSON body for the exception
+  // (`Handler::prepareJsonResponse()`: JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES).
+  const json = await call('/letters/a%FFb', { accept: 'application/json' });
+  assert.equal(json.status, 400);
+  assert.equal(json.headers['content-type'], 'application/json');
+  assert.equal(json.body, '{\n    "message": "Malformed URL."\n}');
+});
+
+test('ValidatePathEncoding: an app that removed the middleware routes instead of 400', async () => {
+  // `bootstrap/app.php` may drop `ValidatePathEncoding` from the global stack
+  // (`$middleware->remove(...)` / `use([...])`); config-dump writes that as
+  // `middleware.validate_path_encoding: false` and the kernel skips the guard.
+  // Otherwise the edge would answer 400 where Laravel answers the route.
+  const { db } = makeDb();
+  const options = {
+    table: normalizeTable(ROUTES),
+    handlers,
+    config: { ...baseConfig(), 'middleware.validate_path_encoding': false },
+    env: { DB: db },
+    db,
+    models: { LWOracleUser },
+    clock: () => FREEZE_S,
+    clientIp: CLIENT_IP,
+  };
+  const res = await handleHttp(
+    { method: 'GET', url: BASE + '/letters/a%FFb', headers: { host: 'localhost' }, body: '' },
+    options
+  );
+  assert.equal(res, null, 'the guard must not run when the app removed the middleware');
+});

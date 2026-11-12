@@ -298,3 +298,20 @@ test('middleware state: preventRequestForgery() records originOnly and allowSame
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('middleware state: ValidatePathEncoding is reported unless the app removed it', () => {
+  // The kernel runs `Illuminate\Http\Middleware\ValidatePathEncoding` first (a
+  // path whose rawurldecode() is not valid UTF-8 is a 400 before the router), so
+  // config-dump has to know whether the app's own stack still holds it: an app
+  // that removed it routes such a request, and the edge must not 400 it.
+  const t = spec('');
+  assert.equal(t.validatePathEncoding, true, 'the framework default stack holds it');
+
+  const removed = spec('$middleware->remove(\\Illuminate\\Http\\Middleware\\ValidatePathEncoding::class);');
+  assert.equal(removed.validatePathEncoding, false);
+
+  // `use()` REPLACES the whole global stack, so a stack that does not name it is
+  // the same answer.
+  const replaced = spec('$middleware->use([\\Illuminate\\Foundation\\Http\\Middleware\\TrustProxies::class]);');
+  assert.equal(replaced.validatePathEncoding, false);
+});
