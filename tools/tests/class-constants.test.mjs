@@ -165,3 +165,25 @@ test('`X::class` folds to the FQCN string in the constant path too (#700)', () =
   assert.equal(c.TYPE, 'App\\Support\\Thing');
   assert.equal(c.SELF_TYPE, 'App\\Foo', 'self::class is the declaring class');
 });
+
+test('`parent::class` folds to the PARENT FQCN, not dropped', () => {
+  // Probed on PHP 8.3: `class B extends A { const P = parent::class; }` answers
+  // `A`. The constant path returned null for `parent::class` (it looked for a
+  // constant named `class` on the parent, the same miss as #700), so the
+  // constant vanished from the dump and every route reading it failed loud.
+  const dir = mkdtempSync(join(tmpdir(), 'lw-parent-'));
+  try {
+    mkdirSync(join(dir, 'app'), { recursive: true });
+    writeFileSync(join(dir, 'app', 'Base.php'), '<?php\nnamespace App;\nclass Base {\n    const KIND = "base";\n}\n');
+    const file = join(dir, 'app', 'Foo.php');
+    writeFileSync(file, '<?php\nnamespace App;\nclass Foo extends Base {\n    const P = parent::class;\n    const Q = self::class;\n}\n');
+    const parsed = parsePhpFile(file);
+    assert.equal(parsed.error, undefined, parsed.error);
+    const c = classConstants(dir, parsed, parsed.classes[0]).constants;
+    assert.equal(c.P, 'App\\Base', 'parent::class resolves through the parent chain');
+    assert.equal(c.Q, 'App\\Foo');
+    assert.equal(c.KIND, 'base', 'the inherited constant still comes through');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
