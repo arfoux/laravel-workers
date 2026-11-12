@@ -7,7 +7,7 @@ The change-by-change record of laravel-workers (M1–M70 and the A-series audit 
 `--lock` wrote `'packages-dev': []` — `resolveDependencies()` walked `require` only, and the header
 comment called that by design. On a Laravel skeleton (Pint, Pail, PHPUnit live in `require-dev`) that
 made `composer validate` exit **2** with `Required (in require-dev) package "..." is not present in the
-lock file.` (Composer 2.9.0 / PHP 8.3.30, audit #805): a lock file this tool writes, rejected by the
+lock file.` (audit #805, Composer 2.9.0; re-measured here on Composer 2.9.4 / PHP 8.3.30): a lock file this tool writes, rejected by the
 ecosystem it is written for.
 
 | change | why |
