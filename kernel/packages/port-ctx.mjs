@@ -134,6 +134,35 @@ export function normalizePortCtx(ctx = {}) {
   };
 }
 
+/**
+ * The identity a port may act on: the platform's own guard — `ctx.user()`, the
+ * awaited accessor the Worker hands every port (`kernel/http.mjs`:
+ * `user: () => auth.guard().user()`), or the `ctx.user` object a test passes —
+ * or an id a `middlewarePorts` guard wrote onto `ctx` (`kernel/router.mjs`).
+ *
+ * A value a CALLER supplied (`ctx.body` / `ctx.query` / `ctx.params`) is never
+ * read: at the edge that lets any caller pick the account it acts as (Laravel
+ * takes the same ids from `$request->user()`, never the request body). Returns a
+ * finite number, or `null` when the request carries no identity — the caller's
+ * handlers must answer 401/403 on `null`, never fall back to a client value.
+ */
+export async function guardUserId(ctx = {}) {
+  if (ctx.user_id != null && ctx.user_id !== '') {
+    const injected = Number(ctx.user_id);
+    if (Number.isFinite(injected)) return injected;
+  }
+  try {
+    const u = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
+    if (u && u.id != null) {
+      const id = Number(u.id);
+      if (Number.isFinite(id)) return id;
+    }
+  } catch {
+    /* guard threw (unauthenticated) — treat as no identity */
+  }
+  return null;
+}
+
 /** The same parse as a flat view, for ports that prefer destructuring. */
 export function readPortContext(ctx = {}) {
   const p = parse(ctx);

@@ -8,9 +8,12 @@
 //
 // Route contract (registry.json → {"ports": {"/broadcasting/auth": "reverb"}}):
 //   POST /broadcasting/auth
-//   body: socket_id, channel_name [, channel_data (presence, base64 JSON)]
-//   → `{auth, channel_data}` signed with HMAC-SHA256 over
-//     `{socket_id}:{channel_name}` using Reverb's app key/secret.
+//   body: socket_id, channel_name
+//   → `{auth}` (private) / `{auth, channel_data}` (presence) signed with
+//     HMAC-SHA256 over `{socket_id}:{channel_name}` using Reverb's app key/secret.
+//   A guarded channel requires an authenticated request (`ctx.user()` /
+//   middleware-written `ctx.user_id`); the presence user id is that identity,
+//   never a value the caller supplied.
 //
 // Secrets (worker env): REVERB_KEY, REVERB_SECRET.
 //
@@ -29,7 +32,7 @@ import {
   isPrivateChannel,
   signChannelAuth,
 } from '../../kernel/packages/broadcast.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 function reverbConfig(env) {
   const key = env.REVERB_KEY;
@@ -55,18 +58,18 @@ export default async function handle(ctx, env) {
       return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'channel must be private- or presence-' }) };
     }
 
+    // Identity comes from the platform guard, never the caller's body:
+    // `PusherBroadcaster::validAuthenticationResponse()` hands `presence_auth()`
+    // `$user->getAuthIdentifier()`, and `Broadcaster::auth()` denies a guarded
+    // (private-/presence-) channel when there is no user. A caller-supplied
+    // `channel_data.user_id` would let anyone join as an arbitrary user.
+    const userId = await guardUserId(ctx);
+    if (userId == null) {
+      return { status: 401, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Unauthenticated.' }) };
+    }
+
     if (channelName.startsWith('presence-')) {
-      const incoming = body.get('channel_data');
-      let userData = null;
-      if (incoming) {
-        try { userData = JSON.parse(atob(String(incoming))); }
-        catch { return { status: 422, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'invalid channel_data' }) }; }
-      }
-      const userId = userData?.user_id ?? ctx.userId ?? null;
-      if (userId == null) {
-        return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'presence channel requires an authenticated user' }) };
-      }
-      const { auth, channel_data: channelData } = await signChannelAuth(key, secret, socketId, channelName, { user_id: userId, user_info: userData?.user_info ?? null });
+      const { auth, channel_data: channelData } = await signChannelAuth(key, secret, socketId, channelName, { user_id: userId });
       return {
         status: 200,
         headers: { 'content-type': 'application/json' },

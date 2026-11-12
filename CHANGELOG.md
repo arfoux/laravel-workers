@@ -2,6 +2,30 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Broadcast channel auth no longer takes the presence user id from the request body
+
+`ports/packages/pusher.mjs` and `ports/packages/reverb.mjs` answered `POST /broadcasting/auth` by reading the
+presence user id out of the caller's own payload — `channel_data` (base64 JSON), a field Echo's client does not
+send — and signed it with the app secret. Ran against the pre-fix code with an independent probe: an anonymous
+request carrying `channel_data={"user_id":999,...}` came back `200` with that id embedded verbatim, authenticated as
+nobody. Both ports also signed a **private** channel for a request with no identity at all, so any caller could
+obtain a valid subscription token for any `private-*` channel of the app.
+
+Laravel does not read identity from the request: `PusherBroadcaster::validAuthenticationResponse()` hands
+`presence_auth()` `$user->getAuthIdentifier()`, and `Broadcaster::auth()` denies a guarded (`private-`/`presence-`)
+channel outright when there is no user. Both ports now resolve the id the same way as the rest of the fleet —
+`guardUserId(ctx)` (`kernel/packages/port-ctx.mjs`): `ctx.user()` (kernel/http.mjs) or an id a `middlewarePorts`
+guard wrote onto `ctx` — sign with that id, and answer `401 Unauthenticated.` on a guarded channel with no
+identity. `channel_data.user_id` is never read.
+
+The same helper absorbs the three copies of this rule that already existed (`passport-oauth.mjs`'s
+`resolveUserId()`, `fortify-two-factor.mjs`/`fortify-confirmation.mjs`'s `currentUser()`): one accessor, one place
+where "the identity is the guard's, not the caller's" is written down.
+
+- Covered by `tools/tests/packages-search-realtime.test.mjs`: byte-parity HMAC with node:crypto for both ports, the
+  guard id embedded when the body carries a different one, and `401`/`403`/`422` for no identity / public channel /
+  missing fields.
+
 ### Fortify two-factor no longer takes the account from the request body
 
 `ports/packages/fortify-two-factor.mjs` resolved the user for **all four** endpoints from `body.email` and

@@ -48,7 +48,7 @@ import {
   recoveryCodes,
   verifyTotp,
 } from '../../kernel/packages/totp.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -81,16 +81,8 @@ async function userById(env, id) {
 // `middlewarePorts` guard wrote onto ctx (kernel/router.mjs). A caller-provided
 // email is never a source. No identity => null (the handler answers 401).
 async function currentUser(ctx, env) {
-  if (ctx.user_id != null && ctx.user_id !== '') {
-    const injected = Number(ctx.user_id);
-    if (Number.isFinite(injected)) return userById(env, injected);
-  }
-  try {
-    const u = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
-    return u && u.id != null ? await userById(env, Number(u.id)) : null;
-  } catch {
-    return null;
-  }
+  const id = await guardUserId(ctx);
+  return id == null ? null : userById(env, id);
 }
 
 // POST enable — mint a secret + recovery codes for the AUTHENTICATED user.

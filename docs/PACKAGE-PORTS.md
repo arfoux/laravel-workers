@@ -92,7 +92,7 @@ fact, not a route conflict.
 
 | Path | Ports that answer it | Note |
 |---|---|---|
-| `/broadcasting/auth` | `pusher`, `reverb` | Only one broadcast backend is installed in a real app. The example maps it to `reverb` and `/broadcast` to `pusher`; a Pusher-only app should move `/broadcasting/auth` to `pusher`. |
+| `/broadcasting/auth` | `pusher`, `reverb` | Only one broadcast backend is installed in a real app. The example maps it to `reverb` and `/broadcast` to `pusher`; a Pusher-only app should move `/broadcasting/auth` to `pusher`. Both sign a `private-`/`presence-` channel only for a request that carries an identity (`ctx.user()` or a `middlewarePorts`-written `ctx.user_id`) and answer `401` otherwise — Laravel requires a user for a guarded channel; the presence `user_id` comes from that identity, never from `channel_data`. |
 
 Route-key uniqueness is enforced by JSON: a duplicate key silently keeps the last one, so a bad
 registry fails at request time, not build time — keep the pairs in this table apart.

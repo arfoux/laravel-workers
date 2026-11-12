@@ -163,6 +163,7 @@ Grounding: HMAC-SHA256 (hex+base64) byte-identical PHP 8.3.30 ↔ Node crypto �
 
 ### laravel/reverb v1.12.0
 - verdict: **refuse** (paket = server WS) / port untuk endpoint auth — `Broadcast::routes()` mendaftarkan `/broadcasting/auth` sebagai route POST biasa: rung terkompilasi menjawabnya dan WebCrypto menandatangani token privat/presence dgn app secret.
+- identity: channel `private-`/`presence-` wajib punya identitas dari guard platform (`ctx.user()` / `ctx.user_id` tulisan `middlewarePorts`) — Laravel menolak channel guarded tanpa user (`Broadcaster::auth()`), dan `user_id` presence diambil dari `$user->getAuthIdentifier()`, bukan dari body. Tanpa identitas → `401`; `channel_data.user_id` kiriman pemanggil tidak pernah dibaca.
 - refusal: Reverb adalah proses server WebSocket long-running (`php artisan reverb:start`, socket ReactPHP) di port TCP — edge-impossible. Build menolak listener `ShouldBroadcast` (LW002) + facade `Broadcast` (LW002).
 - substitution: server WS Reverb → pihak ketiga kompatibel-Pusher / Ably / Durable Object yang bicara protokol Pusher; config Echo `host`/`authEndpoint` diarahkan ke sana.
 - test: oracle PHP menangkap `/broadcasting/auth` (token + data user base64); probe e2e: route terkompilasi menjawab token identik.
@@ -174,6 +175,7 @@ Grounding: HMAC-SHA256 (hex+base64) byte-identical PHP 8.3.30 ↔ Node crypto �
 
 ### pusher/pusher-php-server v7.3.0
 - verdict: **port** — auth token SDK (`socket_id`+`channel_name` → `{key}.{HMAC-SHA256}`) = HMAC murni, direproduksi WebCrypto byte-for-byte; trigger = POST HTTPS ke REST API Pusher dgn auth_signature query-string = `fetch`.
+- identity: idem reverb — channel guarded butuh identitas guard (`ctx.user()`/`ctx.user_id`); `user_id` presence dari identitas itu, bukan `channel_data` body; tanpa identitas → `401`.
 - refusal: paket tak terkompilasi (vendor SDK) → LW002 pada resolve langsung.
 - substitution: panggilan SDK PHP → tanda-tangan WebCrypto + `fetch` REST (disclosure: protokol & signature sama, tanpa proses server).
 - test: oracle PHP menandatangani auth token + REST URL; paritas token & query string edge byte-for-byte.
