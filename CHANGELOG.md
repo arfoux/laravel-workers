@@ -2,6 +2,37 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A route's `->where(...)` requirements reach the Worker — and `Route::fallback()` with them
+
+`route:list --json` prints no requirement at all, and the scan read the verb chain without the
+`->where()` chain. The compiled router therefore matched `{id}` with the default `[^/]++` where PHP
+requires `[0-9]+`: the edge answered **200** for a path Laravel answers 404 — and, in an app that
+declares a `Route::fallback()`, it sent the request INTO the constrained route instead of the
+fallback. `Route::fallback()` is exactly `{fallbackPlaceholder}` + `where('fallbackPlaceholder',
+'.*')`, so the same missing map left the fallback matching a single path segment: `/nope/deep`
+answered 404 where PHP answers the fallback (a route the app believed it had).
+
+| change | why |
+|---|---|
+| `tools/routes-dump.mjs` reads the requirement chain: `->where($param, $expression)`, the array form, `whereNumber`/`whereAlpha`/`whereAlphaNumeric`/`whereUuid`/`whereUlid`/`whereIn`, `Route::where([...])->get(...)` (a `RouteRegistrar` attribute), a group's `where` attribute in both shapes (`Route::group(['where' => ...])`, `->where([...])->group(...)`), and `->where([...])` on a `resource` (whose map `ResourceRegistrar::getResourceAction()` copies into EVERY action, collection routes included) | the scan is the only source for them; it prints each on the entry as `wheres` (the map PHP's `$route->wheres` answers with) |
+| `build.mjs` carries the map onto the route table entry — `wheres` only when the route has one, so an unconstrained app's table is byte-unchanged | the edge matches with the same data the kernel needs, and no empty field appears in the generated table |
+| `kernel/router.mjs`: `compilePatternBody(pattern, wheres)` uses Symfony's `RouteCompiler` branch for a constrained variable — `getRequirement()` **replaces** the default class entirely (no separator/possessive logic, which is what lets `.*` span segments), `sanitizeRequirement()` drops an anchoring `^`/`$`/`\A`/`\z` (the surrounding pattern already anchors the path), and `transformCapturingGroupsToNonCapturings()` rewrites a requirement's own groups so they cannot shift the path's captures | a requirement is a per-variable regex, not a hint; `Route::fallback()` only reaches every unmatched path because `.*` is honoured verbatim |
+| `build.mjs`: every entry's URI regex is compiled at build time (`validateTable(routeTable)`) and a failure stops the build naming the route | the router compiles a pattern on first use, inside the Worker — an expression JS cannot compile used to throw on EVERY request that reached that route (a 500 discovered in production) |
+| `kernel/router.mjs`: a requirement carrying a **unicode property** (`\p{L}+`, `[\p{L}\p{N}]+`, `\P{L}+`) compiles the path regex with JS's `u` flag — PHP compiles every path with PCRE's `u`, so `\p{...}` is a property class there, while JS reads `\p` as the literal character `p` without the flag | measured on the shadow harness (app `fb5`): `->where('name', '\p{L}+')` answered the FALLBACK for `/letters/abc` and `/letters/é` where PHP answered the route — the route was silently dead, not a 500 |
+| `kernel/router.mjs`: `validateTable()` also refuses a requirement the JS engine ACCEPTS but reads as something else — `\h`/`\H`, `\v`/`\V`, `\R`, `\X`, `\Q...\E`, `\K`, `\Z`/`\G`, a `\A`/`\z` in the middle of the expression, a POSIX class (`[[:alpha:]]`) | each compiles and then matches a DIFFERENT path (`\h` is horizontal whitespace in PCRE and the literal `h` in JS) — the silent wrong answer; the build stops with the route, the requirement and a rewrite hint named |
+
+Evidence: the scan's `wheres` against a live Laravel 13.37 app's own `$route->wheres` — **50/50
+(uri, verb) pairs identical** over 26 URIs (after-verb, array, helper, `whereIn` (the dot stays a
+metacharacter), a requirement naming a variable the URI does not use, a literal `{p*}`, both group
+shapes, registrar-before-verb, overridden per name, resource maps, the fallback's `.*`). The shadow
+harness replays 22 live requests against the real app and the compiled worker: **21 byte-identical,
+1 documented divergence** (a `POST` to a GET-only path: both sides answer 405 with the same `Allow`
+header, PHP renders the framework's error page and the edge the minimal page — `COMPILED.md`); the
+fallback answers `/nope`, `/nope/deep`, `/a/b/c`, `/` and `/deep/one/two/three` on both sides.
+`tools/tests/routes-dump.test.mjs` pins the map for every shape (including an empty requirement,
+which Symfony itself refuses, so the build stops instead of serving an unconstrained route);
+`kernel/tests/router.test.mjs` pins the compiled patterns; `npm test` 2072 tests / 0 fail.
+
 ### Route::redirect() answers what Laravel answers, and the route finally reaches the Worker
 
 A `Route::redirect()` route was emitted as an inline handler in `routes.generated.mjs` that
