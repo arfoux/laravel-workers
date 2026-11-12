@@ -26,6 +26,13 @@ export function normalizeTable(routes) {
     const entry = { uri, name, methods, domain };
     if (r.bindings != null) entry.bindings = r.bindings;
     if (r.middleware != null) entry.middleware = r.middleware;
+    // Laravel's `->where($param, $regex)` / whereNumber()/whereAlpha()/…
+    // requirements: a per-variable regex that REPLACES the default `[^/]+`
+    // class (`tools/routes-dump.mjs` reads the chain; `route:list --json` does
+    // not carry them). `Route::fallback()` is exactly `{fallbackPlaceholder}`
+    // + `where('fallbackPlaceholder', '.*')`, so the same mechanism is what
+    // makes Laravel's fallback reach every unmatched path.
+    if (r.wheres != null && typeof r.wheres === 'object' && Object.keys(r.wheres).length) entry.wheres = r.wheres;
     // registry.json → "middlewarePorts": the ports that run BEFORE this route's
     // handler (a `null` return continues, a response short-circuits).
     if (r.middlewarePorts != null) entry.middlewarePorts = r.middlewarePorts;
@@ -82,6 +89,46 @@ function findNextSeparator(rest) {
   return SEPARATORS.includes(ch) ? ch : '';
 }
 
+// Symfony's Route::sanitizeRequirement(), transcribed: a requirement anchored at
+// either end LOSES that anchor (the surrounding pattern already anchors the whole
+// path, and a `^`/`$` inside a named group fights it — probed through Symfony's
+// own compiler: `where('id','^x$')` still matches `/c/x`). `\A`/`\z` are the same
+// anchors spelled absolutely. A requirement that was nothing BUT anchors leaves
+// no character behind, so it IS empty — which is where Symfony throws, and the
+// app cannot boot at all.
+function sanitizeRequirement(key, regex) {
+  let r = String(regex);
+  if (r !== '') {
+    if (r[0] === '^') r = r.slice(1);
+    else if (r.startsWith('\\A')) r = r.slice(2);
+  }
+  if (r.endsWith('$')) r = r.slice(0, -1);
+  else if (r.indexOf('\\z') === r.length - 2) r = r.slice(0, -2);
+  if (r === '') throw new Error(`routing requirement for "${key}" cannot be empty`);
+  return r;
+}
+
+// Symfony's RouteCompiler::transformCapturingGroupsToNonCapturings(), applied
+// to a requirement before it lands in the path regex. A `(` is rewritten to
+// `(?:` unless the next char is `*` or `?` (a PCRE verb or an already
+// non-capturing group), and an escaped `\(` is left alone. PHP does this so a
+// requirement's own capture groups cannot shift the named captures of the
+// path; JS named groups are addressed by NAME, but the rewrite also keeps the
+// compiled pattern byte-comparable with PHP's, which is what the oracle
+// compares.
+function transformCapturingGroupsToNonCapturings(regexp) {
+  let out = String(regexp);
+  for (let i = 0; i < out.length; ++i) {
+    if (out[i] === '\\') { ++i; continue; }
+    if (out[i] !== '(' || i + 2 >= out.length) continue;
+    ++i;
+    if (out[i] === '*' || out[i] === '?') { ++i; continue; }
+    out = out.slice(0, i) + '?:' + out.slice(i);
+    ++i;
+  }
+  return out;
+}
+
 // Symfony's RouteCompiler::compilePattern() for a path pattern, transcribed:
 // Laravel's Route::toSymfonyRoute() drops the '?' of every '{x?}' and hands the
 // names over as defaults, so the optional run is decided HERE by the trailing
@@ -89,8 +136,11 @@ function findNextSeparator(rest) {
 //
 // The regex body is returned unwrapped; the quantifier of a variable is the
 // char class that forbids '/' and the separator that FOLLOWS it, so the class
-// can never swallow the separator and generate the same URL back.
-function compilePatternBody(pattern) {
+// can never swallow the separator and generate the same URL back. A variable
+// with a REQUIREMENT uses that requirement verbatim instead (Symfony's
+// `$route->getRequirement($varName)` branch: no separator logic, no possessive
+// marker) — which is what lets `.*` span segments.
+function compilePatternBody(pattern, wheres) {
   const src = String(pattern);
   const optionalNames = new Set();
   for (const m of src.matchAll(/\{(\w+?)\?\}/g)) optionalNames.add(m[1]);
@@ -125,11 +175,22 @@ function compilePatternBody(pattern) {
 
     const following = norm.slice(pos);
     const nextSeparator = findNextSeparator(following);
+    // Symfony: `$regexp = $route->getRequirement($varName)` — a requirement
+    // REPLACES the default class entirely, and the separator/possessive logic
+    // is skipped. An empty-string requirement is still a requirement (`where`
+    // stores the expression as given), and a name missing from the map (an
+    // unused `->where('other', ...)`, which PHP stores and ignores) falls back
+    // to the class.
+    const requirement =
+      wheres && Object.prototype.hasOwnProperty.call(wheres, name) && wheres[name] != null
+        ? transformCapturingGroupsToNonCapturings(sanitizeRequirement(name, wheres[name]))
+        : null;
     let rx =
       '[^' +
       pregQuote(DEFAULT_SEPARATOR) +
       (DEFAULT_SEPARATOR !== nextSeparator && nextSeparator !== '' ? pregQuote(nextSeparator) : '') +
       ']+';
+    if (requirement !== null) rx = requirement;
     // Symfony appends a POSSESSIVE quantifier when a real separator follows and
     // the next token is not an adjacent variable: the class already forbids that
     // separator, so the backtracking it prevents can never succeed. JS has no
@@ -175,33 +236,120 @@ function compilePatternBody(pattern) {
 }
 
 // A compiled uri regex is registered once and matched on every request, so the
-// compilation is memoized per uri string (pure input, pure output).
+// compilation is memoized: by uri string when the route carries no requirement,
+// and by (requirements object → uri) otherwise. The requirements object is the
+// table's own, so the WeakMap hits from the second request on.
 const uriRegexCache = new Map();
+const constrainedRegexCache = new WeakMap();
 
-function uriToRegex(uri) {
-  const norm = normalizeUri(uri);
-  const cached = uriRegexCache.get(norm);
-  if (cached !== undefined) return cached;
+// `route` is a table entry (uri + optional wheres) or a bare uri string.
+export function uriToRegex(route) {
+  const isEntry = route != null && typeof route === 'object';
+  const norm = normalizeUri(isEntry ? route.uri : route);
+  const wheres = isEntry ? route.wheres : null;
+  const hasWheres = wheres != null && typeof wheres === 'object' && Object.keys(wheres).length > 0;
 
-  const segs = norm.split('/');
-  // Laravel's catch-all is `{segment*}` as the WHOLE last segment — an extension
-  // of this router (Symfony compiles '{p*}' as literal text, Laravel's
-  // Route::toSymfonyRoute() passes it through). Anywhere else it is not a
-  // wildcard at all: PHP then matches the literal text, and so does the
-  // tokenizer below.
-  for (let i = 0; i < segs.length; i++) {
-    if (/^\{\w+\*\}$/.test(segs[i]) && i !== segs.length - 1) {
-      throw new Error('wildcard {param*} must be the last segment: ' + norm);
+  let cache = uriRegexCache;
+  if (hasWheres) {
+    cache = constrainedRegexCache.get(wheres);
+    if (cache === undefined) {
+      cache = new Map();
+      constrainedRegexCache.set(wheres, cache);
     }
   }
-  const wild = /^(.*)\/\{(\w+)\*\}$/.exec(norm);
-  const rx = wild
-    ? new RegExp(
-        '^' + compilePatternBody(wild[1]) + '/(?<' + wild[2] + '>.+)' + '/?$'
-      )
-    : new RegExp('^' + compilePatternBody(norm) + '/?$');
-  uriRegexCache.set(norm, rx);
+  const cached = cache.get(norm);
+  if (cached !== undefined) return cached;
+
+  // PHP compiles the path with the `s` (PCRE_DOTALL) and `D` flags: `s` is what
+  // lets a `.*` requirement reach across a newline (a decoded `%0A` is a real
+  // path byte), and `D` already matches JS's `$` (neither matches just before a
+  // trailing newline). A `{name*}` segment is NOT a wildcard anywhere: Symfony
+  // compiles it as literal text, and PHP's router does exactly the same — a
+  // catch-all is `->where('name', '.*')` (what `Route::fallback()` itself
+  // uses), which is why leaving it out of the tokenizer is the parity-correct
+  // behaviour rather than a missing feature.
+  //
+  // PHP compiles EVERY path with PCRE's `u` modifier, so `\p{...}` there is a
+  // unicode property. JS reads `\p` as the LITERAL character `p` without the
+  // `u` flag — measured: `->where('name', '\p{L}+')` matched nothing (the text
+  // `p{L}`) and answered the fallback where PHP answered the route, for
+  // `/letters/abc` and `/letters/é` alike (shadow harness, fb5). `u` is added
+  // only when the pattern actually asks for it, so every other requirement
+  // keeps the code-unit reading that PHP's `[^/]++`/literals agree with.
+  const body = compilePatternBody(norm, hasWheres ? wheres : null);
+  const bodyFlags = /\\[pP]\{/.test(body) ? 'su' : 's';
+  const rx = new RegExp('^' + body + '/?$', bodyFlags);
+  cache.set(norm, rx);
   return rx;
+}
+
+/**
+ * Compile every entry's URI regex NOW, so a requirement the JS RegExp engine
+ * cannot take (or a pattern Symfony itself would reject) fails the BUILD with
+ * the route named, instead of throwing inside every request that reaches it.
+ * Called by build.mjs on the finished route table.
+ */
+export function validateTable(routes) {
+  const list = Array.isArray(routes) ? routes : (routes && routes.routes) || [];
+  for (const r of list) {
+    try {
+      const wheres = r && typeof r === 'object' ? r.wheres : null;
+      if (wheres != null && typeof wheres === 'object') {
+        // Only a requirement for a variable the URI actually carries reaches
+        // the pattern: Symfony compiles nothing for one naming an unused
+        // variable (PHP stores it and ignores it), so refusing that one would
+        // fail a build PHP boots happily.
+        const used = new Set();
+        for (const m of String(r.uri).replace(/\{(\w+?)\?\}/g, '{$1}').matchAll(PLACEHOLDER)) used.add(m[2]);
+        for (const key of Object.keys(wheres)) {
+          if (used.has(key)) assertRequirementTranslatable(key, wheres[key]);
+        }
+      }
+      uriToRegex(r);
+    } catch (e) {
+      const uri = r && typeof r === 'object' ? r.uri : r;
+      throw new Error('route "' + uri + '": ' + (e && e.message ? e.message : String(e)));
+    }
+  }
+}
+
+// PCRE constructs Laravel accepts AND the JS engine accepts — but reads as
+// something else, so the pattern compiles and then matches a DIFFERENT path:
+// the silent-wrong answer this build exists to prevent (a construct JS itself
+// rejects needs no list — `new RegExp` throws, and the build stops on it).
+// The check runs on the SANITIZED expression, so a leading `\A` / trailing `\z`
+// (which `sanitizeRequirement()` has already stripped, matching Symfony) is not
+// a misread, while one in the middle of the expression is.
+// Measured through PCRE (PHP 8.3 `preg_match`) and the shadow harness:
+// `->where('w', '\h+')` matches a tab in PHP and nothing in the kernel.
+const MISREAD_REQUIREMENTS = [
+  { re: /\\[hH]/, pcre: '\\h / \\H (horizontal whitespace)', js: "the literal character 'h'" },
+  { re: /\\[vV]/, pcre: '\\v / \\V (vertical whitespace)', js: "a vertical tab / the literal 'v'" },
+  { re: /\\R/, pcre: '\\R (any newline sequence)', js: "the literal character 'R'" },
+  { re: /\\X/, pcre: '\\X (an extended grapheme cluster)', js: "the literal character 'X'" },
+  { re: /\\Q/, pcre: '\\Q...\\E (quote the metacharacters)', js: "the literal character 'Q'" },
+  { re: /\\K/, pcre: '\\K (reset the match start)', js: "the literal character 'K'" },
+  { re: /\\[ZG]/, pcre: '\\Z / \\G (an end-of-subject / continue anchor)', js: "the literal character 'Z'/'G'" },
+  { re: /\\[Az]/, pcre: '\\A / \\z (an absolute anchor) inside the expression', js: "the literal character 'A'/'z'" },
+  {
+    re: /\[[^\]]*\[:[a-z]+:\]/,
+    pcre: 'a POSIX class ([:alpha:], [:digit:], ...)',
+    js: 'the literal characters of the class name',
+  },
+];
+
+function assertRequirementTranslatable(key, expression) {
+  const sanitized = sanitizeRequirement(key, expression);
+  for (const { re, pcre, js } of MISREAD_REQUIREMENTS) {
+    if (re.test(sanitized)) {
+      throw new Error(
+        `the requirement for "${key}" uses ${pcre}, which this engine reads as ${js} — ` +
+          'the pattern would compile and match a different path, so the build stops instead. ' +
+          'Rewrite it with the JavaScript-compatible form (e.g. `[\\t ]` for `\\h`)'
+      );
+    }
+  }
+  return sanitized;
 }
 
 function domainToRegex(domain) {
@@ -275,14 +423,19 @@ export function match(table, req) {
   for (const route of tbl) {
     if (!methodMatches(route, method)) continue;
     if (!hostMatches(route, host)) continue;
-    const rx = uriToRegex(route.uri);
+    const rx = uriToRegex(route);
     const m = rx.exec(path);
     if (!m) continue;
     const params = {};
     if (m.groups) {
       for (const k of Object.keys(m.groups)) {
         // The path was decoded before it matched, so the capture is decoded.
-        if (m.groups[k] != null) params[k] = m.groups[k];
+        // Laravel's Route::parametersWithoutNulls() drops a NULL and an EMPTY
+        // capture alike (probed: the fallback route matching '/' answers no
+        // parameters at all), and a `.*` requirement is the one shape that can
+        // match the empty remainder — so the edge must drop it too, or a
+        // controller would receive an argument Laravel never passes.
+        if (m.groups[k] != null && m.groups[k] !== '') params[k] = m.groups[k];
       }
     }
     if (route.domain && host) {
@@ -316,7 +469,7 @@ export function allowedMethods(table, req) {
       if (!hostMatches(route, host)) continue;
       let rx;
       try {
-        rx = uriToRegex(route.uri);
+        rx = uriToRegex(route);
       } catch {
         continue;
       }

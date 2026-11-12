@@ -995,9 +995,17 @@ const TRIM_STRINGS = 'Illuminate\\Foundation\\Http\\Middleware\\TrimStrings';
 export const FRAMEWORK_TRIM_EXCEPT = ['current_password', 'password', 'password_confirmation'];
 /**
  * The global middleware kernel/http.mjs reproduces itself: the two input
- * transformers it runs (see buildRequest), the deferred callbacks the app never
- * observes on a request path, and the path validator the edge cannot run (the
- * platform decodes the path before the worker sees it).
+ * transformers it runs (see buildRequest) and the deferred callbacks the app
+ * never observes on a request path.
+ *
+ * `ValidatePathEncoding` is listed here but NOT reproduced — measured (2026-11-12,
+ * ledger S40): `GET /letters/a%FF` reaches the worker and the edge answers the
+ * fallback with **200** where Laravel's `ValidatePathEncoding::handle()` throws
+ * `MalformedUrlException` and the response is **400** (`rawurldecode($path)` is
+ * not valid UTF-8). The platform does NOT reject the escape, so the "the
+ * platform decodes the path before the worker sees it" reasoning this entry used
+ * to carry was wrong. It stays in this set so the build does not report a
+ * middleware the edge is known not to run until the check is implemented (S40).
  */
 export const MW_IMPLEMENTED_BY_KERNEL = new Set([
   'TrimStrings',

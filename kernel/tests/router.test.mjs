@@ -1,6 +1,6 @@
 // edge/kernel/tests/router.test.mjs
 import assert from 'node:assert/strict';
-import { normalizeTable, routeKey, match, dispatch } from '../router.mjs';
+import { normalizeTable, routeKey, match, dispatch, validateTable } from '../router.mjs';
 import { html, json, redirect, notFound, text } from '../response.mjs';
 
 const routes = [
@@ -102,17 +102,55 @@ handlers['GET /dbcheck'] = () => ({ status: 200, headers: { 'X-Foo': 'bar' }, bo
 const r2 = await dispatch({ method: 'GET', path: '/dbcheck' }, table, handlers);
 assert.equal(r2.headers['x-foo'], 'bar');
 
-// wildcard {path*} captures multiple segments
+// A `{name*}` segment is NOT a wildcard: Symfony's placeholder token only
+// matches `{name}` and `{name?}`, so PHP's router compiles `{path*}` as LITERAL
+// TEXT — and the edge has to answer the same. This used to be an extension
+// here; the behaviour it stood in for is Laravel's own `->where($p, '.*')`,
+// which the route table now carries (see the requirement tests below), so the
+// extension is gone instead of being kept as a second, non-Laravel syntax.
 const wtable = normalizeTable([{ uri: '/files/{path*}', name: 'files', methods: ['GET'], domain: null }]);
-m = match(wtable, { method: 'GET', path: '/files/a/b/c.txt' });
-assert.ok(m, 'wildcard should match multi-segment');
-assert.equal(m.params.path, 'a/b/c.txt');
-
-// wildcard must be the last segment
-assert.throws(
-  () => match(normalizeTable([{ uri: '/{a*}/x', name: null, methods: ['GET'], domain: null }]), { method: 'GET', path: '/a/x' }),
-  /must be the last segment/,
+assert.equal(
+  match(wtable, { method: 'GET', path: '/files/a/b/c.txt' }),
+  null,
+  'a {name*} segment is literal text, not a catch-all',
 );
+m = match(wtable, { method: 'GET', path: '/files/{path*}' });
+assert.ok(m, 'the literal text is the only path this route answers');
+assert.deepEqual(m.params, {});
+
+// Requirements: `->where($param, $expression)` — the expression REPLACES the
+// default `[^/]+` class for that variable (Symfony's RouteCompiler branch, plus
+// its capturing-group rewrite). That is the mechanism behind Laravel's own
+// catch-all: `Route::fallback()` is literally
+// `addRoute('GET', '{fallbackPlaceholder}', $a)->where('fallbackPlaceholder', '.*')`.
+const hitW = (uri, path, wheres) => {
+  const t = normalizeTable([{ uri, name: null, methods: ['GET'], domain: null, wheres }]);
+  const mm = match(t, { method: 'GET', path });
+  return mm ? mm.params : null;
+};
+// probed on Laravel 13.37's own matcher: the requirement rejects '/digits/abc'
+// (the request falls through to the fallback route), and accepts '/digits/12'
+assert.deepEqual(hitW('/digits/{id}', '/digits/12', { id: '[0-9]+' }), { id: '12' });
+assert.equal(hitW('/digits/{id}', '/digits/abc', { id: '[0-9]+' }), null);
+// `.*` spans segments AND matches the empty remainder — where PHP then hands
+// over NO parameter at all (Route::parametersWithoutNulls drops null and '',
+// probed: the fallback matching '/' answers params=[])
+assert.deepEqual(hitW('/{fallbackPlaceholder}', '/', { fallbackPlaceholder: '.*' }), {});
+assert.deepEqual(hitW('/{fallbackPlaceholder}', '/a', { fallbackPlaceholder: '.*' }), { fallbackPlaceholder: 'a' });
+assert.deepEqual(hitW('/{fallbackPlaceholder}', '/a/b/c', { fallbackPlaceholder: '.*' }), { fallbackPlaceholder: 'a/b/c' });
+// the expression is used VERBATIM — `whereIn()` joins its values with '|' and
+// escapes nothing, so the dot in 'two.v' stays a metacharacter and '/twoxv'
+// matches (probed against Laravel, which answers the same route)
+assert.deepEqual(hitW('/in/{a}', '/in/one', { a: 'one|two.v' }), { a: 'one' });
+assert.deepEqual(hitW('/in/{a}', '/in/two.v', { a: 'one|two.v' }), { a: 'two.v' });
+assert.deepEqual(hitW('/in/{a}', '/in/twoxv', { a: 'one|two.v' }), { a: 'twoxv' });
+assert.equal(hitW('/in/{a}', '/in/two', { a: 'one|two.v' }), null, 'the unescaped dot still needs a character of its own');
+// a requirement naming a variable the uri does not use is stored by PHP and
+// ignored by its compiler; so is one for a variable that is optional
+assert.deepEqual(hitW('/only/{a}', '/only/x', { b: '[0-9]+' }), { a: 'x' });
+assert.deepEqual(hitW('/maybe/{a?}', '/maybe/9', { a: '[0-9]+' }), { a: '9' });
+assert.equal(hitW('/maybe/{a?}', '/maybe/x', { a: '[0-9]+' }), null);
+assert.deepEqual(hitW('/maybe/{a?}', '/maybe', { a: '[0-9]+' }), {});
 
 // The compiled pattern grammar is Symfony's RouteCompiler::compilePattern()
 // transcribed, not a "a segment is either '{name}' or literal text" rule. Every
@@ -479,3 +517,64 @@ await assert.rejects(
   /invalid response shape/
 );
 console.log('MIDDLEWARE PORT TESTS: PASS');
+
+// 6. Unicode-property requirements. PHP compiles every path with PCRE's `u`
+//    modifier, so `\p{L}` is a letter class there. JS reads `\p` as the LITERAL
+//    character `p` WITHOUT the `u` flag: `\p{L}+` becomes `p{L}` as text, so the
+//    route matched nothing. Measured end-to-end through the shadow harness
+//    (PHP 8.3 vs the compiled worker, app fb5, 5 steps): `->where('name',
+//    '\p{L}+')` answered the FALLBACK for '/letters/abc' and '/letters/é' where
+//    PHP answered the route. The kernel now compiles such a pattern with `u`;
+//    every expectation below is PHP's own answer for the same uri + path.
+assert.deepEqual(hitW('/letters/{name}', '/letters/abc', { name: '\\p{L}+' }), { name: 'abc' });
+assert.deepEqual(hitW('/letters/{name}', '/letters/é', { name: '\\p{L}+' }), { name: 'é' });
+assert.deepEqual(hitW('/letters/{name}', '/letters/Ж', { name: '\\p{L}+' }), { name: 'Ж' });
+assert.equal(hitW('/letters/{name}', '/letters/123', { name: '\\p{L}+' }), null);
+assert.deepEqual(hitW('/alnum/{v}', '/alnum/é9', { v: '[\\p{L}\\p{N}]+' }), { v: 'é9' });
+assert.equal(hitW('/alnum/{v}', '/alnum/a-b', { v: '[\\p{L}\\p{N}]+' }), null);
+assert.deepEqual(hitW('/notletters/{v}', '/notletters/12-3', { v: '\\P{L}+' }), { v: '12-3' });
+assert.equal(hitW('/notletters/{v}', '/notletters/ab', { v: '\\P{L}+' }), null);
+assert.deepEqual(hitW('/upper/{v}', '/upper/AB', { v: '\\p{Lu}+' }), { v: 'AB' });
+assert.equal(hitW('/upper/{v}', '/upper/ab', { v: '\\p{Lu}+' }), null);
+//    a leading `\A` / trailing `\z` is what `sanitizeRequirement()` strips
+//    (Symfony's own rule), so it is a requirement, not a refusal
+assert.deepEqual(hitW('/w/{v}', '/w/abc', { v: '\\Aabc\\z' }), { v: 'abc' });
+assert.equal(hitW('/w/{v}', '/w/xbc', { v: '\\Aabc\\z' }), null);
+
+// 7. PCRE constructs the JS engine ACCEPTS but reads as something else are
+//    refused by `validateTable()` (so the BUILD stops, naming the route): the
+//    pattern would otherwise compile and match a different path — the silent
+//    wrong answer. Every entry's PCRE meaning was measured through PHP's own
+//    `preg_match` on the 8.3 oracle; an unknown unicode property needs no list
+//    (both engines reject the pattern, so the app would not boot either).
+const refuses = (uri, wheres, re, why) =>
+  assert.throws(
+    () => validateTable([{ uri, name: null, methods: ['GET'], domain: null, wheres }]),
+    re,
+    why
+  );
+refuses('/w/{v}', { v: '\\h+' }, /route "\/w\/\{v\}"[\s\S]*\\h \/ \\H/, 'a PCRE whitespace class read as a literal h');
+refuses('/w/{v}', { v: '[[:alpha:]]+' }, /route "\/w\/\{v\}"[\s\S]*POSIX class/, 'a POSIX class read as its letters');
+refuses('/w/{v}', { v: '\\Qa.b\\E' }, /route "\/w\/\{v\}"[\s\S]*\\Q\.\.\.\\E/, 'a quoted run read as the literal Q');
+refuses('/w/{v}', { v: '\\p{Nope}+' }, /route "\/w\/\{v\}"/, 'an unknown unicode property does not compile at all');
+//    the requirement is named, and a clean table passes untouched
+assert.throws(
+  () => validateTable([{ uri: '/w/{v}', name: null, methods: ['GET'], domain: null, wheres: { v: '\\R' } }]),
+  /the requirement for "v" uses/,
+  'the refusal must name the requirement it is about'
+);
+//    a requirement for a variable the URI does NOT carry never reaches the
+//    pattern (PHP stores it and its compiler ignores it), so it is not a
+//    refusal — a build PHP boots happily must not stop here
+validateTable([{ uri: '/only/{a}', name: null, methods: ['GET'], domain: null, wheres: { b: '\\h+' } }]);
+validateTable([{ uri: '/no-vars', name: null, methods: ['GET'], domain: null, wheres: { v: '[[:alpha:]]' } }]);
+assert.throws(
+  () => validateTable([{ uri: '/w/{a}/{b}', name: null, methods: ['GET'], domain: null, wheres: { b: '\\h+', z: '\\R' } }]),
+  /the requirement for "b" uses/,
+  'a used requirement is refused even beside an unused one'
+);
+validateTable([
+  { uri: '/letters/{name}', name: null, methods: ['GET'], domain: null, wheres: { name: '\\p{L}+' } },
+  { uri: '/digits/{id}', name: null, methods: ['GET'], domain: null, wheres: { id: '[0-9]+' } },
+]);
+console.log('UNICODE REQUIREMENT TESTS: PASS');

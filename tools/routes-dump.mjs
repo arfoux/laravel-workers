@@ -232,11 +232,104 @@ const argStrList = (v) => {
   return out.length ? out : null;
 };
 
-/** Key of an array entry: php-parser stores `['only' => …]` keys as STRING nodes. */
+/** Key of an array entry: php-parser stores `['only' => ...]` keys as STRING nodes. */
 const entryKey = (e) => {
   if (!e || e.kind !== 'entry' || e.key == null) return null;
   if (e.key.kind === 'string') return e.key.value;
   return nodeName(e.key) || null;
+};
+
+/** A `['name' => 'regex']` literal (as `Route::get(...)->where([...])` takes) → object. */
+const stringEntryMap = (arg) => {
+  if (!arg || arg.kind !== 'array') return null;
+  const out = {};
+  for (const e of arg.items || []) {
+    if (!e || e.kind !== 'entry' || e.key == null) continue;
+    const k = entryKey(e);
+    const v = strArg(e.value);
+    if (k != null && v != null) out[k] = v;
+  }
+  return Object.keys(out).length ? out : null;
+};
+
+// CreatesRegularExpressionRouteConstraints: the named helpers are sugar for
+// `where()` with a FIXED expression. The strings below are copied from the
+// trait (`Illuminate\Routing\CreatesRegularExpressionRouteConstraints`) so the
+// edge compiles the very pattern PHP does. `whereIn()` is the one that does NOT
+// escape its values — `Collection::implode('|')` only — so `whereIn('a',
+// ['two.v'])` answers `two|two.v`, and probed against Laravel 13.37 the dot
+// really is a regex metacharacter there (`/twoxv` matches). The scan must
+// reproduce the quirk, not "fix" it: the app's PHP behaviour is the contract.
+const WHERE_HELPERS = {
+  wherealpha: '[a-zA-Z]+',
+  wherealphanumeric: '[a-zA-Z0-9]+',
+  wherenumber: '[0-9]+',
+  whereulid: '[0-7][0-9a-hjkmnp-tv-zA-HJKMNP-TV-Z]{25}',
+  whereuuid: '[\\da-fA-F]{8}-[\\da-fA-F]{4}-[\\da-fA-F]{4}-[\\da-fA-F]{4}-[\\da-fA-F]{12}',
+};
+
+/** `assignExpressionToParameters($parameters, $expr)`: a string is ONE name, an array a list. */
+const whereNames = (arg) => {
+  if (!arg) return null;
+  if (arg.kind === 'string') return [arg.value];
+  return argStrList(arg);
+};
+
+/**
+ * Apply ONE chain step's requirements to `target.wheres`, in source order (the
+ * caller walks the chain in source order, so a later call wins per name — PHP's
+ * `$this->wheres[$name] = $expression`). Returns true when the step was a
+ * requirements step (whatever it carried), so a caller can tell "step seen".
+ *
+ * Shapes, all measured against Laravel 13.37:
+ *   - `->where($name, $expression)`     a Route method (after the verb)
+ *   - `->where([$name => $expr, ...])`  the same method, array form, AND the
+ *                                       RouteRegistrar attribute (before the
+ *                                       verb) — a STRING argument there is a
+ *                                       boot TypeError, reported by `warn`
+ *   - `->whereNumber/whereAlpha/whereAlphaNumeric/whereUuid/whereUlid($name|[...])`
+ *                                       Route methods with a FIXED expression
+ *   - `->whereIn($name|[...], $values)` the values are joined with '|' and
+ *                                       escaped NOWHERE (`whereIn('a', ['two.v'])`
+ *                                       answers `two|two.v`, and the dot stays a
+ *                                       metacharacter: probed, '/twoxv' matches)
+ *   - `->whereIn($p, [])`               `''` — Symfony then refuses the
+ *                                       requirement, so the BUILD stops on it
+ */
+const applyWhereStep = (method, args, afterVerb, target, warn) => {
+  const sm = String(method == null ? '' : method).toLowerCase();
+  if (WHERE_HELPERS[sm] || sm === 'wherein') {
+    const names = whereNames(args[0]);
+    if (!names) return true;
+    let expr;
+    if (sm === 'wherein') {
+      // A non-array second argument is not `whereIn` at all; leave the route
+      // unconstrained rather than inventing an expression PHP never had.
+      if (!args[1]) return true;
+      expr = (argStrList(args[1]) || (args[1].kind === 'array' ? [] : null) || []).join('|');
+    } else {
+      expr = WHERE_HELPERS[sm];
+    }
+    for (const n of names) target.wheres = { ...(target.wheres || {}), [n]: expr };
+    return true;
+  }
+  if (sm !== 'where') return false;
+  const map = stringEntryMap(args[0]);
+  if (map) { target.wheres = { ...(target.wheres || {}), ...map }; return true; }
+  const name = strArg(args[0]);
+  const expr = args.length > 1 ? strArg(args[1]) : null;
+  if (!afterVerb) {
+    // RouteRegistrar::__call → attribute('where', args) stores only the FIRST
+    // argument, and RouteGroup::formatWhere() then array_merge()s it — so a
+    // STRING argument is a boot TypeError, not a requirement. Say so; an app
+    // that reaches the edge this way could not have booted under PHP anyway.
+    if (name != null && warn) {
+      warn('`Route::where($name, $expression)` BEFORE the verb is not a RouteRegistrar attribute (it takes an array map) and throws on boot in Laravel 13 — the requirement for "' + name + '" is not applied here');
+    }
+    return true;
+  }
+  if (name != null && expr != null) { target.wheres = { ...(target.wheres || {}), [name]: expr }; return true; }
+  return true;
 };
 
 /**
@@ -258,6 +351,7 @@ const mergeRouteAttrs = (steps, verbIdx) => {
     names: [],
     middlewareRoute: [],
     excludedRoute: [],
+    wheres: {},
   };
   for (let i = steps.length - 1; i >= 0; i--) {
     if (i === verbIdx) continue;
@@ -281,6 +375,9 @@ const mergeRouteAttrs = (steps, verbIdx) => {
       // route's gathered list (Router::resolveMiddleware() rejects by name).
       const l = middlewareList(st.args[0]);
       if (l && l.length) { if (afterVerb) out.excludedRoute.push(...l); else out.excludedReg = l.slice(); }
+    } else {
+      // `where`/`whereNumber`/…/`whereIn`: the requirements this step carries.
+      applyWhereStep(sm, st.args, afterVerb, out, note);
     }
   }
   return out;
@@ -470,7 +567,7 @@ function parse() {
   const groupStack = []; // { prefix, namePrefix, middleware[], group, domain, excluded[], controller, namespace }
   const now = () => {
     const prefixes = [];
-    const cur = { prefix: '', namePrefix: '', middleware: [], group: null, domain: null, excluded: [], controller: null, namespace: null };
+    const cur = { prefix: '', namePrefix: '', middleware: [], group: null, domain: null, excluded: [], controller: null, namespace: null, wheres: {} };
     for (const g of groupStack) {
       if (g.prefix) prefixes.push(g.prefix);
       cur.namePrefix += g.namePrefix || '';
@@ -478,6 +575,10 @@ function parse() {
       cur.excluded = cur.excluded.concat(g.excluded || []);
       if (g.domain) cur.domain = g.domain; // the innermost non-empty domain wins
       if (!cur.group && g.group) cur.group = g.group;
+      // `RouteGroup::formatWhere()` (:138-146) MERGES the maps with the inner
+      // one last (`array_merge($old ?? [], $new ?? [])`), so an inner group
+      // overwrites per name and keeps the rest — not last-write-wins wholesale.
+      if (g.wheres) cur.wheres = { ...cur.wheres, ...g.wheres };
       // `Router::prependGroupController()` reads the LAST group on the stack, and
       // `RouteGroup::merge()` (:23-25) UNSETS the outer 'controller' the moment an
       // inner group declares one - so the innermost declaration wins and an inner
@@ -572,7 +673,10 @@ function parse() {
       if (sm === 'name') { const n = strArg(st.args[0]); if (n != null) modifiers.name = n; }
       if (sm === 'middleware') { const m = middlewareList(st.args[0]); if (m && m.length) modifiers.middleware = m; }
       if (sm === 'can') modifiers.can = true;
-      if (sm === 'where') modifiers.where = true;
+      // `->where(...)` / `->whereNumber(...)` / `->whereIn(...)`: the
+      // requirements, read by applyWhereStep (shared with the verb path — the
+      // resource path is the only caller of collectModifiers).
+      applyWhereStep(sm, st.args, true, modifiers, note);
       // Resource shape comes in two forms: `->only([...])` (a chain step) and
       // `Route::resource(..., ['only'=>...])` (the options argument) — both count.
       if (sm === 'only') { const l = argStrList(st.args[0]); if (l) modifiers.only = l; }
@@ -748,6 +852,17 @@ function parse() {
       vm === 'match' ? (matchVerbs ? matchVerbs.join('|') : 'MATCH') :
       String(method).toUpperCase();
 
+    // `Route::fallback($action)` is EXACTLY `addRoute('GET', '{fallbackPlaceholder}',
+    // $action)->where('fallbackPlaceholder', '.*')->fallback()` (Router::fallback()).
+    // The scan already writes the placeholder URI; the `.*` is what makes the
+    // route reach a path of any depth (probed: PHP answers `/a/b/c` from it),
+    // the SAME mechanism as an app-authored `->where($p, '.*')`.
+    // Group attributes land first, then the route's own `where` calls (in source
+    // order) overwrite them per name — `RouteGroup::merge()` runs before the
+    // route exists, so its requirements are the BASE.
+    const wheres = { ...(g.wheres || {}), ...(attrs.wheres || {}) };
+    if (isFallback) wheres['fallbackPlaceholder'] = '.*';
+
     routes.push({
       domain,
       method: methodOut,
@@ -758,6 +873,7 @@ function parse() {
       path,
       redirectDestination,
       redirectStatus,
+      ...(Object.keys(wheres).length ? { wheres } : {}),
     });
   };
 
@@ -812,6 +928,16 @@ function parse() {
     if (domainStep) { const v = strArg(domainStep.args[0]); if (v != null) attrs.domain = v; }
     const mwStep = chainLast('middleware');
     if (mwStep) { const m = middlewareList(mwStep.args[0]); if (m) attrs.middleware = m.slice(); }
+    // `Route::where([...])->group(fn)` / `Route::prefix('x')->where([...])->group(fn)`:
+    // the registrar attribute is the ARRAY form only, and it applies to every
+    // route the group registers (probed: `prefix('gp')->where(['p'=>'[0-9]+'])
+    // ->group(...)` answers `gp/g2/{p}` with `{"p":"[0-9]+"}`).
+    const whereStep = chainLast('where');
+    if (whereStep) {
+      const map = stringEntryMap(whereStep.args[0]);
+      if (map) attrs.wheres = { ...(attrs.wheres || {}), ...map };
+      else note('`Route::where($name, $expression)` before `->group()` takes an array map in Laravel 13 (a string argument throws on boot) — the requirement is not applied to this group');
+    }
     // `Route::controller(X::class)->group(fn () => Route::get('/x', 'index'))`:
     // Router::prependGroupController() (Router.php:664-684) turns the bare method
     // name into `X@index` when the route is registered. Without this, the dump
@@ -857,6 +983,12 @@ function parse() {
       if (raw.controller !== undefined) attrs.controller = fqcnOf(raw.controller, parsedOf(file));
       if (raw.namespace !== undefined) attrs.namespace = strArg(raw.namespace) ?? fqcnOf(raw.namespace, parsedOf(file));
       if (raw.middleware !== undefined) attrs.middleware = pickMiddleware(raw.middleware);
+      // `Route::group(['where' => ['id' => '[0-9]+']], fn)` — an attribute array
+      // key (RouteGroup::formatWhere reads `$new['where']`).
+      if (raw.where !== undefined) {
+        const map = stringEntryMap(raw.where);
+        if (map) attrs.wheres = { ...(attrs.wheres || {}), ...map };
+      }
       const exAttr = pickMiddleware(raw.withoutMiddleware)
         .concat(pickMiddleware(raw.without_middleware))
         .concat(pickMiddleware(raw.excluded_middleware));
@@ -1214,6 +1346,14 @@ function parse() {
         action: withGroupNamespace(`${fqcn}@${action}`, g.namespace),
         middleware,
         path: null,
+        // `Route::resource(...)->where([...])` stores the map in the registrar
+        // OPTIONS (`PendingResourceRegistration::where()`), and
+        // `ResourceRegistrar::getResourceAction()` copies it into EVERY action's
+        // `where` — so the whole map lands on all seven routes, the collection
+        // ones included (probed: `photos` and `photos/create` carry
+        // `{"photo":"[0-9]+"}` although their URI has no such segment; the
+        // compiler ignores a requirement for a name the pattern never uses).
+        ...(Object.keys(modifiers.wheres || {}).length ? { wheres: modifiers.wheres } : {}),
       });
     }
   };
