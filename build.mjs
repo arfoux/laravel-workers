@@ -553,6 +553,15 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
       const viewList =
         viteViews.length > 1 ? viteViews.length + ' Blade views (' + viteViews.join(', ') + ')' : viteViews[0];
       const candidates = manifestCandidates.map((p) => relPath(p)).join(', ');
+      // The framing both "no manifest" failures open with: name the views that
+      // call the frontend and the manifest paths that were looked for. One copy
+      // — the two sites differ in what to do next, not in the diagnosis.
+      const fullstackNoManifest = (views, paths) =>
+        'this is a FULLSTACK app: ' +
+        views +
+        ' call @vite()/mix(), but no frontend manifest is built (' +
+        paths +
+        ')';
       let scripts = {};
       try {
         scripts = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8')).scripts || {};
@@ -561,11 +570,8 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
       }
       if (!scripts.build) {
         fail(
-          'this is a FULLSTACK app: ' +
-            viewList +
-            ' call @vite()/mix(), but no frontend manifest is built (' +
-            candidates +
-            ') and there is no package.json "build" script to run automatically. ' +
+          fullstackNoManifest(viewList, candidates) +
+            ' and there is no package.json "build" script to run automatically. ' +
             'Add the Vite frontend (package.json with scripts.build) or drop @vite()/mix() from those views. ' +
             'A backend-only API app (no @vite in any view) needs no manifest at all.'
         );
@@ -616,11 +622,8 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
       if (!runner) {
         if (!has('npm')) {
           fail(
-            'this is a FULLSTACK app: ' +
-              viewList +
-              ' call @vite()/mix(), but no frontend manifest is built (' +
-              candidates +
-              ') and neither `bun` nor `npm` is on PATH to run the app\u2019s frontend build. ' +
+            fullstackNoManifest(viewList, candidates) +
+              ' and neither `bun` nor `npm` is on PATH to run the app\u2019s frontend build. ' +
               'Install bun (or npm), or run the frontend build yourself, then re-run.'
           );
         }
