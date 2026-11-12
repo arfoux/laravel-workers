@@ -60,6 +60,19 @@ const run = (command, args, options = {}) => {
   if (res.status !== 0) process.exit(res.status ?? 1);
 };
 
+// Resolve a bundled tool under the package, refuse loudly if the install is
+// incomplete, then exec it with the app root as cwd. The tool's relative path
+// is written ONCE (here) — the refusal message derives from it, so a rename
+// cannot drift the path and the message apart.
+const runTool = (rel, args, { inPackage = false } = {}) => {
+  const toolPath = join(pkgDir, rel);
+  if (!existsSync(toolPath)) {
+    console.error(`laravel-workers ${cmd}: ${rel} not found${inPackage ? ' in package' : ''} — reinstall laravel-workers.`);
+    process.exit(1);
+  }
+  run(process.execPath, [toolPath, ...args], { cwd: appRoot });
+};
+
 const HELP = `laravel-workers — compile a Laravel app to a JS bundle for Cloudflare Workers
 
 Usage: npx laravel-workers <command> [options]
@@ -117,12 +130,7 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
   console.error(`laravel-workers: developer tasks run via the package.json scripts (npm test / npm run bench / npm run check:docs / npm run test:corpus), not through the CLI. Run from the laravel-workers checkout.`);
   process.exit(2);
 } else if (cmd === 'init') {
-  const initPath = join(pkgDir, 'tools', 'init.mjs');
-  if (!existsSync(initPath)) {
-    console.error('laravel-workers init: tools/init.mjs not found in package — reinstall laravel-workers.');
-    process.exit(1);
-  }
-  run(process.execPath, [initPath], { cwd: appRoot });
+  runTool('tools/init.mjs', [], { inPackage: true });
 } else if (cmd === 'build') {
   const buildPath = join(pkgDir, 'build.mjs');
   if (!existsSync(buildPath)) {
@@ -151,12 +159,7 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
   // Build a (or reuse the cached) vendor tree the build needs to boot the app.
   // Content-addressed by composer.lock, so a second project with the same lock
   // costs nothing and a fresh clone never runs a full `composer install`.
-  const litePath = join(pkgDir, 'tools', 'vendor-lite.mjs');
-  if (!existsSync(litePath)) {
-    console.error('laravel-workers vendor:ensure: tools/vendor-lite.mjs not found in package — reinstall laravel-workers.');
-    process.exit(1);
-  }
-  run(process.execPath, [litePath, ...process.argv.slice(3)], { cwd: appRoot });
+  runTool('tools/vendor-lite.mjs', process.argv.slice(3), { inPackage: true });
 } else if (cmd === 'php:ensure') {
   // Resolve (or provision) the interpreter that can boot THIS app. The build
   // does this automatically; the explicit command exists for CI prewarming and
@@ -203,26 +206,11 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
   }
   run(php, [verifyPath], { cwd: appRoot, env: { ...process.env, LW_APP_ROOT: appRoot } });
 } else if (cmd === 'deploy') {
-  const deployPath = join(pkgDir, 'tools', 'deploy.mjs');
-  if (!existsSync(deployPath)) {
-    console.error('laravel-workers deploy: tools/deploy.mjs not found — reinstall laravel-workers.');
-    process.exit(1);
-  }
-  run(process.execPath, [deployPath, ...process.argv.slice(3)], { cwd: appRoot });
+  runTool('tools/deploy.mjs', process.argv.slice(3));
 } else if (cmd === 'status') {
-  const statusPath = join(pkgDir, 'tools', 'status.mjs');
-  if (!existsSync(statusPath)) {
-    console.error('laravel-workers status: tools/status.mjs not found — reinstall laravel-workers.');
-    process.exit(1);
-  }
-  run(process.execPath, [statusPath], { cwd: appRoot });
+  runTool('tools/status.mjs', []);
 } else if (cmd === 'doctor') {
-  const doctorPath = join(pkgDir, 'tools', 'doctor.mjs');
-  if (!existsSync(doctorPath)) {
-    console.error('laravel-workers doctor: tools/doctor.mjs not found — reinstall laravel-workers.');
-    process.exit(1);
-  }
-  run(process.execPath, [doctorPath, ...process.argv.slice(3)], { cwd: appRoot });
+  runTool('tools/doctor.mjs', process.argv.slice(3));
 } else {
   console.error(`laravel-workers: unknown command "${cmd}". Try: build | deploy | init | status | doctor | shadow | verify | vendor:ensure | php:ensure | help`);
   process.exit(1);
