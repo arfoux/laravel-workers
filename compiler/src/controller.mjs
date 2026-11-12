@@ -472,25 +472,24 @@ export function extractController(source, methodName) {
   const newClassSet = new Set();
   scanBody(method.body, classSet, viewSet, constantSet, newClassSet);
 
+  // Resolve a written alias to its FQCN: the `use` map wins; a name that
+  // already carries a namespace is left whole (PHP resolved it); otherwise the
+  // controller's namespace is prefixed. Three mappers below (classes,
+  // newClasses, constantClasses) must agree — #693 was this rule drifting.
+  const resolveAliasFqcn = (rawAlias) => {
+    const alias = String(rawAlias).replace(/^\\/, '');
+    const fqcn = uses[alias] || (alias.includes('\\') ? alias : nsName ? nsName + '\\' + alias : alias);
+    return { alias, fqcn };
+  };
   const classes = [...classSet]
     .filter((alias) => !NON_MODEL_STATICS.has(alias.replace(/^\\/, '')))
-    .map((rawAlias) => {
-      // A fully-qualified static call (`\App\Models\Post::find()`) is already
-      // resolved by PHP — the controller's namespace must not be prefixed.
-      const alias = String(rawAlias).replace(/^\\/, '');
-      const fqcn = uses[alias] || (alias.includes('\\') ? alias : nsName ? nsName + '\\' + alias : alias);
-      return { alias, fqcn };
-    });
+    .map(resolveAliasFqcn);
   classes.sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
 
   // The classes the body instantiates (`new OrderMail()`): the build stops
   // the route when one of them does not compile.
   const newClasses = [...newClassSet]
-    .map((rawAlias) => {
-      const alias = String(rawAlias).replace(/^\\/, '');
-      const fqcn = uses[alias] || (alias.includes('\\') ? alias : nsName ? nsName + '\\' + alias : alias);
-      return { alias, fqcn };
-    })
+    .map(resolveAliasFqcn)
     .sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
 
   // Classes read for a *constant* (e.g. RouteServiceProvider::HOME).
@@ -500,11 +499,7 @@ export function extractController(source, methodName) {
     // namespace onto an alias that already carries one (#693: `\App\Enums\Status::ACTIVE`
     // used to resolve to `App\Http\Controllers\\App\Enums\Status`).
     .filter((alias) => !NON_MODEL_STATICS.has(String(alias).replace(/^\\/, '')))
-    .map((rawAlias) => {
-      const alias = String(rawAlias).replace(/^\\/, '');
-      const fqcn = uses[alias] || (alias.includes('\\') ? alias : nsName ? nsName + '\\' + alias : alias);
-      return { alias, fqcn };
-    })
+    .map(resolveAliasFqcn)
     .sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
 
   // The kinds of the data the views receive: a Blade view carries no type
