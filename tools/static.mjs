@@ -504,7 +504,19 @@ export function evalConstantExpr(node, ctx, depth = 0, stack = []) {
         if (kind === 'selfreference' || kind === 'self' || kind === 'static' || raw === 'self' || raw === 'static') {
           return ctx.fqcn || ctx.className || null;
         }
-        if (kind === 'parentreference' || raw === 'parent') return null;
+        if (kind === 'parentreference' || raw === 'parent') {
+          // `parent::class` is the PARENT's FQCN, not a constant of it (probed
+          // on PHP 8.3: `class B extends A { const P = parent::class; }`
+          // answers `A`). Returning null dropped the constant, so an app that
+          // names its parent that way failed loud — the #700 bug on the family
+          // side. Resolve the enclosing class's `extends`, the same chain
+          // collectConstants() walks for inherited constants.
+          const own = ctx.fqcn || ctx.className || null;
+          if (!own) return null;
+          const self = nodeFor(appDir, own);
+          if (!self || !self.node) return null;
+          return extendsNameOf(self.parsed, self.node);
+        }
         if (!raw) return null;
         return resolveClassName(raw, what, ctx);
       }
