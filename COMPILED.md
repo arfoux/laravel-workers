@@ -256,7 +256,7 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
 | Response | json/make/view/download(stream)/file; redirect→route/away/back/intended; `with/withErrors/withInput`; cookie queue; headers | `back()` needs session; `intended()` compiled (M20) |
 | Middleware | groups (`web`/`api`), route params (`throttle:60,1`, `can:`), sorting, terminable | compiled pipeline. A middleware the rung cannot compile (a URL-locale resolver, a response cache) is answered by a **middleware port** (`registry.json` → `middlewarePorts` → `ports/<slug>.mjs`): it runs BEFORE the route's handler on the same `ctx` — `null` continues, a response short-circuits — and a `ctx.locale` it resolves becomes that request's `app.locale` (Laravel's per-request `App::setLocale`), so a compiled controller behind it translates `__()` in the URL's locale. A route with no request-time handler behind a middleware port is refused at build time: a snapshot is served by the asset bundle before the Worker, so the port would never run |
 | Route-model binding | implicit/explicit/scoped/nullable | |
-| Routes (the scan) | `Route::get/post/put/patch/delete/options/any/match/query`, `view`/`redirect`/`permanentRedirect`/`fallback`, `resource`, groups (`prefix`/`name`/`middleware`), `require` chains, `bootstrap/app.php` `withRouting()` (`web`/`api`), a provider's `Route::group(base_path(...))` | the scan keeps DECLARATION order (Laravel's first-match precedence) and maps the non-verb helpers to what `route:list --json` prints (`view` → GET|HEAD + `Illuminate\Routing\ViewController`, `redirect`/`permanentRedirect` → `Router::$verbs` + `Illuminate\Routing\RedirectController`, `fallback` → GET|HEAD on `{fallbackPlaceholder}`, `any` → `Router::$verbs`, `match([...])` → uppercased + HEAD when GET is present, `query` → QUERY); a helper the scan cannot read is reported through its `notes`, never dropped. **Not served by the edge** (PHP answers 200, the edge 404): the FRAMEWORK routes a route file cannot declare — the health route (`health: '/up'`; `ApplicationBuilder::withRouting()`, reported with a note naming the URI) and `storage/{path}` (`FilesystemServiceProvider::serveFiles()`); vendor/package routes (sanctum, livewire, …) are outside every source scan and the note says to declare the ones the edge must serve in `registry.json` (static/ports/ignore) |
+| Routes (the scan) | `Route::get/post/put/patch/delete/options/any/match/query`, `view`/`redirect`/`permanentRedirect`/`fallback`, `resource`, `resource`'s `->where([...])`, groups (`prefix`/`name`/`middleware`, and the `where` attribute in both shapes), `->where($param, $expression)` / `whereNumber`/`whereAlpha`/`whereAlphaNumeric`/`whereUuid`/`whereUlid`/`whereIn` in every chain position (after the verb, as `Route::where([...])->get(...)`), `require` chains, `bootstrap/app.php` `withRouting()` (`web`/`api`), a provider's `Route::group(base_path(...))` | the scan keeps DECLARATION order (Laravel's first-match precedence) and maps the non-verb helpers to what `route:list --json` prints (`view` → GET|HEAD + `Illuminate\Routing\ViewController`, `redirect`/`permanentRedirect` → `Router::$verbs` + `Illuminate\Routing\RedirectController`, `fallback` → GET|HEAD on `{fallbackPlaceholder}`, `any` → `Router::$verbs`, `match([...])` → uppercased + HEAD when GET is present, `query` → QUERY); a helper the scan cannot read is reported through its `notes`, never dropped. **Not served by the edge** (PHP answers 200, the edge 404): the FRAMEWORK routes a route file cannot declare — the health route (`health: '/up'`; `ApplicationBuilder::withRouting()`, reported with a note naming the URI) and `storage/{path}` (`FilesystemServiceProvider::serveFiles()`); vendor/package routes (sanctum, livewire, …) are outside every source scan and the note says to declare the ones the edge must serve in `registry.json` (static/ports/ignore). A requirement travels with its route: the scan prints it as `wheres`, `build.mjs` copies the map onto the route table entry, and `kernel/router.mjs` compiles it in Symfony's place (`getRequirement()` replaces the default class). `Route::fallback()` is `{fallbackPlaceholder}` + `where('fallbackPlaceholder', '.*')`, so carrying requirements is what makes the fallback reach every unmatched path; a path PHP rejects is no longer served. Requirements are the scan's alone to carry (`route:list --json` prints none), and an expression the JS engine cannot compile — or an empty one, which Symfony refuses, so the app cannot boot at all — stops the build (§6 item 21) |
 | CSRF | token in session, `X-CSRF-TOKEN`/`X-XSRF-TOKEN`, except list, SameSite | full VerifyCsrfToken semantics |
 | Signed URLs | `signedRoute`, `temporarySignedRoute`, `hasValidSignature` | HMAC kernel done |
 | Cookies | EncryptCookies parity, queued cookies, cookie jar | M5 parity done |
@@ -529,6 +529,33 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
     Same class: a route whose handler the build refused (a declared refusal) is
     not in the include list either *(escape: declare the URI in
     `registry.json`)*.
+21. **A requirement that cannot become a regex** — `->where($param, $expression)`
+    stores the expression as given and Symfony compiles it into the path regex
+    verbatim (`RouteCompiler::compilePattern()`, after `sanitizeRequirement()`
+    drops an anchoring `^`/`$`/`\A`/`\z`), so the kernel does the same. Three
+    cases stop the build (`build.mjs` compiles every entry's regex at build time
+    and names the route): an expression the JS engine **cannot compile** (a PCRE
+    construct with no JS equivalent), an expression the JS engine **compiles to a
+    different meaning** (`\h` is horizontal whitespace in PCRE and the literal
+    `h` in JS; also `\H`, `\v`/`\V`, `\R`, `\X`, `\Q…\E`, `\K`, `\Z`/`\G`, a
+    `\A`/`\z` in the middle of the expression, a POSIX class `[[:alpha:]]`),
+    and an expression that is **empty after sanitizing** (`->where('id', '')`,
+    `->whereIn('id', [])`), which Symfony itself REFUSES — the app cannot boot at
+    all, so it has no PHP answer to match. The alternative is the router
+    compiling it on first use *inside the Worker*: a throw (or a pattern matching
+    a different path) on every request that reaches the route. A requirement
+    carrying a **unicode property** (`\p{L}+`, `[\p{L}\p{N}]+`, `\P{L}+`) is
+    translated rather than refused: PHP compiles every path with PCRE's `u`
+    modifier, so the kernel compiles that pattern with JS's `u` flag (measured:
+    without it `->where('name', '\p{L}+')` became the literal text `p{L}` and
+    answered the fallback for `/letters/abc` where PHP answered the route).
+    Measured against a live Laravel 13.37 app: the scan's `wheres` equals
+    `$route->wheres` on 50/50 (uri, verb) pairs over 26 URIs, every shape
+    included (probed by `tools/tests/routes-dump.test.mjs` and the shadow
+    battery); the unicode battery (`\p{L}+`, `[\p{L}\p{N}]+`, `\P{L}+`,
+    `\p{Lu}+`, `[0-9]+` over ASCII/`é`/`Ж` and every rejection) is **11/11
+    byte-identical** against PHP 8.3 *(escape: rewrite the expression into the
+    common forms the kernel translates, or drop the requirement)*.
 
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
