@@ -3,11 +3,18 @@
 // Laravel rebuilds the compiled package manifest ONLY when the file is missing:
 // `PackageManifest::getManifest()` is
 //
-//   return $this->manifest ?: ($this->manifest = $this->files->exists($this->manifestPath)
-//     ? $this->files->getRequire($this->manifestPath)
-//     : $this->build());
+//   if (! is_null($this->manifest)) {
+//       return $this->manifest;
+//   }
+//   if (! is_file($this->manifestPath)) {
+//       $this->build();
+//   }
+//   return $this->manifest = is_file($this->manifestPath) ?
+//       $this->files->getRequire($this->manifestPath) : [];
 //
-// (`vendor/laravel/framework/src/Illuminate/Foundation/PackageManifest.php:101-113`)
+// (`vendor/laravel/framework/src/Illuminate/Foundation/PackageManifest.php:101-113` —
+// re-read against framework 13.37; the `?: $this->build()` one-liner this
+// comment used to quote is not the shape the vendor tree carries any longer)
 // and the compiled services cache is written the same way. The build keeps both
 // inside its scratch dir (`APP_PACKAGES_CACHE`/`APP_SERVICES_CACHE`, build.mjs
 // `childEnv()`) so that a developer's `bootstrap/cache/*.php` cannot poison the
