@@ -26,7 +26,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -116,10 +116,16 @@ function makeApp() {
   });
   symlinkSync(path.join(APP_ROOT, 'vendor'), path.join(dir, 'vendor'), process.platform === 'win32' ? 'junction' : 'dir');
   writeFileSync(path.join(dir, 'routes', 'web.php'), ROUTES);
-  writeFileSync(
-    path.join(dir, 'registry.json'),
-    JSON.stringify({ autoSnapshot: false, ports: PORTS, middlewarePorts: { '/wrapped': ['localization'] } }, null, 2)
-  );
+  // The copy compiles the source app's own classes (its models, mailables and
+  // listeners are still in `app/`), so a class that reads a config group the
+  // source app declared (`config: ["mail"]`, read by a MailController) fails the
+  // `--strict` build once the declaration is dropped — on a route this test
+  // never wrote. Keep the source's `config` groups, drop only its route policy.
+  const sourceRegistry = path.join(APP_ROOT, 'registry.json');
+  const sourceConfig = existsSync(sourceRegistry) ? JSON.parse(readFileSync(sourceRegistry, 'utf8')).config : null;
+  const registry = { autoSnapshot: false, ports: PORTS, middlewarePorts: { '/wrapped': ['localization'] } };
+  if (sourceConfig) registry.config = sourceConfig;
+  writeFileSync(path.join(dir, 'registry.json'), JSON.stringify(registry, null, 2));
   // The fleet ports, flat under the app's own ports dir, so LW_PORTS_DIR=ports
   // makes `<slug>.mjs` resolve and the ports' `../../kernel/packages/*` imports
   // resolve inside dist/ (the build copies kernel/ to dist/kernel).

@@ -25,7 +25,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -61,6 +61,25 @@ const SKIP_DIRS = new Set(['vendor', 'node_modules', 'dist', '.cache', '.git']);
 // premise under test is the route set, so the policy file goes with it.
 const SKIP_FILES = new Set(['registry.json']);
 
+/**
+ * The copy keeps the source registry's `config` groups. That file is the source
+ * app's ROUTE POLICY plus its config declaration, and only the policy is the
+ * problem (an entry for a route the copy does not declare makes the build fail
+ * on a route this test never wrote). Dropping the whole file also dropped
+ * `config`, and an app whose *classes* read a declared group then failed the
+ * `--strict` build on an unrelated key (`mail.default`): the copy compiles the
+ * source app's controllers, models and mailables even though its route set is
+ * redirect-only. So: strip the policy, keep `config`.
+ */
+function copyRegistryConfig(fromDir, toDir) {
+  const from = path.join(fromDir, 'registry.json');
+  if (!existsSync(from)) return;
+  const reg = JSON.parse(readFileSync(from, 'utf8'));
+  const kept = {};
+  if (reg.config) kept.config = reg.config;
+  writeFileSync(path.join(toDir, 'registry.json'), JSON.stringify(kept, null, 2) + '\n');
+}
+
 function makeRedirectOnlyApp() {
   const dir = mkdtempSync(path.join(tmpdir(), 'lw-redirect-only-'));
   cpSync(APP_ROOT, dir, {
@@ -77,6 +96,7 @@ function makeRedirectOnlyApp() {
   // normal app. A junction (Windows) / dir symlink (POSIX) is enough and needs
   // no elevated rights.
   symlinkSync(path.join(APP_ROOT, 'vendor'), path.join(dir, 'vendor'), process.platform === 'win32' ? 'junction' : 'dir');
+  copyRegistryConfig(APP_ROOT, dir);
   writeFileSync(path.join(dir, 'routes', 'web.php'), ROUTES);
   return dir;
 }
@@ -150,14 +170,16 @@ test('the emitted redirect handlers answer with the recorded status and destinat
     'the route table must record each redirect as its own kind, with its status and destination'
   );
 
-  // The kernel request's URL accessors (`Request::url()`, `fullUrl()`,
-  // `getQueryString()` — kernel/http.mjs:686-692), so a handler that forwarded
-  // the query string has the real seam to read it from.
+  // The ctx `kernel/router.mjs` dispatch() hands a route handler: `ctx.request`
+  // is the compiled kernel Request (the URL accessors are METHODS) and
+  // `ctx.routeParams` is the matched parameter map (ctxExtra), so the emitted
+  // handler has the real seam to read the query string and the params from.
   const ctx = (params = {}, target = 'http://localhost/old?x=1&y=2') => {
     const parsed = new URL(target);
     return {
+      routeParams: params,
       request: {
-        routeParams: () => params,
+        schemeAndHttpHost: () => parsed.origin,
         url: () => parsed.origin + parsed.pathname,
         fullUrl: () => target,
         getQueryString: () => parsed.search.replace(/^\?/, ''),
@@ -177,20 +199,21 @@ test('the emitted redirect handlers answer with the recorded status and destinat
   assert.deepEqual(await answer('GET /perm'), { status: 301, location: '/perm-dest' });
   // Trap 2 — the destination's `{param}` comes from the request's route params.
   assert.deepEqual(await answer('GET /u/{id}', { id: '42' }), { status: 302, location: '/users/42/profile' });
-  // ...substituted as ONE path SEGMENT, so a separator can never leak into the
-  // destination. Measured against the PHP oracle (Laravel 13, the redirect-only
-  // app, `Request::create($uri)` through the HTTP kernel):
-  //   /u/a%20b    -> 302 /users/a%20b/profile   (param 'a b')   — identical here
-  //   /u/a%25b    -> 302 /users/a%25b/profile   (param 'a%b')   — identical here
-  //   /u/a%252Fb  -> 302 /users/a%252Fb/profile (param 'a%2Fb') — identical here
-  //   /u/a%2Bb    -> 302 /users/a+b/profile     (param 'a+b')   — `+` only
-  // The `+` is the one byte that differs: Laravel's generator leaves it literal
-  // while `encodeURIComponent` emits `%2B`. Both Locations percent-decode to the
-  // same segment, and Laravel is the inconsistent side (it escapes a space and a
-  // `%` but not a `+`); the RFC 3986 form is the one emitted here.
-  assert.deepEqual(await answer('GET /u/{id}', { id: 'a/b' }), { status: 302, location: '/users/a%2Fb/profile' });
+  // ...substituted as one value and encoded by
+  // RouteUrlGenerator::encodeParameter() (only `%`, `?` and `#`) plus the
+  // `$dontEncode` table applied to the whole rawurlencode()d URL. Measured
+  // against the PHP oracle (Laravel 13, the redirect-only app,
+  // `Request::create($uri)` through the HTTP kernel — every row below is the
+  // Location PHP answered):
+  //   /u/a%20b    -> 302 /users/a%20b/profile    (param 'a b')   — identical here
+  //   /u/a%2Bb    -> 302 /users/a+b/profile      (param 'a+b')   — `%2B` is in $dontEncode
+  //   /u/a%252Fb  -> 302 /users/a%252Fb/profile  (param 'a%2Fb') — identical here
+  // A real parameter can never hold a `/` (the compiled `[^/]++` forbids it), and
+  // the generator puts one back if it ever did: `%2F` is in $dontEncode too.
+  assert.deepEqual(await answer('GET /u/{id}', { id: 'a/b' }), { status: 302, location: '/users/a/b/profile' });
   assert.deepEqual(await answer('GET /u/{id}', { id: 'a b' }), { status: 302, location: '/users/a%20b/profile' });
-  assert.deepEqual(await answer('GET /u/{id}', { id: 'a+b' }), { status: 302, location: '/users/a%2Bb/profile' });
+  assert.deepEqual(await answer('GET /u/{id}', { id: 'a+b' }), { status: 302, location: '/users/a+b/profile' });
+  assert.deepEqual(await answer('GET /u/{id}', { id: 'a%2Fb' }), { status: 302, location: '/users/a%252Fb/profile' });
   // Trap 3 — a redirect registers with `any()`, so every compiled verb answers
   // the same thing instead of falling through to a 404/405.
   for (const key of ['HEAD /old', 'POST /old', 'PUT /old', 'PATCH /old', 'DELETE /old', 'OPTIONS /old', 'QUERY /old']) {
@@ -205,5 +228,23 @@ test('the emitted redirect handlers answer with the recorded status and destinat
     await answer('GET /old', {}, 'http://localhost/old?x=1&y=2'),
     { status: 302, location: '/new' },
     'the query string must not be forwarded onto the destination'
+  );
+
+  // The build copies `src/worker.mjs` into `dist/src/` and that template imports
+  // every generated registry unconditionally, so a registry the build only wrote
+  // inside the controller-compile block is MISSING here — this app compiles zero
+  // controllers, which is exactly the app that shipped a worker the bundler
+  // could not resolve ("Could not resolve ./classes.generated.mjs"). Assert the
+  // artifact, not the build's source shape: every module the copied worker
+  // imports exists next to it.
+  const workerSrc = readFileSync(path.join(built.dir, 'dist', 'src', 'worker.mjs'), 'utf8');
+  const imported = [...workerSrc.matchAll(/from '(\.\/[A-Za-z0-9._-]+\.mjs)'/g)].map((m) => m[1]);
+  assert.ok(imported.length > 0, 'the copied worker imports no local module - the template changed');
+  const missing = imported.filter((rel) => !existsSync(path.join(built.dir, 'dist', 'src', rel)));
+  assert.deepEqual(
+    missing,
+    [],
+    `dist/src/worker.mjs imports ${imported.join(', ')} but ${missing.join(', ')} was not emitted ` +
+      '(a build with no compiled controller still has to ship every generated registry)'
   );
 });

@@ -2,6 +2,47 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Route::redirect() answers what Laravel answers, and the route finally reaches the Worker
+
+A `Route::redirect()` route was emitted as an inline handler in `routes.generated.mjs` that
+substituted the destination's `{param}`s with `encodeURIComponent`, wrote `''` for a parameter the
+destination named but the request did not carry, answered `{status, headers: {location}, body: ''}`,
+and — the part that made the route invisible in production — was **never added to
+`_routes.json`**. Cloudflare therefore answered the path from the static bundle (there is no such
+file: a 404) and the emitted handler never ran. Found by diffing a redirect-only app against a real
+Laravel 13 app through the shadow harness, byte for byte.
+
+The handler is now `kernel/redirect-route.mjs`, a transcription of
+`Illuminate\Routing\RedirectController::__invoke()` + `Symfony\Component\HttpFoundation\RedirectResponse`:
+
+| change | why |
+|---|---|
+| `kernel/redirect-route.mjs` (new) answers the route table's `kind: 'redirect'` entries; `build.mjs` emits `(ctx) => redirectRouteResponse(ctx.request, ctx.routeParams, dest, status)` | the destination's own path variables are the only ones substituted (`only($destination->getPathVariables())`), a variable the request does not carry leaves its `{name}` in place and raises `UrlGenerationException` (**500**; the old handler wrote `''` — a silently wrong `Location`), and the value goes through `encodeParameter()` (only `%`, `?`, `#`) plus `strtr(rawurlencode($url), $dontEncode)` over the WHOLE url — so `+`, `@`, `:`, `;`, `,`, `=`, `!`, `*`, `|`, `&`, `#`, `%`, `/` stay literal, `(`/`)`/`'`/space stay percent-encoded, and `encodeURIComponent` was wrong on every one of those |
+| the status is the recorded one (`redirect($u, $d, 301)` takes its THIRD argument) and a 301 drops the `Cache-Control` the `Response` constructor injected (`RedirectResponse::__construct`: `301 == $status && !array_key_exists('cache-control', $headers)`) — `kernel/http.mjs` now tracks whether IT injected the default, so an app-set header is never removed | byte parity: the framework's 302 carries `cache-control: no-cache, private` and its 301 carries none |
+| the Symfony redirect HTML body (`<!DOCTYPE html>…<a href="…">…`), html-escaped, is emitted instead of `''` | the response body was empty where PHP sends the framework's page |
+| the request's query string is still NOT forwarded onto the destination | `RedirectController` substitutes only the destination's own variables; a handler that appended `?x=1` answered a different URL |
+| `_routes.json` include rules for `kind: 'redirect'` routes, and a variable inside a segment that also holds text (`/enc-suffix-{id}`) now yields the rule `/enc-suffix-*` instead of the literal `/enc-suffix-{id}` (`tools/routes-json.mjs`) | a rule with a literal `{id}` is matched by no request path, so Cloudflare served the route from the static bundle and the Worker never ran; Cloudflare allows one `*`, only as the last character |
+| `build.mjs`: the auth-provider models are dumped even when NO controller compiled | an app whose routes are all redirects/ports/snapshots still authenticates; the strict build failed loud on the missing user model |
+| `kernel/router.mjs`: the compiled pattern is Symfony's `RouteCompiler::compilePattern()` transcription (text-and-variable segments, the separator inside the optional group, adjacent variables, `{x?}` runs that nest, duplicate-name refusal, the path preparation `rtrim($path, '/') ?: '/'`) | a segment that mixed text and a variable (`/enc-suffix-{id}`, `/a/{id}-{slug}`, `/{id}.json`) used to compile to a LITERAL, so the route answered 404 on every request PHP answers 200 |
+
+Evidence: a redirect-only app (`Route::redirect`, `permanentRedirect`, a `{param}` destination, a
+two-parameter swap, a destination with no leading slash, a variable inside a segment) builds
+`--strict` and its emitted handlers answer the PHP oracle on all 64 keys. The shadow harness replays
+41 live requests against the real app and the compiled worker: **37 byte-identical, 4 documented
+divergences** (each one a path no route matches: both sides answer `404`, PHP renders `errors/404`
+and the edge answers the platform's 404 body — a path outside `_routes.json` never reaches the
+Worker at all). The router grammar was checked against PHP's own `preg_match($route->compile()
+->getRegex(), …)` for **1004 patterns × 60 paths**: 302 of the patterns are ones `RouteCompiler`
+itself refuses (a duplicate variable name — the kernel throws the same named error), and of the
+702 × 60 = 42 120 comparable pairs **42 061 agree**. All 59 differences are the documented
+`{param*}` catch-all extension (Symfony 13 dropped it; the kernel keeps it because compiled apps
+use it) — drop those patterns and the battery is **41 880/41 880 with zero divergence**. Two
+earlier "divergences" turned out to be an artifact of the oracle: raw `preg_match` keeps an
+unmatched named group as `''`, while Laravel's matcher does not (`$router->getRoutes()
+->match('/.json')` on `/{id?}.{fmt?}` yields `{"fmt":"json"}`, which is what the kernel answers).
+`npm test` 2069 tests / 0 fail (3 skipped; `--fast` 2063 / 0 fail),
+`node tools/gate.mjs --strict` PASS, `tools/check-syntax.mjs` PASS, `tools/pack-gate.mjs` OK.
+
 ### Webhook signatures: the verifiers can see the raw body again
 
 `kernel/http.mjs` built a `Request` with no raw-body accessor, so

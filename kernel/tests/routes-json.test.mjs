@@ -25,6 +25,18 @@ test('routeToPatterns maps static, dynamic, optional and catch-all segments', ()
   // Cloudflare drop the whole file: the pattern is the single-wildcard prefix.
   assert.deepEqual(routeToPatterns('/users/{user}/posts/{post}'), ['/users/*']);
   assert.deepEqual(routeToPatterns('/files/{path*}'), ['/files/*']);
+  // A variable need not fill the segment: the rule keeps the literal text
+  // before it, so the real request path is inside the rule. The old code emitted
+  // the literal rule `/enc-suffix-{id}`, which no request path ever matches —
+  // Cloudflare then served the route from static assets (404) and the Worker
+  // never ran.
+  assert.deepEqual(routeToPatterns('/enc-suffix-{id}'), ['/enc-suffix-*']);
+  assert.deepEqual(routeToPatterns('/a/{id}-{slug}'), ['/a/*']);
+  // A variable in a segment that is not the last one cannot be spelled (one
+  // trailing `*`, no mid-rule wildcard): the rule widens to the literal text
+  // before it, which still contains every real path of the route.
+  assert.deepEqual(routeToPatterns('/a{id}/b'), ['/a*']);
+  assert.deepEqual(routeToPatterns('/{id}b'), ['/*']);
 });
 
 test('routeToPatterns covers an optional segment at any position', () => {
