@@ -20,17 +20,11 @@
 //
 // Free tier: ≤2 D1 writes per event, HMAC CPU negligible, 0 subrequests.
 
-import { verifyLemonSignature } from '../../kernel/packages/webhook.mjs';
+import { verifyLemonSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lw_webhook_events (
-    id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    type TEXT,
-    payload TEXT,
-    received_at TEXT
-  )`).run();
+  await ensureWebhookEventsTable(env);
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lemon_squeezy_customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -98,10 +92,13 @@ function json(status, payload) {
 
 async function recordEventOnce(env, event) {
   await ensureSchema(env);
-  const res = await env.DB.prepare(
-    'INSERT OR IGNORE INTO lw_webhook_events (id, provider, type, payload, received_at) VALUES (?, ?, ?, ?, ?)'
-  ).bind(String(event.meta?.event_id), 'lemon-squeezy', String(event.meta?.event_name || ''), JSON.stringify(event).slice(0, 8000), now()).run();
-  return (res.meta?.changes ?? res.changes ?? 0) > 0;
+  return recordWebhookEventOnce(env, {
+    id: String(event.meta?.event_id),
+    provider: 'lemon-squeezy',
+    type: event.meta?.event_name,
+    payload: event,
+    receivedAt: now(),
+  });
 }
 
 // LS nests the app's user id in `meta.custom_data` (set on checkout) and the data

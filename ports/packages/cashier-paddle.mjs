@@ -18,17 +18,11 @@
 //
 // Free tier: ≤2 D1 writes per event, HMAC CPU negligible, 0 subrequests.
 
-import { verifyPaddleSignature } from '../../kernel/packages/webhook.mjs';
+import { verifyPaddleSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lw_webhook_events (
-    id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    type TEXT,
-    payload TEXT,
-    received_at TEXT
-  )`).run();
+  await ensureWebhookEventsTable(env);
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS paddle_customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -80,10 +74,13 @@ function json(status, payload) {
 
 async function recordEventOnce(env, event) {
   await ensureSchema(env);
-  const res = await env.DB.prepare(
-    'INSERT OR IGNORE INTO lw_webhook_events (id, provider, type, payload, received_at) VALUES (?, ?, ?, ?, ?)'
-  ).bind(String(event.event_id), 'paddle', String(event.event_type || ''), JSON.stringify(event).slice(0, 8000), now()).run();
-  return (res.meta?.changes ?? res.changes ?? 0) > 0;
+  return recordWebhookEventOnce(env, {
+    id: String(event.event_id),
+    provider: 'paddle',
+    type: event.event_type,
+    payload: event,
+    receivedAt: now(),
+  });
 }
 
 // Paddle custom_data carries the app's user id (Cashier sets it on checkout).
