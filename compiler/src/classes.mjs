@@ -367,6 +367,22 @@ function ctorAssignedProps(classNode) {
   return assigned;
 }
 
+// The default a promoted constructor parameter falls back to when the caller
+// passes nothing: the container-resolved value, else the declared literal. Two
+// loops (the body bindings and the promoted properties) need the same answer —
+// one copy, so the "cannot inline" refusal cannot drift between them.
+function promotedFallback(fqcn, name, i, p, fallbackOf) {
+  if (fallbackOf.has(i)) return { js: phpLiteralJs(fallbackOf.get(i)) };
+  if (p.value !== undefined && p.value !== null) {
+    const lit = literalOf(p.value);
+    if (!lit) {
+      return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline', code: 'LW002' };
+    }
+    return { js: lit.js };
+  }
+  return { js: 'undefined' };
+}
+
 function compileConstructor(fqcn, classNode, opts) {
   const ctor = findMethod(classNode, '__construct');
   const props = [];
@@ -531,16 +547,9 @@ function compileConstructor(fqcn, classNode, opts) {
       bindings.push('    let ' + vname(name) + ' = deps[' + JSON.stringify(name) + '];');
       continue;
     }
-    let fallback = 'undefined';
-    if (fallbackOf.has(i)) {
-      fallback = phpLiteralJs(fallbackOf.get(i));
-    } else if (p.value !== undefined && p.value !== null) {
-      const lit = literalOf(p.value);
-      if (!lit) {
-        return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline', code: 'LW002' };
-      }
-      fallback = lit.js;
-    }
+    const fb = promotedFallback(fqcn, name, i, p, fallbackOf);
+    if (fb.error) return fb;
+    const fallback = fb.js;
     bindings.push('    let ' + vname(name) + ' = args[' + i + '] === undefined ? ' + fallback + ' : args[' + i + '];');
   }
   for (let i = 0; i < params.length; i++) {
@@ -556,16 +565,9 @@ function compileConstructor(fqcn, classNode, opts) {
       props.push('      ' + JSON.stringify(name) + ': deps[' + JSON.stringify(name) + ']');
       continue;
     }
-    let fallback = 'undefined';
-    if (fallbackOf.has(i)) {
-      fallback = phpLiteralJs(fallbackOf.get(i));
-    } else if (p.value !== undefined && p.value !== null) {
-      const lit = literalOf(p.value);
-      if (!lit) {
-        return { error: 'the promoted property $' + name + ' of ' + fqcn + ' has a default the compiled rung cannot inline', code: 'LW002' };
-      }
-      fallback = lit.js;
-    }
+    const fb = promotedFallback(fqcn, name, i, p, fallbackOf);
+    if (fb.error) return fb;
+    const fallback = fb.js;
     props.push('      ' + JSON.stringify(name) + ': (args[' + i + '] === undefined ? ' + fallback + ' : args[' + i + '])');
   }
   const promoted = props.length ? '{\n' + props.join(',\n') + ',\n    }' : '{}';
