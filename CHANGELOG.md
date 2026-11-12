@@ -2,6 +2,36 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Mollie webhook: the signature check matches Mollie's own, and an unsigned webhook is accepted
+
+`ports/packages/mollie-webhook.mjs` required a signature header that classic Mollie webhooks never
+send — its own disclosure said so ("the `X-Mollie-Signature` header is not part of the real
+protocol") while the code answered `401` whenever the header was absent. A real Cashier Mollie
+webhook (`{ "id": "tr_..." }`, no header) could never reach the reverse-reconcile, so the port was
+unusable in production and its "strict superset of Cashier" claim was backwards.
+
+Checked against Mollie's own validator (`mollie/mollie-api-php`, `src/Webhooks/SignatureValidator.php`
++ `docs/webhooks.md`), which says the opposite of the old disclosure and pins the scheme:
+
+| | classic webhook (what Cashier registers) | next-gen webhook |
+|---|---|---|
+| header | none | `X-Mollie-Signature: sha256=<hex>` (prefix optional) |
+| digest | — | `hash_hmac('sha256', $payload, $secret)` → **hex** |
+| absent header | legacy webhook — proceed | — |
+
+The port followed none of that: it computed **base64** (so even a genuine next-gen signature would
+fail) and treated an absent header as an error. Now: `X-Mollie-Signature` present → compare the
+**hex** HMAC-SHA256 of the raw body constant-time (`timingSafeEqual` from
+`kernel/packages/webhook.mjs` — the local byte/base64 helpers are gone), `401` on mismatch and `401`
+when the header is present but no `MOLLIE_WEBHOOK_SECRET` is configured (an unverifiable claim is
+not accepted); absent → continue to the reverse-reconcile, which is the control that actually
+confirms the payment. `MOLLIE_WEBHOOK_SECRET` is therefore optional; `MOLLIE_API_KEY` stays
+required (`500` without it) because the reconcile needs it.
+
+- Covered by `tools/tests/packages-mollie-webhook.test.mjs` (12/12): hex signature accepted, `sha256=`
+  prefix accepted, a **base64** signature rejected, absent header reconciles with and without a
+  secret, a present signature with no secret is `401`, wrong signature `401` with no fetch/D1 write.
+
 ### Privileged seam routes require an authenticated caller
 
 Three mapped routes have no counterpart route in Laravel — their Laravel side is a library or a
