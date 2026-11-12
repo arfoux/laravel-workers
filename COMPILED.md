@@ -506,6 +506,30 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
     for the methods the transpiler can see it does not implement
     *(escape: set the fields the subset exposes, or port the handler)*.
 
+19. **`{param*}` (the catch-all wildcard)** — Laravel 13 has no wildcard: a route
+    declared `Route::get('/files/{path*}', ...)` is *literal text* to the
+    framework. Measured on the PHP 8.3 / framework 13.37 oracle:
+    `Illuminate\Routing\Route::compileRoute()` on `/files/{path*}` gives
+    `{^/files/\{path\*\}$}sDu` and `Matching\UriValidator::matches()` answers
+    *no* for `/files/a/b/c` — the request is a 404. The kernel keeps the
+    catch-all (it captures multiple segments, `kernel/router.mjs`, pinned by
+    `kernel/tests/router.test.mjs:105-113`) because this repository's own
+    scenarios declare such routes, so a `{param*}` route that PHP 404s is
+    *served* here. An extension, not a gap — declared so nobody re-derives it
+    from the wildcard's presence *(escape: the Laravel 13 shape is
+    `->where('path', '.*')` on an optional parameter)*.
+20. **A path with no route at all** — `_routes.json` decides friend-or-asset
+    before the Worker runs, so a request path outside its include list (an
+    unmapped path, a vendor route the app never declared) is answered by the
+    static bundle: Cloudflare's plain 404, where PHP renders the app's
+    `resources/views/errors/404.blade.php`. The status agrees (404/404), the
+    body does not; the shadow harness declares the four such steps
+    `expect: 'diverges'` and asserts the status and the declared headers on both
+    sides (`shadow/run.mjs` - `diverges (known)` requires `expectStatusOk`).
+    Same class: a route whose handler the build refused (a declared refusal) is
+    not in the include list either *(escape: declare the URI in
+    `registry.json`)*.
+
 Everything else in Laravel's web surface: **compilable** — this document is the checklist.
 
 ## 7. Order of attack (dependency-driven)

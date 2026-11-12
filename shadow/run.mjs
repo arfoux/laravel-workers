@@ -547,6 +547,13 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         cookies: [],
       };
     }
+
+    // The deployed worker answers HEAD with headers only — the generated
+    // template's `toResponse(res, method)` builds `new Response(method === 'HEAD'
+    // ? null : res.body, ...)`. handleHttp is the kernel rung BELOW that
+    // template, so mirror the rule here rather than compare a body the edge
+    // never sends (and PHP never prints).
+    if (res && String(step.method || 'GET').toUpperCase() === 'HEAD') res.body = '';
     if (!res) {
       // No compiled handler: the route is served from the *static bundle* (a
       // build-time snapshot). Compare the prerendered file with the live render
@@ -562,10 +569,26 @@ async function runCompiled(loaded, appRoot, scenario, dbPath) {
         });
         continue;
       }
-      out.push({ label: step.label, status: null, headers: {}, body: '', missing: true });
+      // No snapshot for the path: the deployed worker falls through to the
+      // ASSETS binding (`src/worker.mjs`: handleHttp -> null, then
+      // `env.ASSETS.fetch(request)`), and a path the bundle does not hold
+      // answers the PLATFORM's 404 — not the app's `errors/404` view, which PHP
+      // renders. Mirroring that here is what makes the divergence provable
+      // instead of reported as "no answer": the status is Laravel's 404 and the
+      // body is the platform's.
+      const asset = assetsBinding(appRoot);
+      const assetRes = await asset.fetch(new Request(url));
+      const assetBody = await assetRes.text();
+      out.push({
+        label: step.label,
+        status: assetRes.status,
+        headers: Object.fromEntries(assetRes.headers),
+        body: assetBody,
+        // The platform's response, not the app's: compare the body, not headers.
+        source: 'asset',
+      });
       continue;
     }
-
     for (const sc of res.setCookie) {
       // Only a step that used the jar may update it (a step without it is a
       // separate visitor) — the same rule the PHP oracle follows.
@@ -692,9 +715,10 @@ async function main() {
       const j = js[i] || { status: null, headers: {}, body: '' };
       const ph = normHeaders(p.headers);
       const jh = normHeaders(j.headers);
-      // A snapshot route is served from the static bundle by the platform: the
-      // headers are the platform's, not the app's. Only the body is comparable.
-      const isSnapshot = j.source === 'snapshot';
+      // A snapshot route is served from the static bundle by the platform, and
+      // so is an asset (`/nope` at the edge): the headers are the platform's,
+      // not the app's. Only the body is comparable.
+      const isSnapshot = j.source === 'snapshot' || j.source === 'asset';
       const headerDiff = isSnapshot
         ? []
         : Object.keys({ ...ph, ...jh }).filter((k) => ph[k] !== jh[k]);
