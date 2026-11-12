@@ -2348,14 +2348,19 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       for (const fqcn of paramTypeFqcns) {
         if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
       }
-      // Eloquent auth provider models (config('auth.providers.*.model')) must be in the
-      // generated registry even when no compiled controller references them.
-      for (const fqcn of authProviderFqcns) {
+      // One rule for "an fqcn joins the generated registry": its short name is
+      // the alias, and it must appear in the dump list. Three sources feed it
+      // (auth provider models, the metadata phase's models, the models a policy
+      // mentions) — one copy, so the rule cannot drift between them.
+      const registerFqcn = (fqcn) => {
         const short = fqcn.split('\\').pop();
         if (!aliasToFqcns.has(short)) aliasToFqcns.set(short, new Set());
         aliasToFqcns.get(short).add(fqcn);
         if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
-      }
+      };
+      // Eloquent auth provider models (config('auth.providers.*.model')) must be in the
+      // generated registry even when no compiled controller references them.
+      for (const fqcn of authProviderFqcns) registerFqcn(fqcn);
       const modelDump = new Map();
       let policyDump = { globals: { before: 0, after: 0, abilities: [], definitions: {} }, models: [] };
       const formRequestDump = new Map();
@@ -2390,12 +2395,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
           // Relations and policy models pulled in by the phase are compiled too
           // (the emit loop walks `aliasToFqcns`); their short name is the alias.
-          for (const fqcn of modelDump.keys()) {
-            const short = fqcn.split('\\').pop();
-            if (!aliasToFqcns.has(short)) aliasToFqcns.set(short, new Set());
-            aliasToFqcns.get(short).add(fqcn);
-            if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
-          }
+          for (const fqcn of modelDump.keys()) registerFqcn(fqcn);
         } catch (e) {
           console.log(
             `  metadata phase failed — controller routes stay blocked: ${String(e.stderr || e.message || '')
@@ -2469,12 +2469,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
         }
       }
-      for (const fqcn of policyModelFqcns) {
-        const short = fqcn.split('\\').pop();
-        if (!aliasToFqcns.has(short)) aliasToFqcns.set(short, new Set());
-        aliasToFqcns.get(short).add(fqcn);
-        if (!allFqcns.includes(fqcn)) allFqcns.push(fqcn);
-      }
+      for (const fqcn of policyModelFqcns) registerFqcn(fqcn);
 
       // A policy (and a compiled class) may read a class constant too
       // (`Post::PUBLISHED`): its model and policy classes join the dump, so
