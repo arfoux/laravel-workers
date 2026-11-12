@@ -6,56 +6,41 @@
 //
 // What runs at the edge (1:1 with the package flow):
 //   1. read the event id: the incoming body is just `{ "id": "tr_…" }`,
-//   2. verify `X-Mollie-Signature` = base64(HMAC-SHA256(secret, rawBody)),
-//      compared constant-time (mirrors PHP `hash_equals()`),
+//   2. if `X-Mollie-Signature` is present, verify it — hex HMAC-SHA256 over the
+//      raw body, constant-time (mirrors PHP `hash_equals()`); the classic
+//      Cashier-registered webhook sends no header, which is the legacy path,
 //   3. reverse-reconcile: `GET https://api.mollie.com/v2/payments/{id}` with
 //      `Authorization: Bearer MOLLIE_API_KEY`, tolerating just-received
 //      webhooks by retrying the lookup once on a 404,
 //   4. upsert the returned payment onto a D1 `mollie_payments` row.
 //
-// Disclosures: genuine Mollie confirms webhooks via the reverse call only — the
-// `X-Mollie-Signature` header is not part of the real protocol. It is enforced
-// here as a defence-in-depth gate (and rate-limit) in front of the same
-// reverse-reconcile lookup, so the edge behaviour is a strict superset of
-// Cashier's. Payout/mandate/customer objects that a full Cashier install
-// persists are out of scope: only the payment row is projected.
+// Disclosures: the classic per-resource webhook is UNSIGNED — Mollie's payload
+// carries no status, so the reverse-reconcile below is what actually confirms
+// the payment (Cashier Mollie does the same). Next-gen webhooks DO carry
+// `X-Mollie-Signature: sha256=<hex HMAC-SHA256 of the raw body>` (mollie-api-php
+// `src/Webhooks/SignatureValidator.php`: header `X-Mollie-Signature`, prefix
+// `sha256=`, `hash_hmac('sha256', $payload, $secret)`), and the official
+// validator treats an absent header as "legacy webhook" rather than an error.
+// This port mirrors that: a present header must verify (`401` otherwise, and
+// `401` too when no `MOLLIE_WEBHOOK_SECRET` is configured — an unverifiable
+// claim is not accepted), an absent one continues to the reverse-reconcile.
+// Payout/mandate/customer objects that a full Cashier install persists are out
+// of scope: only the payment row is projected.
 //
 // Free tier: 1–2 subrequests + 1 D1 write per webhook; HMAC CPU negligible.
 
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, mapProviderResponse } from '../../kernel/packages/notify-http.mjs';
+import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 
-// Constant-time byte compare (mirrors PHP `hash_equals()`): length is checked
-// first, then every byte is XORed and only the accumulated diff is folded.
-function timingSafeEqualBytes(a, b) {
-  if (a instanceof Uint8Array && b instanceof Uint8Array) {
-    if (a.length !== b.length) return false;
-    let diff = 0;
-    for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
-    return diff === 0;
-  }
-  // Fallback for the (unused-in-practice) string form.
-  const sa = String(a);
-  const sb = String(b);
-  if (sa.length !== sb.length) return false;
-  let diff = 0;
-  for (let i = 0; i < sa.length; i += 1) diff |= sa.charCodeAt(i) ^ sb.charCodeAt(i);
-  return diff === 0;
-}
+// Constant-time compare comes from kernel/packages/webhook.mjs (the one
+// `hash_equals()` mirror the other webhook verifiers use).
 
-// RFC 4648 base64 → bytes. Used to compare the received header against the
-// expected digest as bytes so a length-different forged header does not leak
-// through the byte-XOR fold. Throws on malformed base64 → caught by caller.
-function base64Bytes(s) {
-  const t = String(s).replace(/\s+/g, '');
-  const binary = atob(t);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
-  return out;
-}
-
-// base64(HMAC-SHA256(secret, rawBody)) — the digest the `X-Mollie-Signature`
-// header must match.
+// HMAC-SHA256 of the raw body, rendered as HEX — the exact string
+// `hash_hmac('sha256', $payload, $secret)` returns in Mollie's own
+// SignatureValidator (`mollie/mollie-api-php`,
+// `src/Webhooks/SignatureValidator.php::createSignature`), which the
+// `X-Mollie-Signature` header carries (optionally prefixed `sha256=`).
 async function signatureFor(secret, rawBody) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -66,10 +51,7 @@ async function signatureFor(secret, rawBody) {
     ['sign']
   );
   const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(rawBody)));
-  let bin = '';
-  const bytes = new Uint8Array(sig);
-  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function json(status, payload) {
@@ -140,25 +122,33 @@ export async function ensureSchema(env) {
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   try {
-    const secret = env && env.MOLLIE_WEBHOOK_SECRET;
-    if (!secret) return json(500, { error: 'MOLLIE_WEBHOOK_SECRET not configured' });
     const apiKey = env && env.MOLLIE_API_KEY;
     if (!apiKey) return json(500, { error: 'MOLLIE_API_KEY not configured' });
 
-    // 1. Signature gate: X-Mollie-Signature = base64(HMAC-SHA256(secret, rawBody)).
+    // 1. Signature gate. Mollie has two webhook generations: the classic
+    // per-resource webhook Cashier Mollie registers is UNSIGNED (the body is just
+    // `{ "id": "tr_..." }`), and the next-gen webhooks carry
+    // `X-Mollie-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Mollie's own
+    // SDK mirrors that: `SignatureValidator::validateRequest()` returns false
+    // ("treat as legacy webhook") when the header is absent, and throws only when
+    // a header IS present and matches no configured secret. So: no header →
+    // continue to the authoritative reverse-reconcile below; header present →
+    // must verify, else 401.
+    const secret = env && env.MOLLIE_WEBHOOK_SECRET;
     const header = ctx.request.header('x-mollie-signature') || '';
     const rawBody = await ctx.request.text();
     const headerSig = header.replace(/^sha256=/i, '').trim();
-    let signatureOk = false;
     if (headerSig) {
-      try {
-        const expected = await signatureFor(secret, rawBody);
-        signatureOk = timingSafeEqualBytes(base64Bytes(headerSig), base64Bytes(expected));
-      } catch {
-        signatureOk = false;
+      let signatureOk = false;
+      if (secret) {
+        try {
+          signatureOk = timingSafeEqual(await signatureFor(secret, rawBody), headerSig);
+        } catch {
+          signatureOk = false;
+        }
       }
+      if (!signatureOk) return json(401, { error: 'invalid X-Mollie-Signature' });
     }
-    if (!signatureOk) return json(401, { error: 'invalid X-Mollie-Signature' });
 
     // 2. Event id from `{ id: "tr_…" }`.
     const body = ctx.body || {};
