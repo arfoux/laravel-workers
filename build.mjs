@@ -334,6 +334,10 @@ const middlewarePortsMap = new Map();
 }
 const ignoreMap = Object.entries(registry.ignore || {});
 const viewMap = Object.entries(registry.views || {});
+// registry.json maps are [route, value] pairs. The "is this route declared?"
+// guard and the "what does it declare?" lookup must agree, so both go through
+// one reader — a second spelling of the predicate drifts silently.
+const registryEntry = (entries, route) => entries.find(([r]) => r === route) || null;
 // registry.json → "config": ["needs"] — the app's own config groups the
 // COMPILED code may read. The runtime config dump is a curated set (framework
 // keys + these groups): a group the app forgets to declare stays out of dist,
@@ -2167,7 +2171,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
     // A port owns the URI for every verb (the handler runs at request time), so
     // there is nothing to transpile here - and no "skipped" line that would read
     // like a gap the port already covers.
-    if (portEntries.some(([r]) => r === route)) continue;
+    if (registryEntry(portEntries, route)) continue;
     // A redirect route's redirect handler answers EVERY verb it declares
     // (redirect registers with any()), so there are no "extra" verbs to refuse -
     // the extra-verb loop must skip it, or it would fail the strict build on the
@@ -2178,7 +2182,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       const action = meta && meta.action;
       if (!COMPILABLE_METHODS.has(String(verb).toUpperCase())) {
         const alreadyTracked = partials.some((p) => p.route === route && p.methods.includes(verb));
-        const ignored = ignoreMap.some(([r]) => r === route);
+        const ignored = !!registryEntry(ignoreMap, route);
         if (!alreadyTracked && !ignored) {
           uncompiledExtraNonPost.push({ route, verb });
         }
@@ -3637,18 +3641,18 @@ const routeTable = routes.map((route) => {
   // not serve this", `ports` says "it does". Picking one silently dropped the
   // port's verbs (PUT /profil had no handler while the build stayed green), so
   // the build names the conflict instead of guessing.
-  if (ignoreMap.some(([r]) => r === route) && portEntries.some(([r]) => r === route)) {
+  if (registryEntry(ignoreMap, route) && registryEntry(portEntries, route)) {
     fail(
       `registry.json declares ${route} in BOTH "ports" and "ignore" — the port answers the route and the ignore removes it.\n` +
         '  keep "ports" and let the port answer the verbs it does not implement (405/404), or keep "ignore" and drop the port.'
     );
   }
-  if (ignoreMap.some(([r]) => r === route)) {
-    const entry = ignoreMap.find(([r]) => r === route);
+  if (registryEntry(ignoreMap, route)) {
+    const entry = registryEntry(ignoreMap, route);
     return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'ignore', reason: entry[1] };
   }
-  if (portEntries.some(([r]) => r === route)) {
-    const slug = portEntries.find(([r]) => r === route)[1];
+  if (registryEntry(portEntries, route)) {
+    const slug = registryEntry(portEntries, route)[1];
     // A port is app-authored code, not a compiled method: it answers EVERY verb
     // the route declares. baseMethodsFor() drops the "extra" verb (POST on a
     // GET+POST route) because a COMPILED controller gets that verb's own entry,
@@ -3659,9 +3663,9 @@ const routeTable = routes.map((route) => {
   // needsPort finding and moved on), so it must fall through to `unhandled`
   // instead of emitting `import handlerN from './controllers/undefined.mjs'`
   // - an import wrangler cannot resolve.
-  if (viewMap.some(([r]) => r === route) && controllerByRoute.has(route)) {
+  if (registryEntry(viewMap, route) && controllerByRoute.has(route)) {
     const slug = controllerByRoute.get(route);
-    const view = viewMap.find(([r]) => r === route)[1];
+    const view = registryEntry(viewMap, route)[1];
     return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'view', view, controller: slug };
   }
   // Route::redirect()/permanentRedirect(): the edge serves the redirect itself
@@ -3684,8 +3688,8 @@ const routeTable = routes.map((route) => {
     const info = controllerRoutes.get(route);
     return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'controller', controller: info.slug };
   }
-  if (staticMap.some(([r]) => r === route)) {
-    const file = staticMap.find(([r]) => r === route)[1];
+  if (registryEntry(staticMap, route)) {
+    const file = registryEntry(staticMap, route)[1];
     return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'snapshot', snapshot: file };
   }
   if (snapshots.includes(route)) {
@@ -3739,7 +3743,7 @@ try {
 // bundle (or a 404) answers the request before any JS. That is a silent
 // no-op exactly like the bug this seam exists to close, so the build stops.
 for (const [route, slugs] of middlewarePortsMap) {
-  if (ignoreMap.some(([r]) => r === route)) {
+  if (registryEntry(ignoreMap, route)) {
     fail(
       `registry.json declares ${route} in BOTH "middlewarePorts" and "ignore" — the middleware cannot wrap a route the edge does not serve.`
     );
