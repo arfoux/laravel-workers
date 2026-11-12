@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of maatwebsite/excel v4.0.6 — CSV export from a D1 table. The PHP
 // package's `Excel::download(new XlsxExport, 'file.xlsx')` writes a real
@@ -11,8 +11,8 @@ import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 // streams); we build it with RFC 4180 quoting (quotes doubled, CRLF rows) so
 // Excel/Numbers/Sheets open it correctly from the default route.
 //
-// Schema (read side, no migration needed — it reads rows from any table the
-// caller registers; default table `users` when not given):
+// Schema (read side, no migration needed — it reads rows from the table named by
+// `env.EXCEL_EXPORT_TABLE`, default `users`):
 //   CREATE TABLE IF NOT EXISTS users (id, name, email, ...);
 //   ensureSchema(env) below creates a `users` table for the demo export so the
 //   route works out of the box against a fresh D1 binding.
@@ -44,9 +44,27 @@ export function csvFromRows(rows, columns) {
   return lines.join('\r\n');
 }
 
-// GET /export?format=csv&table=users — stream a CSV of the table's rows.
+// GET /export?format=csv — stream a CSV of the configured table's rows.
+//
+// The table is NOT taken from the request: `?table=` let any caller dump any
+// table in the database (`?table=users` by default), which on a real app is the
+// app's own user rows. It comes from `env.EXCEL_EXPORT_TABLE` (default `users`,
+// the demo table `ensureSchema` creates) — export scope is a deployment
+// decision, the same way an app writes a fixed export class instead of trusting
+// a query parameter.
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+
+  // The dump is unbounded app data, so it needs an identified caller (same
+  // guard the seam routes use). Anonymous -> 401.
+  if ((await guardUserId(ctx)) == null) {
+    return {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Unauthenticated.' }),
+    };
+  }
+
   const query = ctx.query || {};
   const format = String(query.format || 'csv');
   if (format !== 'csv') {
@@ -61,7 +79,8 @@ export default async function handle(ctx, env) {
 
   try {
     await ensureSchema(env);
-    const table = /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(query.table || '')) ? query.table : 'users';
+    const configured = String(env.EXCEL_EXPORT_TABLE || '');
+    const table = /^[A-Za-z_][A-Za-z0-9_]*$/.test(configured) ? configured : 'users';
 
     const rows = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY id`).all();
     const results = rows.results || [];

@@ -2,6 +2,24 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A security decision read from the request, and a credential check that failed open
+
+Four ports took an authorization/identity decision from request data, or skipped the check they
+documented. Each is now decided from server-side state, with the failing-before case pinned by a
+test:
+
+| port | what the caller controlled | now |
+|---|---|---|
+| `apple-signin` | the `id_token` in the callback **form body** — `decodeIdToken(idToken \|\| exchange.id_token)` only base64-decodes (no signature check), so a caller holding any valid `code` could post a token naming another `sub` and be signed in as that account | only the token endpoint's `id_token` is decoded — the TLS channel we opened for that very `code`, and where Socialite's own `AppleProvider` reads it (`getUserByToken($response['id_token'])`). A swapped form token is ignored (`tools/tests/packages-apple-signin.test.mjs`) |
+| `scout-algolia` | both credential headers: `if (presentedAppId && presentedAppId !== appId)` skipped the check whenever the header was **absent**, so a caller with no credentials proxied to the metered search API on the worker's own key | `X-Algolia-Application-Id`/`X-Algolia-API-Key` are required and compared constant-time (`timingSafeEqual`); absent or mismatched → `403`, no upstream call |
+| `maatwebsite-excel` | the table: `GET /export?table=<anything>` ran `SELECT * FROM <that>` (default `users`), and the route had no caller check at all | table comes from `env.EXCEL_EXPORT_TABLE` (deployment decision, default `users`); the route requires an identified caller (`401` otherwise) |
+| `multitenancy` | everything: `POST /tenants` created a tenant and `GET|POST /tenants/{key}` returned any tenant's `data_json`, anonymously | `guardUserId` floor — `401` without an identity, before any D1 read/write. Which tenants a caller may see stays an app-side decision: spatie's schema (and this port's) has no tenant↔user link |
+
+Also recorded, not changed here: `auth0` never validates the OAuth `state` it documents, and
+`laravel-socialite-callback` accepts a state from the D1 store when the cookie binding fails —
+both need a decision on the state store, and `webhook-client` signs a re-serialised body on the
+kernel path rather than the raw bytes. They are in the extensibility ledger, not silently dropped.
+
 ### Mollie webhook: the signature check matches Mollie's own, and an unsigned webhook is accepted
 
 `ports/packages/mollie-webhook.mjs` required a signature header that classic Mollie webhooks never

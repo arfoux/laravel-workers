@@ -19,16 +19,20 @@
 //   APPLE_REDIRECT_URI     (optional — must match the authorize call; Apple
 //                           checks it on the token exchange)
 //
-// Body (ctx.body): { code, id_token, user } where `user` is a JSON string on
-// first sign-in ({ name: { firstName, lastName }, email }) and absent on later
-// ones — Apple never returns the name twice.
+// Body (ctx.body): { code, user } where `user` is a JSON string on first
+// sign-in ({ name: { firstName, lastName }, email }) and absent on later ones —
+// Apple never returns the name twice. The `id_token` Apple also posts in the
+// form body is ignored (see the disclosure below).
 //
 // Edge disclosure: NONE — one HTTPS `fetch` to Apple's token endpoint plus a
 // WebCrypto ECDSA sign for the client secret; no socket, no key server. This is
-// the substitute for socialite's AppleProvider token exchange. The id_token is
-// DECODED here (the `sub`/`email` claims drive the user); offline signature
-// verification is the JWKS path of the firebase-php-jwt port — compose that
-// when you need it.
+// the substitute for socialite's AppleProvider token exchange. The identity
+// comes from the id_token the TOKEN ENDPOINT returned (Socialite's own source),
+// base64-decoded — never from the `id_token` the callback form posted, which a
+// caller holding any valid `code` could swap to pick the account. Offline
+// signature verification (Apple JWKS, iss/aud/exp) is NOT performed — the same
+// decode-only behaviour as Socialite's AppleProvider; the firebase-php-jwt port
+// carries the JWKS path when an app wants that hardening.
 
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 import { mintClientSecret, decodeIdToken, APPLE_TOKEN_URL } from '../../kernel/packages/apple.mjs';
@@ -109,7 +113,6 @@ export async function handleCallback(ctx, env) {
   if (!code) {
     return json(422, { error: 'no authorization code in the callback body' });
   }
-  const idToken = typeof fields.id_token === 'string' ? String(fields.id_token).trim() : '';
   const userField = parseUser(fields.user);
 
   let clientSecret;
@@ -156,11 +159,17 @@ export async function handleCallback(ctx, env) {
     return json(res.ok ? 502 : 400, { error: String(reason) });
   }
 
-  // Decode Apple's id_token: prefer the one Apple redirected with (the form
-  // field), else the one the token endpoint returned — both are Apple's.
+  // Decode the id_token the TOKEN ENDPOINT returned. The `id_token` Apple also
+  // posts in the form body is NOT used: `decodeIdToken` only base64-decodes (no
+  // signature check), so a caller who holds any valid `code` could present a
+  // different token and pick the `sub`/`email` this route signs in. The endpoint
+  // token arrives over the TLS channel we initiated for that very `code`, which
+  // is also where Socialite's AppleProvider reads it (`getUserByToken(
+  // $response['id_token'])`). Signature verification (Apple JWKS) is the
+  // disclosed hardening step downstream, unchanged by this fix.
   let claims;
   try {
-    claims = decodeIdToken(idToken || exchange.id_token);
+    claims = decodeIdToken(exchange.id_token);
   } catch (err) {
     return json(400, { error: `invalid id_token: ${String((err && err.message) || err)}` });
   }

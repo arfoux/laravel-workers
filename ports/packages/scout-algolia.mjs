@@ -1,4 +1,5 @@
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 
 // ports/packages/scout-algolia.mjs — laravel/scout (v11.9.0) +
 // algolia/algoliasearch-client-php (v4.51.0) search port.
@@ -52,14 +53,18 @@ export default async function handle(ctx, env) {
     }
 
     // Verify the presented X-Algolia-* headers against the configured secrets.
+    // Both are REQUIRED: validating only the headers that happen to be present
+    // let a caller with no credentials at all (or one that simply omits the key)
+    // proxy through the worker's own secret — an open proxy to a metered API.
+    // Constant-time compare, mirroring `hash_equals()`.
     const reqHeaders = ctx.request?.headers ?? {};
     const readHeader = (k) => (typeof reqHeaders.get === 'function' ? reqHeaders.get(k) : reqHeaders[k]);
     const presentedAppId = readHeader('x-algolia-application-id');
     const presentedKey = readHeader('x-algolia-api-key');
-    if (presentedAppId && presentedAppId !== appId) {
+    if (!presentedAppId || !timingSafeEqual(presentedAppId, appId)) {
       return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'application id mismatch' }) };
     }
-    if (presentedKey && presentedKey !== apiKey) {
+    if (!presentedKey || !timingSafeEqual(presentedKey, apiKey)) {
       return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'api key mismatch' }) };
     }
 

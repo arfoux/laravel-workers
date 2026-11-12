@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-multitenancy v4 — multi-tenancy on the edge.
 //
@@ -114,6 +114,15 @@ export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   const db = ctx.db || (env && env.DB);
   if (!db) return json(500, { error: 'no D1 binding (DB) available.' });
+
+  // Authenticated caller required. Laravel resolves the tenant per request from
+  // middleware (`FindTenant` on the domain), so the package itself never checks a
+  // user — but this route is reachable from the edge, and it both creates tenants
+  // and hands back any tenant's `data_json` to whoever names its key. The schema
+  // here has no tenant<->user link (spatie's doesn't either), so WHICH tenants a
+  // caller may see stays an app-side authorization decision; the floor this port
+  // enforces is that an anonymous request gets nothing.
+  if ((await guardUserId(ctx)) == null) return json(401, { message: 'Unauthenticated.' });
 
   try {
     await ensureSchema({ DB: db });

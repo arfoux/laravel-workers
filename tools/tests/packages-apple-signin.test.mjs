@@ -6,10 +6,11 @@
 //                       decodeIdToken splits the id_token; a real P-256 keypair
 //                       is generated per run with WebCrypto, the .p8 being the
 //                       exported PKCS8 base64.
-//   port apple-signin.mjs — the form_post callback: reads code/id_token/user,
-//                       exchanges the code at Apple's token endpoint (fake
-//                       fetch records the exchange), decodes the id_token and
-//                       returns { id, email, name }.
+//   port apple-signin.mjs — the form_post callback: reads code/user, exchanges
+//                       the code at Apple's token endpoint (fake fetch records
+//                       the exchange), decodes the id_token THAT CALL RETURNED
+//                       (a form-supplied id_token is ignored) and returns
+//                       { id, email, name }.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
@@ -225,7 +226,7 @@ test('apple-signin: form_post callback exchanges the code and returns the user',
   assert.equal(form.get('redirect_uri'), 'https://app.example/callback');
 });
 
-test('apple-signin: decodes the id_token the exchange returns when the form carried none', async () => {
+test('apple-signin: decodes the id_token the token endpoint returns', async () => {
   const { kp, p8 } = await makeP8();
   const idToken = await signJwt({ alg: 'ES256', kid: KEY_ID }, appleClaims, kp.privateKey);
   const fetchImpl = makeFetch(200, { access_token: 'at', id_token: idToken });
@@ -235,6 +236,25 @@ test('apple-signin: decodes the id_token the exchange returns when the form carr
   const out = JSON.parse(res.body);
   assert.equal(out.user.id, appleClaims.sub);
   assert.equal(out.user.name, null, 'no form `user` field on later sign-ins -> null name');
+});
+
+test('apple-signin: a swapped form id_token cannot pick the account signed in', async () => {
+  const { kp, p8 } = await makeP8();
+  // Apple's answer for THIS code — the identity the route must use.
+  const realToken = await signJwt({ alg: 'ES256', kid: KEY_ID }, appleClaims, kp.privateKey);
+  // What a caller holding their own valid code would post to impersonate.
+  const swapped = await signJwt(
+    { alg: 'ES256', kid: KEY_ID },
+    { ...appleClaims, sub: '999999.888888.attacker', email: 'attacker@example.com' },
+    kp.privateKey,
+  );
+  const fetchImpl = makeFetch(200, { access_token: 'at', id_token: realToken });
+  const env = { fetchImpl, APPLE_TEAM_ID: TEAM_ID, APPLE_CLIENT_ID: CLIENT_ID, APPLE_P8_PRIVATE_KEY: p8 };
+  const res = await appleSignin(okCtx({ code: 'c1', id_token: swapped }), env);
+  assert.equal(res.status, 200);
+  const out = JSON.parse(res.body);
+  assert.equal(out.user.id, appleClaims.sub);
+  assert.equal(out.user.email, appleClaims.email);
 });
 
 test('apple-signin: missing code is a 422 and never reaches the token endpoint', async () => {
