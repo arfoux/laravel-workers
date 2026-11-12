@@ -278,6 +278,10 @@ if (resolved.source !== 'PATH' || resolved.version !== ORACLE_PHP) {
 const lwConfig = process.env.LW_CONFIG ? resolve(appDir, process.env.LW_CONFIG) : null;
 if (lwConfig && !existsSync(lwConfig))
   fail(`LW_CONFIG is set to "${process.env.LW_CONFIG}" but that file was not found (resolved: ${lwConfig})`);
+// The first candidate path that exists on disk, or null. Five sites pick a
+// source that way (registry, worker, ports, the frontend manifest twice) — one
+// copy, so the "first wins" rule cannot drift between them.
+const firstExisting = (candidates) => candidates.find((p) => existsSync(p)) || null;
 const registryCandidates = [
   ...(lwConfig ? [lwConfig] : []),
   join(appDir, 'registry.json'),
@@ -285,8 +289,7 @@ const registryCandidates = [
   join(appDir, 'edge/registry.json'),
   join(pkgDir, 'registry.json'),
 ];
-let registryPath = null;
-for (const p of registryCandidates) if (existsSync(p)) { registryPath = p; break; }
+const registryPath = firstExisting(registryCandidates);
 if (lwConfig && registryPath === lwConfig) console.log(`• registry: LW_CONFIG -> ${registryPath}`);
 let registry = {};
 if (registryPath) {
@@ -526,7 +529,7 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
     join(appDir, 'public/dist/manifest.json'),
     join(appDir, 'public/mix-manifest.json'),
   ];
-  const manifestPath = manifestCandidates.find((p) => existsSync(p));
+  const manifestPath = firstExisting(manifestCandidates);
   if (!manifestPath) {
     // The app is fullstack iff some Blade view calls the frontend (Vite's
     // @vite() or Laravel Mix's mix()). `mix` must stand alone — a lookbehind
@@ -645,7 +648,7 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
           );
         }
       }
-      const built = manifestCandidates.find((p) => existsSync(p));
+      const built = firstExisting(manifestCandidates);
       if (!built) {
         fail(
           'the frontend build finished but wrote none of the expected manifests (' +
@@ -3557,8 +3560,7 @@ for (const ent of readdirSync(join(appDir, 'public'), { withFileTypes: true })) 
 
 // ---------- 5. worker + ports + routes ----------
 const workerCandidates = [join(appDir, 'src/worker.mjs'), join(pkgDir, 'src/worker.mjs')];
-let workerSrc = null;
-for (const p of workerCandidates) if (existsSync(p)) { workerSrc = p; break; }
+const workerSrc = firstExisting(workerCandidates);
 if (!workerSrc) fail('no worker template found — looked for src/worker.mjs in the app and in the package (reinstall laravel-workers)');
 cpSync(workerSrc, join(dist, 'src/worker.mjs'));
 const portsCandidates = [
@@ -3568,9 +3570,7 @@ const portsCandidates = [
   join(appDir, 'edge/src/ports'),
   join(pkgDir, 'src/ports'),
 ];
-let portsSrc = null;
-for (const p of portsCandidates) if (existsSync(p)) { portsSrc = p; break; }
-if (!portsSrc) portsSrc = join(pkgDir, 'src/ports');
+const portsSrc = firstExisting(portsCandidates) || join(pkgDir, 'src/ports');
 if (portsSrc === lwPortsDir) console.log(`• ports: LW_PORTS_DIR -> ${portsSrc}`);
 const missingPortFiles = [
   ...portEntries.map(([route, name]) => [route, String(name)]),
