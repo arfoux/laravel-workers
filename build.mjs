@@ -2558,6 +2558,16 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         viewDeps.set(view, deps);
         return deps;
       };
+      // One rule for "this view is compiled": mark it and enqueue the
+      // dependencies its compiled PHP names that are not yet compiled or
+      // failed. Three sites reach it (a view already on disk, a wave member,
+      // a recursive-batch member) — one copy, so the closure walk cannot drift.
+      const markCompiled = (view, compiledPhp) => {
+        compiledViews.add(view);
+        for (const d of scanViewDeps(view, compiledPhp)) {
+          if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
+        }
+      };
       // The mailable's views (the dump carries them): a mailable's view is not
       // reached from a route, so the build compiles it here.
       const mailViews = Array.isArray(classesDump.mailViews) ? classesDump.mailViews : [];
@@ -2585,10 +2595,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             // views it depends on.
             try {
               const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-              compiledViews.add(view);
-              for (const d of scanViewDeps(view, dump.compiled)) {
-                if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
-              }
+              markCompiled(view, dump.compiled);
             } catch {
               failedViews.add(view);
             }
@@ -2663,10 +2670,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
             }
             transpileToModule(dumpPath, viewModulePath);
             writeContextModule(view, dump.context);
-            compiledViews.add(view);
-            for (const d of scanViewDeps(view, dump.compiled)) {
-              if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
-            }
+            markCompiled(view, dump.compiled);
           } catch (e) {
             failedViews.add(view);
             console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
@@ -2699,10 +2703,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
           try {
             const dump = emitViewModule(view, dumpPath, viewModulePath, viewDataKinds[view]);
-            compiledViews.add(view);
-            for (const d of scanViewDeps(view, dump.compiled)) {
-              if (!compiledViews.has(d) && !failedViews.has(d)) viewQueue.push(d);
-            }
+            markCompiled(view, dump.compiled);
           } catch (e) {
             failedViews.add(view);
             console.log(`  view ${view}: skipped — ${String(e.stderr || e.message || '').trim().slice(0, 300)}`);
