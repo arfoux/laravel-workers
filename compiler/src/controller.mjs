@@ -11,7 +11,7 @@
 //   emitController(source, method, meta) -> the final handler module source.
 import parser from 'php-parser';
 import { snake } from '../../kernel/str.mjs';
-import { transpileControllerMethod, uncompiledRuleOf } from './transpiler.mjs';
+import { transpileControllerMethod, uncompiledRuleOf, PORT_HINT } from './transpiler.mjs';
 import { viewFileName } from './view-name.mjs';
 // The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore):
 // the same reader the config/const folders use, so a signature default cannot
@@ -19,9 +19,6 @@ import { viewFileName } from './view-name.mjs';
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
-
-const PORT_HINT = 'write a port handler for this route (build --scaffold) instead';
-
 
 // A rule *object* (`Rule::unique('profiles','username')->ignore($id)`,
 // `File::types([...])`, `Rules\Password::defaults()`) is a class: the compiled
