@@ -428,6 +428,10 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
    `urldecodePlus` decodes a `%XX` run as UTF-8, so a non-UTF-8 byte in a query key/value becomes
    U+FFFD (`a%FFb` is `61 ff 62` in PHP, `a\uFFFDb` here). ASCII/UTF-8 input is byte-identical; a
    request that carries a raw non-UTF-8 byte percent-encoded is a declared gap *(escape: port)*.
+   The request's **path** is not in that gap: `ValidatePathEncoding` semantics are applied first
+   (byte-wise `rawurldecode()` + a UTF-8 check, a **400** before the router — see the Global
+   middleware row of §2), so only an app that removed that middleware keeps the byte-vs-UTF-16
+   approximation on its own path.
 4. String-eval'd names outside the compiled universe (`make($runtimeString)` for an unknown
    class) — registry covers the compiled universe; outside → fail loud *(escape: add class / port)*
 5. Precise `__destruct` / `register_shutdown_function` ordering, true streaming `flush()` —
