@@ -2,6 +2,90 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A resource's `where` requirements match PHP: the group's map rides along, a chain replaces it whole
+
+`Route::resource()` requirements were scanned on a per-call basis and merged per name, which is
+neither of the two things PHP does. Measured on a booted Laravel 13.37 app (PHP 8.3.30) by reading
+`$route->wheres` off the router:
+
+- `Route::group(['where' => ['album' => '[a-z]+']], fn => Route::resource('albums', C))` carries
+  `{"album":"[a-z]+"}` on **all seven** actions (`albums` and `albums/create` included, whose uri has
+  no such segment), while the resource's own `->where([...])` overrides the group per name.
+- `Route::resource(…)->where(['album' => '[a-z]+', 'x' => '[0-9]+'])->whereNumber('album')` answers
+  `{"album":"[0-9]+"}` — the `x` key is **gone**: `PendingResourceRegistration::where()` assigns
+  `$this->options['wheres']` (it does not merge) and every helper routes through that same setter.
+
+The scan dropped the group's map (edge served `/albums/9` where PHP answers 404) and merged a chain
+per name (inventing `x`, which made the edge refuse paths PHP answers 200). Both directions are fixed
+against the measurements above.
+
+| change | why |
+|---|---|
+| `registerResource` uses `{ ...g.wheres, ...modifiers.wheres }` as each action's map | `RouteGroup::merge()` carries the group's `where` into the options, and `getResourceAction()` copies it onto every action — the group's map is the base, the resource's own wins per name |
+| `collectModifiers` gives each `where`/`whereNumber`/`whereIn` chain step a **fresh** target and keeps the **first** seen (`steps` is outermost-first, so that is the last in source order) | the setter replaces the map; a per-name merge invents requirements PHP never had |
+| a resource `->where($name, $expression)` that is not a map is reported through `note()` | `PendingResourceRegistration::where()` takes the array only; Laravel throws `array_merge(): Argument #2 must be of type array, string given` on boot (probed on 13.37), so the route cannot be served unconstrained |
+| `whereIn($p, $values)` with a value the scan cannot read is recorded as `''` and said out loud via `warn` | `''` is PHP's value for an empty list and makes Symfony refuse the requirement (the build stops); the alternative — an invented expression or a silent drop — serves paths Laravel rejects |
+
+Evidence: `tools/tests/routes-dump.test.mjs` gains "a GROUP where() applies to a resource inside the
+group" and "a resource where() chain REPLACES the map" (both run the scanner, whose fixed output is
+the PHP measurement above); the pre-existing verb-chain "last call wins" test still passes, so the
+verb path was already correct. `npm test` green with the new cases.
+
+### `parent::class` folds to the parent's FQCN instead of dropping the constant
+
+An app constant written `const P = parent::class;` compiled to a **missing** constant: the constant
+path returned `null` for `parent::class` (it looked for a constant named `class` on the parent, the
+same miss as #700 for `self::class`), so the constant vanished from the dump and every route reading
+it failed loud. Probed on PHP 8.3: `class B extends A { const P = parent::class; }` answers `A` — the
+parent's FQCN.
+
+| change | why |
+|---|---|
+| `evalConstantExpr` (`tools/static.mjs`) resolves `parent::class` to `extendsNameOf()` of the enclosing class | `parent::class` is the parent's FQCN, not a constant *of* the parent; the enclosing class is found through the same `nodeFor` lookup `collectConstants()` walks for inherited constants |
+
+Evidence: `tools/tests/class-constants.test.mjs` ("`parent::class` folds to the PARENT FQCN") passes
+`App\Base`; before the change it failed.
+
+### A malformed wrangler config is reported, and a commented-out cron line is not a trigger
+
+The build answers one safety question from the operator's wrangler config: "a route pushes a queued
+job — does ANYTHING drain `lw_jobs` at the edge?" Two ways the answer was **silently wrong**:
+
+- TOML was scanned with a regex over raw text, so `# crons = ["*/5 * * * *"]` in a **comment** counted
+  as a real trigger and made the build skip the queue check — a job that never runs, reported as fine.
+  Measured: the old regex over `[triggers]\n# crons = ["*/5 * * * *"]` answers `["*/5 * * * *"]`.
+- A config file that failed to parse (or an unreadable one) answered `[]` without a word, so the queue
+  BLOCK blamed "no build-time cron trigger" when the real cause was a malformed file.
+
+| change | why |
+|---|---|
+| `wranglerCronTriggers()`/`jsoncValue` move to `tools/wrangler-crons.mjs`, and `stripTomlComments()` blanks comments (quote-aware) before the table/array regexes run | a commented-out line is not a declaration; the same module pins both readers with tests, and `build.mjs` reuses `jsoncValue` for its binding check instead of keeping a second copy |
+| every failure path (unreadable/unparseable file, `crons` that is not an array) calls `warn(message)`, which the build prints as `  ! …` | a broken config must not be reported as a missing trigger — the file is the operator's to fix, and the message names it |
+
+Evidence: `tools/tests/wrangler-crons.test.mjs` (9 tests) pins the commented-out line, a `#` inside a
+quoted string, a `crons` outside `[triggers]`, the malformed-JSONC warning, the non-array warning, the
+`wrangler.jsonc`-over-`wrangler.toml` precedence and the no-file case.
+
+### A schedule event that can never fire at the edge reaches the verdict
+
+A schedule event the build cannot express as a Cloudflare cron trigger (an empty / `@alias` / 6-field
+expression) is still written to `dist/src/schedule.generated.mjs` — it **ships** — but nothing at the
+edge can fire it. That was a bare `console.log`, so `renderReadiness` never showed it: an operator read
+RUNS ON THE EDGE for an app whose one scheduled job never runs. It is a DECLARED gap and now reaches
+the report the way every other shipped-but-gapped decision does.
+
+| change | why |
+|---|---|
+| the schedule findings (`notTriggerableFindings`, `shiftedTriggerFindings`) move to `tools/schedule-gaps.mjs`; `build.mjs` calls them | the shapes are pinned by `tools/tests/schedule-gaps.test.mjs`, which the inline `note({...})` blocks could not be |
+| the non-triggerable event is `area: 'schedule'`, `severity: DECLARED`, naming the reason and the 5-field-expression fix | the event ships (the HTTP face `POST /__lw/cron` runs it), so it is declared, not blocking — and it has to be visible |
+
+Evidence: `tools/tests/schedule-gaps.test.mjs` pins one finding per gap, the verdict flip
+(`RUNS ON THE EDGE` → `RUNS WITH DECLARED GAPS`) and the strategy-keyed fix. A real `--strict` build of
+a copy of the oracle app whose schedule is `->cron('@daily')` prints
+`! inspire: the cron expression is not a 5-field expression` and the verdict
+`READINESS: RUNS WITH DECLARED GAPS` under "declared gaps — your decision, and they ship".
+
+
 ### The config gate sees a `Config::` facade read, so a key the dump does not carry is refused
 
 `Config::get('app.name')` compiles to `rt.config("app.name", null)` — the facade emission carries an
