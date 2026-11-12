@@ -159,7 +159,7 @@ const childEnv = () => {
   }
   // Relative, because Laravel's normalizeCachePath() only treats '/' and '\' as
   // absolute prefixes: a Windows "C:\..." value would be joined onto basePath.
-  const phpCacheRel = relative(appDir, phpCacheDir).split('\\').join('/') + '/';
+  const phpCacheRel = relPath(phpCacheDir) + '/';
   return {
     ...process.env,
     APP_ENV: process.env.APP_ENV || 'production',
