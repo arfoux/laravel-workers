@@ -4,19 +4,24 @@
 // Exercised with a FAKE `env.fetchImpl` that captures the outgoing lookup
 // (url/method/headers) and returns a stubbed Mollie payment, plus a FAKE
 // `env.DB` (D1) that records the payment upsert. Assertions cover:
-//   - a valid `X-Mollie-Signature` (base64 HMAC-SHA256 of the raw body) is
-//     accepted → 200 AND the reverse-reconcile GET hits the payments endpoint
-//     with a Bearer key and the D1 payment row is upserted,
-//   - a bad / missing signature is rejected 401 BEFORE any fetch/D1 work,
+//   - a valid `X-Mollie-Signature` (hex HMAC-SHA256 of the raw body, `sha256=`
+//     prefix optional) is accepted → 200 AND the reverse-reconcile GET hits the
+//     payments endpoint with a Bearer key and the D1 payment row is upserted,
+//   - an ABSENT header is the classic unsigned webhook (Mollie's own validator
+//     calls it the legacy webhook) → same 200 + reverse-reconcile path, with or
+//     without a configured signing secret,
+//   - a present-but-wrong signature (or one we cannot verify, i.e. no secret
+//     configured) is 401 BEFORE any fetch/D1 work,
 //   - a body without `id` is a 422, again without spending a subrequest.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import handler, { ensureSchema } from '../../ports/packages/mollie-webhook.mjs';
 
-// Mollie computes `X-Mollie-Signature: base64(HMAC-SHA256(secret, rawBody))`.
+// Mollie's own SignatureValidator computes `hash_hmac('sha256', $payload, $secret)`
+// — HEX, and the header may carry the `sha256=` prefix.
 function sign(secret, rawBody) {
-  return crypto.createHmac('sha256', secret).update(String(rawBody)).digest('base64');
+  return crypto.createHmac('sha256', secret).update(String(rawBody)).digest('hex');
 }
 
 // Build a fake fetch that records lookups and replies with a canned payment.
@@ -167,12 +172,73 @@ test('mollie: invalid signature is 401 and never fetches or writes', async () =>
   assert.equal(db.rows.length, 0);
 });
 
-test('mollie: missing signature header is 401', async () => {
+test('mollie: absent signature header is the legacy webhook and still reconciles', async () => {
   const fetchImpl = makeFetch(200, PAYMENT);
   const db = makeDb();
   const rawBody = JSON.stringify({ id: PAYMENT.id });
 
   const res = await handler(okCtx(rawBody, ''), {
+    fetchImpl,
+    DB: db,
+    MOLLIE_WEBHOOK_SECRET: SECRET,
+    MOLLIE_API_KEY: API_KEY,
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(db.rows.length, 1);
+});
+
+test('mollie: legacy webhook works with no signing secret configured', async () => {
+  const fetchImpl = makeFetch(200, PAYMENT);
+  const db = makeDb();
+  const rawBody = JSON.stringify({ id: PAYMENT.id });
+
+  const res = await handler(okCtx(rawBody, ''), { fetchImpl, DB: db, MOLLIE_API_KEY: API_KEY });
+
+  assert.equal(res.status, 200);
+  assert.equal(db.rows.length, 1);
+});
+
+test('mollie: a present signature with no configured secret is 401', async () => {
+  const fetchImpl = makeFetch(200, PAYMENT);
+  const db = makeDb();
+  const rawBody = JSON.stringify({ id: PAYMENT.id });
+
+  const res = await handler(okCtx(rawBody, sign(SECRET, rawBody)), {
+    fetchImpl,
+    DB: db,
+    MOLLIE_API_KEY: API_KEY,
+  });
+
+  assert.equal(res.status, 401);
+  assert.equal(fetchImpl.calls.length, 0);
+  assert.equal(db.rows.length, 0);
+});
+
+test('mollie: the `sha256=` prefix is accepted', async () => {
+  const fetchImpl = makeFetch(200, PAYMENT);
+  const db = makeDb();
+  const rawBody = JSON.stringify({ id: PAYMENT.id });
+
+  const res = await handler(okCtx(rawBody, `sha256=${sign(SECRET, rawBody)}`), {
+    fetchImpl,
+    DB: db,
+    MOLLIE_WEBHOOK_SECRET: SECRET,
+    MOLLIE_API_KEY: API_KEY,
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(db.rows.length, 1);
+});
+
+test('mollie: a base64 signature is rejected (the official digest is hex)', async () => {
+  const fetchImpl = makeFetch(200, PAYMENT);
+  const db = makeDb();
+  const rawBody = JSON.stringify({ id: PAYMENT.id });
+  const base64 = crypto.createHmac('sha256', SECRET).update(rawBody).digest('base64');
+
+  const res = await handler(okCtx(rawBody, base64), {
     fetchImpl,
     DB: db,
     MOLLIE_WEBHOOK_SECRET: SECRET,
@@ -200,30 +266,19 @@ test('mollie: webhook without an id is 422 and never fetches', async () => {
   assert.equal(db.rows.length, 0);
 });
 
-test('mollie: missing credentials is 500 before any work', async () => {
+test('mollie: a missing API key is 500 before any work', async () => {
   const fetchImpl = makeFetch(200, PAYMENT);
   const db = makeDb();
   const rawBody = JSON.stringify({ id: PAYMENT.id });
 
-  const res = await handler(okCtx(rawBody, sign(SECRET, rawBody)), {
-    fetchImpl,
-    DB: db,
-    MOLLIE_API_KEY: API_KEY,
-  });
+  // The API key is what the reverse-reconcile needs, so it is the hard
+  // requirement; the signing secret is optional (legacy webhooks are unsigned).
+  const res = await handler(okCtx(rawBody, ''), { fetchImpl, DB: db, MOLLIE_WEBHOOK_SECRET: SECRET });
 
   assert.equal(res.status, 500);
-  assert.equal(JSON.parse(res.body).error, 'MOLLIE_WEBHOOK_SECRET not configured');
+  assert.equal(JSON.parse(res.body).error, 'MOLLIE_API_KEY not configured');
   assert.equal(fetchImpl.calls.length, 0);
-
-  const res2 = await handler(okCtx(rawBody, sign(SECRET, rawBody)), {
-    fetchImpl,
-    DB: db,
-    MOLLIE_WEBHOOK_SECRET: SECRET,
-  });
-
-  assert.equal(res2.status, 500);
-  assert.equal(JSON.parse(res2.body).error, 'MOLLIE_API_KEY not configured');
-  assert.equal(fetchImpl.calls.length, 0);
+  assert.equal(db.rows.length, 0);
 });
 
 test('mollie: non-200 upstream payment lookup is surfaced (404 for missing payment)', async () => {
