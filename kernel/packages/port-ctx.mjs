@@ -29,10 +29,12 @@ function parse(ctx) {
   const req = (ctx && ctx.request) || {};
   const call = (name, ...args) => (typeof req[name] === 'function' ? req[name](...args) : undefined);
   // A fetch `Request` (what a unit test hand-builds) and the kernel Request both
-  // expose `json()`/`text()`, but only the kernel's are synchronous and
-  // side-effect-free: reading a fetch Request's body consumes the stream, and
-  // calling `json()` on an empty one rejects. Only the kernel shape is read for
-  // the body; a fetch Request's body must come from `ctx.body` / `text()`.
+  // expose `json()`, but only the kernel's is synchronous and side-effect-free:
+  // reading a fetch Request's body consumes the stream, and calling `json()` on an
+  // empty one rejects. Only the kernel shape is read for the body; a fetch
+  // Request's body must come from `ctx.body` / `text()`. The RAW body is read
+  // through `getContent()` (the kernel Request carries one since the webhook
+  // verifiers were found to be HMACing a re-serialised copy — see `rawText`).
   const isFetchRequest = typeof Request === 'function' && req instanceof Request;
 
   const method = String(
@@ -98,7 +100,17 @@ function parse(ctx) {
 
   const rawText = async () => {
     if (isFetchRequest && typeof req.text === 'function') return String(await req.text());
-    if (typeof req.text === 'function' && typeof req.json !== 'function') return String(await req.text());
+    // The bytes as they arrived, in precedence order: the kernel Request's own
+    // accessor (`getContent()`, Symfony parity, added because webhook verifiers
+    // HMAC exactly these bytes), then any `text()` a test ctx hands over, then a
+    // port's `text()`. Falling through to `json()` RE-SERIALISES the parsed body,
+    // which is a different message to a provider's signature: a genuinely signed
+    // Mollie/Stripe/… webhook was answered 401 on the kernel path until the
+    // `getContent()` branch existed.
+    const content = call('getContent');
+    if (typeof content === 'string') return content;
+    if (typeof req.getContent === 'string') return req.getContent;
+    if (typeof req.text === 'function') return String(await req.text());
     const j = call('json');
     return j === undefined || j === null ? '' : JSON.stringify(j);
   };
