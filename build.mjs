@@ -395,19 +395,27 @@ const conditionalArtifactsWhenBuilt = () =>
   conditionalCacheArtifacts.filter(
     (file) => existsSync(join(distFinal, 'src')) && !existsSync(join(distFinal, file))
   );
+
+// The cache key's inputs, in ONE place: the read-time check below and the
+// write-through stamp at the end of the build MUST hash the same shape, or a
+// change to one side makes the stored key unmatchable and every subsequent
+// build pays an unexplained full rebuild. A function, not a frozen object:
+// `resolved` is filled in after provisioning, and the write-through must see
+// that late value while the read-time check sees the early one.
+const buildCacheKeyInputs = () => ({
+  appDir,
+  pkgDir,
+  registryPath,
+  vendorDir,
+  php: resolved,
+  flags: { strict, scaffold, argv: process.argv.slice(2).filter((a) => a !== '--no-cache') },
+  env: process.env,
+  extraDirs: lwPortsDir ? [lwPortsDir] : [],
+});
 let buildCacheKey = null;
 let buildCacheInfo = null;
 try {
-  buildCacheInfo = computeBuildCacheKey({
-    appDir,
-    pkgDir,
-    registryPath,
-    vendorDir,
-    php: resolved,
-    flags: { strict, scaffold, argv: process.argv.slice(2).filter((a) => a !== '--no-cache') },
-    env: process.env,
-    extraDirs: lwPortsDir ? [lwPortsDir] : [],
-  });
+  buildCacheInfo = computeBuildCacheKey(buildCacheKeyInputs());
   buildCacheKey = buildCacheInfo.key;
 } catch (e) {
   console.log(`  build cache: key could not be computed (${String(e.message || e).slice(0, 160)}) — running the full build`);
@@ -4232,16 +4240,7 @@ commitDist(dist, distFinal);
 // this write-through every build after a forced one would first pay an
 // unexplained full rebuild.
 try {
-  const finalInfo = computeBuildCacheKey({
-    appDir,
-    pkgDir,
-    registryPath,
-    vendorDir,
-    php: resolved,
-    flags: { strict, scaffold, argv: process.argv.slice(2).filter((a) => a !== '--no-cache') },
-    env: process.env,
-    extraDirs: lwPortsDir ? [lwPortsDir] : [],
-  });
+  const finalInfo = computeBuildCacheKey(buildCacheKeyInputs());
   mkdirSync(cacheDir, { recursive: true });
   writeFileSync(
     cacheStampPath,
