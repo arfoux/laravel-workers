@@ -509,6 +509,7 @@ The honest consequence: a page that reads rows the build has never seen prerende
 | **Mail** | `Mail::to()->send()` compiles the mailable class; mailer built from `mail.default` → log/noop/resend | M28/M57 |
 | **Queue | Scheduler** | `Queue::push()` fails loud (worker has no queue consumer); the schedule dumps to `dist/cron.json` + `schedule.generated.mjs`, the `scheduled` handler evaluates due events | M28/M29 |
 | **Method handling** | auto `OPTIONS` (200, `Allow` header); unmatched method → 405 (`Allow` + the app's `errors/405` view, else the framework's page; JSON gets Laravel's message) | M40 |
+| **Path encoding** | `ValidatePathEncoding` runs first: a path whose `rawurldecode()` is not valid UTF-8 → **400** `Malformed URL.` before the router and the session (no `Set-Cookie`); `/letters/%zz` stays literal and answers the route like PHP; skipped when the app removed the middleware | M75 (S40) |
 | **Route-model binding** | `show(Post $post)` — model from the route segment, 404 on miss | M40 |
 
 ### Fails loud (use a port instead)

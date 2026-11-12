@@ -2,6 +2,36 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A malformed path is a 400 before routing, as `ValidatePathEncoding` answers
+
+Cloudflare does **not** reject a malformed percent-escape: `GET /letters/a%FFb` reached the Worker, and
+the compiled side answered the app's fallback with **200** where Laravel throws
+`Illuminate\Http\Exceptions\MalformedUrlException` and answers **400** (`Ill.`'s
+`ValidatePathEncoding::handle()`: `rawurldecode($request->path())` that is not valid UTF-8). It is the
+FIRST middleware of the framework's global stack, so it runs **before** the router — measured on
+Laravel 13.37, `GET /nope%FF` is a 400 and not the 404 that path would otherwise get — and before the
+session/CSRF layer, so the 400 carries no `Set-Cookie`.
+
+| change | why |
+|---|---|
+| `kernel/http.mjs` runs the check as the first step of `handleHttp()`, before `installValidation()` and the router match | the middleware is first in the global stack; anything later would answer the fallback/404/route first |
+| the path is decoded **byte-wise** by PHP's `rawurldecode()` rule — a `%` NOT followed by two hex digits is left literal — and the bytes are validated as UTF-8 (RFC 3629: no overlong form, no surrogate, nothing above U+10FFFF, no truncated sequence) | that is what `mb_check_encoding($decodedPath, 'UTF-8')` answers. A `decodeURIComponent()` + try/catch check is WRONG: it throws on `/letters/%zz`, where PHP leaves the escape literal and answers the route |
+| the 400 goes through the same `renderErrorView` hook as the 405 branch (an `errors/400` view when the app ships one — the build compiles error views it finds — else the minimal page), and an `Accept: application/json` request gets Laravel's `Handler::prepareJsonResponse()` body (`JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES`) | the response is the exception handler's, not a bespoke page |
+| `tools/static.mjs` reports `validatePathEncoding` from the app's final global stack (`use()`/`prepend()`/`append()`/`remove()`/`replace()`), `tools/config-dump.mjs` writes it as `middleware.validate_path_encoding`, and the guard is skipped when it is `false` | an app that removed the middleware from its own stack routes such a request; without the flag the edge would answer 400 where Laravel answers the route — a divergence introduced by this change | 
+
+Evidence: PHP 8.3 probes on the oracle app (`rawurldecode()` + `mb_check_encoding()`) fixed the table
+`%FF`, `%C3`, `%E9`, `%80`, `%C0%AF`, `%ED%A0%80`, `%F5%80%80%80`, `%FE%FF`, `%F0%9F%98`, `%C3%25A9`
+malformed vs `%C3%A9`, `%F0%9F%98%80`, `%41%42`, `%2F`, `%zz`, `%`, `%2`, `café`, `%25FF`, `%2541`,
+`%25` valid, and `kernel/tests/http.test.mjs` pins every one of them through the real pipeline (plus the
+`Set-Cookie`-free 400 and the JSON body); `tools/tests/middleware-transform.test.mjs` pins the stack flag
+for the default stack, `remove()` and `use([...])`. The shadow harness (app `fb5`, rebuilt) replays 11
+live requests: **6 malformed paths answer 400 on both sides** (documented divergence: the 400 page is a
+framework asset — Ignition in debug, Symfony's page in production — and the compiled side answers its
+minimal page, the same rule as the 405) and **5 valid paths are byte-identical**, including `/letters/%zz`
+and `/letters/%25FF` (the cases where a naive check diverges). The four earlier batteries are unchanged
+(`fb2` 21/22 + 1 documented, `fb4` 22/22, `fb5` requirements 11/11, the redirect battery). `npm test`
+2072 tests / 0 fail (3 skipped).
+
 ### A route's `->where(...)` requirements reach the Worker — and `Route::fallback()` with them
 
 `route:list --json` prints no requirement at all, and the scan read the verb chain without the
