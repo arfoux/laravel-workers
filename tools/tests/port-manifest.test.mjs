@@ -47,6 +47,21 @@ test('every manifest route points at an existing port file', () => {
   }
 });
 
+// The `file` slot is checked for helpers too, not just route ports: a helper
+// carries `methods: []`, so a `methods.length > 0` gate would silently skip it
+// and let a moved handler leave a stale `file` behind.
+test('missingManifestFiles checks helper entries as well as route ports', () => {
+  const nonexistent = resolve(repoRoot, 'no-such-repo-root');
+  const missing = new Set(missingManifestFiles(nonexistent).map((m) => m.route));
+  const helpers = Object.entries(PORT_MANIFEST)
+    .filter(([, entry]) => entry.methods.length === 0)
+    .map(([route]) => route);
+  assert.ok(helpers.length > 0, 'expected at least one helper entry');
+  for (const route of helpers) {
+    assert.ok(missing.has(route), `helper ${route} was not file-checked`);
+  }
+});
+
 // The registry key -> slug mapping and the manifest must agree: every route the
 // registry maps is present in the manifest, and its manifest slug must NOT
 // contradict the registry's slug.
