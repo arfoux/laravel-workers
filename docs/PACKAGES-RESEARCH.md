@@ -111,7 +111,8 @@
 ### spatie/laravel-permission v8.5.0
 - verdict: **port** — pemeriksaan role/permission mengalir lewat pipeline terkompilasi (`can:` middleware + `Gate` terkompilasi), tapi jawaban spatie hidup di kode vendor.
 - refusal: paket tak terkompilasi (provider mendaftarkan permission registrar + directive Blade + cache per-user); trait `HasRoles` = kode vendor. `Spatie\Permission\` → LW002. Team-scoped + wildcard `*` jadi tugas port.
-- port: `ports/spatie-permission.mjs` menjawab `hasRole`/`hasPermissionTo`/`hasAnyRole` lewat skema D1 `roles`/`permissions`/`model_has_roles`/`model_has_permissions`; disambungkan via `registry.json → guards` atau closure `Gate::before`.
+- port: `ports/packages/permission.mjs` menjawab `hasRole`/`hasPermissionTo`/`hasAnyRole` lewat skema D1 `roles`/`permissions`/`model_has_roles`/`model_has_permissions`; disambungkan via `registry.json → guards` atau closure `Gate::before`.
+- identity: route seam-nya (`GET/POST /model/{modelType}/{modelKey}/...`) butuh identitas guard (`ctx.user()`/`ctx.user_id`) → `401` tanpa itu, sebelum tulis D1: anonim = oracle role + eskalasi (`assign-role` ke model key apa pun). Route params tetap data, bukan identitas.
 - substitution: tabel cache Eloquent spatie → cache store kernel (KV/D1) — disclosure.
 - test: seed role/permission di D1, jalankan `can:` middleware + `Gate::denies()` di shadow run, bandingkan jawaban PHP 8.3; pastikan pemeriksaan kedua tak mengeluarkan query ekstra.
 
@@ -175,7 +176,7 @@ Grounding: HMAC-SHA256 (hex+base64) byte-identical PHP 8.3.30 ↔ Node crypto �
 
 ### pusher/pusher-php-server v7.3.0
 - verdict: **port** — auth token SDK (`socket_id`+`channel_name` → `{key}.{HMAC-SHA256}`) = HMAC murni, direproduksi WebCrypto byte-for-byte; trigger = POST HTTPS ke REST API Pusher dgn auth_signature query-string = `fetch`.
-- identity: idem reverb — channel guarded butuh identitas guard (`ctx.user()`/`ctx.user_id`); `user_id` presence dari identitas itu, bukan `channel_data` body; tanpa identitas → `401`.
+- identity: idem reverb — channel guarded butuh identitas guard (`ctx.user()`/`ctx.user_id`); `user_id` presence dari identitas itu, bukan `channel_data` body; tanpa identitas → `401`. Route seam `/broadcast` (trigger) juga butuh identitas: `triggerEvent()` di app code in-process, tapi HTTP route anonim = injeksi event ke channel apa pun dgn secret app → `401` tanpa guard.
 - refusal: paket tak terkompilasi (vendor SDK) → LW002 pada resolve langsung.
 - substitution: panggilan SDK PHP → tanda-tangan WebCrypto + `fetch` REST (disclosure: protokol & signature sama, tanpa proses server).
 - test: oracle PHP menandatangani auth token + REST URL; paritas token & query string edge byte-for-byte.
@@ -706,6 +707,7 @@ Port seam: `registry.json → "ports": { "<route>": "<slug>" }`, file `ports/<sl
 - edge: kirim webhook → `webhook_calls` + POST ke endpoint; retry via queue drain; signature HMAC.
 - refusal: paket tak terkompilasi (facade + job).
 - port: `ports/packages/webhook-server.mjs` + kernel helper; D1 `webhook_calls` (tabel sama).
+- identity: route seam `/webhook-server/send` butuh caller terautentikasi (`ctx.user()`/`ctx.user_id` a `middlewarePorts` guard) → `401` tanpa itu; app code memanggil `signPayload` in-process, dan `headers` dari caller tak pernah menggantikan `webhook-signature`/`webhook-timestamp` kanonik.
 - test: unit fake-fetch — signature benar di header.
 - free-tier: 1 fetch + D1 tulis; muat.
 - evidence: Packagist; README.

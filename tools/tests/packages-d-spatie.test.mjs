@@ -449,12 +449,15 @@ function parseSelect(sql) {
   return parsed;
 }
 
-// Fake request helper
-function makeCtx({ method = 'GET', params = {}, query = {}, body = null } = {}) {
+// Fake request helper. `user_id` is what a `middlewarePorts` guard writes onto
+// ctx for an authenticated caller (kernel/packages/port-ctx.mjs guardUserId);
+// every permission route requires it.
+function makeCtx({ method = 'GET', params = {}, query = {}, body = null, user_id = 1 } = {}) {
   return {
     params,
     query,
     body,
+    user_id,
     request: new Request('https://edge.local/test', { method }),
   };
 }
@@ -596,6 +599,27 @@ test('permission: unknown role on assign → 404', async () => {
     e
   );
   assert.equal(res.status, 404);
+});
+
+test('permission: no identity → 401 on read AND write, no D1 write', async () => {
+  const e = env();
+  const read = await permissionHandler(
+    makeCtx({ user_id: null, params: { modelKey: '1' }, query: { role: 'admin' } }),
+    e
+  );
+  assert.equal(read.status, 401);
+  const write = await permissionHandler(
+    makeCtx({ user_id: null, method: 'POST', params: { modelKey: '1', action: 'assign-role' }, body: { role: 'admin' } }),
+    e
+  );
+  assert.equal(write.status, 401);
+  // an authenticated caller cannot be impersonated through the body either:
+  // the identity is the guard's, and the route params stay data
+  const spoof = await permissionHandler(
+    makeCtx({ user_id: null, method: 'POST', params: { modelKey: '1', action: 'assign-role' }, body: { role: 'admin', user_id: 9 } }),
+    e
+  );
+  assert.equal(spoof.status, 401);
 });
 
 test('tags: attach, list, idempotent attach', async () => {
