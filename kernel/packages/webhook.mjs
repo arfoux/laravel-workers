@@ -95,3 +95,27 @@ function safeJson(text) {
     return null;
   }
 }
+
+// The idempotent-replay guard every payment webhook shares: one row per event
+// id in `lw_webhook_events`, written with INSERT OR IGNORE so a redelivered
+// event is a no-op. The caller keeps its own id/type extraction (each provider
+// nests them differently) and its own `ensureSchema`; this owns the table
+// shape, the 8000-char payload cap and the "was this the first time?" answer.
+// Written once because the three Cashier/LS ports carried byte-identical
+// copies — a change to the cap or the column list silently missed the others.
+export async function ensureWebhookEventsTable(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lw_webhook_events (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    type TEXT,
+    payload TEXT,
+    received_at TEXT
+  )`).run();
+}
+
+export async function recordWebhookEventOnce(env, { id, provider, type, payload, receivedAt }) {
+  const res = await env.DB.prepare(
+    'INSERT OR IGNORE INTO lw_webhook_events (id, provider, type, payload, received_at) VALUES (?, ?, ?, ?, ?)'
+  ).bind(String(id), String(provider), String(type || ''), JSON.stringify(payload).slice(0, 8000), receivedAt).run();
+  return (res.meta?.changes ?? res.changes ?? 0) > 0;
+}

@@ -22,19 +22,13 @@
 // Free tier: ≤2 D1 writes per event (event row + subscription upsert), HMAC CPU
 // negligible, 0 subrequests (the event is fully self-describing).
 
-import { verifyStripeSignature } from '../../kernel/packages/webhook.mjs';
+import { verifyStripeSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 
 // Cashier's `subscriptions` table (v16 columns incl. meter fields). `subscription_items`
 // is updated alongside for multi-price subscriptions.
 export async function ensureSchema(env) {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lw_webhook_events (
-    id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    type TEXT,
-    payload TEXT,
-    received_at TEXT
-  )`).run();
+  await ensureWebhookEventsTable(env);
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -76,10 +70,13 @@ function json(status, payload) {
 // time we've seen it (so the caller should apply the state change).
 async function recordEventOnce(env, event) {
   await ensureSchema(env);
-  const res = await env.DB.prepare(
-    'INSERT OR IGNORE INTO lw_webhook_events (id, provider, type, payload, received_at) VALUES (?, ?, ?, ?, ?)'
-  ).bind(String(event.id), 'stripe', String(event.type || ''), JSON.stringify(event).slice(0, 8000), now()).run();
-  return (res.meta?.changes ?? res.changes ?? 0) > 0;
+  return recordWebhookEventOnce(env, {
+    id: String(event.id),
+    provider: 'stripe',
+    type: event.type,
+    payload: event,
+    receivedAt: now(),
+  });
 }
 
 // Project a Stripe subscription object (or checkout session) onto a Cashier row.
