@@ -1714,16 +1714,22 @@ const transpileToModule = (dumpPath, viewModulePath) => {
 // Read one dump, run the pure-JS Blade check, and emit the view + context
 // modules. The manifest pass below uses this for the dependency closure that
 // compile-view.php just compiled in the same boot.
+// The kinds of the view data (the pagination view receives a paginator): the
+// transpiler needs them to allow the method calls, so they are stamped into the
+// dump before it is transpiled. Two sites reach it (the manifest pass and the
+// wave loop) — one copy, so the stamp cannot drift.
+const stampViewDataKinds = (dump, dumpPath, kinds) => {
+  if (!kinds) return;
+  dump.viewDataKinds = kinds;
+  writeFileSync(dumpPath, JSON.stringify(dump));
+};
 const emitViewModule = (view, dumpPath, viewModulePath, viewDataKinds) => {
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
   if (!dump || typeof dump.compiled !== 'string') {
     throw new Error('compile-view produced no compiled PHP');
   }
   bladeCompile(dump, view);
-  if (viewDataKinds) {
-    dump.viewDataKinds = viewDataKinds;
-    writeFileSync(dumpPath, JSON.stringify(dump));
-  }
+  stampViewDataKinds(dump, dumpPath, viewDataKinds);
   transpileToModule(dumpPath, viewModulePath);
   writeContextModule(view, dump.context);
   return dump;
@@ -2643,12 +2649,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
               continue;
             }
 
-            // The kinds of the view data (the pagination view receives a
-            // paginator): the transpiler needs them to allow the method calls.
-            if (viewDataKinds[view]) {
-              dump.viewDataKinds = viewDataKinds[view];
-              writeFileSync(dumpPath, JSON.stringify(dump));
-            }
+            stampViewDataKinds(dump, dumpPath, viewDataKinds[view]);
             transpileToModule(dumpPath, viewModulePath);
             writeContextModule(view, dump.context);
             markCompiled(view, dump.compiled);
