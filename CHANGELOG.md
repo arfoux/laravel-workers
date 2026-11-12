@@ -2,6 +2,26 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The config gate sees a `Config::` facade read, so a key the dump does not carry is refused
+
+`Config::get('app.name')` compiles to `rt.config("app.name", null)` — the facade emission carries an
+explicit null default (`compiler/src/transpiler.mjs:2550`) — and the gate's literal regex required the
+call to END after the string, so **every** facade read slipped past `tools/config-gate.mjs` while the
+`config()` helper form was caught. An app whose compiled artifact read a group the dump does not carry
+shipped a worker that answered `null` where PHP answers the value: the same silent null, through the
+other door.
+
+| change | why |
+|---|---|
+| `LITERAL` accepts the trailing arguments (`rt.config("x")` **and** `rt.config("x", null)`) by requiring the call to continue with `,` or `)` | that is the shape the facade emission has; a read that is not a plain literal (`rt.config("a".slice(0,1))`, `rt.config(rt.concat("services.", v_k))`) is still not one, and the dynamic form still goes through the prefix check |
+| the captured key is unescaped (`\"`, `\'`, `\\`) | the reported key has to equal the key the worker looks up, or the gate names a key that does not exist |
+
+Evidence: `rt.config("mail.mailers.smtp.port", null)` — what `Config::get('mail.mailers.smtp.port')`
+emits — matched **nothing** against the old regex and matches now (both run over the same inputs, the
+helper form and the dynamic form unchanged); `build.mjs` (`configGateMissing`) turns the key into a
+`fail` naming the group, so the shipped answer became a build error instead of a silent null.
+`tools/tests/config-gate.test.mjs` pins the scan (facade form, escaped key) and the missing-key answer.
+
 ### A `--lock` file pins the app's `require-dev` names, so `composer validate` accepts it
 
 `--lock` wrote `'packages-dev': []` — `resolveDependencies()` walked `require` only, and the header

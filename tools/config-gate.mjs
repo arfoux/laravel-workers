@@ -16,8 +16,17 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// `rt.config("app.name")` — the literal form.
-const LITERAL = /rt\.config\((["'])([^"']+)\1\)/g;
+// `rt.config("app.name")` — the literal form, in BOTH emissions the compiler
+// produces: the helper (`config('app.name')` → `rt.config("app.name")`) and the
+// Config facade (`Config::get('app.name')` → `rt.config("app.name", null)`,
+// `compiler/src/transpiler.mjs:2550`). The first regex required the call to END
+// after the string, so every facade read slipped the gate while the helper form
+// was caught — the same silent null, through the other door (S25).
+const LITERAL = /rt\.config\((["'])((?:[^"'\\]|\\.)+)\1\s*(?=[,)])/g;
+// A compiled key is a JS string literal, and `\"` / `\'` / `\\` are the only
+// escapes a config key can carry; unescaping them keeps the reported key equal
+// to the key the worker actually looks up.
+const unquote = (raw) => raw.replace(/\\(["'\\])/g, '$1');
 // `rt.config(rt.concat("app.", v_k))` — what `config('app.' . $k)` compiles to.
 // Only the PREFIX is knowable at build time; the rest of the key exists at
 // request time, so the dump must carry at least one key under it.
@@ -38,7 +47,7 @@ export function scanConfigReads(root) {
       if (entry.isDirectory()) walk(full);
       else if (entry.name.endsWith('.mjs')) {
         const text = readFileSync(full, 'utf8');
-        for (const m of text.matchAll(LITERAL)) literal.add(m[2]);
+        for (const m of text.matchAll(LITERAL)) literal.add(unquote(m[2]));
         for (const m of text.matchAll(DYNAMIC)) dynamicPrefix.add(m[2]);
       }
     }

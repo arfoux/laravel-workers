@@ -31,6 +31,10 @@ const reads = (literal = [], dynamicPrefix = []) => ({
 test('the scan collects literal keys and dynamic prefixes, .mjs files only', () => {
   const root = fixture({
     'src/a.mjs': 'const a = rt.config("app.name");\nconst b = rt.config(\'cache.default\');\n',
+    // The Config FACADE emission carries an explicit null default; the escaped
+    // quote is there so the reported key equals the key the worker looks up.
+    'src/e.mjs': 'const e = rt.config("mail.mailers.smtp.port", null);\n',
+    'src/f.mjs': 'const f = rt.config("quoted\\"key");\n',
     'src/nested/b.mjs': 'const c = rt.config(rt.concat("services.", v_k));\n',
     // Neither of these is compiled JS the worker runs: not scanned.
     'src/c.json': 'rt.config("from.json")',
@@ -38,7 +42,12 @@ test('the scan collects literal keys and dynamic prefixes, .mjs files only', () 
   });
   try {
     const found = scanConfigReads(root);
-    assert.deepEqual([...found.literal].sort(), ['app.name', 'cache.default']);
+    assert.deepEqual([...found.literal].sort(), [
+      'app.name',
+      'cache.default',
+      'mail.mailers.smtp.port',
+      'quoted"key',
+    ]);
     // The dynamic form must NOT also register as a literal key.
     assert.deepEqual([...found.dynamicPrefix], ['services.']);
   } finally {
@@ -82,6 +91,21 @@ test('a fully dynamic key (a variable, no literal prefix) is out of the gate\'s 
     const found = scanConfigReads(root);
     assert.equal(found.literal.size, 0);
     assert.equal(found.dynamicPrefix.size, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the Config facade emission is a literal read, not a gap (S25)', () => {
+  // `Config::get('app.name')` compiles to `rt.config("app.name", null)`. The
+  // first regex required the call to END after the string, so a facade read of a
+  // group the dump does not carry shipped a worker answering null where PHP
+  // answers the value: the helper form was caught, the facade form was not.
+  const root = fixture({ 'src/a.mjs': 'const a = rt.config("undeclared.thing", null);\n' });
+  try {
+    const reads = scanConfigReads(root);
+    assert.deepEqual([...reads.literal], ['undeclared.thing']);
+    assert.deepEqual(configGateMissing(reads, { 'app.name': 'x' }).missing, ['undeclared.thing']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
