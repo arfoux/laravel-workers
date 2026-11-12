@@ -3797,6 +3797,15 @@ for (const [route, slugs] of middlewarePortsMap) {
 // snapshot route would be bypassed at the edge — fail the build instead.
 // The set and the numeric-throttle rule live ONCE (above, at `isHonouredMiddleware`):
 // two copies of the same list drift silently (#697).
+// The middleware audit walks the route TABLE; a route that never became a
+// snapshot or a controller skips it, so its middleware is named from the
+// needsPort loop instead. Both sites must emit the same finding — one copy.
+const noteUnhonouredMiddleware = (route, middleware) => {
+  for (const m of middleware) {
+    if (isHonouredMiddleware(m)) continue;
+    note({ route, area: 'middleware', severity: BLOCK, cause: `runs the "${m}" middleware, which the compiled rung does not honour`, fix: MIDDLEWARE_FIX(m, route) });
+  }
+};
 {
   const offenders = [];
   let throttleRoutes = 0;
@@ -3806,7 +3815,7 @@ for (const [route, slugs] of middlewarePortsMap) {
     const bad = (entry.middleware || []).filter((m) => !isHonouredMiddleware(m));
     if (bad.length) {
       offenders.push(`${entry.uri} [${bad.join(', ')}] (${entry.kind})`);
-      for (const m of bad) note({ route: entry.uri, area: 'middleware', severity: BLOCK, cause: `runs the "${m}" middleware, which the compiled rung does not honour`, fix: MIDDLEWARE_FIX(m, entry.uri) });
+      noteUnhonouredMiddleware(entry.uri, bad);
     }
   }
   if (offenders.length) {
@@ -3990,10 +3999,7 @@ for (const n of needsPort) {
   // named - and the reason it could not be served is usually the middleware,
   // not the status it happened to answer. `verified` reads as "HTTP 500"; the
   // truth is a stage the compiled rung does not run.
-  for (const m of middlewareForRoute(n.route) || []) {
-    if (isHonouredMiddleware(m)) continue;
-    note({ route: n.route, area: 'middleware', severity: BLOCK, cause: `runs the "${m}" middleware, which the compiled rung does not honour`, fix: MIDDLEWARE_FIX(m, n.route) });
-  }
+  noteUnhonouredMiddleware(n.route, middlewareForRoute(n.route) || []);
 }
 for (const p of partials) note({ route: p.route, area: 'route', severity: BLOCK, cause: `GET is snapshotted, but ${p.methods.join(', ')} has no handler`, fix: `write a port for ${p.methods.join('/')} ${p.route} (build --scaffold), or ignore the route with a reason` });
 for (const x of uncompiledExtraNonPost) note({ route: x.route, area: 'route', severity: BLOCK, cause: `${x.verb} has no handler (only GET/POST/PUT/PATCH/DELETE compile)`, fix: `write a port for ${x.verb} ${x.route}, or ignore the route with a reason` });
