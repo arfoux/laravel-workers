@@ -1641,6 +1641,10 @@ function viewComponentTags(sourcePath) {
   }
   return [...seen];
 }
+// How a component tag reads in a message: `<x-name>`. Three sites print the
+// list (the route-view skip, the wave skip's reason and its console line) — one
+// copy, so the display form cannot drift.
+const formatComponentTags = (tags) => tags.map((t) => '<x-' + t + '>').join(', ');
 
 function bladeCompile(dump, label, opts = {}) {
   if (bladeOff || !hasCompiledPhp(dump)) return 'skipped';
@@ -1881,7 +1885,7 @@ for (const [route, view] of viewMap) {
   // source instead, naming the component.
   const componentTags = viewComponentTags(dump.path);
   if (componentTags.length) {
-    const list = componentTags.map((t) => '<x-' + t + '>').join(', ');
+    const list = formatComponentTags(componentTags);
     console.log(`  view ${view}: skipped — Blade component(s) ${list} (components stay a port)`);
     needsPort.push({
       route,
@@ -2658,11 +2662,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
               failedViews.add(view);
               viewSkipReason.set(
                 view,
-                `it uses the Blade component(s) ${componentTags.map((t) => '<x-' + t + '>').join(', ')} — ` +
+                `it uses the Blade component(s) ${formatComponentTags(componentTags)} — ` +
                   'a component renders through `$__env->startComponent()`, which the compiled rung does not implement'
               );
               console.log(
-                `  view ${view}: skipped — Blade component(s) ${componentTags.map((t) => '<x-' + t + '>').join(', ')} (components stay a port)`
+                `  view ${view}: skipped — Blade component(s) ${formatComponentTags(componentTags)} (components stay a port)`
               );
               continue;
             }
