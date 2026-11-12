@@ -25,6 +25,8 @@
 // Config comes from the caller (the port reads env): teamId, clientId, the .p8
 // key and optionally the 10-char keyId.
 
+import { b64url as b64urlFromBytes, b64urlToBytes } from './b64url.mjs';
+
 /** The Apple token endpoint an authorization code is exchanged at. */
 export const APPLE_TOKEN_URL = 'https://appleid.apple.com/auth/token';
 /** The Apple authorize endpoint the browser is redirected to first. */
@@ -33,23 +35,6 @@ export const APPLE_AUTHORIZE_URL = 'https://appleid.apple.com/auth/authorize';
 export const APPLE_MAX_CLIENT_SECRET_TTL = 15_777_000;
 /** The `aud` claim the client secret and the id_token both carry. */
 export const APPLE_ISSUER = 'https://appleid.apple.com';
-
-// --- base64url ---------------------------------------------------------------
-
-function b64urlFromBytes(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 // Read the `.p8` (a PKCS#8 EC P-256 private key, base64 DER — with or without
 // the PEM armour Apple's downloader wraps it in) into DER bytes. Exported so a

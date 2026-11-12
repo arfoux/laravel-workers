@@ -17,26 +17,10 @@
 // we auto-detect). FCM_PROJECT_ID — falls back to the `project_id` field in the
 // service account when omitted.
 import { resolveFetch, bearerAuthHeader } from './notify-http.mjs';
+import { b64url as b64urlFromBytes, b64urlToBytes } from './b64url.mjs';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
-
-// --- base64url --------------------------------------------------------------
-
-function b64urlFromBytes(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 // Detect a base64-encoded service-account blob vs the raw JSON. Raw JSON always
 // starts with `{`; a base64 blob is `[A-Za-z0-9+/=_-]+`. We try JSON.parse

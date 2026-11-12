@@ -33,6 +33,7 @@
 
 import { resolveFetch } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { b64urlToBytes } from '../../kernel/packages/b64url.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -40,17 +41,6 @@ const RS_ALG = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
 
 const DEFAULT_JWKS_URL =
   'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
-
-// --- base64url ---------------------------------------------------------------
-
-function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 function decodeSegment(seg) {
   return JSON.parse(dec.decode(b64urlToBytes(seg)));

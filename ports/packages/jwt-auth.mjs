@@ -32,26 +32,14 @@ import bcrypt from 'bcryptjs';
 import { bearerToken } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { b64url, b64urlToBytes } from '../../kernel/packages/b64url.mjs';
+
+// Re-exported: these were this port's public surface before the shared
+// `b64url.mjs` existed; keep the names importable from here.
+export { b64url, b64urlToBytes };
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-
-// --- base64url ---------------------------------------------------------------
-
-export function b64url(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-export function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 export function b64urlJson(obj) {
   return b64url(enc.encode(JSON.stringify(obj)));

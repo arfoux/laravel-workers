@@ -18,23 +18,11 @@
 //   buildVapidHeader(endpoint, vapidPriv, subject)     -> Promise<string>  // "vapid t=.., k=.."
 //   vapidPublicKeyBase64url(vapidPriv)                 -> Promise<string>  // for key rotation/UI
 import { resolveFetch } from './notify-http.mjs';
+import { b64url as b64urlFromBytes, b64urlToBytes } from './b64url.mjs';
 
-// --- base64url --------------------------------------------------------------
-
-export function b64urlFromBytes(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-export function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
+// Re-exported: these were this module's public surface before the shared
+// `b64url.mjs` existed; keep the names importable from here.
+export { b64urlFromBytes, b64urlToBytes };
 
 function concatBytes(...arrays) {
   const total = arrays.reduce((n, a) => n + a.length, 0);

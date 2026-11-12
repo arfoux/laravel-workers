@@ -9,26 +9,11 @@
 // never live in code — the caller injects PEM (`PASSPORT_PRIVATE_KEY`,
 // `PASSPORT_PUBLIC_KEY`) from env secrets.
 
+import { b64url, b64urlToBytes } from './b64url.mjs';
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const RS_ALG = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
-
-// --- base64url -------------------------------------------------------------
-
-function b64url(bytes) {
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function b64urlToBytes(str) {
-  const b64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 // --- PEM → ArrayBuffer (PKCS#8 private / SPKI public) ----------------------
 
