@@ -1052,6 +1052,19 @@ function isResourceCollection(info) {
     info.parentFqcn === 'Illuminate\\Http\\Resources\\Json\\ResourceCollection'));
 }
 
+// Drop the classes that failed from the registry: the runtime cannot build
+// them, so the routes that reach them are stopped. Two passes need this (the
+// failed-dependency cascade and the circular-dependency pass) — one copy, so
+// the two removals (the entries array and the meta map) cannot drift.
+function dropFailedClasses(entries, meta, failed) {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (failed.has(entries[i].fqcn)) entries.splice(i, 1);
+  }
+  for (const fqcn of Object.keys(meta)) {
+    if (failed.has(fqcn)) delete meta[fqcn];
+  }
+}
+
 export function compileClasses(dump, opts = {}) {
   const events = (dump && dump.events) || {};
   const classMap = (dump && dump.classes) || {};
@@ -1437,16 +1450,7 @@ export function compileClasses(dump, opts = {}) {
         }
       }
     }
-    if (failedBy.size) {
-      // The classes that failed are not in the registry: the runtime cannot
-      // build them, so the routes that reach them are stopped.
-      for (let i = entries.length - 1; i >= 0; i--) {
-        if (failedBy.has(entries[i].fqcn)) entries.splice(i, 1);
-      }
-      for (const fqcn of Object.keys(meta)) {
-        if (failedBy.has(fqcn)) delete meta[fqcn];
-      }
-    }
+    if (failedBy.size) dropFailedClasses(entries, meta, failedBy);
   }
 
   // The circular service dependencies (A needs B that needs A): the edge
@@ -1498,14 +1502,7 @@ export function compileClasses(dump, opts = {}) {
         });
       }
     }
-    if (cycleMembers.size) {
-      for (let i = entries.length - 1; i >= 0; i--) {
-        if (cycleMembers.has(entries[i].fqcn)) entries.splice(i, 1);
-      }
-      for (const fqcn of Object.keys(meta)) {
-        if (cycleMembers.has(fqcn)) delete meta[fqcn];
-      }
-    }
+    if (cycleMembers.size) dropFailedClasses(entries, meta, cycleMembers);
   }
 
   // The event -> listener map (only the events whose classes compiled).
