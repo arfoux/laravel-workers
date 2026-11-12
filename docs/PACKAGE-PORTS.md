@@ -61,7 +61,7 @@ on the resolved verb + path. All of these are already in `registry.example.json`
 | `pulse` | `GET /pulse`, `POST /pulse/record` | Dashboard is a JSON aggregation over `pulse_entries` (`?range=<minutes>`), not the HTML UI. |
 | `bugsnag` | `POST /bugsnag/notify` | 1:1 transport swap of the notify API POST. |
 | `webhook-client` | `POST /webhooks/{name}` | Receiving side: HMAC-SHA256 verify (constant-time) before the D1 write; unverified calls are never stored. |
-| `webhook-server` | `POST /webhook-server/send` | Sending side: signs `base64(HMAC-SHA256(secret, rawBody))` + `webhook-timestamp` header. |
+| `webhook-server` | `POST /webhook-server/send` | Sending side: signs `base64(HMAC-SHA256(secret, rawBody))` + `webhook-timestamp` header. Requires an authenticated caller (see *seam routes* below); caller-supplied `headers` can never replace the three canonical headers. |
 | `site-search` | `GET /site-search` | Proxies Meilisearch `POST /indexes/{uid}/search`; indexing is out-of-band (Searchable/Scout sync is vendor code, LW002). |
 | `telegram-notification` | `POST /notify/telegram` | Token rides in the URL path (`/bot{TOKEN}/sendMessage`). |
 | `discord-notification` | `POST /notify/discord` | Webhook wins over the Bot API when both are configured. |
@@ -74,6 +74,39 @@ on the resolved verb + path. All of these are already in `registry.example.json`
 | `auth0` | `POST /auth/auth0/callback` | Stops at the `authorization_code` token exchange; compose with `firebase-php-jwt` for offline `id_token` verify. |
 | `glide` | `GET /img/{path}` | Transform delegated to Cloudflare Image Resizing (`/cdn-cgi/image`) — no GD/Imagick. `w` is required (422 without it). |
 | `localization` | `GET /localization` | **Middleware port**, not a route port: declare it under `middlewarePorts`. Returns `null` (continues to the route handler) for a prefixed or unprefixed path, setting `ctx.locale` on the way; the only response it produces is the `HIDE_DEFAULT_LOCALE_IN_URL` 302. |
+
+## Seam routes — a route whose Laravel counterpart is app-side code
+
+Some mapped routes have **no counterpart route in Laravel**. Their Laravel side is a facade or a
+driver that app code calls inside a request the app itself already authenticated
+(`Mail::send()`, `Notification::send()`, `$user->assignRole()`, `broadcast()`,
+`WebhookCall::dispatch()`, `Prism::chat()`, `Gate`/`can:`): the package is a library, and
+Laravel never exposes it as a public path.
+
+At the edge the HTTP route is only a seam for a caller outside the app — app code reaches the
+same capability through `compiler/package-bindings.mjs` (facade → `rt.<primitive>`) and the port's
+exported functions, never by fetching its own URL. So a seam route must not be anonymous: without
+a caller, `POST /broadcast` triggers events on any channel with the app's Pusher secret,
+`POST /webhook-server/send` is a signing oracle plus arbitrary-https egress, and
+`/model/{modelType}/{modelKey}/roles/{action}` grants any role to any model key.
+
+Rule: **a seam route requires an authenticated caller.** The identity is the platform guard's
+(`ctx.user()` in `kernel/http.mjs`, or a `ctx.user_id` a `middlewarePorts` guard wrote —
+`guardUserId()` in `kernel/packages/port-ctx.mjs`); it is never a body/query/params value.
+No identity → `401` before any DB write, any signature, any outbound `fetch`. The port's exported
+functions stay ungated: an app's own job or Worker call is in-process, not an HTTP request.
+
+Currently gated this way: `permission` (all routes), `pusher` `/broadcast`, `webhook-server`
+`/webhook-server/send`, and `pusher`/`reverb` on `/broadcasting/auth` (guarded channels only).
+
+Not yet gated, same shape, listed here so the gap is visible rather than implied: the
+notification transports (`/notify/*`, `/webpush/subscribe`), `mailgun-mail`, `postmark-mail`,
+`slack-notification`, `twilio-sms`, `ai-sdk` (`/ai/chat`), `mcp` (`/mcp`), `pulse`
+(`/pulse/record`), `bugsnag` (`/bugsnag/notify`), `maatwebsite-excel` (`/export`), `glide`
+(`/img/{path}`). Each spends the app's provider credentials or writes app state on behalf of
+whoever reaches the URL, so an app that maps them must put a guard in front (a small
+`middlewarePorts` port that answers `401` when `ctx.user_id` is absent) until the port itself
+enforces it.
 
 The kernel-side helpers these ports lean on (`kernel/packages/`): `ai.mjs` (provider adapters +
 tool loop), `fcm-oauth.mjs` (service-account JWT → OAuth2 token), `webpush-crypto.mjs` (ECDH/HKDF/

@@ -15,7 +15,10 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import handler from '../../ports/packages/webhook-server.mjs';
 
-const okCtx = (body) => ({ body, query: {}, params: {} });
+// `user_id` is what a `middlewarePorts` guard writes onto ctx for an
+// authenticated caller (the route requires one; app code calls signPayload()
+// directly instead of this HTTP seam).
+const okCtx = (body) => ({ body, query: {}, params: {}, user_id: 1 });
 
 // Build a fake fetch that records the call and replies with a canned response.
 function makeFetch(status, jsonBody, { rawBody, headers } = {}) {
@@ -219,4 +222,35 @@ test('webhook-server: a thrown fetch becomes a 502, logged with an error', async
   assert.equal(calls.length, 1);
   assert.equal(db.inserts.length, 1);
   assert.equal(db.inserts[0].error, 'network down');
+});
+
+test('webhook-server: no identity → 401, never signs and never fetches', async () => {
+  const fetchImpl = makeFetch(200, { ok: true });
+  const db = makeDb();
+  const res = await handler({ body: { url: 'https://example.com/hook', payload: {} }, query: {}, params: {} }, {
+    fetchImpl,
+    DB: db,
+    WEBHOOK_SERVER_SECRET: SECRET,
+  });
+  assert.equal(res.status, 401);
+  assert.equal(fetchImpl.calls.length, 0);
+  assert.equal(db.inserts.length, 0);
+});
+
+test('webhook-server: caller headers cannot replace the signed headers', async () => {
+  const fetchImpl = makeFetch(200, { ok: true });
+  const res = await handler(
+    okCtx({
+      url: 'https://example.com/hook',
+      payload: { a: 1 },
+      headers: { 'webhook-signature': 'forged', 'webhook-timestamp': '1', 'content-type': 'text/plain' },
+    }),
+    { fetchImpl, WEBHOOK_SERVER_SECRET: SECRET },
+  );
+  assert.equal(res.status, 201);
+  const sent = fetchImpl.calls[0].init.headers;
+  assert.notEqual(sent['webhook-signature'], 'forged');
+  assert.notEqual(sent['webhook-timestamp'], '1');
+  const expected = crypto.createHmac('sha256', SECRET).update(fetchImpl.calls[0].init.body).digest('base64');
+  assert.equal(sent['webhook-signature'], expected);
 });
