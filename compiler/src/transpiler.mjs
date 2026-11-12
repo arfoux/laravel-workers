@@ -1616,14 +1616,6 @@ function txGate(node, meth) {
         PORT_HINT
       );
     }
-    if (meth === 'any' || meth === 'none') {
-      throw mkErr(
-        'LW002',
-        'Gate::' + meth + '() is not supported — allowed: allows, denies — ' + PORT_HINT,
-        node.loc,
-        PORT_HINT
-      );
-    }
     if (meth === 'define' || meth === 'before' || meth === 'after' || meth === 'policy' || meth === 'resource') {
       throw mkErr(
         'LW002',
