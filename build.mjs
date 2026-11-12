@@ -289,7 +289,7 @@ const registryCandidates = [
   join(appDir, 'edge/registry.json'),
   join(pkgDir, 'registry.json'),
 ];
-const registryPath = firstExisting(registryCandidates);
+let registryPath = firstExisting(registryCandidates);
 if (lwConfig && registryPath === lwConfig) console.log(`• registry: LW_CONFIG -> ${registryPath}`);
 let registry = {};
 if (registryPath) {
