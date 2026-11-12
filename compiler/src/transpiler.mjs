@@ -56,6 +56,10 @@ const NEW_CLASSES = new Set([
   'UnhandledMatchError',
   'JsonException',
 ]);
+// The compound-assignment operators the compiled rung supports, and the rt
+// helper each one maps to. The expression form (txAssignExpr) and the statement
+// form (txAssignStatement) both read this — one copy, so the two cannot drift.
+const ASSIGN_HELPER = { '+': 'rt.add', '-': 'rt.sub', '.': 'rt.concat', '*': 'rt.mul', '/': 'rt.div', '%': 'rt.mod', '**': 'rt.pow' };
 // The Log facade levels that compile (the padanan is the platform log).
 const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
 // The Mail facade methods that compile (the padanan is the mailer: log/noop/resend).
@@ -3397,7 +3401,7 @@ function txAssignExpr(node) {
     if (op === '=') return '(' + v + ' = ' + right + ')';
     if (op === '??=') return 'rt.coalesceAssign(() => (' + v + '), (x) => { ' + v + ' = x; }, ' + right + ')';
     const base = op.slice(0, -1);
-    const helper = { '+': 'rt.add', '-': 'rt.sub', '.': 'rt.concat', '*': 'rt.mul', '/': 'rt.div', '%': 'rt.mod', '**': 'rt.pow' }[base];
+    const helper = ASSIGN_HELPER[base];
     if (helper) return '(' + v + ' = ' + helper + '(' + v + ', ' + right + '))';
     throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
   }
@@ -3458,7 +3462,7 @@ function txAssignStatement(node) {
     if (op === '=') return v + ' = ' + right + ';';
     if (op === '??=') return 'if (' + v + ' === null || ' + v + ' === undefined) { ' + v + ' = ' + right + '; }';
     const base = op.slice(0, -1);
-    const helper = { '+': 'rt.add', '-': 'rt.sub', '.': 'rt.concat', '*': 'rt.mul', '/': 'rt.div', '%': 'rt.mod', '**': 'rt.pow' }[base];
+    const helper = ASSIGN_HELPER[base];
     if (helper) return v + ' = ' + helper + '(' + v + ', ' + right + ');';
     throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
   }
