@@ -2781,36 +2781,44 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // The model surface the accessor bodies compile against (the same maps
       // the controller path uses - built here because the model file is written
       // before those are declared).
+      // The alias bookkeeping every model surface shares: the FQCN set, the
+      // not-compiled map, the alias->FQCN map, and (optionally) the relations.
+      // The #698 rule — a short name two models share is never guessed, the
+      // FQCN key stays — lives here ONCE: the accessor map and the policy map
+      // used to write it twice, so editing one silently diverged the other.
+      const collectModelAliasMaps = ({ fqcns, notCompiled, classFqcns, relations }) => {
+        for (const [alias, fqcnSet] of aliasToFqcns) {
+          for (const fqcn of fqcnSet) {
+            const d = modelDump.get(fqcn);
+            if (!d || !d.model) continue;
+            fqcns.add(fqcn);
+            if (fqcnSet.size === 1) classFqcns[alias] = fqcn;
+            classFqcns[fqcn] = fqcn;
+            if (Array.isArray(d.notCompiled) && d.notCompiled.length) {
+              notCompiled.set(alias, d.notCompiled);
+              notCompiled.set(fqcn, d.notCompiled);
+            }
+            if (relations && Array.isArray(d.relations) && d.relations.length) {
+              const byName = {};
+              for (const rel of d.relations) {
+                byName[rel.name] = { type: rel.type, related: rel.related, foreignKey: rel.foreignKey };
+              }
+              relations.set(alias, byName);
+              relations.set(fqcn, byName);
+            }
+          }
+        }
+      };
       const accModelFqcns = new Set();
       const accNotCompiled = new Map();
       const accRelations = new Map();
       const accClassFqcns = {};
-      for (const [alias, fqcns] of aliasToFqcns) {
-        for (const fqcn of fqcns) {
-          const d = modelDump.get(fqcn);
-          if (!d || !d.model) continue;
-          accModelFqcns.add(fqcn);
-          // Two models sharing a short name must not be guessed (#698). The
-          // route path and the emitted `models` map both refuse an ambiguous
-          // alias; this map used to keep the LAST one, so an accessor could
-          // read the wrong model's casts/relations silently. The FQCN key is
-          // still recorded: it is unambiguous.
-          if (fqcns.size === 1) accClassFqcns[alias] = fqcn;
-          accClassFqcns[fqcn] = fqcn;
-          if (Array.isArray(d.notCompiled) && d.notCompiled.length) {
-            accNotCompiled.set(alias, d.notCompiled);
-            accNotCompiled.set(fqcn, d.notCompiled);
-          }
-          if (Array.isArray(d.relations) && d.relations.length) {
-            const byName = {};
-            for (const rel of d.relations) {
-              byName[rel.name] = { type: rel.type, related: rel.related, foreignKey: rel.foreignKey };
-            }
-            accRelations.set(alias, byName);
-            accRelations.set(fqcn, byName);
-          }
-        }
-      }
+      collectModelAliasMaps({
+        fqcns: accModelFqcns,
+        notCompiled: accNotCompiled,
+        classFqcns: accClassFqcns,
+        relations: accRelations,
+      });
       for (const [varName, fqcn, acc] of accessorWork) {
         const compiledAcc = compileOneMethod(fqcn, acc.file, acc.method, {
           models: accModelFqcns,
@@ -2856,21 +2864,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       const knownModelFqcnSet = new Set();
       const modelNotCompiled = new Map();
       const modelClassFqcns = {};
-      for (const [alias, fqcns] of aliasToFqcns) {
-        for (const fqcn of fqcns) {
-          const d = modelDump.get(fqcn);
-          if (!d || !d.model) continue;
-          knownModelFqcnSet.add(fqcn);
-          // Same rule as the accessor map (#698): a short name two models share
-          // is never guessed; the FQCN key stays.
-          if (fqcns.size === 1) modelClassFqcns[alias] = fqcn;
-          modelClassFqcns[fqcn] = fqcn;
-          if (Array.isArray(d.notCompiled) && d.notCompiled.length) {
-            modelNotCompiled.set(alias, d.notCompiled);
-            modelNotCompiled.set(fqcn, d.notCompiled);
-          }
-        }
-      }
+      collectModelAliasMaps({
+        fqcns: knownModelFqcnSet,
+        notCompiled: modelNotCompiled,
+        classFqcns: modelClassFqcns,
+      });
       // The dumped constants keyed by the name the source writes (the alias
       // and the FQCN). An alias shared by two classes is skipped: the
       // transpiler must not guess which one the source meant.
