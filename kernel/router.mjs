@@ -54,48 +54,154 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// PHP's preg_quote() without a delimiter argument: the characters PCRE treats as
+// special (PHP >= 7.3 escapes '#' as well, delimiter or not). preg_quote('/') is
+// '/' — Symfony's compiled path regexes keep the slash bare.
+function pregQuote(s) {
+  return String(s).replace(/[.\\+*?[^\]$(){}=!<>|:#-]/g, '\\$&');
+}
+
+// Symfony's RouteCompiler::SEPARATORS — the characters a path token can be
+// split on. The DEFAULT separator of a path pattern is '/' ('.' for a host).
+const SEPARATORS = '/,;.:-_~+*=@|';
+const DEFAULT_SEPARATOR = '/';
+
+// Symfony's placeholder token: '{name}' (and Symfony's '{!name}', an "important"
+// variable Laravel never emits). `\w` cannot match '{' or '}', so a nested
+// '{foo{bar}}' only matches the innermost variable — the same guarantee PHP's
+// preg_match_all('#\{(!)?([\w\x80-\xFF]+)\}#') gives.
+const PLACEHOLDER = /\{(!)?([\w\u0080-\uffff]+)\}/g;
+
+// Symfony's RouteCompiler::findNextSeparator(): the next STATIC character after
+// the variable, when that character is a separator ('/' or the punctuation set),
+// else ''. All placeholders are removed first, so '/{a}{b}' finds none.
+function findNextSeparator(rest) {
+  const stripped = String(rest).replace(/\{[\w\u0080-\uffff]+\}/g, '');
+  if (stripped === '') return '';
+  const ch = stripped[0];
+  return SEPARATORS.includes(ch) ? ch : '';
+}
+
+// Symfony's RouteCompiler::compilePattern() for a path pattern, transcribed:
+// Laravel's Route::toSymfonyRoute() drops the '?' of every '{x?}' and hands the
+// names over as defaults, so the optional run is decided HERE by the trailing
+// token scan (a text token ends it) — '/a/{id?}/b' answers '/a/<id>/b' only.
+//
+// The regex body is returned unwrapped; the quantifier of a variable is the
+// char class that forbids '/' and the separator that FOLLOWS it, so the class
+// can never swallow the separator and generate the same URL back.
+function compilePatternBody(pattern) {
+  const src = String(pattern);
+  const optionalNames = new Set();
+  for (const m of src.matchAll(/\{(\w+?)\?\}/g)) optionalNames.add(m[1]);
+  const norm = src.replace(/\{(\w+?)\?\}/g, '{$1}');
+
+  const tokens = [];
+  const variables = [];
+  PLACEHOLDER.lastIndex = 0;
+  let pos = 0;
+  let m;
+  while ((m = PLACEHOLDER.exec(norm)) !== null) {
+    const important = m[1] !== undefined;
+    const name = m[2];
+    const precedingText = norm.slice(pos, m.index);
+    pos = m.index + m[0].length;
+
+    const precedingChar = precedingText === '' ? '' : precedingText.slice(-1);
+    const isSeparator = precedingChar !== '' && SEPARATORS.includes(precedingChar);
+
+    if (variables.includes(name)) {
+      // Symfony's RouteCompiler: LogicException at compile time — the app
+      // cannot boot, so the edge fails loud instead of answering a wrong route.
+      throw new Error(
+        `Route pattern "${pattern}" cannot reference variable name "${name}" more than once.`
+      );
+    }
+    if (isSeparator && precedingText !== precedingChar) {
+      tokens.push({ text: precedingText.slice(0, -precedingChar.length) });
+    } else if (!isSeparator && precedingText !== '') {
+      tokens.push({ text: precedingText });
+    }
+
+    const following = norm.slice(pos);
+    const nextSeparator = findNextSeparator(following);
+    let rx =
+      '[^' +
+      pregQuote(DEFAULT_SEPARATOR) +
+      (DEFAULT_SEPARATOR !== nextSeparator && nextSeparator !== '' ? pregQuote(nextSeparator) : '') +
+      ']+';
+    // Symfony appends a POSSESSIVE quantifier when a real separator follows and
+    // the next token is not an adjacent variable: the class already forbids that
+    // separator, so the backtracking it prevents can never succeed. JS has no
+    // possessive quantifiers; dropping the marker keeps the same matches.
+    tokens.push({ name, sep: isSeparator ? precedingChar : '', rx, important });
+    variables.push(name);
+  }
+  if (pos < norm.length) tokens.push({ text: norm.slice(pos) });
+
+  // Symfony's first-optional scan: walking BACK from the last token, a variable
+  // is optional while it has a default (Laravel: every '{x?}' name) and is not
+  // "important"; anything else (a text token, a required variable) ends the run.
+  let firstOptional = Number.MAX_SAFE_INTEGER;
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i];
+    if (t.name !== undefined && !t.important && optionalNames.has(t.name)) firstOptional = i;
+    else break;
+  }
+
+  let body = '';
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.name === undefined) {
+      body += pregQuote(t.text);
+      continue;
+    }
+    if (i === 0 && firstOptional === 0) {
+      // "When the only token is an optional variable token, the separator is
+      // required" — '/{id?}' must still answer '/' + a value.
+      body += pregQuote(t.sep) + '(?<' + t.name + '>' + t.rx + ')?';
+      continue;
+    }
+    let part = pregQuote(t.sep) + '(?<' + t.name + '>' + t.rx + ')';
+    if (i >= firstOptional) {
+      part = '(?:' + part;
+      if (i === tokens.length - 1) {
+        part += ')?'.repeat(tokens.length - firstOptional - (firstOptional === 0 ? 1 : 0));
+      }
+    }
+    body += part;
+  }
+  return body;
+}
+
+// A compiled uri regex is registered once and matched on every request, so the
+// compilation is memoized per uri string (pure input, pure output).
+const uriRegexCache = new Map();
+
 function uriToRegex(uri) {
   const norm = normalizeUri(uri);
+  const cached = uriRegexCache.get(norm);
+  if (cached !== undefined) return cached;
+
   const segs = norm.split('/');
-  // handle root: '' segments
-  let pattern = '';
+  // Laravel's catch-all is `{segment*}` as the WHOLE last segment — an extension
+  // of this router (Symfony compiles '{p*}' as literal text, Laravel's
+  // Route::toSymfonyRoute() passes it through). Anywhere else it is not a
+  // wildcard at all: PHP then matches the literal text, and so does the
+  // tokenizer below.
   for (let i = 0; i < segs.length; i++) {
-    const seg = segs[i];
-    const wild = seg.match(/^\{(\w+)\*\}$/);
-    if (wild) {
-      if (i !== segs.length - 1) {
-        throw new Error('wildcard {param*} must be the last segment: ' + norm);
-      }
-      pattern += (i === 0 ? '' : '/') + '(?<' + wild[1] + '>.+)';
-      continue;
+    if (/^\{\w+\*\}$/.test(segs[i]) && i !== segs.length - 1) {
+      throw new Error('wildcard {param*} must be the last segment: ' + norm);
     }
-    const m = seg.match(/^\{(\w+)\??\}$/);
-    if (m) {
-      const name = m[1];
-      const optional = seg.endsWith('?}');
-      if (optional) {
-        // Symfony's RouteCompiler: an optional variable becomes a subpattern
-        // ("Enclose each optional token in a subpattern to make it optional"),
-        // so '/users/{id?}' also answers '/users'. The separator goes INSIDE
-        // the group - except when the optional variable is the only token
-        // (the separator is required there) or when it is not the last one
-        // (Symfony's first-optional scan stops at the text token after it, so
-        // the variable is required in the regex).
-        if (i !== segs.length - 1) {
-          pattern += (i === 0 ? '' : '/') + '(?<' + name + '>[^/]+)';
-        } else if (segs.length === 2) {
-          pattern += '/(?<' + name + '>[^/]+)?';
-        } else {
-          pattern += '(?:/(?<' + name + '>[^/]+))?';
-        }
-        continue;
-      }
-      pattern += (i === 0 ? '' : '/') + '(?<' + name + '>[^/]+)';
-      continue;
-    }
-    pattern += (i === 0 ? '' : '/') + escapeRegex(seg);
   }
-  return new RegExp('^' + pattern + '/?$');
+  const wild = /^(.*)\/\{(\w+)\*\}$/.exec(norm);
+  const rx = wild
+    ? new RegExp(
+        '^' + compilePatternBody(wild[1]) + '/(?<' + wild[2] + '>.+)' + '/?$'
+      )
+    : new RegExp('^' + compilePatternBody(norm) + '/?$');
+  uriRegexCache.set(norm, rx);
+  return rx;
 }
 
 function domainToRegex(domain) {
@@ -134,7 +240,10 @@ function requestPath(req) {
   let path = (req && req.path) || '/';
   const qIdx = path.indexOf('?');
   if (qIdx !== -1) path = path.slice(0, qIdx);
-  if (path.length > 1 && path.endsWith('/')) path = path.replace(/\/+$/, '');
+  // UriValidator: `rtrim($request->getPathInfo(), '/') ?: '/'` — every trailing
+  // slash is dropped, and a path of slashes only (or none at all) is '/'.
+  const trimmed = path.replace(/\/+$/, '');
+  path = trimmed === '' ? '/' : trimmed;
   return rawurldecode(path);
 }
 
