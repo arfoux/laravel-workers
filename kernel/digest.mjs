@@ -11,7 +11,7 @@
 
 const enc = new TextEncoder();
 
-function bytesToHex(bytes) {
+export function bytesToHex(bytes) {
   let hex = '';
   for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
   return hex;
@@ -357,4 +357,4 @@ export function hmacSha256Hex(data, key) {
   return bytesToHex(sha256Bytes(concatBytes(opad, inner)));
 }
 
-export default { sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256Hex };
+export default { bytesToHex, sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256Hex };

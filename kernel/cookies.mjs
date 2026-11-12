@@ -13,6 +13,7 @@
 // WebCrypto). Everything else is synchronous and workerd-compatible.
 
 import { encryptString, decryptString, DecryptError } from './encrypter.mjs';
+import { bytesToHex } from './digest.mjs';
 import { ownSet, ownGet, ownHas } from './own-key.mjs';
 
 export class CookieError extends Error {
@@ -321,12 +322,6 @@ async function getHmacKey(keyBytes) {
     KEY_CACHE.set(cacheKey, key);
   }
   return key;
-}
-
-function bytesToHex(bytes) {
-  let h = '';
-  for (let i = 0; i < bytes.length; i++) h += bytes[i].toString(16).padStart(2, '0');
-  return h;
 }
 
 function base64ToBytes(b64) {
