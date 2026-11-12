@@ -883,27 +883,20 @@ const metaForRoute = (route) => {
   // table keeps its old shape for unconstrained apps.
   return { name, domain, middleware, ...(wheres ? { wheres } : {}) };
 };
-// route:list action for a route (prefer GET — the only method controller
-// transpilation supports today).
-const actionForRoute = (route) => {
+// A route's meta field, preferring GET — the only method controller
+// transpilation supports today. Both the route:list action and the route:list
+// middleware read it the same way; one copy, so the preference cannot drift.
+const preferGetMeta = (route, field) => {
   const getMeta = metaFor.get('GET ' + route);
-  if (getMeta && getMeta.action) return getMeta.action;
+  if (getMeta && getMeta[field]) return getMeta[field];
   for (const m of methodsFor.get(route) || []) {
     const meta = metaFor.get(m + ' ' + route);
-    if (meta && meta.action) return meta.action;
+    if (meta && meta[field]) return meta[field];
   }
   return null;
 };
-// route:list middleware for a route (prefer GET — see above).
-const middlewareForRoute = (route) => {
-  const getMeta = metaFor.get('GET ' + route);
-  if (getMeta && getMeta.middleware) return getMeta.middleware;
-  for (const m of methodsFor.get(route) || []) {
-    const meta = metaFor.get(m + ' ' + route);
-    if (meta && meta.middleware) return meta.middleware;
-  }
-  return null;
-};
+const actionForRoute = (route) => preferGetMeta(route, 'action');
+const middlewareForRoute = (route) => preferGetMeta(route, 'middleware');
 // The verb a uri's "main" handler answers: GET when present, else the first
 // non-HEAD verb (POST for form-only routes). Extra verbs (e.g. Breeze's
 // GET+POST /login) are compiled as separate per-verb handlers below.
