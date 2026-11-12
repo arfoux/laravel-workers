@@ -320,12 +320,7 @@ function tx(node) {
           PORT_HINT
         );
       }
-      if (CTX && node.what && node.what.kind === 'call') {
-        const _m = requestMethodOfCall(node.what);
-        if (_m && REQUEST_NO_CHAIN.has(_m)) {
-          throw mkErr('LW002', '$request->' + _m + '() result cannot be chained - ' + PORT_HINT, node.loc, PORT_HINT);
-        }
-      }
+      if (CTX && node.what && node.what.kind === 'call') refuseNoChain(node.what, node.loc);
       // A relation / an accessor read as a property ($post->comments). It
       // used to answer null - a wrong answer, silently. The build stops.
       if (CTX && CTX.modelVars && node.what && node.what.kind === 'variable') {
@@ -1078,6 +1073,17 @@ function requestMethodOfCall(callNode) {
   if (!inner || inner.kind !== 'variable') return null;
   if (!CTX || !CTX.requestVars || !CTX.requestVars.has(vname(inner.name))) return null;
   return (typeof w.offset?.name === 'string') ? w.offset.name : null;
+}
+
+// A request method whose result cannot be chained (`$request->input('x')->y`):
+// the compiled surface returns a plain value, so a chain on it is refused. Two
+// property-read paths reach this (the generic property lookup and the inline
+// class chain) — one copy, so the refusal cannot drift between them.
+function refuseNoChain(callNode, loc) {
+  const m = requestMethodOfCall(callNode);
+  if (m && REQUEST_NO_CHAIN.has(m)) {
+    throw mkErr('LW002', '$request->' + m + '() result cannot be chained - ' + PORT_HINT, loc, PORT_HINT);
+  }
 }
 
 // The kind of an uploaded-file expression: `$request->file('x')` is a file,
@@ -2731,12 +2737,7 @@ function txCall(node) {
         PORT_HINT
       );
     }
-    if (CTX && what.what && what.what.kind === 'call') {
-      const _m = requestMethodOfCall(what.what);
-      if (_m && REQUEST_NO_CHAIN.has(_m)) {
-        throw mkErr('LW002', '$request->' + _m + '() result cannot be chained - ' + PORT_HINT, node.loc, PORT_HINT);
-      }
-    }
+    if (CTX && what.what && what.what.kind === 'call') refuseNoChain(what.what, node.loc);
     const meth = what.offset && what.offset.name;
     if (!meth) throw mkErr('LW002', 'property access without method', node.loc);
     // An INLINE chain whose receiver is a Collection the runtime builds
