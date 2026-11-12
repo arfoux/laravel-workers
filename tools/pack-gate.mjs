@@ -38,10 +38,11 @@ export const UNREACHABLE = ['shadow/fixture-app.mjs'];
 //
 // The three dated audit records that used to sit here
 // (`AUDIT-2026-10-27.md`, `AUDIT-REAL-APPS.md`, `SWEEP-FINDINGS.md`) moved to
-// `docs/archive/`: the README never linked them, so requiring them here
-// demanded a file no reader could reach. Archived records still ship (the
-// `docs` entry in package.json `files` covers the whole directory) but are not
-// a README requirement — this list is about links that must not rot.
+// `docs/archive/`, and the published tarball no longer carries them: the README
+// never linked them, so requiring them here demanded a file no reader could
+// reach, and `docs/.npmignore` (`archive/`) narrows the `docs` entry in
+// package.json `files` (`npm pack --dry-run` lists zero `docs/archive` paths).
+// This list is about links that must not rot.
 export const REQUIRED_DOCS = [
   'README.md',
   'CHANGELOG.md',
