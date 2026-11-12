@@ -54,9 +54,23 @@ const FRAMEWORK_ONLY = [
     // exist. An app may declare the same URI itself (lw-showcase does, so the
     // edge serves /up), and then the scan rightly sees `up#` — that is a second
     // registration, not this entry going stale. `route:list --json` tells the
-    // two apart: the framework's action is Illuminate\Foundation\Http\HealthCheck,
+    // two apart: the framework's action is Illuminate\Foundation\Http\HealthCheck
+    // (a Closure at the same framework file before 13.42 - see `match` below),
     // an app's is its own controller.
-    match: (r) => r.uri === 'up' && r.action === 'Illuminate\\Foundation\\Http\\HealthCheck',
+    match: (r) =>
+      r.uri === 'up' &&
+      // The action here is a framework INTERNAL that moved inside 13.x: 13.42
+      // registers `Route::get($health, HealthCheck::class)`
+      // (ApplicationBuilder::buildRoutingCallback()), and 13.37 registered an
+      // inline closure at the same call site (`ApplicationBuilder.php:224` -
+      // read from the vendored framework). The oracle reports a `path` for a
+      // Closure, so BOTH shapes are the framework's own registration; an app
+      // that declares `/up` itself (lw-showcase does, so the edge serves it)
+      // reports its OWN controller with a path under `app/`, and the scan sees
+      // that route anyway - the keyed check above still bounds this entry.
+      (r.action === 'Illuminate\\Foundation\\Http\\HealthCheck' ||
+        (r.action === 'Closure' &&
+          /Foundation[\\/]Configuration[\\/]ApplicationBuilder\.php/.test(r.path || ''))),
   },
   {
     why: 'vendor file server, registered by FilesystemServiceProvider::serveFiles()',

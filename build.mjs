@@ -28,6 +28,7 @@ import {
   guardPortsModuleSource,
 } from './tools/ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
+import { validateTable } from './kernel/router.mjs';
 import { ADVISORY, BLOCK, DECLARED, isBuildEnvDbFailure, renderReadiness, sweepAppSources } from './tools/readiness.mjs';
 import { utcTriggersFor } from './tools/schedule-utc.mjs';
 import { deserializeOrdered, configModuleSource } from './tools/order-json.mjs';
@@ -848,7 +849,7 @@ for (const r of appRoutes) {
   for (const m of methods) {
     if (!m) continue;
     const key = m.toUpperCase() + ' ' + uri;
-    if (!metaFor.has(key)) metaFor.set(key, { name: r.name ?? null, domain: r.domain ?? null, action: r.action ?? null, middleware: Array.isArray(r.middleware) ? r.middleware : null });
+    if (!metaFor.has(key)) metaFor.set(key, { name: r.name ?? null, domain: r.domain ?? null, action: r.action ?? null, middleware: Array.isArray(r.middleware) ? r.middleware : null, wheres: r.wheres ?? null });
   }
 }
 // DB::table() aside, Route::redirect()/permanentRedirect() routes carry their
@@ -876,14 +877,20 @@ const metaForRoute = (route) => {
   let name = null;
   let domain = null;
   let middleware = null;
+  let wheres = null;
   for (const m of methodsFor.get(route) || []) {
     const meta = metaFor.get(m + ' ' + route);
     if (!meta) continue;
     if (name == null) name = meta.name;
     if (domain == null) domain = meta.domain;
     if (middleware == null && meta.middleware) middleware = meta.middleware;
+    // The requirements belong to the Route object, so every method of one route
+    // carries the same map; the first entry that has one is that map.
+    if (wheres == null && meta.wheres) wheres = meta.wheres;
   }
-  return { name, domain, middleware };
+  // `wheres` is omitted (not null) when the route has none, so the generated
+  // table keeps its old shape for unconstrained apps.
+  return { name, domain, middleware, ...(wheres ? { wheres } : {}) };
 };
 // route:list action for a route (prefer GET — the only method controller
 // transpilation supports today).
@@ -3748,6 +3755,32 @@ for (const v of verbControllers) {
     kind: 'controller',
     controller: v.slug,
   });
+}
+
+// The router compiles each entry's URI regex ON FIRST USE, inside the Worker:
+// a requirement the JS engine cannot compile (an invalid pattern, or a PCRE
+// construct with no JS equivalent) — or one it compiles to a DIFFERENT meaning
+// (`\h` is horizontal whitespace in PCRE and the literal 'h' in JS) — would
+// then throw, or silently match other paths, on every request that reaches the
+// route — a failure the operator only discovers in production. Compile (and
+// translate-check) them here instead, where the failure names the route and
+// stops the build.
+try {
+  validateTable(routeTable);
+} catch (e) {
+  const cause = e && e.message ? e.message : String(e);
+  note({
+    route: null,
+    area: 'route',
+    severity: BLOCK,
+    cause: 'a route URI cannot be compiled faithfully: ' + cause,
+    fix: 'rewrite the `->where($param, $expression)` requirement into a form JS reads the same way as PHP (the common forms are translated; the rest is refused here), then re-run the build',
+  });
+  fail(
+    'a route URI cannot be compiled faithfully: ' + cause + '\n' +
+      '  the router would answer a different path (or throw) inside every request that reaches this route, so the build stops instead —\n' +
+      '  fix the route pattern/requirement (see the finding above), then re-run the build'
+  );
 }
 
 // registry.json → "middlewarePorts": annotate the route a port wraps, and refuse

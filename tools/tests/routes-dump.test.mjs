@@ -850,3 +850,116 @@ Route::get('/named-method', [HomeController::class, 'index']);
   assert.equal(by.get('array').action, FQ + '@__invoke');
   assert.equal(by.get('named-method').action, FQ + '@index');
 });
+
+test('the scan carries every route requirement Laravel would compile', () => {
+  // `route:list --json` prints NO requirement, so the only source for
+  // `$route->wheres` is the route file itself — and without them the edge
+  // answers a request Laravel rejects, and never reaches a `Route::fallback()`
+  // (which IS `{fallbackPlaceholder}` + `where('fallbackPlaceholder', '.*')`).
+  // Every expectation below was read off a live Laravel 13.37 app through
+  // `$route->wheres` (the same app the kernel fuzz compares against).
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get('/two-arg/{id}', fn (string $id) => 'x')->where('id', '[0-9]+');
+Route::get('/array/{a}/{b}', fn () => 'x')->where(['a' => '[0-9]+', 'b' => '[a-z]+']);
+Route::get('/num/{id}', fn () => 'x')->whereNumber('id');
+Route::get('/alpha/{id}', fn () => 'x')->whereAlpha('id');
+Route::get('/alnum/{id}', fn () => 'x')->whereAlphaNumeric('id');
+Route::get('/uuid/{id}', fn () => 'x')->whereUuid('id');
+Route::get('/ulid/{id}', fn () => 'x')->whereUlid('id');
+Route::get('/in/{slug}', fn () => 'x')->whereIn('slug', ['one', 'two.v']);
+Route::get('/unused/{a}', fn () => 'x')->where('other', '[0-9]+');
+Route::get('/star/{p*}', fn () => 'x');
+Route::get('/empty/{id}', fn () => 'x')->where('id', '');
+Route::get('/emptyin/{id}', fn () => 'x')->whereIn('id', []);
+Route::where(['reg' => '[a-z]+'])->get('/reg/{reg}', fn () => 'x');
+Route::where(['id' => '[0-9]+'])->get('/reg-own/{id}', fn () => 'x')->where('id', '[a-z]+');
+Route::group(['where' => ['g' => '[0-9]+']], function () {
+    Route::get('/g/{g}', fn () => 'x');
+});
+Route::prefix('gp')->where(['p' => '[0-9]+'])->group(function () {
+    Route::get('/g2/{p}', fn () => 'x');
+});
+Route::fallback(fn () => 'FALLBACK');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  const w = (uri) => (by.get(uri) || {}).wheres || {};
+
+  assert.deepEqual(w('two-arg/{id}'), { id: '[0-9]+' });
+  assert.deepEqual(w('array/{a}/{b}'), { a: '[0-9]+', b: '[a-z]+' });
+  // the named helpers are sugar for the FIXED expressions in
+  // CreatesRegularExpressionRouteConstraints (copied verbatim)
+  assert.deepEqual(w('num/{id}'), { id: '[0-9]+' });
+  assert.deepEqual(w('alpha/{id}'), { id: '[a-zA-Z]+' });
+  assert.deepEqual(w('alnum/{id}'), { id: '[a-zA-Z0-9]+' });
+  assert.deepEqual(w('uuid/{id}'), { id: '[\\da-fA-F]{8}-[\\da-fA-F]{4}-[\\da-fA-F]{4}-[\\da-fA-F]{4}-[\\da-fA-F]{12}' });
+  assert.deepEqual(w('ulid/{id}'), { id: '[0-7][0-9a-hjkmnp-tv-zA-HJKMNP-TV-Z]{25}' });
+  // whereIn joins with '|' and escapes NOTHING (probed: the dot stays a
+  // metacharacter and '/twoxv' matches in Laravel)
+  assert.deepEqual(w('in/{slug}'), { slug: 'one|two.v' });
+  // a requirement for a variable the uri does not use is stored by PHP and
+  // ignored by its compiler; the scan keeps it too
+  assert.deepEqual(w('unused/{a}'), { other: '[0-9]+' });
+  // `{p*}` is NOT a wildcard in Laravel (Symfony compiles it as literal text),
+  // so it is not a requirement either — the edge matches the literal path only
+  assert.deepEqual(w('star/{p*}'), {});
+  // an expression that is empty (`where('id','')`, `whereIn('id', [])`) is
+  // recorded, NOT dropped: Symfony refuses it and the app cannot boot, so the
+  // build has to stop on it rather than serve an unconstrained route
+  assert.deepEqual(w('empty/{id}'), { id: '' });
+  assert.deepEqual(w('emptyin/{id}'), { id: '' });
+  // RouteRegistrar attribute (before the verb), array form
+  assert.deepEqual(w('reg/{reg}'), { reg: '[a-z]+' });
+  // ...and the route's own call AFTER the verb overwrites it per name
+  assert.deepEqual(w('reg-own/{id}'), { id: '[a-z]+' });
+  // group attributes apply to every route the group registers, in both shapes
+  assert.deepEqual(w('g/{g}'), { g: '[0-9]+' });
+  assert.deepEqual(w('gp/g2/{p}'), { p: '[0-9]+' });
+  // Router::fallback(): Route::fallback() is addRoute('GET','{fallbackPlaceholder}')
+  // ->where('fallbackPlaceholder', '.*'), so the catch-all is carried as the real
+  // requirement it is
+  assert.deepEqual(w('{fallbackPlaceholder}'), { fallbackPlaceholder: '.*' });
+});
+
+test('a resource where() map lands on every action, like ResourceRegistrar', () => {
+  // `Route::resource(...)->where([...])` stores the map in the OPTIONS
+  // (PendingResourceRegistration::where()), and ResourceRegistrar::getResourceAction()
+  // copies it into every action — collection routes included, whose uri has no
+  // such segment (probed on Laravel 13.37).
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::resource('photos', 'PhotoController')->where(['photo' => '[0-9]+']);
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  for (const uri of ['photos', 'photos/create', 'photos/{photo}', 'photos/{photo}/edit']) {
+    assert.deepEqual((by.get(uri) || {}).wheres, { photo: '[0-9]+' }, `wheres for ${uri}`);
+  }
+});
+
+test('a where() before the verb with a string is reported, not silently applied', () => {
+  // RouteRegistrar takes a MAP for `where`; `Route::where('id', '[0-9]+')->get(...)`
+  // is a boot TypeError in Laravel 13 (RouteGroup::formatWhere -> array_merge).
+  // The scan says so instead of pretending that route has a requirement.
+  const { res, entries } = runTool(
+    {},
+    `<?php
+use Illuminate\\Support\\Facades\\Route;
+
+Route::where('id', '[0-9]+')->get('/regform/{id}', fn () => 'x');
+`
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stderr, /BEFORE the verb is not a RouteRegistrar attribute/);
+  const by = new Map((entries || []).map((e) => [e.uri, e]));
+  assert.equal(by.get('regform/{id}').wheres, undefined);
+});
