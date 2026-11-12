@@ -2965,25 +2965,26 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       // classes: a mailable with Laravel 13's modern API, a listener with a
       // queued trait, ... The transpiler then refuses to instantiate it, and
       // the route that instantiates it is stopped with the reason.
-      for (const [cls, why] of classErrors) {
-        blockedClasses[cls] = why;
-        const short = cls.split('\\').pop();
+      // One rule for "this class is blocked": record the fqcn's reason and, the
+      // first time its short name is seen, the short name too (the transpiler
+      // resolves either form). Two sources feed it — the class compiler's own
+      // errors and the event/listener closure — one copy, so the rule cannot
+      // drift between them.
+      const blockClass = (fqcn, why) => {
+        blockedClasses[fqcn] = why;
+        const short = fqcn.split('\\').pop();
         if (!blockedShortNames.has(short)) {
           blockedShortNames.add(short);
           blockedClasses[short] = why;
         }
-      }
+      };
+      for (const [cls, why] of classErrors) blockClass(cls, why);
       for (const [event, info] of Object.entries(classesDump.events || {})) {
         const names = [event, ...(info.listeners || [])];
         const bad = names.find((n) => classErrors.has(n));
         if (!bad) continue;
         const why = classErrors.get(bad);
-        blockedClasses[event] = why;
-        const short = event.split('\\').pop();
-        if (!blockedShortNames.has(short)) {
-          blockedShortNames.add(short);
-          blockedClasses[short] = why;
-        }
+        blockClass(event, why);
       }
       const classesMeta = {
         fqcns: Object.keys(classesCompile.meta),
