@@ -1643,7 +1643,7 @@ function viewComponentTags(sourcePath) {
 }
 
 function bladeCompile(dump, label, opts = {}) {
-  if (bladeOff || !dump || typeof dump.compiled !== 'string') return 'skipped';
+  if (bladeOff || !hasCompiledPhp(dump)) return 'skipped';
   if (typeof dump.path !== 'string' || !existsSync(dump.path)) return 'skipped';
   let out;
   try {
@@ -1726,9 +1726,12 @@ const stampViewDataKinds = (dump, dumpPath, kinds) => {
   dump.viewDataKinds = kinds;
   writeFileSync(dumpPath, JSON.stringify(dump));
 };
+// A dump is usable only when it carries the compiled PHP string. Three sites
+// read a dump and must agree on that definition — one copy, so it cannot drift.
+const hasCompiledPhp = (dump) => !!dump && typeof dump.compiled === 'string';
 const emitViewModule = (view, dumpPath, viewModulePath, viewDataKinds) => {
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-  if (!dump || typeof dump.compiled !== 'string') {
+  if (!hasCompiledPhp(dump)) {
     throw new Error('compile-view produced no compiled PHP');
   }
   bladeCompile(dump, view);
@@ -1865,7 +1868,7 @@ for (const [route, view] of viewMap) {
     continue;
   }
   const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-  if (!dump || typeof dump.compiled !== 'string') fail('compile-view produced no compiled PHP for ' + route);
+  if (!hasCompiledPhp(dump)) fail('compile-view produced no compiled PHP for ' + route);
 
   bladeCompile(dump, route);
 
@@ -1960,7 +1963,7 @@ if (errorViewCodes.length) {
       fail('compile-view failed for ' + code + ': ' + detail.slice(0, 800));
     }
     const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-    if (!dump || typeof dump.compiled !== 'string') {
+    if (!hasCompiledPhp(dump)) {
       // #313: without a `view`-area finding the READINESS banner shows whatever
       // BLOCK happened to be pushed earlier — often a ROUTE — for a failure that
       // is entirely in the error view.
@@ -2639,7 +2642,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           }
           try {
             const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
-            if (!dump || typeof dump.compiled !== 'string') throw new Error('compile-view produced no compiled PHP');
+            if (!hasCompiledPhp(dump)) throw new Error('compile-view produced no compiled PHP');
 
             bladeCompile(dump, view);
 
