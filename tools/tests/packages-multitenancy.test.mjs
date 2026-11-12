@@ -106,12 +106,15 @@ class FakeD1 {
 }
 
 // Build a ctx matching the port contract (kernel-style request accessors).
-function makeCtx({ method = 'GET', url = 'http://worker.test/tenants', params = {}, body, query = {}, headers = {} } = {}) {
+// `user_id` defaults to an authenticated caller: the handler answers 401 without
+// one, and every test below is about what an authenticated app request does.
+function makeCtx({ method = 'GET', url = 'http://worker.test/tenants', params = {}, body, query = {}, headers = {}, user_id = 1 } = {}) {
   const u = new URL(url);
   return {
     method,
     params,
     query,
+    user_id,
     body: body !== undefined ? body : undefined,
     request: {
       method,
@@ -126,6 +129,31 @@ function makeCtx({ method = 'GET', url = 'http://worker.test/tenants', params = 
     },
   };
 }
+
+// ===========================================================================
+// (0) The identity floor — no caller, no tenant data
+// ===========================================================================
+test('anonymous: both routes are 401 and write/read nothing', async () => {
+  const db = new FakeD1();
+  await handler(makeCtx({ method: 'POST', url: 'http://worker.test/tenants', body: { key: 'acme', name: 'Acme Inc' } }), { DB: db });
+
+  const created = await handler(
+    makeCtx({ method: 'POST', url: 'http://worker.test/tenants', body: { key: 'walk-in', name: 'Walk In' }, user_id: null }),
+    { DB: db },
+  );
+  assert.equal(created.status, 401);
+  assert.equal(JSON.parse(created.body).message, 'Unauthenticated.');
+
+  const read = await handler(
+    makeCtx({ method: 'GET', url: 'http://worker.test/tenants/acme', params: { tenantKey: 'acme' }, user_id: null }),
+    { DB: db },
+  );
+  assert.equal(read.status, 401);
+  assert.ok(!read.body.includes('acme'), 'a tenant key must not be confirmed to an anonymous caller');
+
+  const rows = (await db.prepare('SELECT * FROM tenants').all()).results;
+  assert.deepEqual(rows.map((r) => r.key), ['acme']);
+});
 
 // ===========================================================================
 // (1) Create — POST /tenants

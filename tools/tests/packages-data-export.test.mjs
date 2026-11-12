@@ -123,11 +123,12 @@ class FakeD1 {
 }
 
 // Build a ctx object matching the port contract.
-function makeCtx({ method = 'GET', url = 'http://worker.test/x', params = {}, query = {}, body, headers = {}, fetchImpl, randomBytes } = {}) {
+function makeCtx({ method = 'GET', url = 'http://worker.test/x', params = {}, query = {}, body, headers = {}, fetchImpl, randomBytes, user_id } = {}) {
   return {
     params,
     query,
     body,
+    user_id,
     request: {
       method,
       url,
@@ -280,7 +281,7 @@ test('excel: GET /export?format=csv streams a CSV of D1 rows', async () => {
   await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(1, 'Ada', 'ada@example.com').run();
   await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(2, 'Last, First', 'lf@example.com').run();
 
-  const res = await excelHandler(makeCtx({ query: { format: 'csv' } }), { DB: db });
+  const res = await excelHandler(makeCtx({ query: { format: 'csv' }, user_id: 1 }), { DB: db });
   assert.equal(res.status, 200);
   assert.match(res.headers['content-type'], /^text\/csv/);
   assert.match(res.headers['content-disposition'], /attachment; filename="users\.csv"/);
@@ -291,9 +292,33 @@ test('excel: GET /export?format=csv streams a CSV of D1 rows', async () => {
   assert.equal(lines[2], '2,"Last, First",lf@example.com');
 });
 
+test('excel: an anonymous export is a 401 and reads no rows', async () => {
+  const db = new FakeD1();
+  await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(1, 'Ada', 'ada@example.com').run();
+
+  const res = await excelHandler(makeCtx({ query: { format: 'csv' } }), { DB: db });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+});
+
+test('excel: ?table= cannot redirect the export; the table comes from env', async () => {
+  const db = new FakeD1();
+  await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(1, 'Ada', 'ada@example.com').run();
+  db.tables.set('secrets', [{ id: 1, value: 'leak' }]);
+
+  const res = await excelHandler(makeCtx({ query: { format: 'csv', table: 'secrets' }, user_id: 1 }), { DB: db });
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-disposition'], /attachment; filename="users\.csv"/);
+  assert.ok(!res.body.includes('leak'), 'rows of the caller-named table must not be exported');
+
+  const other = await excelHandler(makeCtx({ query: { format: 'csv' }, user_id: 1 }), { DB: db, EXCEL_EXPORT_TABLE: 'secrets' });
+  assert.match(other.headers['content-disposition'], /attachment; filename="secrets\.csv"/);
+  assert.match(other.body, /leak/);
+});
+
 test('excel: format=xlsx is refused (406), not faked as CSV', async () => {
   const db = new FakeD1();
-  const res = await excelHandler(makeCtx({ query: { format: 'xlsx' } }), { DB: db });
+  const res = await excelHandler(makeCtx({ query: { format: 'xlsx' }, user_id: 1 }), { DB: db });
   assert.equal(res.status, 406);
   assert.match(JSON.parse(res.body).error, /csv/);
 });

@@ -218,6 +218,35 @@ test('algolia: app id mismatch → 403', async () => {
   assert.equal(res.status, 403);
 });
 
+test('algolia: absent credentials → 403 (never proxied through the worker secret)', async () => {
+  const env = { ALGOLIA_APP_ID: 'APPID', ALGOLIA_KEY: 'AKEY' };
+
+  // No headers at all: previously the two presented-only checks both passed and
+  // the request went upstream with the worker's own key.
+  const bare = fakeFetch();
+  const noHeaders = await algolia({ params: { name: 'p' }, request: { headers: {} }, body: '{}', fetchImpl: bare }, env);
+  assert.equal(noHeaders.status, 403);
+  assert.equal(bare.calls.length, 0);
+
+  // App id present but key omitted — same fail-open shape.
+  const halfKey = fakeFetch();
+  const keyless = await algolia(
+    { params: { name: 'p' }, request: { headers: { 'x-algolia-application-id': 'APPID' } }, body: '{}', fetchImpl: halfKey },
+    env,
+  );
+  assert.equal(keyless.status, 403);
+  assert.equal(halfKey.calls.length, 0);
+
+  // Right app id, wrong key.
+  const wrongKey = fakeFetch();
+  const mismatched = await algolia(
+    { params: { name: 'p' }, request: { headers: { 'x-algolia-application-id': 'APPID', 'x-algolia-api-key': 'NOPE' } }, body: '{}', fetchImpl: wrongKey },
+    env,
+  );
+  assert.equal(mismatched.status, 403);
+  assert.equal(wrongKey.calls.length, 0);
+});
+
 test('algolia: missing secrets → 500', async () => {
   const res = await algolia({ params: { name: 'p' }, request: { headers: {} }, body: '{}', fetchImpl: fakeFetch() }, {});
   assert.equal(res.status, 500);

@@ -62,10 +62,11 @@ the edge does natively. XLSX needs a ZIP+XML spreadsheet writer
 XLSX explicitly rather than mislabel a CSV as `.xlsx`.
 
 - **Path:** `ports/packages/maatwebsite-excel.mjs` (slug `maatwebsite-excel`)
-- **What runs on the edge:** `GET /export?format=csv&table=users` streams a
-  CSV body (`text/csv; charset=utf-8`, `content-disposition: attachment`)
-  built with RFC 4180 quoting (quotes doubled, CRLF rows). Header = union of
-  row keys, first-seen order.
+- **What runs on the edge:** `GET /export?format=csv` streams a CSV body
+  (`text/csv; charset=utf-8`, `content-disposition: attachment`) built with RFC
+  4180 quoting (quotes doubled, CRLF rows). Header = union of row keys,
+  first-seen order. Requires an identified caller (`guardUserId`, `401`
+  otherwise): the response is unbounded app data.
 - **Refusal:** `format=xlsx` (or any non-CSV) → `406` with an explanatory
   error. No silent downgrade.
 - **Substitution:** `FromArray`/`FromQuery` + PhpSpreadsheet → a pure
@@ -75,8 +76,10 @@ XLSX explicitly rather than mislabel a CSV as `.xlsx`.
 - **Free-tier bounds:** one `SELECT *` (bounded by 100k rows/day); CPU is the
   string build — the p95 50ms cap is the practical row-count ceiling, not the
   query.
-- **Schema:** reads any registered table (default `users(id, name, email)`,
-  created by `ensureSchema`).
+- **Schema:** reads the table named by `env.EXCEL_EXPORT_TABLE` (default
+  `users(id, name, email)`, created by `ensureSchema`). The table is NOT taken
+  from the request — a `?table=` selector would let any caller dump any table in
+  the database.
 
 ---
 
