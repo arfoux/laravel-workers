@@ -1450,7 +1450,7 @@ let cronTriggers = [];
   // that has to reach the verdict — `tools/schedule-gaps.mjs` builds the finding
   // (tools/tests/schedule-gaps.test.mjs pins it), the `console.log` below only
   // keeps the build log readable.
-  for (const e of events.filter((x) => x && !x.cron_triggerable)) {
+  for (const e of notTriggerable) {
     console.log(`     ! ${e.name}: ${e.reason || 'not triggerable at the edge'}`);
   }
   for (const f of notTriggerableFindings(events)) note(f);
