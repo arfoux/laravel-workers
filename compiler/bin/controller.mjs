@@ -30,6 +30,20 @@ function usageError(message) {
   fail([{ code: 'LW004', message: message + ' — ' + USAGE, line: 0, column: 0, hint: '' }]);
 }
 
+// Resolve a path against cwd, require it to exist, and parse it as JSON — the
+// batch file and the emit meta file both go through this, so the "not found" /
+// "invalid JSON" usage errors cannot drift between them. `label` is the bare
+// noun ("batch" / "meta") the two messages are built from.
+function readJsonFile(p, label) {
+  const abs = path.resolve(process.cwd(), p);
+  if (!fs.existsSync(abs)) usageError(label + ' file not found: ' + abs);
+  try {
+    return JSON.parse(fs.readFileSync(abs, 'utf8'));
+  } catch (e) {
+    usageError('invalid ' + label + ' JSON: ' + (e.message || String(e)));
+  }
+}
+
 function extractPayload(info) {
   return {
     ok: true,
@@ -56,14 +70,7 @@ function batchFailure(index, file, method, errors) {
 }
 
 function runBatch(batchPath) {
-  const absBatch = path.resolve(process.cwd(), batchPath);
-  if (!fs.existsSync(absBatch)) usageError('batch file not found: ' + absBatch);
-  let jobs;
-  try {
-    jobs = JSON.parse(fs.readFileSync(absBatch, 'utf8'));
-  } catch (e) {
-    usageError('invalid batch JSON: ' + (e.message || String(e)));
-  }
+  const jobs = readJsonFile(batchPath, 'batch');
   if (!Array.isArray(jobs)) usageError('batch JSON must be an array of {file, method}');
   const results = jobs.map((job, index) => {
     const file = job && job.file ? String(job.file) : '';
@@ -132,14 +139,7 @@ if (cmd === 'extract' && batchPath) {
   } else {
     if (!metaPath) usageError('emit requires --meta <file.json>');
     if (!outPath) usageError('emit requires --out <file.mjs>');
-    const absMeta = path.resolve(process.cwd(), metaPath);
-    if (!fs.existsSync(absMeta)) usageError('meta file not found: ' + absMeta);
-    let meta;
-    try {
-      meta = JSON.parse(fs.readFileSync(absMeta, 'utf8'));
-    } catch (e) {
-      usageError('invalid meta JSON: ' + (e.message || String(e)));
-    }
+    const meta = readJsonFile(metaPath, 'meta');
     const res = emitController(source, method, meta);
     if (res.errors.length) fail(res.errors);
     const absOut = path.resolve(process.cwd(), outPath);
