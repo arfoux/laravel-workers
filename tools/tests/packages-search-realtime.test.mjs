@@ -228,7 +228,7 @@ test('pusher: private channel auth token byte-parity with node:crypto HMAC', asy
   const key = 'pusherkey', secret = 'pushersecret';
   const socketId = '1234.5678', channel = 'private-orders';
   const res = await handleBroadcastingAuth(
-    { body: new URLSearchParams({ socket_id: socketId, channel_name: channel }), request: {} },
+    { body: new URLSearchParams({ socket_id: socketId, channel_name: channel }), request: {}, user: async () => ({ id: 3 }) },
     { PUSHER_KEY: key, PUSHER_SECRET: secret, PUSHER_APP_ID: 'app', PUSHER_CLUSTER: 'mt1' },
   );
   assert.equal(res.status, 200);
@@ -237,26 +237,31 @@ test('pusher: private channel auth token byte-parity with node:crypto HMAC', asy
   assert.equal(auth, expected);
 });
 
-test('pusher: presence channel auth embeds user_id in channel_data', async () => {
+// The presence `user_id` is the platform guard's (`$user->getAuthIdentifier()` in
+// `PusherBroadcaster::validAuthenticationResponse()`), never a value the caller
+// sent: a client-supplied `channel_data.user_id` used to be embedded verbatim, so
+// any caller could join a presence channel as any user.
+test('pusher: presence channel embeds the guard user id and ignores body channel_data', async () => {
   const key = 'k', secret = 's';
   const socketId = '1.1', channel = 'presence-room';
-  const userData = { user_id: 42, user_info: { name: 'Ana' } };
-  const incoming = Buffer.from(JSON.stringify(userData)).toString('base64');
+  const spoof = Buffer.from(JSON.stringify({ user_id: 999, user_info: { name: 'Mallory' } })).toString('base64');
   const res = await handleBroadcastingAuth(
-    { body: new URLSearchParams({ socket_id: socketId, channel_name: channel, channel_data: incoming }), request: {} },
+    { body: new URLSearchParams({ socket_id: socketId, channel_name: channel, channel_data: spoof }), request: {}, user: async () => ({ id: 42 }) },
     { PUSHER_KEY: key, PUSHER_SECRET: secret, PUSHER_APP_ID: 'app' },
   );
   assert.equal(res.status, 200);
   const body = json(res);
   assert.equal(body.auth, `${key}.` + createHmac('sha256', secret).update(`${socketId}:${channel}`).digest('hex'));
-  assert.deepEqual(JSON.parse(body.channel_data), userData);
+  assert.deepEqual(JSON.parse(body.channel_data), { user_id: 42 });
 });
 
-test('pusher: public channel → 403; missing fields → 422', async () => {
+test('pusher: guarded channel with no identity → 401; public channel → 403; missing fields → 422', async () => {
   const env = { PUSHER_KEY: 'k', PUSHER_SECRET: 's', PUSHER_APP_ID: 'a' };
+  const anon = await handleBroadcastingAuth({ body: new URLSearchParams({ socket_id: '1.1', channel_name: 'private-x' }), request: {} }, env);
+  assert.equal(anon.status, 401);
   const pub = await handleBroadcastingAuth({ body: new URLSearchParams({ socket_id: '1.1', channel_name: 'public-x' }), request: {} }, env);
   assert.equal(pub.status, 403);
-  const missing = await handleBroadcastingAuth({ body: new URLSearchParams({ socket_id: '1.1' }), request: {} }, env);
+  const missing = await handleBroadcastingAuth({ body: new URLSearchParams({ socket_id: '1.1' }), request: {}, user_id: 1 }, env);
   assert.equal(missing.status, 422);
 });
 
@@ -299,7 +304,7 @@ test('reverb: private channel auth token byte-parity with node:crypto HMAC', asy
   const key = 'rk', secret = 'rs';
   const socketId = '99.1', channel = 'private-dash';
   const res = await reverb(
-    { body: new URLSearchParams({ socket_id: socketId, channel_name: channel }), request: {} },
+    { body: new URLSearchParams({ socket_id: socketId, channel_name: channel }), request: {}, user_id: 5 },
     { REVERB_KEY: key, REVERB_SECRET: secret },
   );
   assert.equal(res.status, 200);
@@ -308,15 +313,17 @@ test('reverb: private channel auth token byte-parity with node:crypto HMAC', asy
   assert.equal(auth, expected);
 });
 
-test('reverb: presence channel auth returns channel_data; public → 403', async () => {
+test('reverb: presence channel returns the guard identity, not the body channel_data; public → 403', async () => {
   const env = { REVERB_KEY: 'rk', REVERB_SECRET: 'rs' };
-  const incoming = Buffer.from(JSON.stringify({ user_id: 7 })).toString('base64');
+  const spoof = Buffer.from(JSON.stringify({ user_id: 999 })).toString('base64');
   const res = await reverb(
-    { body: new URLSearchParams({ socket_id: '1.1', channel_name: 'presence-x', channel_data: incoming }), request: {} },
+    { body: new URLSearchParams({ socket_id: '1.1', channel_name: 'presence-x', channel_data: spoof }), request: {}, user: async () => ({ id: 7 }) },
     env,
   );
   assert.equal(res.status, 200);
   assert.deepEqual(JSON.parse(json(res).channel_data), { user_id: 7 });
+  const anon = await reverb({ body: new URLSearchParams({ socket_id: '1.1', channel_name: 'private-x' }), request: {} }, env);
+  assert.equal(anon.status, 401);
   const pub = await reverb({ body: new URLSearchParams({ socket_id: '1.1', channel_name: 'public-x' }), request: {} }, env);
   assert.equal(pub.status, 403);
 });

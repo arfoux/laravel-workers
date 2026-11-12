@@ -3,8 +3,11 @@
 // Two halves of the SDK, both reproducible on the edge:
 //
 // 1. Channel auth — `POST /broadcasting/auth`
-//      body: socket_id, channel_name [, channel_data for presence]
-//      → `{auth, channel_data}` signed with HMAC-SHA256 (WebCrypto).
+//      body: socket_id, channel_name
+//      → `{auth}` (private) / `{auth, channel_data}` (presence) signed with
+//        HMAC-SHA256 (WebCrypto). The user id embedded in a presence
+//        `channel_data` comes from the platform guard, never the request body
+//        (the SDK's `presence_auth()` is handed `$user->getAuthIdentifier()`).
 //    This is the `Pusher::socket_auth()` / `presence_auth()` half.
 //
 // 2. Event trigger — `POST /broadcast` (this port's trigger route)
@@ -32,7 +35,7 @@ import {
   signChannelAuth,
   buildAuthQueryString,
 } from '../../kernel/packages/broadcast.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(`
@@ -74,21 +77,19 @@ export async function handleBroadcastingAuth(ctx, env) {
       return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'channel must be private- or presence-' }) };
     }
 
+    // The channel's identity is the platform guard's, never the caller's: the
+    // PHP SDK's `presence_auth()` receives `$user->getAuthIdentifier()` from
+    // `PusherBroadcaster::validAuthenticationResponse()`, and Laravel's
+    // `auth()` denies a guarded channel outright when there is no user. Reading
+    // `channel_data.user_id` from the body would let any caller (authenticated
+    // or not) join a private/presence channel as an arbitrary user.
+    const userId = await guardUserId(ctx);
+    if (userId == null) {
+      return { status: 401, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Unauthenticated.' }) };
+    }
+
     if (channelName.startsWith('presence-')) {
-      // Echo sends the user back as base64-encoded JSON in `channel_data`; the
-      // SDK re-signs with that user embedded. We accept the incoming user data
-      // if present, else require an authenticated user id.
-      const incoming = body.get('channel_data');
-      let userData = null;
-      if (incoming) {
-        try { userData = JSON.parse(atob(String(incoming))); }
-        catch { return { status: 422, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'invalid channel_data' }) }; }
-      }
-      const userId = userData?.user_id ?? ctx.userId ?? null;
-      if (userId == null) {
-        return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'presence channel requires an authenticated user' }) };
-      }
-      const { auth, channel_data: channelData } = await signChannelAuth(key, secret, socketId, channelName, { user_id: userId, user_info: userData?.user_info ?? null });
+      const { auth, channel_data: channelData } = await signChannelAuth(key, secret, socketId, channelName, { user_id: userId });
       return {
         status: 200,
         headers: { 'content-type': 'application/json' },

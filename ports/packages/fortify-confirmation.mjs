@@ -37,7 +37,7 @@
 import bcrypt from 'bcryptjs';
 import { signPath, verifyPath } from '../../kernel/packages/signedurl.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -79,16 +79,8 @@ async function findUserById(env, id) {
 // `middlewarePorts` guard wrote onto ctx (kernel/router.mjs). A caller-provided
 // email is never a source. No identity => null (the handlers answer 401).
 async function currentUser(ctx, env) {
-  if (ctx.user_id != null && ctx.user_id !== '') {
-    const injected = Number(ctx.user_id);
-    if (Number.isFinite(injected)) return findUserById(env, injected);
-  }
-  try {
-    const u = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
-    return u && u.id != null ? await findUserById(env, Number(u.id)) : null;
-  } catch {
-    return null;
-  }
+  const id = await guardUserId(ctx);
+  return id == null ? null : findUserById(env, id);
 }
 
 function baseUrl(ctx, env, override) {

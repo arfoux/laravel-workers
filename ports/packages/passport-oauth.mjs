@@ -51,7 +51,7 @@
 import { signJwt, jwks as jwksExport, verifyPkce } from '../../kernel/packages/passport.mjs';
 import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -152,30 +152,13 @@ async function authenticateClient(env, clientId, clientSecret) {
 // --- caller identity ---------------------------------------------------------
 // Who the authorization code belongs to. Like Laravel - where this endpoint sits
 // behind the `auth` middleware - the resource owner comes from the platform's own
-// guard, never from the request. Sources, in order:
-//   1. `ctx.user()` — the accessor the worker hands every port
-//      (kernel/http.mjs: `user: () => auth.guard().user()`); async, so awaited.
-//   2. `ctx.user_id` / `ctx.user.id` — an identity a `middlewarePorts` guard wrote
-//      onto ctx before this handler ran (kernel/router.mjs).
-// No identity => 401 `access_denied`, no code stored. `?user_id=` is deliberately
-// NOT a source: an authorization request is client-supplied, so trusting it let
-// any caller mint a code - and then a token - for any user id.
-async function resolveUserId(ctx) {
-  if (ctx.user_id != null && ctx.user_id !== '') {
-    const injected = Number(ctx.user_id);
-    if (Number.isFinite(injected)) return injected;
-  }
-  try {
-    const user = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
-    if (user && user.id != null) {
-      const id = Number(user.id);
-      if (Number.isFinite(id)) return id;
-    }
-  } catch {
-    // No guard / no session on this route: the request is simply unauthenticated.
-  }
-  return null;
-}
+// guard (`guardUserId`, kernel/packages/port-ctx.mjs): `ctx.user()` — the accessor
+// the worker hands every port (kernel/http.mjs: `user: () => auth.guard().user()`)
+// — or an id a `middlewarePorts` guard wrote onto ctx before this handler ran
+// (kernel/router.mjs). No identity => 401 `access_denied`, no code stored.
+// `?user_id=` is deliberately NOT a source: an authorization request is
+// client-supplied, so trusting it let any caller mint a code — and then a
+// token — for any user id (the class the pusher/reverb presence fix closes too).
 
 async function issueTokens(env, { userId, clientId, scopes, privatePem, pub, kid, ttlSeconds = 3600, refreshTtlSeconds = 60 * 60 * 24 * 14 }) {
   const expSeconds = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -243,7 +226,7 @@ export async function handleAuthorize(ctx, env) {
   // middleware port wrote onto ctx. NOT `user_id` from the query string - an
   // authorization request is client-supplied, so trusting it let any caller mint
   // a code, and then a token, for any user id.
-  const userId = await resolveUserId(ctx);
+  const userId = await guardUserId(ctx);
   if (userId == null) {
     return json(401, { error: 'access_denied', message: 'No authenticated user for the authorization.' });
   }
