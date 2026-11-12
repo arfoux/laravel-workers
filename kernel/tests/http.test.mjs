@@ -1745,3 +1745,38 @@ test('a non-UTF-8 %XX byte is the documented U+FFFD gap (COMPILED §6)', () => {
   assert.equal(value('a=%'), '%');
   assert.equal(value('a=%4'), '%4');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request::getContent() — the RAW body, byte for byte.
+//
+// The seam ports that verify a provider signature (Cashier/Stripe, Paddle, Lemon
+// Squeezy, Mollie, webhook-client) HMAC the bytes as they arrived. The kernel
+// Request exposed no raw-body accessor, so `normalizePortCtx`'s `rawText()` fell
+// back to `JSON.stringify(json())` and every one of those verifiers compared
+// against a re-serialised copy: a genuinely signed, pretty-printed webhook was
+// answered 401 in production (probed). Symfony's `getContent()` is the parity
+// accessor; `text()` is the alias a port written against a fetch `Request` reads.
+// ─────────────────────────────────────────────────────────────────────────────
+test('Request::getContent() returns the raw bytes, not a re-serialisation', async () => {
+  const pretty = '{\n  "id": "tr_1",\n  "status": "paid"\n}';
+  const jsonReq = buildRequest({
+    method: 'POST', url: 'https://app.test/hook',
+    headers: { 'content-type': 'application/json' }, body: pretty,
+  });
+  assert.equal(jsonReq.getContent(), pretty);
+  assert.equal(await jsonReq.text(), pretty);
+  assert.notEqual(jsonReq.getContent(), JSON.stringify(jsonReq.json()));
+  assert.deepEqual(jsonReq.json(), { id: 'tr_1', status: 'paid' });
+
+  // A form body stays verbatim too (PHP keeps the raw query string).
+  const form = 'name=Ada&tags[]=a&tags[]=b';
+  const formReq = buildRequest({
+    method: 'POST', url: 'https://app.test/hook',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form,
+  });
+  assert.equal(formReq.getContent(), form);
+
+  // A GET has an empty body, like Symfony.
+  const getReq = buildRequest({ method: 'GET', url: 'https://app.test/hook?a=1', headers: {} });
+  assert.equal(getReq.getContent(), '');
+});

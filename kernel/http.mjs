@@ -800,6 +800,20 @@ export function buildRequest(raw, options = {}) {
       if (key === null) return json;
       return dataGet(json ?? {}, key, def);
     },
+    // Symfony Request::getContent(): the RAW body string, exactly as it arrived.
+    // A webhook verifier HMACs these bytes, and a re-serialised copy is a
+    // DIFFERENT message to the provider's signature (`{"id":"a"}` vs
+    // `{\n  "id": "a"\n}`), so `json()` must never stand in for it. A multipart
+    // body keeps its bytes in `bodyBytes` and answers '' here, matching Laravel
+    // for a body it never held as text.
+    getContent() {
+      return body;
+    },
+    // The alias the seam ports read (`ctx.request.text()`); the same raw string,
+    // awaited so a port written against a fetch `Request` needs no branch.
+    text() {
+      return Promise.resolve(body);
+    },
     // InteractsWithData::has(): `array_all($keys, fn ($v) => Arr::has($data, $v))`
     // over `$this->all()` (input + query + uploaded files). Oracle-verified:
     // `has('nope')` = false, `has(['a','nope'])` = false, `has(['a','title'])` = true.
