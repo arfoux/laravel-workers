@@ -133,6 +133,15 @@ export async function triggerEvent(env, { channel, name, data }, fetchImpl = glo
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   try {
+    // The route IS the seam: Laravel triggers events from app code
+    // (`broadcast()`, a queued job) with the app's own Pusher secret, so an
+    // anonymous caller reaching this URL would be an event-injection primitive
+    // into any channel, including private ones. `triggerEvent()` below stays
+    // ungated for app code that calls the module directly; the HTTP route
+    // requires an authenticated caller.
+    if ((await guardUserId(ctx)) == null) {
+      return { status: 401, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Unauthenticated.' }) };
+    }
     const body = typeof ctx.body === 'string' ? JSON.parse(ctx.body || '{}') : (ctx.body || {});
     const { channel, name, data } = body;
     if (!channel || !name) {

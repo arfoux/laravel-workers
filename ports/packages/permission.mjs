@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/permission.mjs — port of spatie/laravel-permission v8.5.0 seam.
 //
@@ -158,6 +158,14 @@ async function hasAnyRole(env, modelType, modelKey, names) {
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   try {
+    // spatie/laravel-permission is a LIBRARY: `$user->assignRole()` /
+    // `$user->hasPermissionTo()` run inside app code, in an authenticated request
+    // context, after the app's own authorization. The port's routes are that
+    // capability's seam, so without an identity an anonymous caller could read any
+    // model's roles (a role oracle) or grant itself `admin`. A caller-supplied
+    // modelType/modelKey/body is never an identity: the guard decides, and its
+    // absence is 401 — before any D1 write.
+    if ((await guardUserId(ctx)) == null) return json(401, { message: 'Unauthenticated.' });
     await ensureSchema(env);
     const modelType = (ctx.body && ctx.body.model_type) || (ctx.query && ctx.query.model_type) || DEFAULT_MODEL_TYPE;
     const modelKey = ctx.params && ctx.params.modelKey;

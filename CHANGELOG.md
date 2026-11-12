@@ -2,6 +2,41 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Privileged seam routes require an authenticated caller
+
+Three mapped routes have no counterpart route in Laravel — their Laravel side is a library or a
+driver that app code calls inside a request the app already authenticated. Exposed as public paths
+with no caller check, each was a primitive any anonymous request could use:
+
+| route | what an anonymous caller could do |
+|---|---|
+| `/model/{modelType}/{modelKey}/roles/assign-role` (`permission`) | grant `admin` to any model key — and every read answered "does model X have role Y" for anyone |
+| `POST /broadcast` (`pusher`) | trigger events on any channel, including `private-*`, signing with the app's Pusher secret |
+| `POST /webhook-server/send` (`webhook-server`) | sign an arbitrary body with the app's webhook secret (a signing oracle) and POST it to any https host |
+
+App code does not go through these URLs: `compiler/package-bindings.mjs` maps a facade straight to
+`rt.<primitive>`, and each port exports the function (`triggerEvent`, `signPayload`, the permission
+queries) for in-process use. The HTTP route is a seam for a caller *outside* the app, so it now
+requires one: `guardUserId(ctx)` — `ctx.user()` (`kernel/http.mjs`) or a `ctx.user_id` a
+`middlewarePorts` guard wrote — and answers `401 Unauthenticated.` with no D1 write, no signature
+and no outbound `fetch` when the request carries no identity. A caller-supplied `user_id` in the
+body is never accepted, and route params stay data.
+
+`webhook-server` also had the canonical headers last: a caller-supplied `headers` block could
+replace `webhook-signature` with a value of its choosing, and a receiver verifying the header (not
+recomputing the HMAC) would accept an unsigned body. The extras now merge under the three canonical
+headers, so the signature always wins.
+
+`docs/PACKAGE-PORTS.md` gains a *seam routes* section stating the rule and listing the ports of the
+same shape that do **not** enforce it yet (`/notify/*`, `mailgun-mail`, `postmark-mail`, `ai-sdk`,
+`mcp`, `pulse/record`, `bugsnag`, `maatwebsite-excel`, `glide`) so an app that maps them knows to
+put a guard in front.
+
+- Covered by `tools/tests/packages-d-spatie.test.mjs` (permission: read, write and spoofed-body all
+  `401` with no D1 row), `tools/tests/packages-search-realtime.test.mjs` (broadcast trigger: `401`,
+  no Pusher call, no row) and `tools/tests/packages-webhook-server.test.mjs` (`401` with no fetch;
+  forged `webhook-signature`/`webhook-timestamp`/`content-type` cannot replace the canonical ones).
+
 ### Broadcast channel auth no longer takes the presence user id from the request body
 
 `ports/packages/pusher.mjs` and `ports/packages/reverb.mjs` answered `POST /broadcasting/auth` by reading the

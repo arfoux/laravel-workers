@@ -493,7 +493,9 @@ test('webhook-client ADV: a body tampered after signing is rejected (400) and no
 // ===========================================================================
 
 const SERVER_SECRET = 'wh-server-secret';
-const serverCtx = (body) => ({ body, query: {}, params: {} });
+// The route is an authenticated seam (an anonymous caller would get a signing
+// oracle + arbitrary-https egress), so the adversarial cases run as a caller.
+const serverCtx = (body) => ({ body, query: {}, params: {}, user_id: 1 });
 
 function makeFetch(status, jsonBody) {
   const calls = [];

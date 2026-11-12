@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, mapProviderResponse, jsonPort } from '../../kernel/packages/notify-http.mjs';
 
 // ports/packages/webhook-server.mjs — port of spatie/laravel-webhook-server
@@ -69,6 +69,12 @@ function nowIso() {
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   try {
+    // The route IS the seam: Laravel's WebhookClient/Server send from app code
+    // (`WebhookCall::dispatch()` in a job) using the app's signing secret. Exposed
+    // anonymously, this URL is both an arbitrary-URL egress (SSRF-ish: any https
+    // host) and a signing oracle over a secret the caller cannot read. App code
+    // calls `signPayload()`/the module directly; the HTTP route needs a caller.
+    if ((await guardUserId(ctx)) == null) return jsonPort({ message: 'Unauthenticated.' }, 401);
     const body = ctx.body || {};
     const url = body.url;
 
@@ -93,10 +99,14 @@ export default async function handle(ctx, env) {
     const requestInit = {
       method: 'POST',
       headers: {
+        // Caller extras first: the three canonical headers define the signed
+        // contract the receiver verifies, so they always win (a caller-supplied
+        // `webhook-signature` would else replace the real signature and make the
+        // receiver accept an unsigned body).
+        ...extraHeaders,
         'content-type': 'application/json',
         'webhook-signature': signature,
         'webhook-timestamp': timestamp,
-        ...extraHeaders,
       },
       body: rawBody,
     };

@@ -291,12 +291,24 @@ test('pusher: POST /broadcast handler records event to D1', async () => {
   const db = new FakeD1();
   const fetchImpl = fakeFetch(() => jsonResponse({ event_ids: { c: 'x' } }));
   const res = await pusher(
-    { body: { channel: 'private-c', name: 'Ev', data: { a: 1 } }, request: {}, fetchImpl },
+    { body: { channel: 'private-c', name: 'Ev', data: { a: 1 } }, request: {}, fetchImpl, user_id: 1 },
     { PUSHER_KEY: 'k', PUSHER_SECRET: 's', PUSHER_APP_ID: 'a', DB: db },
   );
   assert.equal(res.status, 200);
   assert.equal(db.tables.get('pusher_events').length, 1);
   assert.equal(db.tables.get('pusher_events')[0].channel, 'private-c');
+});
+
+test('pusher: POST /broadcast without an identity is 401 and never triggers', async () => {
+  const db = new FakeD1();
+  const fetchImpl = fakeFetch(() => jsonResponse({ event_ids: { c: 'x' } }));
+  const res = await pusher(
+    { body: { channel: 'private-c', name: 'Ev', data: { a: 1 } }, request: {}, fetchImpl },
+    { PUSHER_KEY: 'k', PUSHER_SECRET: 's', PUSHER_APP_ID: 'a', DB: db },
+  );
+  assert.equal(res.status, 401);
+  assert.equal(fetchImpl.calls.length, 0, 'no Pusher call for an anonymous caller');
+  assert.equal((db.tables.get('pusher_events') || []).length, 0);
 });
 
 // ═══ (4) laravel/reverb auth-half ═══════════════════════════════════════════
