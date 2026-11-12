@@ -97,12 +97,17 @@ No identity → `401` before any DB write, any signature, any outbound `fetch`. 
 functions stay ungated: an app's own job or Worker call is in-process, not an HTTP request.
 
 Currently gated this way: `permission` (all routes), `pusher` `/broadcast`, `webhook-server`
-`/webhook-server/send`, and `pusher`/`reverb` on `/broadcasting/auth` (guarded channels only).
+`/webhook-server/send`, `pusher`/`reverb` on `/broadcasting/auth` (guarded channels only),
+`maatwebsite-excel` `/export`, and `multitenancy` (both routes: create + resolve). `scout-algolia`
+(`/1/indexes/{name}/query`) is a check rather than a gate: it requires the caller's
+`X-Algolia-Application-Id`/`X-Algolia-API-Key` headers to *match* `ALGOLIA_APP_ID`/`ALGOLIA_KEY`
+(constant-time) and answers `403` when either is absent — an omitted header must never proxy
+through the worker's own key.
 
 Not yet gated, same shape, listed here so the gap is visible rather than implied: the
 notification transports (`/notify/*`, `/webpush/subscribe`), `mailgun-mail`, `postmark-mail`,
 `slack-notification`, `twilio-sms`, `ai-sdk` (`/ai/chat`), `mcp` (`/mcp`), `pulse`
-(`/pulse/record`), `bugsnag` (`/bugsnag/notify`), `maatwebsite-excel` (`/export`), `glide`
+(`/pulse/record`), `bugsnag` (`/bugsnag/notify`), `glide`
 (`/img/{path}`). Each spends the app's provider credentials or writes app state on behalf of
 whoever reaches the URL, so an app that maps them must put a guard in front (a small
 `middlewarePorts` port that answers `401` when `ctx.user_id` is absent) until the port itself
