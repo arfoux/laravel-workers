@@ -1842,6 +1842,13 @@ for (const code of errorViewCodes) {
 }
 const viewStderr = runViewJobs({ recursive: true });
 
+// The tail both transpile failures end with: point the reader at the standalone
+// transpiler for the full error. One copy — the two sites differ in what they
+// were transpiling, not in how to debug it.
+const transpileFailHint = (dumpPath) =>
+  '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
+  `    node compiler/bin/transpile.mjs ${dumpPath} --json`;
+
 for (const [route, view] of viewMap) {
   const slug = slugifyRoute(route);
   const dumpPath = join(cacheDir, view + '.compiled.json');
@@ -1892,8 +1899,7 @@ for (const [route, view] of viewMap) {
     const detail = String(e.message || '').trim().split('\n').slice(-4).join(' / ');
     fail(
       `transpiling the view for ${route} failed (${view}): ${detail}\n` +
-        '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
-        `    node compiler/bin/transpile.mjs ${dumpPath} --json`
+        transpileFailHint(dumpPath)
     );
   }
 
@@ -1995,8 +2001,7 @@ if (errorViewCodes.length) {
       });
       fail(
         `transpiling the error view ${viewName} failed: ${detail}\n` +
-          '  the compiler refuses what it cannot port — run it standalone for the full error:\n' +
-          `    node compiler/bin/transpile.mjs ${dumpPath} --json`
+          transpileFailHint(dumpPath)
       );
     }
 
