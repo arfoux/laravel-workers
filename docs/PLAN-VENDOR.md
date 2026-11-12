@@ -179,8 +179,8 @@ It is a **pinning file for vendor-lite**, not a Composer-authored lock.
 carries the dev closure resolved for the lock only (`includeDev`), minus every
 name already in `packages` — that is what keeps `composer validate` green on a
 skeleton. Before that, `packages-dev: []` made it exit 2 with `Required (in
-require-dev) package "..." is not present in the lock file.` (Composer 2.9.0 /
-PHP 8.3.30, audit #805). Nothing dev is ever installed: `readLockPackages()` reads
+require-dev) package "..." is not present in the lock file.` (audit #805, Composer 2.9.0;
+re-measured on Composer 2.9.4 / PHP 8.3.30). Nothing dev is ever installed: `readLockPackages()` reads
 `packages` only, so a lock that lists Pint or PHPUnit in `packages-dev` still
 installs none of them. `content-hash` is Composer's own recipe over the same
 `composer.json`, so the lock is not called stale. An app that wants a
