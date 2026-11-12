@@ -39,6 +39,8 @@ import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mj
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { slugifyRoute } from './tools/route-slug.mjs';
 import { buildRouteMap } from './tools/route-map.mjs';
+import { jsoncValue, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
+import { notTriggerableFindings, shiftedTriggerFindings } from './tools/schedule-gaps.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
 import { compileView } from './compiler/blade.mjs';
@@ -1420,19 +1422,10 @@ let cronTriggers = [];
     if (m.strategy === 'shifted' && m.event.timezone) {
       console.log(`  -> ${m.event.name}: ${m.event.expression} in ${m.event.timezone} -> UTC trigger ${m.trigger}`);
     }
-    if (m.reason) {
-      note({
-        route: null,
-        area: 'schedule',
-        severity: DECLARED,
-        cause: `the schedule event "${m.event.name}" (${m.event.expression}) ships the trigger \`${m.trigger}\` — ${m.reason}`,
-        fix:
-          m.strategy === 'per-minute'
-            ? 'the schedule still runs (the worker filters by the event timezone at fire time), but the trigger runs 1440×/day: give the event a fixed-offset timezone or `->timezone("UTC")` to collapse it to one fire per occurrence'
-            : 'the trigger fires daily and the worker re-applies the day/month fields in the event timezone — nothing to do, this is how the shift works',
-      });
-    }
   }
+  // The shifted/per-minute findings are built by `tools/schedule-gaps.mjs`, so
+  // their shape is pinned by tools/tests/schedule-gaps.test.mjs.
+  for (const f of shiftedTriggerFindings(mapped)) note(f);
   writeFileSync(
     join(dist, 'cron.json'),
     JSON.stringify(
@@ -1458,9 +1451,15 @@ let cronTriggers = [];
         .join(', ')}]}})`
     );
   }
-  for (const e of notTriggerable) {
+  // An event the build cannot express as a cron trigger is SHIPPED (it is in
+  // `schedule.generated.mjs`) but never fires at the edge. That is a DECLARED gap
+  // that has to reach the verdict — `tools/schedule-gaps.mjs` builds the finding
+  // (tools/tests/schedule-gaps.test.mjs pins it), the `console.log` below only
+  // keeps the build log readable.
+  for (const e of events.filter((x) => x && !x.cron_triggerable)) {
     console.log(`     ! ${e.name}: ${e.reason || 'not triggerable at the edge'}`);
   }
+  for (const f of notTriggerableFindings(events)) note(f);
   // The due event is DELIVERED through the app's `QUEUE` producer binding (the
   // app runtime that consumes it lives outside this Worker). Without the
   // binding the push falls back to the kernel's in-memory queue, which is
@@ -1533,16 +1532,8 @@ const authProviderFqcns = Object.entries(runtimeConfig)
 // `false` for EVERY product, so the `d1_databases`/`r2_buckets` notes fired for
 // apps that did bind them. The project's own reader is the authority — the same
 // one `deploy` edits — so the source-aware AST is turned back into plain data.
-function jsoncValue(node) {
-  if (!node || typeof node !== 'object') return null;
-  if (node.type === 'object') {
-    const out = {};
-    for (const entry of node.entries || []) out[entry.key] = jsoncValue(entry.value);
-    return out;
-  }
-  if (node.type === 'array') return (node.items || []).map(jsoncValue);
-  return node.value === undefined ? null : node.value;
-}
+// `jsoncValue` lives in `tools/wrangler-crons.mjs` (imported above), which pins
+// it against `tools/jsonc.mjs` in tools/tests/wrangler-crons.test.mjs.
 
 function hasBinding(appRoot, product, name) {
   const jsonc = join(appRoot, 'wrangler.jsonc');
@@ -4173,37 +4164,10 @@ if (strict && blocked) {
 // trigger. lw-showcase, for one, registers no schedule on purpose and relies on
 // its wrangler cron (`*/5 * * * *`) to drain — the schedule-only check below
 // would refuse that push even though the deployed trigger runs it.
-function wranglerCronTriggers(appRoot) {
-  const jsonc = join(appRoot, 'wrangler.jsonc');
-  if (existsSync(jsonc)) {
-    try {
-      const cfg = jsoncValue(parseJsonc(readFileSync(jsonc, 'utf8')));
-      const crons = cfg && cfg.triggers && cfg.triggers.crons;
-      if (Array.isArray(crons)) return crons.filter(Boolean).map(String);
-    } catch {
-      /* an unparseable wrangler.jsonc is not a trigger we can rely on */
-    }
-  }
-  const toml = join(appRoot, 'wrangler.toml');
-  if (existsSync(toml)) {
-    try {
-      const text = readFileSync(toml, 'utf8');
-      // `[triggers]` table -> the `crons = [ ... ]` array on the following lines.
-      const m = /\[triggers\]([\s\S]*?)(?:\n\[|$)/.exec(text);
-      const crons = m && /crons\s*=\s*\[([^\]]*)\]/.exec(m[1]);
-      if (crons) {
-        return crons[1]
-          .split(',')
-          .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
-          .filter(Boolean);
-      }
-    } catch {
-      /* an unreadable wrangler.toml is not a trigger we can rely on */
-    }
-  }
-  return [];
-}
-const deployedCronTriggers = wranglerCronTriggers(appDir);
+// `tools/wrangler-crons.mjs` owns both readers (and pins them with tests); the
+// `warn` below is what keeps a malformed config from being reported as "no cron
+// trigger" — the file is the operator's to fix, and the verdict names it.
+const deployedCronTriggers = wranglerCronTriggers(appDir, (message) => console.log(`  ! ${message}`));
 const queueCronSecret = !!process.env.LW_CRON_SECRET;
 if (
   queuePushes.length &&
