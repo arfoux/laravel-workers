@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { table } from '../db.mjs';
 import { Model } from '../model.mjs';
+import { d1 } from './_helpers.mjs';
 
 let DatabaseSync = null;
 try {
@@ -15,39 +16,6 @@ try {
   // Older Node without node:sqlite: the suite still runs, these tests skip.
 }
 const skip = DatabaseSync ? false : 'node:sqlite unavailable (needs Node >= 22)';
-
-// Minimal D1-shaped wrapper: prepare().bind().all()/first()/run().
-function d1(sqlite) {
-  return {
-    prepare(sql) {
-      let params = [];
-      return {
-        bind(...p) {
-          params = p;
-          return this;
-        },
-        async all() {
-          const st = sqlite.prepare(sql);
-          const rows = params.length ? st.all(...params) : st.all();
-          return { results: rows.map((r) => ({ ...r })) };
-        },
-        async first() {
-          const st = sqlite.prepare(sql);
-          const row = params.length ? st.get(...params) : st.get();
-          return row ? { ...row } : null;
-        },
-        async run() {
-          const st = sqlite.prepare(sql);
-          const info = params.length ? st.run(...params) : st.run();
-          return {
-            success: true,
-            meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid ?? 0) },
-          };
-        },
-      };
-    },
-  };
-}
 
 class Comment extends Model {}
 Comment.table = 'comments';

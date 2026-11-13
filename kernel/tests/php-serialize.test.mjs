@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { phpSerialize, phpUnserialize, PhpSerializeError } from '../php-serialize.mjs';
+import { tag } from './_helpers.mjs';
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-serialize-oracle.php');
@@ -32,22 +33,6 @@ function runOracle(mode, payload) {
     throw new Error(`PHP oracle exited ${res.status}: ${res.stderr}`);
   }
   return JSON.parse(res.stdout).results;
-}
-
-function tag(v) {
-  if (v === null) return { t: 'n' };
-  if (typeof v === 'boolean') return { t: 'b', v };
-  if (typeof v === 'number') {
-    if (Number.isNaN(v)) return { t: 'd', v: 'NAN' };
-    if (v === Infinity) return { t: 'd', v: 'INF' };
-    if (v === -Infinity) return { t: 'd', v: '-INF' };
-    if (Object.is(v, -0)) return { t: 'd', v: '-0' };
-    if (Number.isInteger(v) && Number.isSafeInteger(v)) return { t: 'i', v: String(v) };
-    return { t: 'd', v: String(v) };
-  }
-  if (typeof v === 'string') return { t: 's', v };
-  if (Array.isArray(v)) return { t: 'a', v: v.map(tag) };
-  return { t: 'a', v: Object.fromEntries(Object.entries(v).map(([k, x]) => [k, tag(x)])) };
 }
 
 const PARITY = [

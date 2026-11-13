@@ -43,6 +43,7 @@ import { applyAuthenticatable } from '../auth.mjs';
 import { Model } from '../model.mjs';
 import { normalizeTable } from '../router.mjs';
 import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
+import { d1, parseSetCookie, normHeaders } from './_helpers.mjs';
 
 let DatabaseSync = null;
 try {
@@ -309,39 +310,6 @@ class LWOracleUser extends Model {}
 LWOracleUser.table = 'lw_users';
 applyAuthenticatable(LWOracleUser);
 
-// Minimal D1-shaped wrapper over node:sqlite.
-function d1(sqlite) {
-  return {
-    prepare(sql) {
-      let params = [];
-      return {
-        bind(...p) {
-          params = p;
-          return this;
-        },
-        async all() {
-          const st = sqlite.prepare(sql);
-          const rows = params.length ? st.all(...params) : st.all();
-          return { results: rows.map((r) => ({ ...r })) };
-        },
-        async first() {
-          const st = sqlite.prepare(sql);
-          const row = params.length ? st.get(...params) : st.get();
-          return row ? { ...row } : null;
-        },
-        async run() {
-          const st = sqlite.prepare(sql);
-          const info = params.length ? st.run(...params) : st.run();
-          return {
-            success: true,
-            meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid ?? 0) },
-          };
-        },
-      };
-    },
-  };
-}
-
 // Schema mirrors the oracle's: Laravel's default `sessions` table + the oracle's
 // `lw_users`, seeded with the same pinned bcrypt hash.
 function makeDb() {
@@ -454,33 +422,12 @@ function serializeJar(jar) {
 
 // --------------------------------------------------------------- comparisons
 
-function normHeaders(headers) {
-  const out = {};
-  for (const [name, value] of Object.entries(headers)) {
-    const key = String(name).toLowerCase();
-    if (key === 'date' || key === 'set-cookie') continue;
-    out[key] = Array.isArray(value) ? String(value[0]) : String(value);
-  }
-  return out;
-}
-
 // Normalise the random session token out of a probe JSON body.
 function normJsonBody(parsed) {
   if (parsed === null || typeof parsed !== 'object') return parsed;
   const out = { ...parsed };
   if (typeof out.token === 'string') out.token = TOKEN;
   return out;
-}
-
-function parseSetCookie(raw) {
-  const parts = String(raw).split('; ');
-  const first = parts[0];
-  const eq = first.indexOf('=');
-  const name = decodeURIComponent(first.slice(0, eq));
-  const value = decodeURIComponent(first.slice(eq + 1));
-  // Keep attribute order (parity), normalise only the Max-Age value.
-  const attrs = parts.slice(1).map((a) => (a.toLowerCase().startsWith('max-age=') ? 'max-age=*' : a));
-  return { name, value, attrs };
 }
 
 function normCookies(list) {

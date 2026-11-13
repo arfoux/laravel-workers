@@ -44,6 +44,7 @@ import { serializeCookie } from '../cookies.mjs';
 import { hmacSha256Hex, sha1Hex } from '../digest.mjs';
 import { Model } from '../model.mjs';
 import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
+import { d1 } from './_helpers.mjs';
 
 let DatabaseSync = null;
 try {
@@ -379,39 +380,6 @@ class RecordingEvents {
 class LWFakeUser extends Model {}
 LWFakeUser.table = 'lw_users';
 applyAuthenticatable(LWFakeUser);
-
-// Minimal D1-shaped wrapper over node:sqlite (same as sqlite-integration.test).
-function d1(sqlite) {
-  return {
-    prepare(sql) {
-      let params = [];
-      return {
-        bind(...p) {
-          params = p;
-          return this;
-        },
-        async all() {
-          const st = sqlite.prepare(sql);
-          const rows = params.length ? st.all(...params) : st.all();
-          return { results: rows.map((r) => ({ ...r })) };
-        },
-        async first() {
-          const st = sqlite.prepare(sql);
-          const row = params.length ? st.get(...params) : st.get();
-          return row ? { ...row } : null;
-        },
-        async run() {
-          const st = sqlite.prepare(sql);
-          const info = params.length ? st.run(...params) : st.run();
-          return {
-            success: true,
-            meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid ?? 0) },
-          };
-        },
-      };
-    },
-  };
-}
 
 function makeRequest(input) {
   const headers = new Map();

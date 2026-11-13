@@ -7,15 +7,7 @@
 // The expectations come from PHP 8.3 itself.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { emitController } from '../src/controller.mjs';
-
-function compile(body) {
-  const src =
-    '<?php\nnamespace App\\Http\\Controllers;\nclass C {\n    public function demo()\n    {\n' +
-    body +
-    '\n        return response("ok");\n    }\n}\n';
-  return emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
-}
+import { compile } from './_helpers.mjs';
 
 test('rt-semantics: a foreach by reference fails loud (PHP writes back into the array)', () => {
   // PHP: $a=[1,2,3]; foreach ($a as &$v) { $v = 9; } => [9,9,9]. A by-value

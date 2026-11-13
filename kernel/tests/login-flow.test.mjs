@@ -28,6 +28,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
+import { d1, parseSetCookie, normHeaders } from './_helpers.mjs';
 
 let DatabaseSync = null;
 try {
@@ -175,39 +176,6 @@ function runOracle() {
 // ---------------------------------------------------------------------------
 // 3. Minimal D1 shim + the app's storage schema.
 // ---------------------------------------------------------------------------
-
-function d1(sqlite) {
-  return {
-    prepare(sql) {
-      let params = [];
-      return {
-        bind(...p) {
-          params = p;
-          return this;
-        },
-        async all() {
-          const st = sqlite.prepare(sql);
-          const rows = params.length ? st.all(...params) : st.all();
-          return { results: rows.map((r) => ({ ...r })) };
-        },
-        async first() {
-          const st = sqlite.prepare(sql);
-          const row = params.length ? st.get(...params) : st.get();
-          return row ? { ...row } : null;
-        },
-        async run() {
-          const st = sqlite.prepare(sql);
-          const info = params.length ? st.run(...params) : st.run();
-          return {
-            success: true,
-            meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid ?? 0) },
-          };
-        },
-      };
-    },
-  };
-}
-
 // `sessions` (Laravel default), `users` (the app's User model table) + the
 // `cache` tables the database cache store backs `throttle:5,1` with. The user
 // row is seeded with the *oracle's* bcrypt hash so both sides check the same
@@ -375,16 +343,6 @@ async function jarPlain(encryptor, jar, name) {
 
 // --------------------------------------------------------------- comparisons
 
-function normHeaders(headers) {
-  const out = {};
-  for (const [name, value] of Object.entries(headers)) {
-    const key = String(name).toLowerCase();
-    if (key === 'date' || key === 'set-cookie') continue;
-    out[key] = Array.isArray(value) ? String(value[0]) : String(value);
-  }
-  return out;
-}
-
 function normJsonBody(parsed) {
   if (parsed === null || typeof parsed !== 'object') return parsed;
   const out = { ...parsed };
@@ -398,16 +356,6 @@ function normJsonBody(parsed) {
 function normBodyTokens(body, token) {
   if (!token) return String(body);
   return String(body).split(token).join(TOKEN);
-}
-
-function parseSetCookie(raw) {
-  const parts = String(raw).split('; ');
-  const first = parts[0];
-  const eq = first.indexOf('=');
-  const name = decodeURIComponent(first.slice(0, eq));
-  const value = decodeURIComponent(first.slice(eq + 1));
-  const attrs = parts.slice(1).map((a) => (a.toLowerCase().startsWith('max-age=') ? 'max-age=*' : a));
-  return { name, value, attrs };
 }
 
 function normCookies(list) {

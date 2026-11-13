@@ -13,17 +13,9 @@
 // `/rt\.inc\(/` said nothing about the value it answered.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { emitController } from '../src/controller.mjs';
 import { buildRt } from '../runtime/rt-from-context.mjs';
 import { runPhpSnippet } from './run-php-snippet.mjs';
-
-function compile(body) {
-  const src =
-    '<?php\nnamespace App\\Http\\Controllers;\nclass C {\n    public function demo()\n    {\n' +
-    body +
-    '\n        return response("ok");\n    }\n}\n';
-  return emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
-}
+import { compile } from './_helpers.mjs';
 
 test('rt-increment: a continue inside a switch leaves the switch (PHP 8: a warning, a break)', () => {
   // PHP: foreach ([1,2] as $x) { switch ($x) { case 1: continue; default: echo 'D'; }
