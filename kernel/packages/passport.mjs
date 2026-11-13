@@ -10,9 +10,9 @@
 // `PASSPORT_PUBLIC_KEY`) from env secrets.
 
 import { b64url, b64urlToBytes, pemToDer } from './b64url.mjs';
+import { verifyJwtSignature } from './jwt.mjs';
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 const RS_ALG = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
 
 // --- PEM → DER (PKCS#8 private / SPKI public); see b64url.mjs#pemToDer ------
@@ -39,32 +39,14 @@ export async function signJwt(payload, privatePem, { kid, now = Math.floor(Date.
 
 // Verify an RS256 JWT with the public PEM. Returns the decoded payload on a
 // valid signature, else null. Callers enforce `exp`/`nbf` themselves (they get
-// the full payload back).
+// the full payload back). The envelope is `kernel/packages/jwt.mjs`'s — the
+// jwt-auth port verifies its HS256 tokens with the same one.
 export async function verifyJwt(token, publicPem) {
-  if (typeof token !== 'string') return null;
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  const [h, p, s] = parts;
-  let header;
-  try {
-    header = JSON.parse(dec.decode(b64urlToBytes(h)));
-  } catch {
-    return null;
-  }
-  if (header.alg !== 'RS256') return null;
-  const key = await importPublicKey(publicPem);
-  let ok = false;
-  try {
-    ok = await crypto.subtle.verify(RS_ALG, key, b64urlToBytes(s), enc.encode(`${h}.${p}`));
-  } catch {
-    return null;
-  }
-  if (!ok) return null;
-  try {
-    return JSON.parse(dec.decode(b64urlToBytes(p)));
-  } catch {
-    return null;
-  }
+  return verifyJwtSignature(token, {
+    alg: 'RS256',
+    algorithm: RS_ALG,
+    importKey: () => importPublicKey(publicPem),
+  });
 }
 
 // --- JWKS ------------------------------------------------------------------
