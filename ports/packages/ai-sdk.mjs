@@ -249,8 +249,3 @@ function normalizeClientMessages(messages) {
   });
 }
 
-// The full conversation to persist = input messages + (tool rounds) + final
-// assistant answer.
-function logMessages(clientMessages, assistant) {
-  return [...clientMessages, assistant];
-}

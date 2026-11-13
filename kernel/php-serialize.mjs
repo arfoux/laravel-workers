@@ -26,7 +26,6 @@ export class PhpSerializeError extends Error {
 }
 
 const INT_KEY_RE = /^(?:0|-?[1-9][0-9]*)$/;
-const SAFE = Number.MAX_SAFE_INTEGER;
 
 // ---- encode ---------------------------------------------------------------
 

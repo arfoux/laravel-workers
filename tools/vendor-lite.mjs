@@ -24,8 +24,6 @@ import { toNativePath as normaliseShellPath } from './native-path.mjs';
 /** Same options as tools/static.mjs — positions are irrelevant here, docblocks are dropped. */
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
 // A shell-supplied path ("/c/Users/...") normalised to a real Windows drive
 // path AND made absolute: this module uses the result as a cache key, so the
 // same app reached by two spellings has to land on one key (audit #401/#417).

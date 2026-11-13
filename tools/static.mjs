@@ -397,15 +397,6 @@ export function parsePhpFile(file) {
   return { namespace, imports, classes, source };
 }
 
-/** Get the FQCN of the class declared in `parsed` matching `shortOrFqcn`. */
-function classFqcn(parsed, clsNode, shortOrFqcn) {
-  const ns = parsed.namespace || '';
-  const short = shortOrFqcn.split('\\').pop();
-  const own = (ns ? ns + '\\' : '') + nodeName(clsNode.name);
-  // The caller passes an FQCN; match by short name within the same namespace.
-  return own === shortOrFqcn || own.split('\\').pop() === short ? own : null;
-}
-
 /**
  * Evaluate a PHP class-constant expression to a scalar, or null (== PHP's
  * "not a scalar" filter). Node kinds follow php-parser 3.x.
@@ -719,14 +710,6 @@ function resolveClassName(raw, what, ctx) {
 // bootstrap/app.php -> the middleware configurator state (Laravel 11+ shape)
 // ---------------------------------------------------------------------------
 
-/** Is this an argument list entry with a given name (`except:`)? */
-const argByName = (args, name) => {
-  for (const a of (args || [])) {
-    if (a && a.kind === 'argument' && a.name === name) return a.value || a.expr || a;
-  }
-  return null;
-};
-
 /** One literal string node -> its value (null when the literal is not a string). */
 function oneString(node) {
   if (!node) return null;
@@ -1005,7 +988,6 @@ export const FRAMEWORK_GLOBAL_MIDDLEWARE = [
   'Illuminate\\Foundation\\Http\\Middleware\\TrimStrings',
   'Illuminate\\Foundation\\Http\\Middleware\\ConvertEmptyStringsToNull',
 ];
-const TRIM_STRINGS = 'Illuminate\\Foundation\\Http\\Middleware\\TrimStrings';
 /** `TrimStrings::$except` (vendor TrimStrings.php:16-20). */
 export const FRAMEWORK_TRIM_EXCEPT = ['current_password', 'password', 'password_confirmation'];
 /**
@@ -1030,7 +1012,6 @@ export const MW_IMPLEMENTED_BY_KERNEL = new Set([
   'InvokeDeferredCallbacks',
   'ValidatePathEncoding',
 ]);
-const EMPTY_TO_NULL = 'Illuminate\\Foundation\\Http\\Middleware\\ConvertEmptyStringsToNull';
 /**
  * `TrimStrings::except([...])` / `TrimStrings::skipWhen(...)` /
  * `ConvertEmptyStringsToNull::skipWhen(...)` anywhere in the file.
@@ -1095,16 +1076,6 @@ function middlewareList(arg) {
     out.push(one);
   }
   return out;
-}
-/**
- * Is `expr` a static call on the TrimStrings / ConvertEmptyStringsToNull facade
- * (`TrimStrings::except([...])`, `TrimStrings::skipWhen(fn () => true)`)?
- */
-function isTransformerConfigCall(expr, simpleName) {
-  if (!expr || expr.kind !== 'staticcall') return false;
-  const cls = expr.class && expr.class.kind === 'name' ? String(expr.class.name) : null;
-  if (!cls) return false;
-  return cls.split('\\').pop() === simpleName;
 }
 const sameMiddleware = (a, b) => String(a).split('\\').pop() === String(b).split('\\').pop();
 /**

@@ -22,8 +22,6 @@ const MAX_RULE_LENGTH = 100;
 
 // An optional segment (`{page?}`) — it may be absent.
 const isOptionalSeg = (s) => /^\{[^}]*\?\}$/.test(s);
-// A required catch-all segment (`{path*}`): everything from here on.
-const isCatchAllSeg = (s) => s === '*' || /^\{[^}]*\*[^}]*\}$/.test(s);
 
 /**
  * Convert a Laravel-style uri into the Cloudflare patterns that cover every

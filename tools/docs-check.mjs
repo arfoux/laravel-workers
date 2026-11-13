@@ -10,7 +10,6 @@ const MAP = join(ROOT, 'MAP.md');
 const COMPILED = join(ROOT, 'COMPILED.md');
 const STRICT = process.argv.includes('--strict');
 const GLYPHS = ['\u2705', '\u{1F7E1}', '\u{1F534}', '\u26D4'];
-const VALID = new Set(GLYPHS);
 
 function fail(msg) { console.error('docs-check FAIL: ' + msg); process.exit(1); }
 function warn(msg) { console.warn('docs-check WARN: ' + msg); if (STRICT) { console.error('docs-check FAIL (--strict): ' + msg); process.exit(1); } }
