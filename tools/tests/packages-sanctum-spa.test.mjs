@@ -67,6 +67,18 @@ test('sanctum-spa: login without a matching CSRF header is a 419', async () => {
   assert.equal(res.status, 419);
 });
 
+test('sanctum-spa: a malformed cookie escape is a 419, not a 500', async () => {
+  const env = makeEnv();
+  await seedUser(env, 'ada@example.com');
+  // `decodeURIComponent('%')` used to throw out of readCookie, so the client's
+  // own Cookie header turned a CSRF mismatch into a 500.
+  const res = await spa(
+    { params: { action: 'login' }, body: { email: 'ada@example.com', password: 'spa-password' }, query: {}, request: req('POST', { cookie: 'XSRF-TOKEN=%', xsrf: 'different' }) },
+    env
+  );
+  assert.equal(res.status, 419);
+});
+
 test('sanctum-spa: login with CSRF + correct password sets an HttpOnly session cookie', async () => {
   const env = makeEnv();
   await seedUser(env, 'ada@example.com');

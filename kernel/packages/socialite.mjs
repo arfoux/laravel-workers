@@ -10,6 +10,7 @@
 // `lw_oauth_state` D1 row so the callback can check either (defense in depth).
 
 import { randomString } from './token.mjs';
+import { parseCookieHeader } from '../cookies.mjs';
 
 // Provider config straight from the env binding. Callers must set:
 //   env.<PROVIDER>_CLIENT_ID / _CLIENT_SECRET / _REDIRECT_URI
@@ -82,13 +83,13 @@ export function stateCookie(state, { maxAgeSeconds = 600, secure = true } = {}) 
 
 export function readStateCookie(ctx) {
   const cookie = (ctx.request && ctx.request.headers && ctx.request.headers.get('cookie')) || '';
-  for (const part of cookie.split(/;\s*/)) {
-    if (!part) continue;
-    const eq = part.indexOf('=');
-    if (eq === -1) continue;
-    if (part.slice(0, eq) === COOKIE_NAME) return decodeURIComponent(part.slice(eq + 1));
-  }
-  return null;
+  // `parseCookieHeader` (kernel/cookies.mjs) is the one Cookie-header reader:
+  // it trims the name, keeps the LAST duplicate (PHP's parser overwrites),
+  // tolerates a malformed escape (`%` stays `%`, where `decodeURIComponent`
+  // threw a URIError - uncontrolled input on a public callback route) and
+  // nests PHP-style `name[]=` cookies, which a string cookie is not.
+  const state = parseCookieHeader(cookie)[COOKIE_NAME];
+  return typeof state === 'string' ? state : null;
 }
 
 // Persist the state so the callback can double-check when the cookie is absent
