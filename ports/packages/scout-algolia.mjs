@@ -44,12 +44,12 @@ export default async function handle(ctx, env) {
   try {
     const indexName = ctx.params?.name;
     if (!indexName) {
-      return { status: 400, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'missing index name' }) };
+      return jsonResponse(400, { error: 'missing index name' }, { noStore: false });
     }
     const appId = env.ALGOLIA_APP_ID;
     const apiKey = env.ALGOLIA_KEY ?? env.ALGOLIA_API_KEY;
     if (!appId || !apiKey) {
-      return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'ALGOLIA_APP_ID / ALGOLIA_KEY not configured' }) };
+      return jsonResponse(500, { error: 'ALGOLIA_APP_ID / ALGOLIA_KEY not configured' }, { noStore: false });
     }
 
     // Verify the presented X-Algolia-* headers against the configured secrets.
@@ -62,10 +62,10 @@ export default async function handle(ctx, env) {
     const presentedAppId = readHeader('x-algolia-application-id');
     const presentedKey = readHeader('x-algolia-api-key');
     if (!presentedAppId || !timingSafeEqual(presentedAppId, appId)) {
-      return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'application id mismatch' }) };
+      return jsonResponse(403, { error: 'application id mismatch' }, { noStore: false });
     }
     if (!presentedKey || !timingSafeEqual(presentedKey, apiKey)) {
-      return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'api key mismatch' }) };
+      return jsonResponse(403, { error: 'api key mismatch' }, { noStore: false });
     }
 
     const body = typeof ctx.body === 'string' ? JSON.parse(ctx.body || '{}') : (ctx.body || {});
@@ -82,7 +82,7 @@ export default async function handle(ctx, env) {
     const json = await res.json().catch(() => null);
     if (!res.ok) {
       const message = (json && (json.message || json.error)) || `algolia search failed (${res.status})`;
-      return { status: res.status, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: message }) };
+      return jsonResponse(res.status, { error: message }, { noStore: false });
     }
 
     // Preserve Algolia's response contract: hits, nbHits, page, nbPages, params.
@@ -95,10 +95,6 @@ export default async function handle(ctx, env) {
       ...(json?.facets ? { facets: json.facets } : {}),
     });
   } catch (err) {
-    return {
-      status: 502,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: String((err && err.message) || err) }),
-    };
+    return jsonResponse(502, { error: String((err && err.message) || err) }, { noStore: false });
   }
 }

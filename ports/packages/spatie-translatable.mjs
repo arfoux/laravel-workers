@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-translatable v6.15.0 — per-locale translation columns
 // stored as JSON. In Laravel a translatable model declares which attributes are
@@ -43,13 +43,9 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-function json(status, payload, extraHeaders = {}) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', ...extraHeaders },
-    body: JSON.stringify(payload),
-  };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload, extraHeaders = {}) =>
+  jsonResponse(status, payload, { noStore: false, headers: extraHeaders });
 
 // getTranslation: read one locale from a stored JSON column, falling back to
 // FALLBACK_LOCALE when the locale is missing/empty and fallback is enabled.

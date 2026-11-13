@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-enum v3.x — an enum class with `toArray`, `values`,
 // `names`, `from`, `tryFrom`, `random`. In Laravel the package backs a class of
@@ -88,13 +88,8 @@ export const ENUM_REGISTRY = {
   }),
 };
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 function asInstanceOrError(result) {
   return result;

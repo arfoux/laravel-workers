@@ -24,7 +24,7 @@
 //
 // Free tier: 1 D1 write per accepted call, one HMAC, 0 subrequests.
 
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { hmacSha256Base64 } from '../../kernel/hmac.mjs';
 
@@ -42,9 +42,8 @@ export async function ensureSchema(env) {
   )`).run();
 }
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 async function recordCall(env, name, rawBody, exception) {
   await ensureSchema(env);

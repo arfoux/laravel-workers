@@ -21,7 +21,7 @@
 // Free tier: ≤2 D1 writes per event, HMAC CPU negligible, 0 subrequests.
 
 import { verifyLemonSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite, sqliteOrNull as isoOrNull } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
@@ -82,9 +82,8 @@ export async function ensureSchema(env) {
 
 const now = () => dateToSqlite(new Date());
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 async function recordEventOnce(env, event) {
   await ensureSchema(env);

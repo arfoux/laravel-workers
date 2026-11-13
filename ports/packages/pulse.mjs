@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/pulse.mjs — port of laravel/pulse observability seam.
 //
@@ -46,13 +46,8 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 function toNumber(value) {
   if (value == null || value === '') return null;

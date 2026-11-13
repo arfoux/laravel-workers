@@ -18,7 +18,7 @@
 //
 // Edge disclosure: no PHP execution, no disk, no long-running work — pure header
 // assembly, well within Workers limits.
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { buildCspHeader, generateNonce, CSP_HEADER } from '../../kernel/packages/csp.mjs';
 
 /** Read the policy object from ctx.body / env, tolerating a JSON-string dump. */
@@ -52,23 +52,15 @@ export default async function handle(ctx, env) {
   const nonce = generateNonce();
   const headerValue = buildCspHeader(policy, nonce);
 
-  // A caller-supplied upstream response (e.g. a compiled view body) is passed
-  // through with the CSP header merged in; otherwise we answer with the header
-  // metadata a view port reads to stamp onto its own response.
-  const headers = {
-    'content-type': 'application/json',
-    'cache-control': 'no-store',
-    'content-security-policy': headerValue,
-  };
-
-  return {
-    status: 200,
-    headers,
-    body: JSON.stringify({
+  // The header metadata a view port reads to stamp onto its own response.
+  return jsonResponse(
+    200,
+    {
       ok: true,
       header: CSP_HEADER,
       'content-security-policy': headerValue,
       nonce,
-    }),
-  };
+    },
+    { headers: { 'content-security-policy': headerValue } }
+  );
 }

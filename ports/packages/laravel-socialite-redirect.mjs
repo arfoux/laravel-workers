@@ -16,17 +16,13 @@ import {
   stateCookie,
   rememberState,
 } from '../../kernel/packages/socialite.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   const provider = resolveProvider(env, String(ctx.params && ctx.params.provider));
   if (!provider) {
-    return {
-      status: 400,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'unknown or unconfigured provider' }),
-    };
+    return jsonResponse(400, { error: 'unknown or unconfigured provider' }, { noStore: false });
   }
 
   try {
@@ -43,10 +39,6 @@ export default async function handle(ctx, env) {
       body: '',
     };
   } catch (err) {
-    return {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: String((err && err.message) || err) }),
-    };
+    return jsonResponse(500, { error: String((err && err.message) || err) }, { noStore: false });
   }
 }
