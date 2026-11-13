@@ -33,13 +33,13 @@ import { bearerToken } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { b64url, b64urlToBytes } from '../../kernel/packages/b64url.mjs';
+import { verifyJwtSignature } from '../../kernel/packages/jwt.mjs';
 
 // Re-exported: these were this port's public surface before the shared
 // `b64url.mjs` existed; keep the names importable from here.
 export { b64url, b64urlToBytes };
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 
 export function b64urlJson(obj) {
   return b64url(enc.encode(JSON.stringify(obj)));
@@ -65,31 +65,15 @@ export async function signJwt(payload, secret) {
 
 // Verify an HS256 JWT. Returns the decoded payload on a valid signature, else
 // null. `exp`/`nbf`/`iat` are the caller's to enforce (they get the full payload).
+// The envelope is `kernel/packages/jwt.mjs`'s — the kernel's RS256 verifier
+// (passport) checks its tokens with the same one.
 export async function verifyJwt(token, secret) {
-  if (typeof token !== 'string' || !secret) return null;
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  const [h, p, s] = parts;
-  let header;
-  try {
-    header = JSON.parse(dec.decode(b64urlToBytes(h)));
-  } catch {
-    return null;
-  }
-  if (header.alg !== 'HS256') return null;
-  const key = await hmacKey(secret);
-  let ok = false;
-  try {
-    ok = await crypto.subtle.verify('HMAC', key, b64urlToBytes(s), enc.encode(`${h}.${p}`));
-  } catch {
-    return null;
-  }
-  if (!ok) return null;
-  try {
-    return JSON.parse(dec.decode(b64urlToBytes(p)));
-  } catch {
-    return null;
-  }
+  if (!secret) return null;
+  return verifyJwtSignature(token, {
+    alg: 'HS256',
+    algorithm: 'HMAC',
+    importKey: () => hmacKey(secret),
+  });
 }
 
 // --- schema / helpers --------------------------------------------------------
