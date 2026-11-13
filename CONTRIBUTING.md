@@ -37,7 +37,7 @@ runs them for real in the `parity-oracle` job.
 ```bash
 npm test                   # the suite (the oracle files run when LW_LARAVEL_APP resolves)
 npm run test:corpus        # byte-exact compiler corpus
-node tools/gate.mjs --strict   # docs gate: coverage index, format, code⇄MAP
+node tools/gate.mjs --strict   # docs gate: coverage index, format, code⇄MAP, catalogs
 node tools/bench.mjs       # micro-benchmarks
 node tools/pack-gate.mjs   # the tarball ships every module the build loads
 ```
@@ -54,8 +54,10 @@ npm run test:shadow -- --app /path/to/app --scenarios shadow/scenarios/fresh-app
 ```
 
 and update the docs that describe it (`MAP.md`, `COMPILED.md`, `CHANGELOG.md`).
-The docs gate fails on a stale coverage row, an undocumented module, or an
-undocumented `LW0xx` code, so run it before pushing.
+The docs gate fails on a stale coverage row, an undocumented module, an
+undocumented `LW0xx` code, or a catalog that no longer matches the code's own
+tables and `env.` reads (`docs/D1-SCHEMA.md`, `docs/ENV-SECRETS.md` — run
+`node tools/port-catalog.mjs --write` when it does), so run it before pushing.
 
 ## What a good change looks like
 
