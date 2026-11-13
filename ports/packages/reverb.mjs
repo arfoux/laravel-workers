@@ -28,15 +28,8 @@
 //
 // Free-tier: 0 subrequests — pure HMAC. No D1 involved.
 
-import {
-  isPrivateChannel,
-  readChannelAuthBody,
-  channelAuthRefusal,
-  channelAuthPayload,
-  CHANNEL_AUTH_REQUIRED,
-  CHANNEL_AUTH_NOT_PRIVATE,
-} from '../../kernel/packages/broadcast.mjs';
-import { normalizePortCtx, jsonResponse, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
+import { channelAuthResponse } from '../../kernel/packages/broadcast.mjs';
+import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 
 function reverbConfig(env) {
   const key = env.REVERB_KEY;
@@ -47,30 +40,11 @@ function reverbConfig(env) {
   return { key, secret };
 }
 
-// `Broadcast::routes()` maps POST /broadcasting/auth here. The guard bodies are
-// `kernel/packages/broadcast.mjs`'s (the same ones pusher and echo answer with).
+// `Broadcast::routes()` maps POST /broadcasting/auth here. The block is
+// `channelAuthResponse()` in kernel/packages/broadcast.mjs — reverb and pusher
+// answer with the identical sequence — and this port contributes Reverb's own
+// secret lookup (`REVERB_*`) and its wording when the secrets are missing.
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
-  try {
-    const { key, secret } = reverbConfig(env);
-    const { socketId, channelName } = readChannelAuthBody(ctx);
-    if (!socketId || !channelName) {
-      return channelAuthRefusal(422, CHANNEL_AUTH_REQUIRED);
-    }
-    if (!isPrivateChannel(channelName)) {
-      return channelAuthRefusal(403, CHANNEL_AUTH_NOT_PRIVATE);
-    }
-
-    // Identity comes from the platform guard, never the caller's body:
-    // `PusherBroadcaster::validAuthenticationResponse()` hands `presence_auth()`
-    // `$user->getAuthIdentifier()`, and `Broadcaster::auth()` denies a guarded
-    // (private-/presence-) channel when there is no user. A caller-supplied
-    // `channel_data.user_id` would let anyone join as an arbitrary user.
-    const userId = await guardUserId(ctx);
-    if (userId == null) return unauthorized();
-
-    return channelAuthPayload(key, secret, socketId, channelName, userId);
-  } catch (err) {
-    return jsonResponse(500, { error: String((err && err.message) || err) });
-  }
+  return channelAuthResponse(ctx, () => reverbConfig(env));
 }

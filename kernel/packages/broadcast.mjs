@@ -16,7 +16,7 @@
 
 import { timingSafeEqual } from './webhook.mjs';
 import { hmacSha256Hex } from '../hmac.mjs';
-import { jsonResponse } from './port-ctx.mjs';
+import { jsonResponse, guardUserId, unauthorized } from './port-ctx.mjs';
 
 // A channel is subscribable only when it is private or presence — public
 // channels need no auth token (the SDK returns null for them).
@@ -28,10 +28,14 @@ export function isPrivateChannel(channelName) {
 // ── The `POST /broadcasting/auth` bodies ─────────────────────────────────────
 // Laravel's `Broadcast::routes()` registers one path and three ports answer it:
 // echo (a Sanctum-token client), pusher-php-server and reverb (the platform
-// guard). The ORDER of the guards stays with each port — echo resolves its
-// Bearer token before it reads the body, pusher/reverb check the channel first,
-// the way Laravel's own `PusherBroadcaster::auth()` does — but the BODIES are
-// one rule, so one spelling cannot go stale while the others move.
+// guard). Two of them answer with the SAME block — resolve the app key/secret,
+// read `socket_id` + `channel_name`, refuse a missing pair (422) or a public
+// channel (403), take the presence identity from the platform guard (401 when
+// there is none) and sign the token — so that block lives here once, as
+// `channelAuthResponse()`; `pusher` and `reverb` pass in their own secret lookup
+// (and keep their own "not configured" wording, which is a 500).
+// echo's ORDER is its own (it resolves its Bearer token before it reads the
+// body), so it keeps its handler and reuses only the pieces below.
 //
 // Parity: Laravel denies a channel it cannot authorize by throwing
 // `AccessDeniedHttpException`, which the framework renders as
@@ -55,6 +59,36 @@ export function readChannelAuthBody(ctx) {
 // every port answers with (`jsonResponse`).
 export function channelAuthRefusal(status, message) {
   return jsonResponse(status, { message });
+}
+
+// The whole `POST /broadcasting/auth` block the Pusher-protocol auth ports
+// answer with. `resolveKeys()` is the port's own secret lookup (`env.PUSHER_*`,
+// `env.REVERB_*`), and a throw from it — or from the guard, or from the signer —
+// is the same 500 the ports answered with before.
+export async function channelAuthResponse(ctx, resolveKeys) {
+  try {
+    const { key, secret } = resolveKeys();
+    const { socketId, channelName } = readChannelAuthBody(ctx);
+    if (!socketId || !channelName) {
+      return channelAuthRefusal(422, CHANNEL_AUTH_REQUIRED);
+    }
+    if (!isPrivateChannel(channelName)) {
+      return channelAuthRefusal(403, CHANNEL_AUTH_NOT_PRIVATE);
+    }
+
+    // The channel's identity is the platform guard's, never the caller's: the
+    // PHP SDK's `validAuthenticationResponse()` hands `presence_auth()`
+    // `$user->getAuthIdentifier()`, and Laravel's `auth()` denies a guarded
+    // channel outright when there is no user. Reading `channel_data.user_id`
+    // from the body would let any caller (authenticated or not) join a
+    // private/presence channel as an arbitrary user.
+    const userId = await guardUserId(ctx);
+    if (userId == null) return unauthorized();
+
+    return channelAuthPayload(key, secret, socketId, channelName, userId);
+  } catch (err) {
+    return jsonResponse(500, { error: String((err && err.message) || err) });
+  }
 }
 
 // The 200 the client (Echo) expects — `{ auth }` for a private channel,
