@@ -45,6 +45,7 @@ import {
   callMethodName,
   callArgs,
   argValue,
+  chainSteps,
   isClosureFn,
   closureStatements,
   classFile,
@@ -171,24 +172,6 @@ const withGroupNamespace = (action, namespace) =>
   action && namespace && !action.startsWith('\\') && !action.startsWith(namespace)
     ? namespace + '\\' + action
     : action;
-
-/** The method sequence of a route chain, OUTER call -> INNER call. */
-const chainSteps = (callNode) => {
-  const steps = [];
-  let cur = callNode;
-  const seen = new Set();
-  while (cur && cur.kind === 'call' && !seen.has(cur)) {
-    seen.add(cur);
-    const mm = (cur.what && cur.what.kind === 'propertylookup')
-      ? (cur.what.offset && (cur.what.offset.name || cur.what.offset.value))
-      : (cur.what && cur.what.kind === 'staticlookup')
-        ? (cur.what.offset && (cur.what.offset.name || cur.what.offset.value))
-        : null;
-    steps.push({ method: mm, node: cur, args: callArgs(cur).map(argValue) });
-    cur = cur.what && cur.what.what;
-  }
-  return steps; // outermost first, innermost last (PHP declaration order)
-};
 
 // php-parser's statement kinds for require/include.
 const REQUIRE_KINDS = ['require', 'requireonce', 'include', 'includeonce'];

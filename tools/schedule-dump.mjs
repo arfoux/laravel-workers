@@ -15,7 +15,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import parser from 'php-parser';
 import { resolveAppRoot } from './native-path.mjs';
-import { parsePhpFile, appRouteFiles, callMethodName, callArgs, argValue, loadConfig, readEnvFile, configGet, renestMixedChains } from './static.mjs';
+import { parsePhpFile, appRouteFiles, chainSteps, loadConfig, readEnvFile, configGet, renestMixedChains } from './static.mjs';
 
 const appDir = resolveAppRoot();
 if (!appDir) { process.stderr.write('schedule-dump.mjs: cannot find app root\n'); process.exit(1); }
@@ -193,24 +193,6 @@ const applyStep = (state, method, args) => {
     case 'cron': if (a[0] !== null && a[0] !== undefined) spliceCron(state, a[0]); return true;
     default: return false;
   }
-};
-
-/** Chain steps for a call, outer -> inner. */
-const chainSteps = (callNode) => {
-  const steps = [];
-  let cur = callNode;
-  const seen = new Set();
-  while (cur && cur.kind === 'call' && !seen.has(cur)) {
-    seen.add(cur);
-    const mm = (cur.what && cur.what.kind === 'propertylookup')
-      ? (cur.what.offset && (cur.what.offset.name || cur.what.offset.value))
-      : (cur.what && cur.what.kind === 'staticlookup')
-        ? (cur.what.offset && (cur.what.offset.name || cur.what.offset.value))
-        : null;
-    steps.push({ method: mm, node: cur, args: callArgs(cur).map(argValue) });
-    cur = cur.what && cur.what.what;
-  }
-  return steps;
 };
 
 const inspect = (node, seen = new Set()) => {

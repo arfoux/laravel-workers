@@ -795,6 +795,31 @@ export const argValue = (a) => {
 };
 
 /**
+ * The method sequence of a call chain, OUTER call -> INNER call, as
+ * `[{ method, node, args }]`. `routes-dump` reads `Route::get(...)->middleware(...)`
+ * with it and `schedule-dump` reads `Schedule::command(...)->daily()`; both
+ * describe the same source, so the walk lives here once — the two copies had
+ * already drifted in their doc comments, and a divergence would show up as two
+ * tools disagreeing about one app (#697).
+ */
+export const chainSteps = (callNode) => {
+  const steps = [];
+  let cur = callNode;
+  const seen = new Set();
+  while (cur && cur.kind === 'call' && !seen.has(cur)) {
+    seen.add(cur);
+    const mm = (cur.what && cur.what.kind === 'propertylookup')
+      ? (cur.what.offset && (cur.what.offset.name || cur.what.offset.value))
+      : (cur.what && cur.what.kind === 'staticlookup')
+        ? (cur.what.offset && (cur.what.offset.name || cur.what.offset.value))
+        : null;
+    steps.push({ method: mm, node: cur, args: callArgs(cur).map(argValue) });
+    cur = cur.what && cur.what.what;
+  }
+  return steps; // outermost first, innermost last (PHP declaration order)
+};
+
+/**
  * A closure OR an arrow function. `php-parser` gives them different kinds
  * (`closure` / `arrowfunc`) and a different body shape, and both are legal
  * everywhere Laravel takes a callback: a route handler
