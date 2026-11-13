@@ -1,4 +1,4 @@
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/permission.mjs — port of spatie/laravel-permission v8.5.0 seam.
 //
@@ -70,13 +70,6 @@ export async function ensureSchema(env) {
   }
 }
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(payload),
-  };
-}
 
 async function findRole(env, name) {
   return env.DB.prepare('SELECT id, name FROM roles WHERE name = ? LIMIT 1')

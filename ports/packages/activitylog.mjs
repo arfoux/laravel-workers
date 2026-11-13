@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/activitylog.mjs — port of spatie/laravel-activitylog v4.x seam.
 //
@@ -46,13 +46,6 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(payload),
-  };
-}
 
 function nowIso() {
   return new Date().toISOString();

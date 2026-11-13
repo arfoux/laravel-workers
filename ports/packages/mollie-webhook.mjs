@@ -29,7 +29,7 @@
 //
 // Free tier: 1–2 subrequests + 1 D1 write per webhook; HMAC CPU negligible.
 
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, mapProviderResponse } from '../../kernel/packages/notify-http.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { hmacSha256Hex as signatureFor } from '../../kernel/hmac.mjs';
@@ -44,13 +44,6 @@ import { dateToSqlite } from '../../kernel/db.mjs';
 // `src/Webhooks/SignatureValidator.php::createSignature`), which the
 // `X-Mollie-Signature` header carries (optionally prefixed `sha256=`).
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(payload),
-  };
-}
 
 const now = () => dateToSqlite(new Date());
 

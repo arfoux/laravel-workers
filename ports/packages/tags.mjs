@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/tags.mjs — port of spatie/laravel-tags v4.12.0 seam.
 //
@@ -38,13 +38,6 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(payload),
-  };
-}
 
 // Str::slug — ascii fold is minimal (edge: no full transliteration table);
 // whitespace/punctuation → '-', lowercase, collapse repeats.

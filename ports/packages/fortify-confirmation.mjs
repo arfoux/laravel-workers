@@ -37,7 +37,7 @@
 import bcrypt from 'bcryptjs';
 import { signPath, verifyPath } from '../../kernel/packages/signedurl.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { bytesToHex } from '../../kernel/digest.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
@@ -56,9 +56,6 @@ export async function ensureSchema(env) {
 
 const now = () => dateToSqlite(new Date());
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };
-}
 
 async function sha1hex(text) {
   const d = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(String(text)));

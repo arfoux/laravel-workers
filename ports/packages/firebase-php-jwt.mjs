@@ -32,7 +32,7 @@
 // life to keep the common path at zero subrequests.
 
 import { resolveFetch } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { b64urlToBytes } from '../../kernel/packages/b64url.mjs';
 
 const enc = new TextEncoder();
@@ -169,9 +169,6 @@ function claimsOk(payload, projectId) {
   return null;
 }
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };
-}
 
 // POST /auth/firebase/verify — {idToken} → decoded payload
 export async function handleVerify(ctx, env) {

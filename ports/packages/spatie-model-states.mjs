@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-model-states v2.14.3 — a state field on a model backed
 // by a transition map. In Laravel each state is a subclass of `State`; a model
@@ -72,13 +72,6 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(payload),
-  };
-}
 
 async function findRow(env, id) {
   return env.DB.prepare('SELECT * FROM state_models WHERE id = ?').bind(Number(id)).first();

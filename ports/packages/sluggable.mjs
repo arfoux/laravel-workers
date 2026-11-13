@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/sluggable.mjs — port of spatie/laravel-sluggable v4.0.6 seam.
 //
@@ -28,13 +28,6 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(payload),
-  };
-}
 
 // Str::slug equivalent (see tags.mjs slugify — same edge-safe fold).
 function strSlug(value, separator = '-') {
