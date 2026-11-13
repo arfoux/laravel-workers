@@ -2,6 +2,38 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The broadcasting-auth bodies are one rule, and pusher/reverb answer Laravel's error key
+
+`POST /broadcasting/auth` is a single path that three ports answer — `echo` for a Sanctum-token
+client, `pusher` and `reverb` for the platform guard — so the refusals were written three times and
+had already drifted: `echo` answered with Laravel's error key (`{"message": …}`, the framework's
+`AccessDeniedHttpException` rendering) while `pusher`/`reverb` invented `{"error": …}`; the two hub
+ports also hand-assembled the `{status, headers, body}` JSON triple that `jsonResponse()` had
+replaced everywhere else, and spelled the `401` out instead of calling `unauthorized()`.
+
+The bodies now live once in `kernel/packages/broadcast.mjs` — the module that already signs the token
+for all three. The **order** of the guards deliberately stays with each port (echo resolves its
+Bearer token before it reads the body; pusher/reverb check the channel first, the way Laravel's own
+`PusherBroadcaster::auth()` does), so what is shared is the bodies, not the sequence.
+
+| change | why |
+|---|---|
+| `kernel/packages/broadcast.mjs`: `readChannelAuthBody()`, `channelAuthRefusal()`, `channelAuthPayload()`, `CHANNEL_AUTH_REQUIRED`, `CHANNEL_AUTH_NOT_PRIVATE` | six response bodies and three body-parses became three calls |
+| `ports/packages/echo.mjs`, `pusher.mjs`, `reverb.mjs`: the guards call them; the raw triples are `jsonResponse()`/`unauthorized()` | one spelling of the route's contract cannot go stale in two of three ports |
+| `pusher.mjs`: the `/broadcast` trigger route answers through `jsonResponse()` too | same envelope, same file |
+| `docs/PACKAGE-PORTS.md`: the `/broadcasting/auth` row names all three ports and the body contract | the `422` is the ports' own guard — Laravel has no such case |
+| tests (`packages-echo`, `packages-search-realtime`): the refusal key is asserted, not just the status | the key was the drift |
+
+Behaviour change (disclosed): the `403` and `422` bodies of `pusher` and `reverb` are now
+`{"message": …}` — the key `echo` already used and the key Laravel renders for
+`AccessDeniedHttpException`. The refusal **text** stays the ports' own; Laravel's exception carries
+none.
+
+Evidence: Laravel's `PusherBroadcaster::auth()` (read from the showcase's `vendor/`) denies a
+channel it cannot authorize by throwing `AccessDeniedHttpException`, and adds no `422` case — an
+empty `channel_name` takes the same deny path. The signed tokens are untouched: the auth suites
+still recompute them with `node:crypto` (`createHmac('sha256', secret)`) byte for byte.
+
 ### The `uuid` rule is Laravel's own `Str::isUuid`, and `Str::isUuid()` compiles
 
 `kernel/packages/validate.mjs` — the mini-validator the settings and `spatie/laravel-data` DTO ports

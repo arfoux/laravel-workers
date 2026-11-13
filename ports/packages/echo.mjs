@@ -37,7 +37,14 @@
 // Free-tier: 1 D1 read to resolve the token + 1 D1 read for the membership
 // check. No subrequests (pure HMAC signing).
 
-import { isPrivateChannel, signChannelAuth } from '../../kernel/packages/broadcast.mjs';
+import {
+  isPrivateChannel,
+  readChannelAuthBody,
+  channelAuthRefusal,
+  channelAuthPayload,
+  CHANNEL_AUTH_REQUIRED,
+  CHANNEL_AUTH_NOT_PRIVATE,
+} from '../../kernel/packages/broadcast.mjs';
 import { normalizePortCtx, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { bearerToken, verifyPersonalAccessToken } from '../../kernel/packages/token.mjs';
 
@@ -91,18 +98,15 @@ export default async function handle(ctx, env) {
 
     // 2. Echo posts form-urlencoded (socket_id, channel_name[, channel_data]);
     //    a plain object / URLSearchParams body works identically.
-    const raw = ctx.body && typeof ctx.body === 'string' ? ctx.body : (ctx.body || {});
-    const body = raw && typeof raw.get === 'function' ? raw : new URLSearchParams(raw);
-    const socketId = body.get('socket_id');
-    const channelName = body.get('channel_name');
+    const { socketId, channelName } = readChannelAuthBody(ctx);
     if (!socketId || !channelName) {
-      return json(422, { error: 'socket_id and channel_name are required' });
+      return channelAuthRefusal(422, CHANNEL_AUTH_REQUIRED);
     }
 
     // 3. Public channels are never authed — Echo only POSTs here for
     //    private-/presence- (subscribing a public channel needs no token).
     if (!isPrivateChannel(channelName)) {
-      return json(403, { message: 'channel must be private- or presence-' });
+      return channelAuthRefusal(403, CHANNEL_AUTH_NOT_PRIVATE);
     }
 
     // 4. Membership = the edge's `Broadcast::channel()` closure. No row → denied.
@@ -110,21 +114,13 @@ export default async function handle(ctx, env) {
       'SELECT id FROM channel_memberships WHERE user_id = ? AND channel = ?'
     ).bind(userId, channelName).first();
     if (!member) {
-      return json(403, { message: 'This action is unauthorized.' });
+      return channelAuthRefusal(403, 'This action is unauthorized.');
     }
 
     // 5. Sign the token byte-identical to the pusher/reverb ports. Presence
     //    channels embed the resolved user id (Laravel's `PresenceChannel` shape).
     const { key, secret } = broadcastConfig(env);
-    if (channelName.startsWith('presence-')) {
-      const { auth, channel_data: channelData } = await signChannelAuth(
-        key, secret, socketId, channelName, { user_id: userId },
-      );
-      return json(200, { auth, channel_data: channelData });
-    }
-
-    const { auth } = await signChannelAuth(key, secret, socketId, channelName);
-    return json(200, { auth });
+    return channelAuthPayload(key, secret, socketId, channelName, userId);
   } catch (err) {
     return json(500, { error: String((err && err.message) || err) });
   }
