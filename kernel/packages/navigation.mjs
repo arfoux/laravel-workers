@@ -24,16 +24,6 @@ function toNode(raw) {
   };
 }
 
-function pathMatches(url, currentPath) {
-  if (!url || typeof currentPath !== 'string') return false;
-  const norm = (u) => (u.length > 1 && u.endsWith('/') ? u.slice(0, -1) : u);
-  const urlN = norm(url);
-  const curN = norm(currentPath);
-  if (urlN === curN) return true;
-  // prefix match on segment boundaries only
-  return curN.startsWith(urlN + '/');
-}
-
 // Specificity score for a node URL against the current path:
 //   0 → no match; 1 → prefix match; 2 → exact match. Longest URL wins ties.
 function matchScore(url, currentPath) {

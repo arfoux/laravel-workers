@@ -220,7 +220,6 @@ const inspect = (node, seen = new Set()) => {
     const steps = chainSteps(node);
     if (steps.length) {
       const root = steps[steps.length - 1]; // innermost: Schedule::command/call/exec
-      const isSchedule = (n) => n && n.kind === 'staticlookup' && n.what && n.what.name === 'Schedule';
       const rootWhat = root.node.what;
       const facade = rootWhat && rootWhat.kind === 'staticlookup' ? (rootWhat.what && rootWhat.what.name) : null;
       if (facade === 'Schedule') {

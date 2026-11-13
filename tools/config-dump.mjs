@@ -47,9 +47,6 @@ if (!existsSync(join(appDir, 'artisan'))) {
   process.exit(1);
 }
 
-// Normalise path separators to what PHP emits (forward slashes everywhere).
-const phpPath = (p) => String(p || '').replace(/\\/g, '/');
-
 // Laravel's Env reads the process environment FIRST (Env::getRepository() is
 // immutable), so the build's own child environment — the same one the PHP
 // oracle boots with — has to be the seed here too. Without it a config value

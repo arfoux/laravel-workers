@@ -974,13 +974,6 @@ function collectRuleStrings(node, into) {
   }
 }
 
-// Is the token's NAME a rule the compiled validator does not know? `explode`
-// splits INSIDE a regex parameter too (ValidationRuleParser :92-96), so the
-// trailing half of `regex:/^(a|b)$/` is just an ordinary unknown name here.
-function isUnknownRuleName(name) {
-  return !KNOWN_RULES.has(name);
-}
-
 function unknownRuleMessage(name) {
   return (
     'the ' + name + ' validation rule is unknown to the compiled validator (illuminate/validation has no such ' +
@@ -2156,7 +2149,6 @@ function txCall(node) {
       if (BUILTIN_CALLBACK_FNS.has(n.value)) return 'rt.' + n.value;
       return null;
     };
-    const cbRef = (n) => stringFn(n);
     // The closure/arrow/`null` forms, and any string form above.
     const cbOrNull = (n) => {
       if (n && n.kind === 'nullkeyword') return 'null';

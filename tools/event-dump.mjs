@@ -92,15 +92,6 @@ const scalarDefault = (node) => {
   }
 };
 
-// Fluent builder value extraction needs raw literals (argValue may not keep
-// scalar-only). Guard uniformly for event/class dump purposes.
-const strLit = (n) => {
-  if (n && n.kind === 'string') return n.value;
-  if (typeof n === 'string') return n;
-  if (n && n.kind === 'number') return n.value;
-  return null;
-};
-
 // The container-stub bindings: app providers' bind()/singleton().
 let bindingsGlobal = null;
 const appBindings = () => {
@@ -413,7 +404,6 @@ const listPhpByDir = listPhp;
 
 const events = {};
 const eventsFinal = events;
-const classesFinal = () => classes;
 const mailViewsFinal = [];
 const mailViewsByClassFinal = {};
 const mailableClassesFinal = [];

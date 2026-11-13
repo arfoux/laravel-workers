@@ -1834,7 +1834,6 @@ export async function handleHttp(raw, options = {}) {
         body: '',
       };
     }
-    const has405 = config['errors.405_view'] === true;
     // Laravel keeps the exception's OWN status - 405 - whether or not the app
     // ships an `errors/405` view: `Handler::renderHttpException` renders the
     // view when it exists and `convertExceptionToResponse` otherwise, and that
