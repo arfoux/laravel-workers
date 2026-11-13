@@ -1,7 +1,9 @@
 // kernel/packages/broadcast.mjs — Pusher-protocol broadcast primitives shared by
 // the pusher-php-server and reverb ports. Both packages sign a channel
 // authorization token the exact same way (`{socket_id}:{channel_name}` →
-// HMAC-SHA256 hex, prefixed with the app key), so the crypto lives here once.
+// HMAC-SHA256 hex, prefixed with the app key), so the crypto lives here once —
+// along with the bodies of the `POST /broadcasting/auth` route they and `echo`
+// answer (see the guard section below).
 //
 // Parity target (PHP `Pusher` SDK `socket_auth` / `presence_auth`):
 //   private  → `{key}.{hash(socket_id:channel_name)}`
@@ -14,12 +16,59 @@
 
 import { timingSafeEqual } from './webhook.mjs';
 import { hmacSha256Hex } from '../hmac.mjs';
+import { jsonResponse } from './port-ctx.mjs';
 
 // A channel is subscribable only when it is private or presence — public
 // channels need no auth token (the SDK returns null for them).
 export function isPrivateChannel(channelName) {
   return typeof channelName === 'string'
     && (channelName.startsWith('private-') || channelName.startsWith('presence-'));
+}
+
+// ── The `POST /broadcasting/auth` bodies ─────────────────────────────────────
+// Laravel's `Broadcast::routes()` registers one path and three ports answer it:
+// echo (a Sanctum-token client), pusher-php-server and reverb (the platform
+// guard). The ORDER of the guards stays with each port — echo resolves its
+// Bearer token before it reads the body, pusher/reverb check the channel first,
+// the way Laravel's own `PusherBroadcaster::auth()` does — but the BODIES are
+// one rule, so one spelling cannot go stale while the others move.
+//
+// Parity: Laravel denies a channel it cannot authorize by throwing
+// `AccessDeniedHttpException`, which the framework renders as
+// `{"message": "<exception message>"}` — status 403, key `message`. The ports'
+// TEXT is their own (Laravel's exception carries none), which is why the two
+// messages below are spelled here once. The 422 is the ports' own guard:
+// Laravel has no such case (an empty `channel_name` takes the 403 path too) —
+// disclosed in docs/PACKAGE-PORTS.md.
+export const CHANNEL_AUTH_REQUIRED = 'socket_id and channel_name are required';
+export const CHANNEL_AUTH_NOT_PRIVATE = 'channel must be private- or presence-';
+
+// The `socket_id` / `channel_name` pair out of a form-urlencoded body (a plain
+// object or an already-parsed `URLSearchParams` works identically).
+export function readChannelAuthBody(ctx) {
+  const raw = typeof ctx.body === 'string' ? ctx.body : (ctx.body || {});
+  const body = raw && typeof raw.get === 'function' ? raw : new URLSearchParams(raw);
+  return { socketId: body.get('socket_id'), channelName: body.get('channel_name') };
+}
+
+// A refusal on the auth route: Laravel's error key + the no-store JSON envelope
+// every port answers with (`jsonResponse`).
+export function channelAuthRefusal(status, message) {
+  return jsonResponse(status, { message });
+}
+
+// The 200 the client (Echo) expects — `{ auth }` for a private channel,
+// `{ auth, channel_data }` for a presence one. The presence `user_id` is the
+// resolved guard identity, never a value from the request body.
+export async function channelAuthPayload(key, secret, socketId, channelName, userId) {
+  if (String(channelName).startsWith('presence-')) {
+    const { auth, channel_data: channelData } = await signChannelAuth(
+      key, secret, socketId, channelName, { user_id: userId },
+    );
+    return jsonResponse(200, { auth, channel_data: channelData });
+  }
+  const { auth } = await signChannelAuth(key, secret, socketId, channelName);
+  return jsonResponse(200, { auth });
 }
 
 // Sign a private/presence channel auth token. `userData` (presence only) is

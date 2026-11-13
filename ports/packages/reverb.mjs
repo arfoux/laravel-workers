@@ -30,9 +30,13 @@
 
 import {
   isPrivateChannel,
-  signChannelAuth,
+  readChannelAuthBody,
+  channelAuthRefusal,
+  channelAuthPayload,
+  CHANNEL_AUTH_REQUIRED,
+  CHANNEL_AUTH_NOT_PRIVATE,
 } from '../../kernel/packages/broadcast.mjs';
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 function reverbConfig(env) {
   const key = env.REVERB_KEY;
@@ -43,19 +47,18 @@ function reverbConfig(env) {
   return { key, secret };
 }
 
-// `Broadcast::routes()` maps POST /broadcasting/auth here.
+// `Broadcast::routes()` maps POST /broadcasting/auth here. The guard bodies are
+// `kernel/packages/broadcast.mjs`'s (the same ones pusher and echo answer with).
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   try {
     const { key, secret } = reverbConfig(env);
-    const body = typeof ctx.body === 'string' ? new URLSearchParams(ctx.body) : new URLSearchParams(ctx.body || {});
-    const socketId = body.get('socket_id');
-    const channelName = body.get('channel_name');
+    const { socketId, channelName } = readChannelAuthBody(ctx);
     if (!socketId || !channelName) {
-      return { status: 422, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'socket_id and channel_name are required' }) };
+      return channelAuthRefusal(422, CHANNEL_AUTH_REQUIRED);
     }
     if (!isPrivateChannel(channelName)) {
-      return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'channel must be private- or presence-' }) };
+      return channelAuthRefusal(403, CHANNEL_AUTH_NOT_PRIVATE);
     }
 
     // Identity comes from the platform guard, never the caller's body:
@@ -64,26 +67,10 @@ export default async function handle(ctx, env) {
     // (private-/presence-) channel when there is no user. A caller-supplied
     // `channel_data.user_id` would let anyone join as an arbitrary user.
     const userId = await guardUserId(ctx);
-    if (userId == null) {
-      return { status: 401, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Unauthenticated.' }) };
-    }
+    if (userId == null) return unauthorized();
 
-    if (channelName.startsWith('presence-')) {
-      const { auth, channel_data: channelData } = await signChannelAuth(key, secret, socketId, channelName, { user_id: userId });
-      return {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ auth, channel_data: channelData }),
-      };
-    }
-
-    const { auth } = await signChannelAuth(key, secret, socketId, channelName);
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ auth }),
-    };
+    return channelAuthPayload(key, secret, socketId, channelName, userId);
   } catch (err) {
-    return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: String((err && err.message) || err) }) };
+    return jsonResponse(500, { error: String((err && err.message) || err) });
   }
 }

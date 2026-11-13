@@ -135,6 +135,7 @@ test('echo: public channel never authed → 403', async () => {
   await grant(db, { userId: 42, channel: 'public-news' }); // even if somehow granted
   const res = await handle(ctx({ auth: plain, channelName: 'public-news' }), { ...ENV, DB: db });
   assert.equal(res.status, 403);
+  assert.equal(json(res).message, 'channel must be private- or presence-');
 });
 
 // ---- missing / invalid token -------------------------------------------------
@@ -184,6 +185,7 @@ test('echo: valid token but missing socket_id/channel_name → 422', async () =>
   const plain = await seedToken(db, { id: 7, userId: 42 });
   const res = await handle(ctx({ auth: plain, body: new URLSearchParams({ socket_id: '1.1' }) }), { ...ENV, DB: db });
   assert.equal(res.status, 422);
+  assert.equal(json(res).message, 'socket_id and channel_name are required');
 });
 
 test('echo: unconfigured signing secret → 500', async () => {

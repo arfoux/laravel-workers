@@ -292,6 +292,13 @@ test('pusher: guarded channel with no identity → 401; public channel → 403; 
   assert.equal(pub.status, 403);
   const missing = await handleBroadcastingAuth({ body: new URLSearchParams({ socket_id: '1.1' }), request: {}, user_id: 1 }, env);
   assert.equal(missing.status, 422);
+  // All three hubs answer Laravel's error key on this route (`message`, the
+  // `AccessDeniedHttpException` rendering). pusher/reverb used to spell the two
+  // refusals `{ error }` while echo spelled them `{ message }` — the drift the
+  // shared guard in kernel/packages/broadcast.mjs removed.
+  assert.equal(json(anon).message, 'Unauthenticated.');
+  assert.equal(json(pub).message, 'channel must be private- or presence-');
+  assert.equal(json(missing).message, 'socket_id and channel_name are required');
 });
 
 test('pusher: triggerEvent signs REST query byte-parity and POSTs to api-{cluster}', async () => {
@@ -367,6 +374,9 @@ test('reverb: presence channel returns the guard identity, not the body channel_
   assert.equal(anon.status, 401);
   const pub = await reverb({ body: new URLSearchParams({ socket_id: '1.1', channel_name: 'public-x' }), request: {} }, env);
   assert.equal(pub.status, 403);
+  // Same error key as pusher and echo (see the pusher guard test).
+  assert.equal(json(anon).message, 'Unauthenticated.');
+  assert.equal(json(pub).message, 'channel must be private- or presence-');
 });
 
 test('reverb: missing secrets → 500', async () => {

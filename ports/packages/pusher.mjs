@@ -32,10 +32,14 @@
 
 import {
   isPrivateChannel,
-  signChannelAuth,
   buildAuthQueryString,
+  readChannelAuthBody,
+  channelAuthRefusal,
+  channelAuthPayload,
+  CHANNEL_AUTH_REQUIRED,
+  CHANNEL_AUTH_NOT_PRIVATE,
 } from '../../kernel/packages/broadcast.mjs';
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(`
@@ -67,14 +71,12 @@ function pusherConfig(env) {
 export async function handleBroadcastingAuth(ctx, env) {
   try {
     const { key, secret } = pusherConfig(env);
-    const body = typeof ctx.body === 'string' ? new URLSearchParams(ctx.body) : new URLSearchParams(ctx.body || {});
-    const socketId = body.get('socket_id');
-    const channelName = body.get('channel_name');
+    const { socketId, channelName } = readChannelAuthBody(ctx);
     if (!socketId || !channelName) {
-      return { status: 422, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'socket_id and channel_name are required' }) };
+      return channelAuthRefusal(422, CHANNEL_AUTH_REQUIRED);
     }
     if (!isPrivateChannel(channelName)) {
-      return { status: 403, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'channel must be private- or presence-' }) };
+      return channelAuthRefusal(403, CHANNEL_AUTH_NOT_PRIVATE);
     }
 
     // The channel's identity is the platform guard's, never the caller's: the
@@ -84,27 +86,11 @@ export async function handleBroadcastingAuth(ctx, env) {
     // `channel_data.user_id` from the body would let any caller (authenticated
     // or not) join a private/presence channel as an arbitrary user.
     const userId = await guardUserId(ctx);
-    if (userId == null) {
-      return { status: 401, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Unauthenticated.' }) };
-    }
+    if (userId == null) return unauthorized();
 
-    if (channelName.startsWith('presence-')) {
-      const { auth, channel_data: channelData } = await signChannelAuth(key, secret, socketId, channelName, { user_id: userId });
-      return {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ auth, channel_data: channelData }),
-      };
-    }
-
-    const { auth } = await signChannelAuth(key, secret, socketId, channelName);
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ auth }),
-    };
+    return channelAuthPayload(key, secret, socketId, channelName, userId);
   } catch (err) {
-    return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: String((err && err.message) || err) }) };
+    return jsonResponse(500, { error: String((err && err.message) || err) });
   }
 }
 
@@ -139,13 +125,11 @@ export default async function handle(ctx, env) {
     // into any channel, including private ones. `triggerEvent()` below stays
     // ungated for app code that calls the module directly; the HTTP route
     // requires an authenticated caller.
-    if ((await guardUserId(ctx)) == null) {
-      return { status: 401, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Unauthenticated.' }) };
-    }
+    if ((await guardUserId(ctx)) == null) return unauthorized();
     const body = typeof ctx.body === 'string' ? JSON.parse(ctx.body || '{}') : (ctx.body || {});
     const { channel, name, data } = body;
     if (!channel || !name) {
-      return { status: 422, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'channel and name are required' }) };
+      return jsonResponse(422, { error: 'channel and name are required' });
     }
     const fetchImpl = ctx.fetchImpl ?? globalThis.fetch;
     const result = await triggerEvent(env, { channel, name, data: data ?? {} }, fetchImpl);
@@ -159,13 +143,9 @@ export default async function handle(ctx, env) {
       } catch { /* observability only */ }
     }
 
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ok: true, event_ids: result?.event_ids ?? {} }),
-    };
+    return jsonResponse(200, { ok: true, event_ids: result?.event_ids ?? {} });
   } catch (err) {
-    return { status: 502, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: String((err && err.message) || err) }) };
+    return jsonResponse(502, { error: String((err && err.message) || err) });
   }
 }
 
