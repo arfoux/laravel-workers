@@ -397,6 +397,33 @@ export function parsePhpFile(file) {
   return { namespace, imports, classes, source };
 }
 
+// --- shared AST helpers ----------------------------------------------------
+// The class dump, the event dump and the route dump each parsed and resolved
+// names the same way. These live once so a fix cannot miss a copy (#697).
+
+// The PHP builtin type names: a parameter whose type is one of these is not a
+// class (dumped as `builtin`, never resolved).
+export const PHP_BUILTIN_TYPES = new Set(['int', 'float', 'string', 'bool', 'array', 'callable', 'iterable', 'object', 'mixed', 'void', 'null', 'true', 'false']);
+
+/** Is this type node PHP's `null` (a union member to drop)? */
+export const isNullType = (t) => {
+  if (!t) return false;
+  if (t.kind === 'typereference') return (t.name || t.raw) === 'null';
+  if (t.kind === 'name') return (t.name || '') === 'null';
+  return false;
+};
+
+/** The FQCN of a class node `c` in `parsed` (namespace-qualified). */
+export const fullName = (parsed, c) => ((parsed && parsed.namespace ? parsed.namespace + '\\' : '') + (c && c.name ? nodeName(c.name) : ''));
+
+// parsePhpFile, memoized per file: a tool parses the same file many times (once
+// per referencing class/route) and the parse is pure, so one cache serves all.
+const parseCache = new Map();
+export function parsedOf(file) {
+  if (!parseCache.has(file)) parseCache.set(file, parsePhpFile(file));
+  return parseCache.get(file);
+}
+
 /**
  * Evaluate a PHP class-constant expression to a scalar, or null (== PHP's
  * "not a scalar" filter). Node kinds follow php-parser 3.x.

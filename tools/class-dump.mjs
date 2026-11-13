@@ -7,25 +7,15 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveAppRoot } from './native-path.mjs';
-import { classFile, parsePhpFile, evalConstantExpr, nodeName, appPsr4Dirs } from './static.mjs';
+import { classFile, evalConstantExpr, nodeName, appPsr4Dirs, PHP_BUILTIN_TYPES as BUILTINS, isNullType, fullName, parsedOf } from './static.mjs';
 
 const appDir = resolveAppRoot();
 if (!appDir) { process.stderr.write('class-dump.mjs: cannot find app root\n'); process.exit(1); }
-
-const BUILTINS = new Set(['int', 'float', 'string', 'bool', 'array', 'callable', 'iterable', 'object', 'mixed', 'void', 'null', 'true', 'false']);
 
 const normalize = (p) => p.replace(/\\/g, '/');
 // The app's own source roots = the composer `App\` mapping (`app/` in the
 // skeleton, `src/` when the prefix is remapped).
 const appPrefixes = appPsr4Dirs(appDir).map((d) => normalize(d) + '/');
-
-/** Is this type node PHP's `null` (a union member)? */
-const isNullType = (t) => {
-  if (!t) return false;
-  if (t.kind === 'typereference') return (t.name || t.raw) === 'null';
-  if (t.kind === 'name') return (t.name || '') === 'null';
-  return false;
-};
 
 /** Resolve a parameter type node to {fqcn, builtin} or null. */
 const typeInfo = (type, parsed) => {
@@ -81,12 +71,6 @@ const scalarDefault = (node, ctx) => {
   return undefined;
 };
 
-const parseCache = new Map();
-const parsedOf = (file) => {
-  if (!parseCache.has(file)) parseCache.set(file, parsePhpFile(file));
-  return parseCache.get(file);
-};
-
 /** Resolve a `use`-aware name node (param type, extends target) to an FQCN. */
 const resolveFqcn = (node, parsed) => {
   if (!node || !parsed) return null;
@@ -102,7 +86,6 @@ const resolveFqcn = (node, parsed) => {
   if (parsed.namespace && !t.includes('\\')) return parsed.namespace + '\\' + t;
   return t;
 };
-const fullName = (parsed, c) => ((parsed && parsed.namespace ? parsed.namespace + '\\' : '') + (c && c.name ? nodeName(c.name) : ''));
 const findCls = (parsed, fqcn) => (parsed && !parsed.error ? (parsed.classes || []).find((c) => fullName(parsed, c) === fqcn) || null : null);
 
 /** Find the AST `__construct` node for a class, walking its `extends` chain. */
