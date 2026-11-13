@@ -41,7 +41,7 @@ import {
 } from '../auth.mjs';
 import { CookieJar, PhpSessionStore } from '../session.mjs';
 import { serializeCookie } from '../cookies.mjs';
-import { hmacSha256Hex, sha1Hex } from '../digest.mjs';
+import { hmacSha256HexSync, sha1Hex } from '../digest.mjs';
 import { Model } from '../model.mjs';
 import { oracleAppRoot, oracleDbPath, oracleSkip } from './oracle-app.mjs';
 import { d1 } from './_helpers.mjs';
@@ -842,8 +842,8 @@ test('auth: SessionGuard + middleware end-to-end parity', { skip: noSqlite || no
     remember_token: null,
   });
   const resumeToken = 'A'.repeat(60);
-  const resumeValue = `1|${resumeToken}|${hmacSha256Hex(HASH12, hashKey)}`;
-  const badHashValue = `1|${resumeToken}|${hmacSha256Hex(HASH10, hashKey)}`;
+  const resumeValue = `1|${resumeToken}|${hmacSha256HexSync(HASH12, hashKey)}`;
+  const badHashValue = `1|${resumeToken}|${hmacSha256HexSync(HASH10, hashKey)}`;
 
   const runs = [
     { label: 'baseline', input: baselineInput, oracle: baseline },
@@ -1034,12 +1034,12 @@ test('auth: SessionGuard + middleware end-to-end parity', { skip: noSqlite || no
       assert.ok(await js.hasher.check('secret', jsHash), `${run.label}: js stored hash verifies`);
       assert.equal(
         js.rawQueued[1][0].value,
-        `1|${resumeToken}|${hmacSha256Hex(jsHash, hashKey)}`,
+        `1|${resumeToken}|${hmacSha256HexSync(jsHash, hashKey)}`,
         `${run.label}: js recaller mac after rehash`
       );
       assert.equal(
         oracle.snapshots[1].queued[0].value,
-        `1|${resumeToken}|${hmacSha256Hex(phpHash, hashKey)}`,
+        `1|${resumeToken}|${hmacSha256HexSync(phpHash, hashKey)}`,
         `${run.label}: php recaller mac after rehash`
       );
     }

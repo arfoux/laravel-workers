@@ -383,12 +383,18 @@ export function sha256Hex(str) {
 }
 
 /**
- * PHP hash_hmac('sha256', $data, $key, false) — lowercase hex.
+ * PHP hash_hmac('sha256', $data, $key, false) — lowercase hex, SYNCHRONOUS.
  *
  * String inputs follow PHP string semantics (UTF-8 bytes); keys longer than
  * the 64-byte block size are hashed down first (RFC 2104).
+ *
+ * The `...Sync` suffix is load-bearing: `kernel/hmac.mjs` owns a second
+ * `hmacSha256Hex` with the SAME name but an async signature and the arguments
+ * the other way round (`(secret, message)`, WebCrypto). Importing the wrong
+ * module then reads as a value where a `Promise` arrives, or as a MAC over
+ * swapped inputs - both silent. One name per contract makes it loud.
  */
-export function hmacSha256Hex(data, key) {
+export function hmacSha256HexSync(data, key) {
   const blockSize = 64;
   let k = utf8Bytes(key ?? '');
   if (k.length > blockSize) k = sha256Bytes(k);
@@ -404,4 +410,4 @@ export function hmacSha256Hex(data, key) {
   return bytesToHex(sha256Bytes(concatBytes(opad, inner)));
 }
 
-export default { bytesToHex, timingSafeEqual, base64ToBytes, bytesToBase64, sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256Hex };
+export default { bytesToHex, timingSafeEqual, base64ToBytes, bytesToBase64, sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256HexSync };

@@ -4,6 +4,12 @@
 // is async, so every caller here is async. The digest is byte-identical to PHP
 // (verified against the vendor oracle in the package tests).
 //
+// `kernel/digest.mjs` carries the SYNCHRONOUS twin of this rule — a manual
+// RFC 2104 implementation used where the caller cannot await (the password-hash
+// MAC in `auth.mjs`). It is named `hmacSha256HexSync` on purpose: the two
+// written the same way would take their arguments in opposite orders and one of
+// them returns a `Promise`, so a wrong import reads as a silent bug.
+//
 // This rule was written five times — the webhook verifiers
 // (packages/webhook.mjs), the Pusher signers (packages/broadcast.mjs), the
 // signed-value/URL ports (packages/signedurl.mjs), the Mollie webhook
