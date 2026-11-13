@@ -1,4 +1,6 @@
-// kernel/hmac.mjs — the one async HMAC-SHA256 → lowercase-hex primitive.
+// kernel/hmac.mjs — the one async HMAC-SHA256 primitive at the edge, in every
+// encoding a caller needs: raw bytes, lowercase hex, base64 (and base64url via
+// `hmacSha256Bytes` + `packages/b64url.mjs`, which is what the URL signer does).
 //
 // PHP's `hash_hmac('sha256', $data, $key)` is synchronous; WebCrypto's sign()
 // is async, so every caller here is async. The digest is byte-identical to PHP
@@ -22,12 +24,15 @@ import { bytesToHex, bytesToBase64 } from './digest.mjs';
 const enc = new TextEncoder();
 
 /**
- * HMAC-SHA256 over `message`, keyed with `secret`, as lowercase hex.
+ * HMAC-SHA256 over `message`, keyed with `secret`, as raw bytes — the WebCrypto
+ * `importKey`/`sign` pair, written once. Everything below (and the URL signer's
+ * base64url shape) encodes these bytes differently; the signature itself is the
+ * same rule, so it lives once (#697).
  * @param {string} secret
  * @param {string} message
- * @returns {Promise<string>}
+ * @returns {Promise<Uint8Array>}
  */
-export async function hmacSha256Hex(secret, message) {
+export async function hmacSha256Bytes(secret, message) {
   const key = await crypto.subtle.importKey(
     'raw',
     enc.encode(String(secret)),
@@ -36,7 +41,17 @@ export async function hmacSha256Hex(secret, message) {
     ['sign']
   );
   const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  return bytesToHex(new Uint8Array(sig));
+  return new Uint8Array(sig);
+}
+
+/**
+ * HMAC-SHA256 over `message`, keyed with `secret`, as lowercase hex.
+ * @param {string} secret
+ * @param {string} message
+ * @returns {Promise<string>}
+ */
+export async function hmacSha256Hex(secret, message) {
+  return bytesToHex(await hmacSha256Bytes(secret, message));
 }
 
 /**
@@ -51,15 +66,7 @@ export async function hmacSha256Hex(secret, message) {
  * @returns {Promise<string>}
  */
 export async function hmacSha256Base64(secret, message) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(String(secret)),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  return bytesToBase64(new Uint8Array(sig));
+  return bytesToBase64(await hmacSha256Bytes(secret, message));
 }
 
-export default { hmacSha256Hex, hmacSha256Base64 };
+export default { hmacSha256Bytes, hmacSha256Hex, hmacSha256Base64 };
