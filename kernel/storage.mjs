@@ -9,6 +9,7 @@
 //                        runtime fails loud instead of losing writes).
 import { timingSafeEqual } from './encrypter.mjs';
 import { hmacSha256Hex as hmacHex } from './hmac.mjs';
+import { base64ToBytes, bytesToBase64 } from './digest.mjs';
 
 // The D1 blob store: one row per object.
 export const BLOB_TABLE = 'lw_blobs';
@@ -20,38 +21,8 @@ export const BLOB_DDL =
 export const MAX_BLOB_BYTES = 1500000;
 // A binary object in the D1 blob store: the row is TEXT, so the bytes are
 // base64-encoded with this marker (the R2 path stores the bytes as they are).
+// The codec itself is digest.mjs's (the one base64 <-> bytes rule, #697).
 const B64_MARKER = 'lw-b64:';
-
-// The base64 of the bytes (the runtime has no Buffer: btoa() is latin1 only).
-const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-function bytesToBase64(bytes) {
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b0 = bytes[i];
-    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
-    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
-    out += B64_CHARS[b0 >> 2];
-    out += B64_CHARS[((b0 & 3) << 4) | (b1 >> 4)];
-    out += i + 1 < bytes.length ? B64_CHARS[((b1 & 15) << 2) | (b2 >> 6)] : '=';
-    out += i + 2 < bytes.length ? B64_CHARS[b2 & 63] : '=';
-  }
-  return out;
-}
-function base64ToBytes(text) {
-  const clean = String(text).replace(/[^A-Za-z0-9+/]/g, '');
-  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
-  let p = 0;
-  for (let i = 0; i < clean.length; i += 4) {
-    const c0 = B64_CHARS.indexOf(clean[i]);
-    const c1 = B64_CHARS.indexOf(clean[i + 1]);
-    const c2 = B64_CHARS.indexOf(clean[i + 2]);
-    const c3 = B64_CHARS.indexOf(clean[i + 3]);
-    if (p < out.length) out[p++] = (c0 << 2) | (c1 >> 4);
-    if (p < out.length) out[p++] = ((c1 & 15) << 4) | (c2 >> 2);
-    if (p < out.length) out[p++] = ((c2 & 3) << 6) | c3;
-  }
-  return out;
-}
 
 // The table check is cached per D1 binding (one probe per isolate, not per
 // request): the probe succeeds when the table exists, otherwise it is created.

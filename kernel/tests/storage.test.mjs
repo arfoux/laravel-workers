@@ -131,3 +131,53 @@ test('the D1 blob cap is enforced (MAX_BLOB_BYTES)', () => {
   // write never silently truncates.
   assert.equal(MAX_BLOB_BYTES, 1500000);
 });
+
+test('the D1 driver keeps bytes in the row as lw-b64:<base64>, read back byte-exact', async () => {
+  // A D1 row is TEXT, so a binary object is stored base64-encoded behind a
+  // marker; the marker is what tells the reader to decode instead of handing
+  // the app the encoded text. The base64 is the plain standard alphabet (the
+  // one every version of the store has written), so rows written before a
+  // deploy stay readable — that is a cross-version contract, not an internal
+  // detail, hence the pinned literal.
+  const rows = new Map();
+  const stmt = (sql, args = []) => ({
+    async run() {
+      if (/INSERT OR REPLACE/.test(sql)) {
+        rows.set(args[0], { body: args[1], size: args[2] });
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    },
+    async first() {
+      if (/SELECT 1 FROM/.test(sql)) {
+        if (rows.size === 0) throw new Error('no such table: lw_blobs');
+        return { 1: 1 };
+      }
+      const row = rows.get(args[0]);
+      return row ? { body: row.body } : null;
+    },
+    bind: (...bound) => stmt(sql, bound),
+  });
+  const storage = createStorage({ d1: { prepare: (sql) => stmt(sql) } });
+
+  // `iVBORw0=` is the base64 of the 5-byte PNG header above.
+  await storage.put('img/logo.png', PNG_HEADER);
+  assert.equal(rows.get('img/logo.png').body, 'lw-b64:iVBORw0=');
+  assert.equal(rows.get('img/logo.png').size, PNG_HEADER.length);
+
+  // Every padding phase (len % 3 = 1, 2, 0), and a body big enough to be a
+  // real file, must survive the round trip byte-exact.
+  for (const len of [1, 2, 3, 4, 5, 1024]) {
+    const bytes = Uint8Array.from({ length: len }, (_, i) => (i * 37 + 11) & 0xff);
+    const key = 'blob/' + len + '.bin';
+    await storage.put(key, bytes);
+    assert.equal(rows.get(key).body, 'lw-b64:' + Buffer.from(bytes).toString('base64'));
+    assert.equal(rows.get(key).size, len);
+    assert.deepEqual(Array.from(await storage.getBytes(key)), Array.from(bytes));
+  }
+
+  // A text object carries no marker: it is stored raw and read as text.
+  await storage.put('notes/a.txt', 'héllo');
+  assert.equal(rows.get('notes/a.txt').body, 'héllo');
+  assert.equal(await storage.getText('notes/a.txt'), 'héllo');
+});
