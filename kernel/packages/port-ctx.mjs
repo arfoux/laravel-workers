@@ -192,3 +192,17 @@ export function readPortContext(ctx = {}) {
     request: ctx && ctx.request,
   };
 }
+
+/**
+ * The JSON envelope a route port answers with: `content-type: application/json`
+ * and `cache-control: no-store` (a port response is per-request state, never
+ * cacheable). The rule lives here once — the same body was copied into every
+ * port that answers JSON, and the copies drifted.
+ */
+export function jsonResponse(status, payload) {
+  return {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    body: JSON.stringify(payload),
+  };
+}

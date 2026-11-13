@@ -51,7 +51,7 @@
 import { signJwt, jwks as jwksExport, verifyPkce } from '../../kernel/packages/passport.mjs';
 import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { bytesToHex } from '../../kernel/digest.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
@@ -107,9 +107,6 @@ const sha256hex = async (text) => {
   return bytesToHex(new Uint8Array(d));
 };
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };
-}
 
 function keys(env) {
   const priv = env.PASSPORT_PRIVATE_KEY;

@@ -31,7 +31,7 @@
 import bcrypt from 'bcryptjs';
 import { bearerToken } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { b64url, b64urlToBytes } from '../../kernel/packages/b64url.mjs';
 
 // Re-exported: these were this port's public surface before the shared
@@ -103,9 +103,6 @@ export async function ensureSchema(env) {
   )`).run();
 }
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };
-}
 
 function isFresh(payload) {
   const nowSec = Math.floor(Date.now() / 1000);

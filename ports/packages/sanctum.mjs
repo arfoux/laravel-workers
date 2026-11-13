@@ -33,7 +33,7 @@ import {
 } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import bcrypt from 'bcryptjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 // ---------------------------------------------------------------------------
@@ -62,9 +62,6 @@ export async function ensureSchema(env) {
 
 const now = () => dateToSqlite(new Date());
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };
-}
 
 // Resolve the caller: an existing Bearer token (re-auth) OR email+password.
 // Returns `{ user }` on success, `{ error }` (a Response) on failure.

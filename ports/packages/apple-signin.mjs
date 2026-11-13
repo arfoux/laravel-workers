@@ -34,17 +34,10 @@
 // decode-only behaviour as Socialite's AppleProvider; the firebase-php-jwt port
 // carries the JWKS path when an app wants that hardening.
 
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { mintClientSecret, decodeIdToken, APPLE_TOKEN_URL } from '../../kernel/packages/apple.mjs';
 import { resolveFetch, formUrlEncoded } from '../../kernel/packages/notify-http.mjs';
 
-function json(status, payload) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(payload),
-  };
-}
 
 // Apple's form body is urlencoded. normalizePortCtx surfaces the JSON bag only;
 // `ctx.body` (the test/injected shape) already carries the fields as an object

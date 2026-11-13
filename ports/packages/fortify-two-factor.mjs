@@ -48,7 +48,7 @@ import {
   recoveryCodes,
   verifyTotp,
 } from '../../kernel/packages/totp.mjs';
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
@@ -68,9 +68,6 @@ export async function ensureSchema(env) {
 
 const now = () => dateToSqlite(new Date());
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };
-}
 
 async function userById(env, id) {
   if (id == null) return null;
