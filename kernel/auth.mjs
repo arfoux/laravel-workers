@@ -34,7 +34,7 @@
 // exactly like their PHP counterparts.
 
 import bcrypt from 'bcryptjs';
-import { sha1Hex, hmacSha256Hex } from './digest.mjs';
+import { sha1Hex, hmacSha256HexSync } from './digest.mjs';
 import { phpRandomString, phpTruthy } from './session.mjs';
 import { phpFalsy } from './ratelimit.mjs';
 import { timingSafeEqual } from './hash.mjs';
@@ -896,7 +896,7 @@ export class SessionGuard {
   }
 
   hashPasswordForCookie(passwordHash) {
-    return hmacSha256Hex(passwordHash ?? '', this.hashKey ?? 'base-key-for-password-hash-mac');
+    return hmacSha256HexSync(passwordHash ?? '', this.hashKey ?? 'base-key-for-password-hash-mac');
   }
 
   async logout() {
