@@ -16,15 +16,14 @@
 
 import { timingSafeEqual } from './webhook.mjs';
 import { b64url } from './b64url.mjs';
-
-const enc = new TextEncoder();
+import { hmacSha256Bytes } from '../hmac.mjs';
 
 // Sign the given `url` for `expiresSeconds` from now. Returns the signed URL.
 export async function sign(url, expiresSeconds, secret) {
   const expires = Math.floor(Date.now() / 1000) + Number(expiresSeconds);
   const sep = String(url).includes('?') ? '&' : '?';
   const message = `${url}${sep}expires=${expires}`;
-  const signature = await hmacB64url(secret, message);
+  const signature = b64url(await hmacSha256Bytes(secret, message));
   return `${message}&signature=${signature}`;
 }
 
@@ -41,18 +40,6 @@ export async function validate(url, secret, { now = Math.floor(Date.now() / 1000
   const expires = Number(expMatch[1]);
   if (now > expires) return { valid: false, expired: true };
   const unsignedUrl = url.replace(/[?&]signature=[^&]+/, '');
-  const expect = await hmacB64url(secret, unsignedUrl);
+  const expect = b64url(await hmacSha256Bytes(secret, unsignedUrl));
   return timingSafeEqual(expect, signature) ? { valid: true } : { valid: false };
-}
-
-async function hmacB64url(secret, message) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(String(secret)),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  return b64url(new Uint8Array(sig));
 }
