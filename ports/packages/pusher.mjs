@@ -31,13 +31,8 @@
 // which the SDK's `triggerBatch` maps 1:1 onto and this port preserves.
 
 import {
-  isPrivateChannel,
   buildAuthQueryString,
-  readChannelAuthBody,
-  channelAuthRefusal,
-  channelAuthPayload,
-  CHANNEL_AUTH_REQUIRED,
-  CHANNEL_AUTH_NOT_PRIVATE,
+  channelAuthResponse,
 } from '../../kernel/packages/broadcast.mjs';
 import { normalizePortCtx, jsonResponse, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
@@ -66,32 +61,14 @@ function pusherConfig(env) {
 
 // ── Channel auth (`POST /broadcasting/auth`) ─────────────────────────────────
 // Laravel's `Broadcast::routes()` registers this as a plain POST; the compiled
-// rung answers it and WebCrypto signs the token. Returns Echo's expected body
-// `{ auth }` for private channels, `{ auth, channel_data }` for presence.
+// rung answers it and WebCrypto signs the token. The block is
+// `channelAuthResponse()` in kernel/packages/broadcast.mjs — pusher and reverb
+// answer with the identical sequence, so it is spelled there once; this port
+// contributes its own secret lookup (`PUSHER_*`) and its own wording when the
+// secrets are missing. Returns Echo's expected body `{ auth }` for private
+// channels, `{ auth, channel_data }` for presence.
 export async function handleBroadcastingAuth(ctx, env) {
-  try {
-    const { key, secret } = pusherConfig(env);
-    const { socketId, channelName } = readChannelAuthBody(ctx);
-    if (!socketId || !channelName) {
-      return channelAuthRefusal(422, CHANNEL_AUTH_REQUIRED);
-    }
-    if (!isPrivateChannel(channelName)) {
-      return channelAuthRefusal(403, CHANNEL_AUTH_NOT_PRIVATE);
-    }
-
-    // The channel's identity is the platform guard's, never the caller's: the
-    // PHP SDK's `presence_auth()` receives `$user->getAuthIdentifier()` from
-    // `PusherBroadcaster::validAuthenticationResponse()`, and Laravel's
-    // `auth()` denies a guarded channel outright when there is no user. Reading
-    // `channel_data.user_id` from the body would let any caller (authenticated
-    // or not) join a private/presence channel as an arbitrary user.
-    const userId = await guardUserId(ctx);
-    if (userId == null) return unauthorized();
-
-    return channelAuthPayload(key, secret, socketId, channelName, userId);
-  } catch (err) {
-    return jsonResponse(500, { error: String((err && err.message) || err) });
-  }
+  return channelAuthResponse(ctx, () => pusherConfig(env));
 }
 
 // ── Event trigger (`POST /broadcast`) ────────────────────────────────────────
