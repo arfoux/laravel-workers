@@ -23,6 +23,8 @@ import { transpileControllerMethod, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES, JSO
 import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapters.mjs';
 // The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore).
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
+// The AST-node name reader (`nodeName`) lives once in tools/static.mjs.
+import { nodeName } from '../../tools/static.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -190,14 +192,6 @@ function needsAwait(code) {
 const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 const shortName = (fqcn) => String(fqcn).split('\\').pop();
 const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
-// The name of an AST node (a string or a `{ name }` object).
-const nodeName = (n) => {
-  if (n == null) return '';
-  if (typeof n === 'string') return n;
-  if (typeof n.name === 'string') return n.name;
-  if (n.name && typeof n.name.name === 'string') return n.name.name;
-  return '';
-};
 
 // ---------------------------------------------------------------------------
 // the AST of the class file

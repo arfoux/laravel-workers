@@ -17,6 +17,7 @@ import { viewFileName } from './view-name.mjs';
 // the same reader the config/const folders use, so a signature default cannot
 // bake a different number than PHP's.
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
+import { nodeName } from '../../tools/static.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
@@ -196,13 +197,6 @@ function parseSource(source) {
   return { ast };
 }
 
-const nodeName = (n) => {
-  if (n == null) return '';
-  if (typeof n === 'string') return n;
-  if (typeof n.name === 'string') return n.name;
-  if (n.name && typeof n.name.name === 'string') return n.name.name;
-  return '';
-};
 
 // Program -> namespaces (files without a namespace get a virtual '' namespace).
 function collectNamespaces(ast) {

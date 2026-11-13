@@ -16,19 +16,13 @@
 import parser from 'php-parser';
 import { readFileSync } from 'node:fs';
 import { transpileControllerMethod } from './transpiler.mjs';
+import { nodeName } from '../../tools/static.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 const shortName = (fqcn) => String(fqcn).split('\\').pop();
 
-const nodeName = (n) => {
-  if (n == null) return '';
-  if (typeof n === 'string') return n;
-  if (typeof n.name === 'string') return n.name;
-  if (n.name && typeof n.name.name === 'string') return n.name.name;
-  return '';
-};
 
 const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
 
