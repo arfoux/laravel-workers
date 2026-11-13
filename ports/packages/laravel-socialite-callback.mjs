@@ -23,7 +23,7 @@
 import { verifyState, exchangeCode, fetchUser } from '../../kernel/packages/oauth.mjs';
 import { resolveProvider, readStateCookie, consumeState } from '../../kernel/packages/socialite.mjs';
 import { createPersonalAccessToken } from '../../kernel/packages/token.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -113,15 +113,11 @@ export default async function handle(ctx, env) {
         (tokenable_type, tokenable_id, name, token, abilities) VALUES (?1, ?2, ?3, ?4, ?5)`
     ).bind(row.tokenable_type, row.tokenable_id, row.name, row.token, row.abilities).run();
 
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-      body: JSON.stringify({
-        user,
-        access_token: plain,
-        token_id: row.tokenable_id,
-      }),
-    };
+    return jsonResponse(200, {
+      user,
+      access_token: plain,
+      token_id: row.tokenable_id,
+    });
   } catch (err) {
     return {
       status: 502,

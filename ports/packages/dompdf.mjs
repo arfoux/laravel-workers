@@ -34,20 +34,13 @@
 // 'cf-browser-rendering'), CF_ACCOUNT_ID? (required for cf-browser-rendering).
 // Returns { status, headers, body } — 200 + application/pdf (base64) on success,
 // 422 without `html`, 500 without credentials, 502 on upstream failure.
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonError } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, basicAuthHeader } from '../../kernel/packages/notify-http.mjs';
 
 const DOCRAPTOR_URL = 'https://docraptor.com/docs';
 const CF_BROWSER_RENDERING_URL =
   'https://api.cloudflare.com/client/v4/accounts/{account}/browser-rendering/pdf';
 
-function jsonError(status, message) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify({ ok: false, error: message }),
-  };
-}
 
 // Build the provider request (url + fetch init) for the configured provider.
 export function buildPdfRequest({ provider, html, options, apiKey, accountId }) {

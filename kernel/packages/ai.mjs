@@ -12,6 +12,8 @@
 // PHP generator, which has no edge equivalent. Only non-streaming
 // `generate()`/`chat()` is covered; streaming is a disclosed runtime gap.
 
+import { jsonResponse } from './port-ctx.mjs';
+
 // ---- fetch plumbing --------------------------------------------------------
 
 // Resolve the fetch implementation. Tests inject `env.fetchImpl`; production
@@ -22,14 +24,10 @@ export function resolveFetch(env) {
   return globalThis.fetch;
 }
 
-// Standard `{status,headers,body}` JSON port response (same shape the notify
-// cluster uses), so every port returns one consistent envelope.
+// Standard `{status,headers,body}` JSON port response — the envelope lives once
+// in `jsonResponse` (port-ctx.mjs); this keeps the `(body, status)` call shape.
 export function jsonPort(body, status = 200) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(body),
-  };
+  return jsonResponse(status, body);
 }
 
 // Map a provider `Response` to `{status, headers, body(text)}`. Headers become

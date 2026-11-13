@@ -2026,6 +2026,8 @@ writeTree(tmpRoot, {
   'kernel/packages/webhook.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'webhook.mjs'), 'utf8'),
   'kernel/packages/broadcast.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'broadcast.mjs'), 'utf8'),
   'kernel/packages/notify-http.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'notify-http.mjs'), 'utf8'),
+  // notify-http.mjs answers JSON through port-ctx's shared envelope.
+  'kernel/packages/port-ctx.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'packages', 'port-ctx.mjs'), 'utf8'),
   // webhook.mjs / broadcast.mjs sign through the shared HMAC primitive.
   'kernel/hmac.mjs': fs.readFileSync(path.join(pkgDir, 'kernel', 'hmac.mjs'), 'utf8'),
   // token.mjs / hmac.mjs hex-encode through the shared bytesToHex primitive.

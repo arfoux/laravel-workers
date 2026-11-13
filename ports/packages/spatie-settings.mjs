@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-settings v3.10.1 — grouped settings persisted to a
 // table. In Laravel each `Settings` subclass maps to a row (`settings` table,
@@ -50,11 +50,7 @@ export default async function handle(ctx, env) {
       for (const r of (rows.results || [])) {
         settings[r.key] = JSON.parse(r.json);
       }
-      return {
-        status: 200,
-        headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-        body: JSON.stringify({ group, settings }),
-      };
+      return jsonResponse(200, { group, settings });
     }
 
     if (method === 'PUT') {

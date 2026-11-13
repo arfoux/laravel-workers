@@ -27,18 +27,11 @@
 //   - The CF response is binary — the port returns `{status, headers, body}` with
 //     `body` the bytes as base64 and `content-transfer-encoding: base64` set so
 //     the caller knows to decode before streaming.
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonError } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch } from '../../kernel/packages/notify-http.mjs';
 
 const ALLOWED = new Set(['w', 'h', 'fit', 'q', 'dpr']);
 
-function jsonError(status, message) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify({ ok: false, error: message }),
-  };
-}
 
 // Build the Cloudflare Image Resizing URL for one transform request.
 export function buildResizingUrl({ zone, origin, path, params }) {
