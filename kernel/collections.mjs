@@ -399,7 +399,7 @@ import { phpJsonEncode, phpJsonEncodeWithFlags } from './php-json.mjs';
 import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 import { ownSet, ownGet } from './own-key.mjs';
 // `combine()` coerces its keys with PHP's string cast before the array-key rule.
-import { phpStringCast } from './str.mjs';
+import { phpStringCast, escapeHtml } from './str.mjs';
 import {
   isNumericForLooseEq,
   phpScalarEquals,
@@ -629,15 +629,6 @@ const dataHasProp = (target, key) => {
   }
   return true;
 };
-
-/** `htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE)` (Laravel's `e()`). */
-const escapeHtml = (value) =>
-  String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 
 /**
  * `new $class(...$args)` for the two shapes the edge can name: a constructor

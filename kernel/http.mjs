@@ -90,6 +90,8 @@ import {
   sessionErrorBag,
   DEFAULT_DONT_FLASH,
 } from './validation.mjs';
+// Laravel's `e()` (htmlspecialchars ENT_QUOTES): the one html-escape rule.
+import { escapeHtml } from './str.mjs';
 // Illuminate\Support\Str::trim() (Str.php:1717-1726): the DEFAULT character
 // set is " \n\r\t\x0B\0" (not JavaScript's WhiteSpace+LineTerminator, which
 // also strips \f and U+00A0) and the invisible characters (INVISIBLE_CHARACTERS,
@@ -1467,7 +1469,7 @@ async function renderException(error, request, ctx) {
     return new HttpResponse({
       status: error.status,
       headers: { 'content-type': 'text/html; charset=utf-8', ...(error.headers || {}) },
-      body: `<html><body><h1>${error.status}</h1><p>${escapeHtmlText(error.message)}</p></body></html>`,
+      body: `<html><body><h1>${error.status}</h1><p>${escapeHtml(error.message)}</p></body></html>`,
     });
   }
   // Illuminate\Foundation\Exceptions\Handler::render() (13.37): a Throwable that
@@ -1521,7 +1523,7 @@ async function renderException(error, request, ctx) {
     body:
       rendered500 != null
         ? String(rendered500)
-        : `<html><body><h1>500</h1><p>${escapeHtmlText('Server Error')}</p></body></html>`,
+        : `<html><body><h1>500</h1><p>${escapeHtml('Server Error')}</p></body></html>`,
   });
 }
 
@@ -1533,23 +1535,10 @@ async function renderException(error, request, ctx) {
 const REDIRECT_STATUSES = new Set([201, 301, 302, 303, 307, 308]);
 
 // Symfony's RedirectResponse renders the target URL into an HTML body with
-// `htmlspecialchars($url, ENT_QUOTES, 'UTF-8')` (the vendor template, byte for byte).
-function escapeHtmlText(value) {
-  return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
+// `htmlspecialchars($url, ENT_QUOTES, 'UTF-8')` (the vendor template, byte for
+// byte) - the same `e()` rule as the rest of the repo.
 export function symfonyRedirectBody(url) {
-  const escaped = String(url)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  const escaped = escapeHtml(url);
 
   return (
     '<!DOCTYPE html>\n' +

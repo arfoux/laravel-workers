@@ -14,6 +14,9 @@
 // Supported tags (self-closing set is enforced):
 //   span, div, p, input, button, select, option, a, img
 
+// Laravel's `e()`: the shared html-escape rule (kernel/str.mjs).
+import { escapeHtml } from '../str.mjs';
+
 const VOID_TAGS = new Set(['input', 'img']);
 
 const ALLOWED_TAGS = new Set([
@@ -92,16 +95,10 @@ export function html(tag, attrs) {
   return new HtmlElement(tag, attrs || {});
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function serializeAttrs(attrs) {
+// Serialise an attribute bag: `undefined`/`null`/`false` drop the attribute,
+// `true` renders a bare name, anything else becomes `name="value"` (escaped).
+// Shared with the menu builder — one attribute rule, not two.
+export function serializeAttrs(attrs) {
   let out = '';
   for (const [k, v] of Object.entries(attrs)) {
     if (v === undefined || v === null || v === false) continue;

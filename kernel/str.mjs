@@ -402,6 +402,23 @@ export function squish(value) {
     .replace(/(?:[\s\u3000])+/g, ' ');
 }
 
+// `htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8')` — Laravel's `e()`
+// helper (Illuminate/Support/helpers.php; not a `Str::` method, but this module
+// is where PHP's string semantics live). THE html-escape rule for the whole
+// repo: a text body, an attribute value, the Symfony redirect body and the
+// Inertia `data-page` shell all go through here, so the spelling (`&#039;`,
+// which is what PHP emits) and any future fix land once. Callers that need
+// PHP's `(string)` cast first use `phpStringCast` themselves — `e()` casts with
+// `$value ?? ''` only, exactly as below.
+export function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // PHP's `(string)` cast, shared by everything that ports PHP's own coercion
 // (the validator's rule comparisons AND Eloquent's `'string'` model cast):
 // true becomes '1', false becomes '', null becomes '', an array becomes the

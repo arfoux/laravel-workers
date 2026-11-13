@@ -15,6 +15,12 @@
 // `/admin/users` but `/ad` never matches `/admin`). Longest URL wins when
 // several items qualify, so `/admin/users` beats `/admin`.
 
+// The escape rule is `e()` (kernel/str.mjs); the attribute bag serialiser is
+// shared with the html builder (kernel/packages/html.mjs). The menu adds only
+// its own markup on top.
+import { escapeHtml } from '../str.mjs';
+import { serializeAttrs } from './html.mjs';
+
 const DEFAULT_ACTIVE_CLASS = 'active';
 const DEFAULT_UL_CLASS = 'menu';
 
@@ -65,7 +71,7 @@ export class Menu {
   // Serialise to an HTML string. Returns '' when the menu is empty.
   toHtml() {
     if (this.items.length === 0) return '';
-    const parts = [`<ul class="${escapeAttr(this.ulClass)}">`];
+    const parts = [`<ul class="${escapeHtml(this.ulClass)}">`];
     for (const it of this.items) {
       if (it.kind === 'divider') {
         parts.push('<li class="divider"></li>');
@@ -74,37 +80,15 @@ export class Menu {
       const classes = ['menu-item'];
       if (it.active) classes.push(this.activeClass);
       const extra = it.attrs ? serializeAttrs(it.attrs) : '';
-      const url = escapeAttr(it.url ?? '#');
+      const url = escapeHtml(it.url ?? '#');
       const label = escapeHtml(it.label ?? '');
       parts.push(
-        `<li class="${escapeAttr(classes.join(' '))}"><a href="${url}"${extra}>${label}</a></li>`
+        `<li class="${escapeHtml(classes.join(' '))}"><a href="${url}"${extra}>${label}</a></li>`
       );
     }
     parts.push('</ul>');
     return parts.join('');
   }
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function escapeAttr(s) {
-  return escapeHtml(s);
-}
-
-function serializeAttrs(attrs) {
-  let out = '';
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v === undefined || v === null || v === false) continue;
-    out += v === true ? ` ${escapeAttr(k)}` : ` ${escapeAttr(k)}="${escapeAttr(v)}"`;
-  }
-  return out;
 }
 
 export default Menu;

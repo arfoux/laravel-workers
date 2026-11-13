@@ -25,23 +25,14 @@
 // upstream `cookieConsent` Blade partial.
 
 import { normalizePortCtx } from './port-ctx.mjs';
+// Laravel's `{{ }}` blade echo is `e()` — the title/body of the banner go
+// through the shared html-escape rule.
+import { escapeHtml } from '../str.mjs';
 
 const COOKIE_NAME = 'laravel_cookie_consent';
 // `Cookie::forever` upstream expires at the end of year 2038 (INT_MAX); we keep
 // the same spirit with a 1-year lifetime so the value is stable and testable.
 export const COOKIE_LIFETIME_SECONDS = 60 * 60 * 24 * 365; // 1 year
-
-// Escape text before it is interpolated into HTML attributes/content so a
-// caller-supplied title or body can't break out of the banner markup. Mirrors
-// the escaping Laravel's `{{ }}` blade echo gives its variables.
-function esc(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
 
 /**
  * isCookieSet(request) — true when the Cookie header already carries the
@@ -91,8 +82,8 @@ export function injectBanner(html, { title, body } = {}) {
     '<div id="cookie-consent" class="cookie-consent" role="region" aria-label="Cookie consent" hidden>',
     `  <div class="cookie-consent__inner">`,
     `    <div class="cookie-consent__copy">`,
-    `      <span class="cookie-consent__title">${esc(title)}</span>`,
-    `      <span class="cookie-consent__message">${esc(body)}</span>`,
+    `      <span class="cookie-consent__title">${escapeHtml(title)}</span>`,
+    `      <span class="cookie-consent__message">${escapeHtml(body)}</span>`,
     `    </div>`,
     `    <button type="button" class="cookie-consent__button" data-cookie-consent="allow">Allow cookies</button>`,
     `  </div>`,

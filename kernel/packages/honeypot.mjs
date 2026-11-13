@@ -25,19 +25,14 @@
 // read/write only plain objects + strings, so they run on the edge and in a
 // unit test unchanged.
 
+// The hidden fields are built with double-quoted attributes and a generated
+// (safe-charset) name, but a caller may pass its own name — so the values go
+// through the shared `e()` rule rather than a second, weaker escaper (the old
+// local copy skipped `'`, which a single-quoted context would need).
+import { escapeHtml } from '../str.mjs';
+
 const DEFAULT_TIME_FIELD = '_hp_time';
 const NAME_PREFIX = '_hp_name_';
-
-// Minimal HTML attribute escaper — field names are generated (safe charset) but
-// a caller may pass its own, so escape anyway. Never build HTML from raw user
-// input; the name value is never echoed back.
-function esc(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
 
 // A unique name-field name. The suffix is the render time in base36, so two
 // forms rendered in the same millisecond collide only if a caller also reuses
@@ -77,8 +72,8 @@ export function renderHoneypot(opts = {}) {
 
   return (
     '<div style="display:none" aria-hidden="true">' +
-    `<input type="text" name="${esc(nameField)}" value="" tabindex="-1" autocomplete="off">` +
-    `<input type="hidden" name="${esc(timeField)}" value="${esc(timeValue)}">` +
+    `<input type="text" name="${escapeHtml(nameField)}" value="" tabindex="-1" autocomplete="off">` +
+    `<input type="hidden" name="${escapeHtml(timeField)}" value="${escapeHtml(timeValue)}">` +
     '</div>'
   );
 }

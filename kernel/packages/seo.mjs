@@ -3,36 +3,18 @@
 // needs: title, description, canonical, robots, Open Graph, Twitter cards and
 // JSON-LD, all rendered to a single HTML meta string.
 //
-// All tag values are HTML-escaped; URLs are escaped separately (quotes + angle
-// brackets) so attributes can never break out of their quotes. `jsonLd()` is
-// passed through as-is (only escaped for `</script>` safety) because callers
-// supply their own serialised JSON, e.g. `JSON.stringify(article)`.
+// All tag values — titles, attributes, URLs — go through the shared html
+// escape (`e()`, kernel/str.mjs), so an attribute can never break out of its
+// quotes. `jsonLd()` is passed through as-is (only escaped for `</script>`
+// safety) because callers supply their own serialised JSON, e.g.
+// `JSON.stringify(article)`.
 
-// Escape text content that may appear inside an element body or attribute.
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
+import { escapeHtml } from '../str.mjs';
 
 // Safe sequence for `</script>` inside JSON-LD so the JSON block cannot close
 // the script tag early.
 function escapeJsonLd(data) {
   return String(data).replaceAll('</script', '<\\/script');
-}
-
-// Escape only the characters that break an attribute value. URLs keep their
-// ampersands (escaped as &amp;) but quotes/angle brackets are neutralised.
-function escapeUrl(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
 }
 
 // Render a `<meta name="..." content="...">` tag.
@@ -50,7 +32,7 @@ function property(prop, content) {
 // Render a `<link rel="..." href="...">` tag.
 function link(rel, href) {
   if (!href) return '';
-  return `<link rel="${escapeHtml(rel)}" href="${escapeUrl(href)}">\n`;
+  return `<link rel="${escapeHtml(rel)}" href="${escapeHtml(href)}">\n`;
 }
 
 export class SeoBuilder {
