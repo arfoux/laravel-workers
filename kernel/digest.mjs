@@ -43,6 +43,27 @@ export function timingSafeEqual(a, b) {
   return diff === 0;
 }
 
+// base64 <-> bytes. The runtime has no Buffer, so btoa/atob are latin1-only and
+// the byte walk is explicit. The decode rule was written twice — the cookie
+// key ring (cookies.mjs) and the Encrypter's key/iv/ciphertext (encrypter.mjs)
+// — byte-identically; the encode rule twice more (toB64 / b64EncodeBytes). A
+// fix to one copy silently missed the others (#697).
+export function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+export function bytesToBase64(bytes) {
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
 function utf8Bytes(str) {
   return enc.encode(String(str));
 }
@@ -383,4 +404,4 @@ export function hmacSha256Hex(data, key) {
   return bytesToHex(sha256Bytes(concatBytes(opad, inner)));
 }
 
-export default { bytesToHex, timingSafeEqual, sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256Hex };
+export default { bytesToHex, timingSafeEqual, base64ToBytes, bytesToBase64, sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256Hex };

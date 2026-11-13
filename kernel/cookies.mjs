@@ -13,7 +13,7 @@
 // WebCrypto). Everything else is synchronous and workerd-compatible.
 
 import { encryptString, decryptString, DecryptError } from './encrypter.mjs';
-import { bytesToHex } from './digest.mjs';
+import { bytesToHex, base64ToBytes, bytesToBase64 as toB64 } from './digest.mjs';
 import { ownSet, ownGet, ownHas } from './own-key.mjs';
 
 export class CookieError extends Error {
@@ -324,13 +324,6 @@ async function getHmacKey(keyBytes) {
   return key;
 }
 
-function base64ToBytes(b64) {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
 /** CookieValuePrefix::create($name, $key) — hex sha1 HMAC of "<name>v2" + "|". */
 export async function cookieValuePrefix(name, keyBytes) {
   const hmac = await getHmacKey(keyBytes);
@@ -424,14 +417,6 @@ export function createCookieEncryptor({ keyBase64, previousKeys = [], except = [
       return out;
     },
   };
-}
-
-function toB64(keyBytes) {
-  let bin = '';
-  for (let i = 0; i < keyBytes.length; i += 0x8000) {
-    bin += String.fromCharCode.apply(null, keyBytes.subarray(i, i + 0x8000));
-  }
-  return btoa(bin);
 }
 
 // ---------------------------------------------------------------------------
