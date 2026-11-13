@@ -1,5 +1,6 @@
 import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, mapProviderResponse, jsonPort } from '../../kernel/packages/notify-http.mjs';
+import { hmacSha256Base64 as signPayload } from '../../kernel/hmac.mjs';
 
 // ports/packages/webhook-server.mjs — port of spatie/laravel-webhook-server
 // (the CLIENT side: signing + sending a webhook to a third-party endpoint).
@@ -25,24 +26,6 @@ import { resolveFetch, mapProviderResponse, jsonPort } from '../../kernel/packag
 //   → 201 { ok, call: { id, url, signature, response_status, response_body, ... } }
 //   → 422 when `url` is missing/invalid (no subrequest spent)
 //   → 500 when WEBHOOK_SERVER_SECRET is unset or the call throws
-
-// HMAC-SHA256 over `message`, returned as base64 (the package signs the raw
-// JSON body string, and receivers base64-decode the header before comparing).
-async function signPayload(secret, message) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(String(secret)),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  let bin = '';
-  const bytes = new Uint8Array(sig);
-  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
