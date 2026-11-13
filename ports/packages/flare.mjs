@@ -23,43 +23,26 @@ import {
   resolveFetch,
   jsonPort,
   deliverVia,
+  normaliseErrorReport,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 
 const FLARE_URL = 'https://flareapp.io/api/report';
 
-// Coerce one caller-supplied frame into Flare's {file, lineNumber, method}.
-function toFrame(frame) {
-  if (typeof frame === 'string') {
-    return { file: frame, lineNumber: 0, method: '(unknown)' };
-  }
-  const f = frame || {};
-  const line = Number(f.lineNumber ?? f.line);
-  return {
-    file: f.file || f.filename || '(unknown)',
-    lineNumber: Number.isFinite(line) ? line : 0,
-    method: f.method || f.function || '(unknown)',
-  };
-}
-
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   const body = (ctx && ctx.body) || {};
 
-  const errorClass = body.errorClass || body.error_class;
+  // `errorClass` (or Laravel's `error_class`) plus the coerced stack — a real
+  // captured stack when the caller has one, otherwise a single minimal frame so
+  // the report still groups. Both error-tracking ports share this rule.
+  const { errorClass, stacktrace } = normaliseErrorReport(ctx);
   if (!errorClass) return jsonPort({ error: 'missing `errorClass`' }, 422);
 
   const flareKey = env && env.FLARE_KEY;
   const projectKey = env && env.FLARE_PROJECT_KEY;
   if (!flareKey) return jsonPort({ error: 'missing Flare credential: set FLARE_KEY' }, 500);
   if (!projectKey) return jsonPort({ error: 'missing Flare credential: set FLARE_PROJECT_KEY' }, 500);
-
-  // A real captured stack when the caller has one; otherwise a single minimal
-  // frame so the report still groups on the Flare dashboard.
-  const rawFrames = Array.isArray(body.stacktrace) ? body.stacktrace : [];
-  const stacktrace = rawFrames.length
-    ? rawFrames.map(toFrame)
-    : [{ file: '(edge)', lineNumber: 0, method: errorClass }];
 
   const doFetch = resolveFetch(env);
   const init = {
