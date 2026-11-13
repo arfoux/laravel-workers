@@ -815,7 +815,7 @@ PHP boots **only at S0** (build time). The edge (S1–S6) is pure JS.
 
 - `MAP.md` — the construct coverage map, D1 limits, the unknown-to-verify list.
 - `tools/constructs.json` — every `Illuminate\Support\Facades\*` (Laravel 13) with a verdict.
-- `npm run check:docs` — the gate: the coverage index, the construct audit (COMPILED.md), and this README's counts (both generated — a hand-typed number here is a bug).
+- `npm run check:docs` — the gate: the coverage index, the construct audit (COMPILED.md), this README's counts, and the two port catalogs (docs/D1-SCHEMA.md, docs/ENV-SECRETS.md) — all generated (a hand-typed number here is a bug).
 - `npm run bench` — the local micro-bench (a Node proxy for CPU: a fast regression detector).
 - `npm run gate:cpu` — the platform's own numbers: deploys a probe worker running the real kernel hot paths, reads `cpuTime`/`outcome` back through `wrangler tail`, asserts a page-like load fits the Free budget **and** that a burn is caught, then deletes the worker. Outside `gate:ci` (it needs a logged-in wrangler).
 - `kernel/tests/budget.test.mjs` — wall-clock p95 ≤ 5 ms per hot operation, ≤ 30 ms for the encrypter (no D1/KV in the loop).

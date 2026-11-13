@@ -15,6 +15,9 @@
 //                                framework's own lang/en/validation.php (#353).
 //   5. tools/ascii-map-check.mjs - the generated portable-ascii table vs the
 //                                app's vendor copy (#294).
+//   6. tools/port-catalog.mjs   - the two port catalogs (docs/D1-SCHEMA.md,
+//                                docs/ENV-SECRETS.md): totals, summary tables and
+//                                SQL blocks read out of the code's own literals.
 //
 // WHERE THIS SITS (audit #431): this file is the DOCS layer. The CI command
 // `npm run gate:ci` is the outer layer - `npm test` (an explicit subset of the
@@ -62,4 +65,10 @@ run('tools/validation-messages-check.mjs', flags.filter((f) => f === '--require'
 // skip/require contract: it needs LW_APP_ROOT, and the CI e2e job passes
 // `--require` so the table cannot go green unaudited.
 run('tools/ascii-map-check.mjs', flags.filter((f) => f === '--require'));
+// 6. tools/port-catalog.mjs - the D1 schema catalog and the env-var catalog: the
+// totals, the summary tables and every SQL block are read out of the two trees'
+// string literals, so the documents cannot describe a table (or a variable) the
+// code does not have - the 2026-11-11 hand-grep went stale in one day (five
+// tables missing, and a wrong `lw_webhook_events` attribution).
+run('tools/port-catalog.mjs', ['--check']);
 console.log('gate PASS: the docs and the construct audit match the code');
