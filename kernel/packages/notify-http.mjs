@@ -120,3 +120,35 @@ export function normalisePayload(ctx) {
     from: typeof raw.from === 'string' ? raw.from : '',
   };
 }
+
+// Validate + normalise an error-tracking payload (Bugsnag, Flare). The report
+// carries the caller's `errorClass` plus its stack, every frame coerced to
+// `{ file, lineNumber, method }`; a report with no usable stack still carries a
+// single `(edge)` frame, so the provider groups it instead of dropping it. The
+// rule lives here once — the two error-reporting ports differed only in which
+// provider name they wrote in a comment.
+export function normaliseErrorReport(ctx) {
+  const body = (ctx && ctx.body) || {};
+  const errorClass = body.errorClass || body.error_class || '';
+  const rawFrames = Array.isArray(body.stacktrace) ? body.stacktrace : [];
+  return {
+    errorClass,
+    stacktrace: rawFrames.length
+      ? rawFrames.map(toStackFrame)
+      : [{ file: '(edge)', lineNumber: 0, method: errorClass }],
+  };
+}
+
+// Coerce one caller-supplied frame into `{ file, lineNumber, method }`.
+function toStackFrame(frame) {
+  if (typeof frame === 'string') {
+    return { file: frame, lineNumber: 0, method: '(unknown)' };
+  }
+  const f = frame || {};
+  const line = Number(f.lineNumber ?? f.line);
+  return {
+    file: f.file || f.filename || '(unknown)',
+    lineNumber: Number.isFinite(line) ? line : 0,
+    method: f.method || f.function || '(unknown)',
+  };
+}

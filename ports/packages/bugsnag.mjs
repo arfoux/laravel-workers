@@ -23,6 +23,7 @@ import {
   resolveFetch,
   jsonPort,
   deliverVia,
+  normaliseErrorReport,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 
@@ -34,38 +35,20 @@ const NOTIFIER = {
   url: 'https://github.com/bugsnag/bugsnag-laravel',
 };
 
-// Coerce one caller-supplied frame into Bugsnag's {file, lineNumber, method}.
-function toFrame(frame) {
-  if (typeof frame === 'string') {
-    return { file: frame, lineNumber: 0, method: '(unknown)' };
-  }
-  const f = frame || {};
-  const line = Number(f.lineNumber ?? f.line);
-  return {
-    file: f.file || f.filename || '(unknown)',
-    lineNumber: Number.isFinite(line) ? line : 0,
-    method: f.method || f.function || '(unknown)',
-  };
-}
-
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   const body = (ctx && ctx.body) || {};
 
-  const errorClass = body.errorClass || body.error_class;
+  // `errorClass` (or Laravel's `error_class`) plus the coerced stack — a real
+  // captured stack when the caller has one, otherwise a single minimal frame so
+  // the event still groups. Both error-tracking ports share this rule.
+  const { errorClass, stacktrace } = normaliseErrorReport(ctx);
   const message = body.message;
   if (!errorClass) return jsonPort({ error: 'missing `errorClass`' }, 422);
   if (!message) return jsonPort({ error: 'missing `message`' }, 422);
 
   const apiKey = env && env.BUGSNAG_API_KEY;
   if (!apiKey) return jsonPort({ error: 'missing Bugsnag credential: set BUGSNAG_API_KEY' }, 500);
-
-  // A real captured stack when the caller has one; otherwise a single minimal
-  // frame so the event still groups on the Bugsnag dashboard.
-  const rawFrames = Array.isArray(body.stacktrace) ? body.stacktrace : [];
-  const stacktrace = rawFrames.length
-    ? rawFrames.map(toFrame)
-    : [{ file: '(edge)', lineNumber: 0, method: errorClass }];
 
   const doFetch = resolveFetch(env);
   const init = {
