@@ -36,7 +36,7 @@ import {
 import {
   accountLabel, readCloudIdentity, selectAccount,
 } from './cloud-account.mjs';
-import { readState, writeState } from './lw-state.mjs';
+import { readState, writeState, emptyState } from './lw-state.mjs';
 import { NPX, runCapture, runInherit } from './run.mjs';
 
 // Re-exported for the unit tests and for callers that edited the old module.
@@ -183,22 +183,12 @@ const USAGE = `Usage: npx laravel-workers deploy [flags]
   --dry-run is not supported; use --plan, or --mode 1 for build only.`;
 
 
-// State carried to the final write. It starts as a copy of the existing state,
-// so a D1-only run preserves the last deploy metadata unless the worker name
-// changes (in which case the old URL belongs to a different worker).
-const chosen = {
-  account: { id: null, name: null, email: null },
-  workerName: null,
-  workerUrl: null,
-  deployedAt: null,
-  d1: {
-    binding: 'DB',
-    databaseName: null,
-    databaseId: null,
-    schemaAppliedAt: null,
-    schemaHash: null,
-  },
-};
+// State carried to the final write, seeded with the schema's own defaults
+// (`emptyState()` — the shape is written once, in lw-state.mjs). It is then
+// filled from the existing state, so a D1-only run preserves the last deploy
+// metadata unless the worker name changes (in which case the old URL belongs to
+// a different worker).
+const chosen = emptyState();
 
 let rl = null;
 

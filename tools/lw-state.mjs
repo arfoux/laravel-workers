@@ -39,8 +39,13 @@ import { join } from 'node:path';
 export const STATE_FILE = 'lw-state.json';
 export const SCHEMA_VERSION = 1;
 
-/** Default empty state matching the current schema. */
-const EMPTY = () => ({
+/**
+ * Default empty state matching the current schema — the ONE place the shape of
+ * `lw-state.json` is written. `deploy` builds the run's state (`chosen`) from it
+ * so a field added to the schema shows up in the deploy path too, instead of
+ * having to be remembered in a second literal.
+ */
+export const emptyState = () => ({
   schemaVersion: SCHEMA_VERSION,
   account: {
     id: null,
@@ -117,18 +122,18 @@ class StateError extends Error {}
  */
 export function readState(appRoot, { strict = false } = {}) {
   const path = join(appRoot, STATE_FILE);
-  if (!existsSync(path)) return EMPTY();
+  if (!existsSync(path)) return emptyState();
 
   const bad = (message) => {
     if (strict) throw new StateError(`${STATE_FILE} ${message}`);
-    return EMPTY();
+    return emptyState();
   };
 
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     const problem = stateProblem(parsed);
     if (problem) return bad(problem);
-    const empty = EMPTY();
+    const empty = emptyState();
     const account = { ...empty.account, ...(parsed.account || {}) };
     if (account.id) account.id = String(account.id).trim().toLowerCase();
     return {
@@ -140,7 +145,7 @@ export function readState(appRoot, { strict = false } = {}) {
   } catch (e) {
     if (e instanceof StateError) throw e;
     if (strict) throw new Error(`could not read ${STATE_FILE}: ${e.message}`);
-    return EMPTY();
+    return emptyState();
   }
 }
 
