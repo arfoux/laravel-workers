@@ -20,8 +20,9 @@
 // Payload (ctx.body): { to?, channel?, content?, text?, body?, embeds?, tts?,
 //   allowed_mentions? }. `content` is the canonical Discord message field;
 //   `text`/`body`/`message` are accepted as generic aliases. The bot path
-//   requires a channel id (`to`/`channel` or DISCORD_CHANNEL). The webhook path
-//   needs no channel at all.
+//   requires a channel id (`to`/`channel` or DISCORD_CHANNEL); on the webhook
+//   path the same value targets a thread (`?thread_id=`, Discord's query
+//   parameter for execute-webhook). The webhook path needs no channel at all.
 // Provider response is mapped 1:1 to {status, headers, body}.
 import {
   resolveFetch,
@@ -64,9 +65,12 @@ export default async function handle(ctx, env) {
 
   if (webhookUrl) {
     // Incoming Webhook: no auth header — the URL itself carries the secret.
-    url = webhookUrl;
-    // A webhook may target a thread; a bot needs an explicit channel id.
-    if (channel) body.thread_id = channel;
+    // A thread target travels in the QUERY (`?thread_id=`), which is the only
+    // place Discord reads it on execute-webhook; as a JSON body field it is
+    // ignored and the message lands in the webhook's parent channel.
+    url = channel
+      ? `${webhookUrl}${webhookUrl.includes('?') ? '&' : '?'}thread_id=${encodeURIComponent(channel)}`
+      : webhookUrl;
     init.body = JSON.stringify(body);
   } else if (botToken) {
     // Bot API: `Authorization: Bot <token>` + explicit channel id required.

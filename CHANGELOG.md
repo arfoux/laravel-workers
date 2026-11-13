@@ -2,6 +2,39 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The FCM port reads the project id from the service account, and Discord's thread target reaches the thread
+
+Two notification ports answered something other than what they (and the docs) said they did:
+
+- **FCM.** `FCM_PROJECT_ID` is documented as optional, falling back to the service account's own
+  `project_id` (`docs/PACKAGE-PORTS.md`, `docs/ENV-SECRETS.md`, both file headers) — but the port read
+  the env var only and answered **500** with a valid service account that carried a `project_id`. The
+  PHP package derives it: kreait's `Factory::getProjectId()` (7.x) is "explicit id → Google credentials →
+  `GOOGLE_CLOUD_PROJECT` → `$serviceAccount->projectId` → throw", so an app configured the way the docs
+  describe works on Laravel and failed on the edge. The derivation now lives in
+  `serviceAccountProjectId()` (`kernel/packages/fcm-oauth.mjs`, using the same raw/base64
+  auto-detection as the mint) and the port is `FCM_PROJECT_ID || serviceAccountProjectId(...)`.
+- **Discord.** A webhook send put the thread target in the JSON body as `thread_id`. Discord reads
+  `thread_id` from the **query string** on execute-webhook ("you must provide either `thread_id` in the
+  query string params, or `thread_name` in the JSON/form params" — discord-api-docs
+  `developers/resources/webhook.mdx`), so the body field was dropped and the message went to the
+  webhook's parent channel. The target is now `?thread_id=`, appended after any query the webhook URL
+  already carries.
+- A dead `const target = ...` binding in the FCM port (assigned, never read) is gone.
+
+| change | why |
+|---|---|
+| `kernel/packages/fcm-oauth.mjs` exports `serviceAccountProjectId(raw)` | the service-account blob is parsed in one place already; the helper never throws, so the port keeps its own "cannot determine the project id" guard and a malformed blob still fails louder at mint time |
+| `ports/packages/fcm-notification.mjs` derives the id from the env var or the service account | parity with kreait's `Factory::getProjectId()`; the 500 now means "no id anywhere", which is the case the docs call an error |
+| `ports/packages/discord-notification.mjs` puts the thread target in the query | the only place Discord reads it; a body field is ignored, so the thread was never targeted |
+
+Evidence: `tools/tests/packages-fcm-webpush.test.mjs` replaces the "missing project id is a 500" pin
+(which asserted the divergence, with a service account that *had* a project id) with "with no
+`FCM_PROJECT_ID` the service account project_id is used", keeps the no-id-anywhere 500, and adds a
+`serviceAccountProjectId` unit test (raw, base64, unreadable); `tools/tests/packages-discord-expo-onesignal.test.mjs`
+asserts the webhook URL carries `?thread_id=111` and the body does not, plus a case for a webhook URL
+that already carries `?wait=true`.
+
 ### A resource's `where` requirements match PHP: the group's map rides along, a chain replaces it whole
 
 `Route::resource()` requirements were scanned on a per-call basis and merged per name, which is

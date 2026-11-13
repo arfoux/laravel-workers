@@ -25,20 +25,31 @@ test('discord: incoming webhook posts JSON content to DISCORD_WEBHOOK_URL with n
   assert.equal(res.status, 200);
   assert.equal(fetchImpl.calls.length, 1);
   const call = fetchImpl.calls[0];
-  assert.equal(call.url, 'https://discord.com/api/webhooks/1/abc');
+  // The thread target is Discord's `thread_id` QUERY parameter — a body field
+  // would be dropped and the message would land in the parent channel.
+  assert.equal(call.url, 'https://discord.com/api/webhooks/1/abc?thread_id=111');
   assert.equal(call.init.method, 'POST');
   const sent = JSON.parse(call.init.body);
   assert.equal(sent.content, 'deploy finished');
-  assert.equal(sent.thread_id, '111');
+  assert.equal(sent.thread_id, undefined);
   // Webhook carries no auth header — the URL is the secret.
   assert.equal(call.init.headers.authorization, undefined);
+});
+
+test('discord: a webhook URL that already carries a query keeps it before thread_id', async () => {
+  const fetchImpl = makeFetch(200, undefined, { rawBody: '' });
+  const env = { fetchImpl, DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/1/abc?wait=true' };
+  await discord(okCtx({ to: '222', content: 'x' }), env);
+  assert.equal(fetchImpl.calls[0].url, 'https://discord.com/api/webhooks/1/abc?wait=true&thread_id=222');
 });
 
 test('discord: webhook needs no channel — omitting `to` still sends content', async () => {
   const fetchImpl = makeFetch(200, undefined, { rawBody: '' });
   const res = await discord(okCtx({ content: 'x' }), { fetchImpl, DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/1/x' });
   assert.equal(res.status, 200);
-  const sent = JSON.parse(fetchImpl.calls[0].init.body);
+  const call = fetchImpl.calls[0];
+  assert.equal(call.url, 'https://discord.com/api/webhooks/1/x');
+  const sent = JSON.parse(call.init.body);
   assert.equal(sent.content, 'x');
   assert.equal(sent.thread_id, undefined);
 });

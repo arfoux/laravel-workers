@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 
-import { buildServiceAccountJwt, mintFcmAccessToken } from '../../kernel/packages/fcm-oauth.mjs';
+import { buildServiceAccountJwt, mintFcmAccessToken, serviceAccountProjectId } from '../../kernel/packages/fcm-oauth.mjs';
 import fcmPort from '../../ports/packages/fcm-notification.mjs';
 import { encryptAes128Gcm, buildVapidHeader, vapidPublicKeyBase64url, toRawSignature } from '../../kernel/packages/webpush-crypto.mjs';
 import webpushPort from '../../ports/packages/webpush-notification.mjs';
@@ -193,13 +193,37 @@ test('fcm port: missing target is a 422 and never mints/fetches', async () => {
   assert.equal(fetchImpl.calls.length, 0);
 });
 
-test('fcm port: missing project id is a 500', async () => {
+test('fcm port: with no FCM_PROJECT_ID the service account project_id is used', async () => {
   const sa = await makeServiceAccount();
+  const fetchImpl = makeFetch((i) =>
+    i === 0
+      ? { status: 200, body: JSON.stringify({ access_token: 't' }) }
+      : { status: 200, body: JSON.stringify({ name: 'x' }) },
+  );
+  // No FCM_PROJECT_ID: kreait's Factory::getProjectId() falls back to the
+  // service account's own project_id, and so does the port.
+  const res = await fcmPort(okCtx({ token: 'x' }), { fetchImpl, FCM_SERVICE_ACCOUNT_JSON: JSON.stringify(sa) });
+  assert.equal(res.status, 200);
+  assert.equal(fetchImpl.calls[1].url, `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`);
+});
+
+test('fcm port: no project id anywhere is a 500 and never mints/fetches', async () => {
+  const sa = await makeServiceAccount();
+  delete sa.project_id;
   const fetchImpl = makeFetch({ status: 200, body: JSON.stringify({ access_token: 't' }) });
   const env = { fetchImpl, FCM_SERVICE_ACCOUNT_JSON: JSON.stringify(sa) };
   const res = await fcmPort(okCtx({ token: 'x' }), env);
   assert.equal(res.status, 500);
   assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('serviceAccountProjectId: raw, base64, and unreadable blobs', async () => {
+  const sa = await makeServiceAccount();
+  assert.equal(serviceAccountProjectId(JSON.stringify(sa)), sa.project_id);
+  assert.equal(serviceAccountProjectId(Buffer.from(JSON.stringify(sa)).toString('base64')), sa.project_id);
+  assert.equal(serviceAccountProjectId(''), '');
+  assert.equal(serviceAccountProjectId('not-a-service-account'), '');
+  assert.equal(serviceAccountProjectId(JSON.stringify({ client_email: 'x@p.iam' })), '');
 });
 
 // ---- webpush crypto --------------------------------------------------------

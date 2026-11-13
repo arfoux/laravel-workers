@@ -12,7 +12,8 @@
 // supported substitute.
 //
 // Config (env): FCM_SERVICE_ACCOUNT_JSON (raw or base64 service-account JSON),
-// FCM_PROJECT_ID (optional; falls back to the service account's `project_id`).
+// FCM_PROJECT_ID (optional; when omitted the project id is read from the service
+// account's `project_id`, like kreait's `Factory::getProjectId()`).
 //
 // Payload (ctx.body): either a ready FCM v1 `message` object under `message`,
 // or convenience fields we assemble into one:
@@ -20,25 +21,23 @@
 // A message with none of token/topic/condition is a 422 — FCM would reject it.
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, jsonPort, deliverVia } from '../../kernel/packages/notify-http.mjs';
-import { mintFcmAccessToken } from '../../kernel/packages/fcm-oauth.mjs';
+import {
+  mintFcmAccessToken,
+  serviceAccountProjectId,
+} from '../../kernel/packages/fcm-oauth.mjs';
 
 function fcmSendUrl(projectId) {
   return `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`;
 }
 
 // Assemble a v1 `message` object from convenience fields when the caller did
-// not supply a ready `message`. `target` = token | topic | condition.
+// not supply a ready `message`. The target is one of token | topic | condition.
 function buildMessage(raw) {
   if (raw && typeof raw.message === 'object' && raw.message !== null) {
     return raw.message;
   }
   const message = {};
   const str = (v) => (typeof v === 'string' ? v : '');
-  const target =
-    str(raw.token).trim() ||
-    str(raw.to).trim() ||
-    str(raw.topic).trim() ||
-    str(raw.condition).trim();
   if (str(raw.token).trim() || str(raw.to).trim()) message.token = str(raw.token).trim() || str(raw.to).trim();
   else if (str(raw.topic).trim()) message.topic = str(raw.topic).trim();
   else if (str(raw.condition).trim()) message.condition = str(raw.condition).trim();
@@ -69,9 +68,11 @@ export default async function handle(ctx, env) {
     return jsonPort({ error: 'FCM message requires a target: set token/to, topic, or condition' }, 422);
   }
 
-  const projectId = (env && env.FCM_PROJECT_ID) || '';
+  const projectId =
+    (env && env.FCM_PROJECT_ID) ||
+    serviceAccountProjectId(env && env.FCM_SERVICE_ACCOUNT_JSON);
   if (!projectId) {
-    return jsonPort({ error: 'missing FCM_PROJECT_ID (set env FCM_PROJECT_ID or derive from the service account)' }, 500);
+    return jsonPort({ error: 'cannot determine the FCM project id: set FCM_PROJECT_ID or put project_id in FCM_SERVICE_ACCOUNT_JSON' }, 500);
   }
 
   let accessToken;
