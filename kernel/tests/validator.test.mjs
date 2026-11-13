@@ -648,6 +648,15 @@ test('uuid: the version parameter follows Str::isUuid', async () => {
   assert.equal(await passes({ x: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }, { x: 'uuid:max' }), true);
   assert.equal(await passes({ x: v4 }, { x: 'uuid:max' }), false);
   assert.equal(await passes({ x: v4 }, { x: 'uuid:abc' }), false);
+  // validateUuid casts the parameter with PHP's `(int)` unless it is exactly
+  // 'max', so every non-numeric version name means version 0: `uuid:nil`,
+  // `uuid:all` and `uuid:foo` all accept the all-zero uuid and nothing else
+  // (probed on PHP 8.3 - the nil spelling used to be refused here).
+  const nil = '00000000-0000-0000-0000-000000000000';
+  for (const name of ['nil', 'all', 'foo']) {
+    assert.equal(await passes({ x: nil }, { x: `uuid:${name}` }), true, name);
+    assert.equal(await passes({ x: v4 }, { x: `uuid:${name}` }), false, name);
+  }
 });
 test('extensions: the client extension, and a PHP extension is refused', async () => {
   const boundary = 'LWEXT';
@@ -1183,20 +1192,6 @@ test('rules added for 13.37: base64/ulid/contains/doesnt_contain/in_array_keys/m
   assert.equal(await pass({ f: file('a.txt', 'text/plain') }, { f: 'extensions:png,jpg' }), false);
   assert.equal(await pass({ f: file('a.php', 'application/x-php') }, { f: 'extensions:php' }), true);
   assert.equal(await pass({ f: file('a.php', 'application/x-php') }, { f: 'extensions:txt' }), false);
-});
-
-test('uuid: the version parameter narrows like Str::isUuid', async () => {
-  const pass = async (value, rule) => new Validator({ x: value }, { x: rule }).passes();
-  const v4 = 'a0eea2b0-1c4d-4c0e-9d1e-1a2b3c4d5e6f';
-  assert.equal(await pass(v4, 'uuid:4'), true);
-  assert.equal(await pass(v4, 'uuid:1'), false);
-  // A bare 32-hex value is a uuid only WITH a version rule.
-  assert.equal(await pass('a0eea2b01c4d4c0e9d1e1a2b3c4d5e6f', 'uuid:4'), true);
-  assert.equal(await pass('a0eea2b01c4d4c0e9d1e1a2b3c4d5e6f', 'uuid'), false);
-  // The variant nibble must be 8/9/a/b.
-  assert.equal(await pass('a0eea2b0-1c4d-4c0e-1d1e-1a2b3c4d5e6f', 'uuid:4'), false);
-  assert.equal(await pass('00000000-0000-0000-0000-000000000000', 'uuid:0'), true);
-  assert.equal(await pass('ffffffff-ffff-ffff-ffff-ffffffffffff', 'uuid:max'), true);
 });
 
 test('a pipe inside a regex rule splits the string exactly like Laravel', async () => {

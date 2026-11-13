@@ -63,7 +63,7 @@ assert.equal(start('abbc', 'a'), 'abbc');
 assert.equal(start('bc', 'ab'), 'abbc');
 assert.equal(start('aabbc', 'a'), 'abbc');
 assert.equal(start('abc', ''), 'abc');
-for (const m of ['is', 'finish', 'start', 'random', 'isUrl']) {
+for (const m of ['is', 'finish', 'start', 'random', 'isUrl', 'isUuid']) {
   assert.ok(STR_METHODS.has(m), `STR_METHODS is missing ${m}`);
 }
 assert.equal(random(40).length, 40);
@@ -83,6 +83,26 @@ assert.equal(rt.Str.isUrl('http://[::1]/x'), true);
 // a custom protocol list replaces Laravel's (Str::isUrl($v, ['ftp']))
 assert.equal(rt.Str.isUrl('ftp://x.co', ['ftp']), true);
 assert.equal(rt.Str.isUrl('http://x.co', ['ftp']), false);
+// Str::isUuid — oracle: Str::isUuid on PHP 8.3 (the canonical form with ANY
+// hex in the last two groups when no version is given; ramsey parses the value
+// and a version must be an INT whose nibble matches).
+const v4u = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
+assert.equal(rt.Str.isUuid(v4u), true);
+assert.equal(rt.Str.isUuid('018f0c1e-6b1a-7c3d-8e4f-9a0b1c2d3e4f'), true); // v7
+assert.equal(rt.Str.isUuid('ffffffff-ffff-ffff-ffff-ffffffffffff'), true);
+assert.equal(rt.Str.isUuid('a0eebc99-9c0b-4ef8-0b6d-6bb9bd380a11'), true); // variant 0, no version
+assert.equal(rt.Str.isUuid('a0eebc999c0b4ef8bb6d6bb9bd380a11'), false); // no dashes
+assert.equal(rt.Str.isUuid(v4u, 4), true);
+assert.equal(rt.Str.isUuid('A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11', 4), true);
+assert.equal(rt.Str.isUuid('a0eebc999c0b4ef8bb6d6bb9bd380a11', 4), true); // ramsey reads the 32-char form
+assert.equal(rt.Str.isUuid('a0eebc99-9c0b-4ef8-0b6d-6bb9bd380a11', 4), false); // variant outside [89ab]
+assert.equal(rt.Str.isUuid(v4u, '4'), false); // a string version never matches an int nibble
+assert.equal(rt.Str.isUuid(v4u, 1), false);
+assert.equal(rt.Str.isUuid(v4u, 'nil'), false);
+assert.equal(rt.Str.isUuid('00000000-0000-0000-0000-000000000000', 'nil'), true);
+assert.equal(rt.Str.isUuid('00000000-0000-0000-0000-000000000000', 0), true);
+assert.equal(rt.Str.isUuid('ffffffff-ffff-ffff-ffff-ffffffffffff', 'max'), true);
+assert.equal(rt.Str.isUuid(v4u, 15), false);
 // Arr — the surface the sample apps call (oracle: Arr::* on Laravel 13.37)
 import { arr as arrHelpers, ARR_METHODS } from '../../kernel/arr.mjs';
 assert.equal(rt.Arr, arrHelpers);

@@ -154,6 +154,23 @@ test('validate: required catches missing/empty; optional integer skips when abse
   assert.equal(r.errors.age, undefined); // age absent -> integer rule not applied
 });
 
+test('validate: the uuid rule is Laravel\'s own Str::isUuid, not a version-restricted regex', () => {
+  // The bare rule is the canonical dashed form with ANY hex in the last two
+  // groups: v6/v7, `nil`, `max` and a variant-0 uuid are all accepted (probed
+  // on PHP 8.3 with Laravel's validateUuid).
+  for (const u of [
+    'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+    '018f0c1e-6b1a-7c3d-8e4f-9a0b1c2d3e4f',
+    '00000000-0000-0000-0000-000000000000',
+    'ffffffff-ffff-ffff-ffff-ffffffffffff',
+    'a0eebc99-9c0b-4ef8-0b6d-6bb9bd380a11',
+  ]) {
+    assert.equal(validate({ id: u }, { id: 'uuid' }).valid, true, u);
+  }
+  assert.equal(validate({ id: 'nope' }, { id: 'uuid' }).valid, false);
+  assert.equal(validate({ id: 'a0eebc999c0b4ef8bb6d6bb9bd380a11' }, { id: 'uuid' }).valid, false);
+});
+
 test('validate: data drops unknown fields and does not mutate input', () => {
   const input = { name: 'A', email: 'a@b.co', extra: 'drop-me' };
   const r = validate(input, { name: 'required', email: 'required|email' });

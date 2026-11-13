@@ -2,6 +2,39 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The `uuid` rule is Laravel's own `Str::isUuid`, and `Str::isUuid()` compiles
+
+`kernel/packages/validate.mjs` — the mini-validator the settings and `spatie/laravel-data` DTO ports
+ride — declared its parity target as "Laravel / spatie/laravel-data" but answered `uuid` from its own
+regex. That regex was version-restricted (`[1-5]` + variant `[89ab]`), while Laravel's rule is
+`Str::isUuid($value, $version)` (Str.php:687-717) and its bare form accepts the canonical dashed
+shape with **any** hex in the last two groups: a v6/v7 uuid, the nil uuid, the max uuid and a
+variant-0 uuid all validate on Laravel and answered 422 here. `kernel/validator.mjs` already carried
+the correct rule, so the rule existed twice, in two semantics — the drift class the build comments
+label "two copies drift silently".
+
+The rule now lives once, as `isUuid()` in `kernel/str.mjs`, and the compiled `Str::` subset gains it.
+
+| change | why |
+|---|---|
+| `kernel/str.mjs`: `isUuid(value, version = null)`, exported, in `str` and `STR_METHODS` | one home for the rule; `str.mjs` is a leaf and both validators already import it |
+| `kernel/validator.mjs`: `validateUuid` calls it; the local implementation is gone; `phpIntParam()` is PHP's `(int)` cast for the rule parameter | `$version = (int) $parameters[0]` unless it is exactly `max`, so `uuid:nil`, `uuid:all` and `uuid:foo` all mean version 0 — the old code refused them |
+| `kernel/packages/validate.mjs`: `UUID_RE` deleted, `isUuid` imported | the drifted copy |
+| `tools/static.mjs`: `StrMethod.isUuid` | `Str::isUuid('…')` folds at build time through the same function, not a second one |
+| `COMPILED.md`, `tools/constructs.json`: the `Str` subset names `isUuid` | the construct tables are the shipped surface |
+| `kernel/tests/validator.test.mjs`, `compiler/tests/rt-str.test.mjs`, `tools/tests/packages-data-export.test.mjs` | the version matrix (`nil`/`all`/`foo`/`0`/`max`/`4`/`15`/bare, dash-less and upper-case spellings) on the runtime, the rule and the port; the port case is new |
+
+The `email` rule in `kernel/packages/validate.mjs` is deliberately **not** egulias: matching Laravel
+there needs the lexer `kernel/validator.mjs` already carries, so the four measured differences
+(`a@b` and `user@example` — Laravel accepts a dotless domain; `a@-b.co` and an underscore TLD —
+Laravel refuses) are now stated in the module header instead of being implied by a bare regex.
+
+Evidence: `Str::isUuid` and `validateUuid` probed on the showcase's `vendor/` Laravel over a 21-case
+rule matrix × 7 version spellings — the port moves from 4 differences to **0**, and all five
+Laravel-accepted bare forms (v4, v7, `nil`, `max`, variant 0) pass while the dash-less 32-char form
+still fails. The `(int)` cast was probed on 19 strings (`'4.7'`→4, `'1e3x'`→1000, `'0x1A'`→0,
+`'nil'`→0), all equal.
+
 ### Azure's extra provider fetches the profile from Graph, where the endpoint is
 
 `resolveProviderExtra()` shipped Azure's `userUrl` as
