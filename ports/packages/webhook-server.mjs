@@ -1,4 +1,4 @@
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, mapProviderResponse, jsonPort } from '../../kernel/packages/notify-http.mjs';
 import { hmacSha256Base64 as signPayload } from '../../kernel/hmac.mjs';
 
@@ -57,7 +57,7 @@ export default async function handle(ctx, env) {
     // anonymously, this URL is both an arbitrary-URL egress (SSRF-ish: any https
     // host) and a signing oracle over a secret the caller cannot read. App code
     // calls `signPayload()`/the module directly; the HTTP route needs a caller.
-    if ((await guardUserId(ctx)) == null) return jsonPort({ message: 'Unauthenticated.' }, 401);
+    if ((await guardUserId(ctx)) == null) return unauthorized();
     const body = ctx.body || {};
     const url = body.url;
 

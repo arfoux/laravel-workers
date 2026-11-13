@@ -37,7 +37,7 @@
 import bcrypt from 'bcryptjs';
 import { signPath, verifyPath } from '../../kernel/packages/signedurl.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx, guardUserId, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { bytesToHex } from '../../kernel/digest.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
@@ -97,7 +97,7 @@ export async function handleConfirmPassword(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
   const user = await currentUser(ctx, env);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
   if (typeof body.password !== 'string') return json(422, { errors: { password: ['The password field is required.'] } });
 
   const ok = user.password ? await bcrypt.compare(body.password, user.password) : false;
@@ -116,7 +116,7 @@ export async function handleConfirmStatus(ctx, env) {
   const q = { ...(ctx.query || {}) };
   const maxAge = Number(q.max_age ?? q.maxAge ?? 60 * 60 * 3);
   const user = await currentUser(ctx, env);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
   if (!user.password_confirmed_at) return json(200, { confirmed: false });
 
   const age = (Date.now() - new Date(user.password_confirmed_at.replace(' ', 'T') + 'Z').getTime()) / 1000;
@@ -131,7 +131,7 @@ export async function handleSendVerification(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
   const user = await currentUser(ctx, env);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
   if (user.email_verified_at) return json(200, { already_verified: true, verification_url: null });
 
   let key;

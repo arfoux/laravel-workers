@@ -38,7 +38,7 @@
 // check. No subrequests (pure HMAC signing).
 
 import { isPrivateChannel, signChannelAuth } from '../../kernel/packages/broadcast.mjs';
-import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { bearerToken, verifyPersonalAccessToken } from '../../kernel/packages/token.mjs';
 
 // ── Schema ────────────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ export default async function handle(ctx, env) {
   try {
     // 1. Token → user id. Missing/invalid token is a 401 before anything else.
     const userId = await resolveUserId(ctx, env);
-    if (userId == null) return json(401, { message: 'Unauthenticated.' });
+    if (userId == null) return unauthorized();
 
     // 2. Echo posts form-urlencoded (socket_id, channel_name[, channel_data]);
     //    a plain object / URLSearchParams body works identically.
