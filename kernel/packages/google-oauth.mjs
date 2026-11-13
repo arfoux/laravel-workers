@@ -1,14 +1,14 @@
-// kernel/packages/google-oauth.mjs — Google OAuth2 access-token minting,
-// generalised from the FCM path in `fcm-oauth.mjs`.
+// kernel/packages/google-oauth.mjs — Google OAuth2 access-token minting.
 //
 // FCM (`kreait/laravel-firebase`) and GA4 (`spatie/laravel-analytics`) both
 // authenticate to a Google API with a short-lived OAuth2 access token minted
 // from a service account: sign an RS256 JWT with the account's private key,
 // exchange it at Google's token endpoint, and send the returned `access_token`
-// as a Bearer credential. `fcm-oauth.mjs` bakes in the FCM scope and env var
-// name; this module parameterises both, so any Google API port (GA4 analytics,
-// Search Console, …) reuses the same pure WebCrypto machinery without
-// duplicating it. `fcm-oauth.mjs` is left untouched (it stays the FCM binding).
+// as a Bearer credential. That machinery lives HERE, once: this module
+// parameterises the scope, the env var name and the two error labels, and
+// `fcm-oauth.mjs` is a thin binding over it (FCM scope, FCM env var) — so any
+// Google API port (GA4 analytics, Search Console, ...) reuses the same pure
+// WebCrypto machinery, and the FCM copy cannot drift from it.
 //
 // Edge disclosure: NONE. RSASSA-PKCS1-v1_5 SHA-256 signing and the token
 // endpoint are native WebCrypto + HTTPS `fetch` — no socket, no token cache, a
@@ -23,12 +23,15 @@ import { b64url as b64urlFromBytes, b64urlToBytes, pemToDer } from './b64url.mjs
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const GA4_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly';
 
-// Same auto-detect as fcm-oauth.mjs: raw JSON always starts with `{`; a base64
-// blob (how GCP tooling commonly stores key files) is decoded. Exported so
-// callers/tests can reuse the parse without re-implementing it.
-export function parseServiceAccount(raw) {
+// Same auto-detect as the FCM binding used to spell out on its own: raw JSON
+// always starts with `{`; a base64 blob (how GCP tooling commonly stores key
+// files) is decoded. `emptyLabel` names the config in the empty-blob error, so
+// each binding keeps its own wording (FCM says `FCM_SERVICE_ACCOUNT_JSON is
+// empty`). Exported so callers/tests can reuse the parse without re-implementing
+// it.
+export function parseServiceAccount(raw, emptyLabel = 'service-account JSON') {
   const text = String(raw || '').trim();
-  if (!text) throw new Error('service-account JSON is empty');
+  if (!text) throw new Error(`${emptyLabel} is empty`);
   if (text.startsWith('{')) {
     return JSON.parse(text);
   }
@@ -37,15 +40,16 @@ export function parseServiceAccount(raw) {
 
 // Build and sign the RS256 JWT a Google OAuth2 token endpoint expects for
 // `scope`. Returns { assertion, header, payload } (payload carries iat/exp/aud/
-// scope for tests to assert on).
-export async function buildGoogleServiceAccountJwt(serviceAccount, { scope = GA4_SCOPE, now = Math.floor(Date.now() / 1000) } = {}) {
+// scope for tests to assert on). `keyLabel` names the private key in the
+// pemToDer errors, so each binding keeps its own wording.
+export async function buildGoogleServiceAccountJwt(serviceAccount, { scope = GA4_SCOPE, now = Math.floor(Date.now() / 1000), keyLabel = 'Google service-account private_key' } = {}) {
   const clientEmail = serviceAccount && serviceAccount.client_email;
   const privateKeyPem = serviceAccount && serviceAccount.private_key;
   if (!clientEmail) throw new Error('service account is missing client_email');
   if (!privateKeyPem) throw new Error('service account is missing private_key');
 
   // PKCS8 PEM (or the bare base64 body) -> DER bytes for importKey.
-  const der = pemToDer(privateKeyPem, 'Google service-account private_key');
+  const der = pemToDer(privateKeyPem, keyLabel);
 
   const key = await crypto.subtle.importKey(
     'pkcs8',
@@ -77,11 +81,11 @@ export async function buildGoogleServiceAccountJwt(serviceAccount, { scope = GA4
 // Mint a short-lived OAuth2 access token for a Google API. The service-account
 // JSON comes from `env[jsonEnv]` (default `GA4_SERVICE_ACCOUNT_JSON`). Throws
 // with Google's error on a non-2xx response.
-export async function mintGoogleAccessToken(env, { scope = GA4_SCOPE, jsonEnv = 'GA4_SERVICE_ACCOUNT_JSON', now = Math.floor(Date.now() / 1000) } = {}) {
+export async function mintGoogleAccessToken(env, { scope = GA4_SCOPE, jsonEnv = 'GA4_SERVICE_ACCOUNT_JSON', now = Math.floor(Date.now() / 1000), keyLabel = 'Google service-account private_key', emptyLabel = 'service-account JSON' } = {}) {
   const raw = env && env[jsonEnv];
   if (!raw) throw new Error(`missing ${jsonEnv}`);
-  const serviceAccount = parseServiceAccount(raw);
-  const { assertion } = await buildGoogleServiceAccountJwt(serviceAccount, { scope, now });
+  const serviceAccount = parseServiceAccount(raw, emptyLabel);
+  const { assertion } = await buildGoogleServiceAccountJwt(serviceAccount, { scope, now, keyLabel });
 
   const doFetch = resolveFetch(env);
   const body = new URLSearchParams({
