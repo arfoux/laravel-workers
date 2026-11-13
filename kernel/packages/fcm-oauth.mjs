@@ -32,12 +32,7 @@ function parseServiceAccount(raw) {
     return JSON.parse(text);
   }
   // base64 (standard or url-safe, with or without padding).
-  let b64 = text.replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-  const bin = atob(b64 + '='.repeat(pad));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return JSON.parse(new TextDecoder().decode(bytes));
+  return JSON.parse(new TextDecoder().decode(b64urlToBytes(text)));
 }
 
 // Build and sign the RS256 JWT the OAuth2 token endpoint expects.
