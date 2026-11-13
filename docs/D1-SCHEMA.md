@@ -2,7 +2,7 @@
 
 Consolidated list of every Cloudflare D1 table the package ports and the kernel packages create.
 
-**Scope / method:** every `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statement the code RUNS, read out of the string and template literals of `ports/packages/*.mjs` and `kernel/packages/*.mjs` by `tools/port-catalog.mjs`. A statement sketched in a module's header comment (`//   CREATE TABLE IF NOT EXISTS users ( ... )`) documents the shape and is deliberately not counted here — a plain grep counted those sketches too, and that is how this file came to describe itself as complete while five tables created after 2026-11-11 were missing.
+**Scope / method:** every `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statement the code RUNS, read out of the string and template literals of `ports/packages/*.mjs` and `kernel/packages/*.mjs` by `tools/port-catalog.mjs`. A statement sketched in a module's header comment (`//   CREATE TABLE IF NOT EXISTS users ( ... )`) documents the shape and is deliberately not counted here — a plain grep counted those sketches too, and that is how this file came to describe itself as complete while six tables the code creates (`channel_memberships`, `invoices`, `job_metrics`, `mollie_payments`, `tenants`, `transactions`) had no section at all.
 
 The numbers, the summary and every SQL block below are generated; `--check` runs in the docs gate (`npm run check:docs`), so they cannot drift from the code again. What stays hand-written is the per-table description and the caveats — analysis, not a grep.
 

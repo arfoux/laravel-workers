@@ -61,14 +61,15 @@ const BEFORE_REGEX = new Set(['', '(', ',', '=', ':', '[', '!', '&', '|', '?', '
 
 /**
  * Classify every character of a module: 0 = code, 1 = comment, 2 = inside a
- * string/template literal. Template `${...}` returns to code, so `env.KEY` in an
- * interpolated template still counts as a read. Also returns the literal spans,
- * which is where a real `CREATE TABLE` lives.
+ * string/template literal. A template's `${...}` returns to code and a `}` at
+ * depth 0 returns to the literal, so `env.KEY` in an interpolated template still
+ * counts as a read and the closing backtick is not mistaken for an opening one.
+ * Also returns the literal spans, which is where a real `CREATE TABLE` lives.
  */
 function lex(source) {
   const kinds = new Uint8Array(source.length);
   const literals = [];
-  const stack = []; // 'tpl' frames and the brace depth of a `${...}` inside one
+  const stack = []; // one frame per open `${...}`: how many `{` deep we are
   let state = 'code';
   let quote = '';
   let start = 0;
@@ -99,21 +100,15 @@ function lex(source) {
         state = 'lit';
         quote = c;
         start = i;
-      } else if (c === '{' && stack.length && stack[stack.length - 1].kind === 'brace') {
-        stack[stack.length - 1].depth++;
-      } else if (c === '}' && stack.length && stack[stack.length - 1].kind === 'brace') {
-        if (stack[stack.length - 1].depth > 0) stack[stack.length - 1].depth--;
-        else {
+      } else if (c === '{') {
+        if (stack.length) stack[stack.length - 1].depth++;
+      } else if (c === '}') {
+        if (stack.length && stack[stack.length - 1].depth > 0) stack[stack.length - 1].depth--;
+        else if (stack.length) {
           stack.pop(); // back into the template literal
           state = 'lit';
           quote = '`';
         }
-      } else if (c === '$' && d === '{' && stack.length && stack[stack.length - 1].kind === 'tpl') {
-        stack.push({ kind: 'brace', depth: 0 });
-        kinds[i] = 0;
-        kinds[i + 1] = 0;
-        i += 2;
-        continue;
       }
       if (!/\s/.test(c)) prev = c;
       i++;
@@ -154,7 +149,7 @@ function lex(source) {
     }
     if (quote === '`' && c === '$' && d === '{') {
       literals.push({ from: start, to: i, quote });
-      stack.push({ kind: 'tpl' });
+      stack.push({ depth: 0 });
       state = 'code';
       i += 2;
       continue;
@@ -192,8 +187,12 @@ export function statementsIn(source) {
   return found;
 }
 
-/** `env.NAME` and `env['NAME']` reads that are real code, in source order. */
-function envReadsIn(source) {
+/**
+ * `env.NAME` and `env['NAME']` reads that are real code, in source order. The
+ * Inventory is generated from this, so a desynced lexer does not just mislabel
+ * a span: it silently drops reads the document then claims to have listed.
+ */
+export function envReadsIn(source) {
   const { kinds } = lex(source);
   const names = [];
   const code = (index) => kinds[index] === 0;
@@ -495,13 +494,32 @@ function checkCatalogSection(doc, modules, fail) {
  * required, what format it takes. What the check proves is that every `NAME`
  * they mention is something the code reads — the way a curated row rots is by
  * outliving the read it documents.
+ *
+ * The generated regions are removed first: the Inventory lists the code's own
+ * reads (it cannot be stale) and the Counts block is a number, so neither is a
+ * curated row. Scanning only the front matter, as an earlier revision did, made
+ * this check a no-op — every curated table sits BELOW the Inventory.
  */
-function checkCuratedEnvRows(doc, modules, fail) {
+export function checkCuratedEnvRows(doc, modules, fail) {
   const names = envNames(modules);
-  const curated = doc.slice(0, doc.indexOf(marker('counts', 'start')));
+  const curated = withoutRegions(doc, ['counts', 'inventory']);
   for (const m of curated.matchAll(/`([A-Z][A-Z0-9_]{2,})`/g)) {
     if (!names.has(m[1])) fail(`docs/ENV-SECRETS.md: the curated row \`${m[1]}\` names an env var neither tree reads`);
   }
+}
+
+/** The document with its generated regions cut out: what is left is hand-written. */
+function withoutRegions(doc, regions) {
+  for (const name of regions) {
+    const open = marker(name, 'start');
+    const close = marker(name, 'end');
+    const start = doc.indexOf(open);
+    const end = doc.indexOf(close);
+    // A missing region is another check's failure; do not compound it here.
+    if (start === -1 || end === -1) continue;
+    doc = doc.slice(0, start) + doc.slice(end + close.length);
+  }
+  return doc;
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
