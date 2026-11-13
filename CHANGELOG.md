@@ -2,6 +2,28 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Azure's extra provider fetches the profile from Graph, where the endpoint is
+
+`resolveProviderExtra()` shipped Azure's `userUrl` as
+`https://login.microsoftonline.com/{tenant}/oauth2/v2.0/openid/userinfo`. The login host has no
+userinfo endpoint: both candidates (`…/oauth2/v2.0/openid/userinfo`, `…/oauth2/v2.0/userinfo`) answer
+**404**, and the tenant-agnostic discovery document
+(`https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration`) names
+`"userinfo_endpoint": "https://graph.microsoft.com/oidc/userinfo"`, which answers **401** (it wants
+the bearer token). So an Azure sign-in could authorize and mint a token, and then `fetchUser()` in
+`kernel/packages/oauth.mjs` 404'd. The Graph URL carries no tenant, so it is a constant.
+
+| change | why |
+|---|---|
+| `kernel/packages/socialite-providers.mjs`: azure's `userPath` is `https://graph.microsoft.com/oidc/userinfo` | the login-host path 404s, so the profile step could never succeed |
+| `tools/tests/packages-socialite-providers.test.mjs`: the azure shape asserts Graph, and the test name says "login endpoints" | the old assertion pinned the 404 |
+
+Evidence: `curl` gave 404 for `/oauth2/v2.0/openid/userinfo`, 200 for `/oauth2/v2.0/authorize` and
+`/oauth2/v2.0/token`, 401 for `graph.microsoft.com/oidc/userinfo`; the discovery document supplies the
+`userinfo_endpoint` value above. The other three extra providers keep their paths, which match their
+providers' documented defaults (Okta's default authorization server is `/oauth2/v1/*`, Cognito's
+profile path is `/oauth2/userInfo`, Keycloak's is the realm's `/protocol/openid-connect/userinfo`).
+
 ### The FCM port reads the project id from the service account, and Discord's thread target reaches the thread
 
 Two notification ports answered something other than what they (and the docs) said they did:
