@@ -12,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import welcome from '../../ports/packages/welcome-notification.mjs';
+import { okCtx } from './_helpers.mjs';
 
 // Build a fake fetch that records the call and replies with a canned response.
 function makeFetch(status, jsonBody, { headers } = {}) {
@@ -26,8 +27,6 @@ function makeFetch(status, jsonBody, { headers } = {}) {
   fetchImpl.calls = calls;
   return fetchImpl;
 }
-
-const okCtx = (body) => ({ body, query: {}, params: {} });
 
 // ---- Mailgun path -----------------------------------------------------------
 

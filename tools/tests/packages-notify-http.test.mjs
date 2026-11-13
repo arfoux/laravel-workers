@@ -14,23 +14,7 @@ import slack from '../../ports/packages/slack-notification.mjs';
 import twilio from '../../ports/packages/twilio-sms.mjs';
 import mailgun from '../../ports/packages/mailgun-mail.mjs';
 import postmark from '../../ports/packages/postmark-mail.mjs';
-
-// Build a fake fetch that records the call and replies with a canned response.
-function makeFetch(status, jsonBody, { rawBody, headers } = {}) {
-  const calls = [];
-  const bodyText = rawBody !== undefined ? rawBody : JSON.stringify(jsonBody);
-  const fetchImpl = async (url, init) => {
-    calls.push({ url: String(url), init: init || {} });
-    return new Response(bodyText, {
-      status,
-      headers: headers || { 'content-type': 'application/json' },
-    });
-  };
-  fetchImpl.calls = calls;
-  return fetchImpl;
-}
-
-const okCtx = (body) => ({ body, query: {}, params: {} });
+import { makeFetch, okCtx } from './_helpers.mjs';
 
 // ---- Slack -----------------------------------------------------------------
 
