@@ -1481,6 +1481,7 @@ const StrMethod = {
   finish: (value, cap) => kernelStr.finish(value, cap),
   start: (value, prefix) => kernelStr.start(value, prefix),
   isUrl: (value, protocols = []) => kernelStr.isUrl(value, protocols),
+  isUuid: (value, version = null) => kernelStr.isUuid(value, version),
   trim: (value, chars) => phpTrim(value, chars),
 };
 

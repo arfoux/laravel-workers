@@ -7,19 +7,28 @@
 //   - `required` fails on `undefined`, `null`, `''`, and `[]` (Laravel's
 //     `NotEmpty`-style emptiness for scalars/arrays).
 //   - `email`  — pragmatic RFC-ish check (has local@domain with a dotted TLD).
+//     Deliberately NOT egulias: Laravel accepts a dotless domain (`a@b`,
+//     `user@example`) that this refuses, and refuses a domain label starting
+//     with `-` (`a@-b.co`), or an underscore in the TLD
+//     (`user@example.toolongtld_x`) that this accepts (probed on PHP 8.3,
+//     12 cases, 4 differ).
 //   - `integer`— a whole number; numeric strings like `"42"` pass (Laravel's
 //     `validateInteger` accepts numeric strings when `numeric` conversion holds).
 //   - `min:N`  — string length for strings, numeric value for numbers
 //     (mirrors Laravel, which switches on the attribute's type).
-//   - `boolean`,`array`,`uuid` — common extras the settings/DTO ports use.
+//   - `boolean`,`array` — common extras the settings/DTO ports use.
+//   - `uuid`   — Laravel's own rule, `isUuid()` from kernel/str.mjs (it used to
+//     be a version-restricted regex here: a v6/v7/`nil`/`max` uuid that Laravel
+//     accepts was refused).
 // A field stops at its first failing rule, and only the first error per field is
 // kept — the same "bag" shape Laravel returns from a JSON validation failure.
 // Errors are keyed by top-level field (nested `a.b` keys are returned as-is).
 
+import { isUuid } from '../str.mjs';
+
 // --- individual rules -------------------------------------------------------
 
 const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isBlank(v) {
   return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
@@ -37,7 +46,7 @@ function ruleFailed(rule, value) {
   if (rule === 'integer') return !isInteger(value);
   if (rule === 'boolean') return typeof value !== 'boolean' && value !== 0 && value !== 1 && value !== '0' && value !== '1';
   if (rule === 'array') return !Array.isArray(value);
-  if (rule === 'uuid') return typeof value !== 'string' || !UUID_RE.test(value);
+  if (rule === 'uuid') return !isUuid(value);
   if (rule.startsWith('min:')) {
     const min = Number(rule.slice(4));
     if (typeof value === 'number') return value < min;

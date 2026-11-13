@@ -599,7 +599,7 @@ export const STR_METHODS = new Set([
   'slug', 'limit', 'upper', 'lower', 'studly', 'camel', 'snake', 'kebab', 'title',
   'contains', 'startsWith', 'endsWith', 'after', 'before', 'length',
   'replace', 'replaceFirst', 'replaceLast', 'squish', 'ucfirst', 'ucwords', 'ascii',
-  'is', 'finish', 'start', 'random', 'isUrl',
+  'is', 'finish', 'start', 'random', 'isUrl', 'isUuid',
 ]);
 
 
@@ -623,6 +623,40 @@ function urlPatternFor(protocols) {
 function isUrl(value, protocols = []) {
   if (typeof value !== 'string') return false;
   return (protocols && protocols.length ? urlPatternFor(protocols) : URL_PATTERN).test(value);
+}
+// `Str::isUuid($value, $version = null)` (Str.php): without a version, the
+// canonical dashed form with ANY hex in the last two groups (`/D`, so no
+// trailing-newline tolerance - a bare JS `$` is already end-of-input). With a
+// version the value goes through ramsey/uuid's parse first (so the dash-less
+// and upper-case spellings count, and a variant nibble outside `[89ab]` does
+// NOT: `…-0b6d-…` refuses), then `$version === 0 || 'nil'` is the all-zero uuid,
+// `'max'` the all-`f` one, and anything else must be an INTEGER `getVersion()`
+// equals - a string version never matches, it is a strict comparison.
+// Probed on PHP 8.3 (Str::isUuid directly, and the rule through
+// validateUuid): `0`/`'nil'` -> nil only; `'max'` -> max only; int `4` -> v4,
+// its dash-less and upper-case spellings, but not a variant-0 v4; `'4'`,
+// `'foo'`, `''`, int `15` -> nothing; no version -> canonical form only.
+const UUID_CANONICAL = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const UUID_HEX32 = /^[0-9a-fA-F]{32}$/;
+// ramsey's accepted shape for a versioned lookup, lower-cased: version nibble
+// 1-8 with the RFC variant `[89ab]`.
+const UUID_VERSIONED = /^[0-9a-f]{8}(-[0-9a-f]{4}){2}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_NIL = '00000000-0000-0000-0000-000000000000';
+const UUID_MAX = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+export function isUuid(value, version = null) {
+  if (typeof value !== 'string') return false;
+  if (version === null || version === undefined) return UUID_CANONICAL.test(value);
+  let u = value;
+  if (UUID_HEX32.test(u)) {
+    u = `${u.slice(0, 8)}-${u.slice(8, 12)}-${u.slice(12, 16)}-${u.slice(16, 20)}-${u.slice(20)}`;
+  } else if (!UUID_CANONICAL.test(u)) {
+    return false;
+  }
+  u = u.toLowerCase();
+  if (version === 0 || version === 'nil') return u === UUID_NIL;
+  if (version === 'max') return u === UUID_MAX;
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 8) return false;
+  return UUID_VERSIONED.test(u) && u[14] === String(version);
 }
 export const str = {
   slug,
@@ -652,6 +686,7 @@ export const str = {
   start,
   random,
   isUrl,
+  isUuid,
 };
 
 export default { str, STR_METHODS, ascii };
