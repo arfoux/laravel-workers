@@ -21,8 +21,8 @@ never in `registry.example.json`.
 <!-- port-catalog:counts:start -->
 
 **Generated from both trees** — the curated tables further down carry the operator-facing judgement: which variable a deploy cannot run without.
-- env names read by the two trees: **97**
-- read by a port in `ports/packages`: **88**
+- env names read by the two trees: **112**
+- read by a port in `ports/packages`: **101**
 
 <!-- port-catalog:counts:end -->
 
@@ -49,6 +49,7 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `APPLE_CLIENT_ID` | `apple-signin` |
 | `APPLE_KEY_ID` | `apple-signin` |
 | `APPLE_P8_PRIVATE_KEY` | `apple-signin` |
+| `APPLE_REDIRECT_URI` | `apple-signin` |
 | `APPLE_TEAM_ID` | `apple-signin` |
 | `APP_KEY` | `fortify-confirmation`, `sanctum-spa-cookie` |
 | `APP_URL` | `fortify-confirmation` |
@@ -61,6 +62,8 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `BROADCAST_KEY` | `echo` |
 | `BROADCAST_SECRET` | `echo` |
 | `BUGSNAG_API_KEY` | `bugsnag` |
+| `CF_ACCOUNT_ID` | `dompdf` |
+| `CF_IMAGE_RESIZING_ZONE` | `glide` |
 | `COOKIE_CONSENT_BODY` | kernel `cookie-consent` |
 | `COOKIE_CONSENT_LIFETIME` | kernel `cookie-consent` |
 | `COOKIE_CONSENT_TITLE` | kernel `cookie-consent` |
@@ -70,6 +73,7 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `DISCORD_BOT_TOKEN` | `discord-notification` |
 | `DISCORD_CHANNEL` | `discord-notification` |
 | `DISCORD_WEBHOOK_URL` | `discord-notification` |
+| `EXCEL_EXPORT_TABLE` | `maatwebsite-excel` |
 | `EXPO_ACCESS_TOKEN` | `expo-notification` |
 | `FCM_PROJECT_ID` | `fcm-notification` |
 | `FCM_SERVICE_ACCOUNT_JSON` | kernel `fcm-oauth` |
@@ -79,6 +83,7 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `FLARE_PROJECT_KEY` | `flare` |
 | `GA4_PROPERTY_ID` | `analytics` |
 | `GA4_SERVICE_ACCOUNT_JSON` | `analytics` |
+| `GLIDE_ORIGIN` | `glide` |
 | `HIDE_DEFAULT_LOCALE_IN_URL` | `localization` |
 | `HONEYPOT_MIN_DELTA_MS` | `honeypot-middleware` |
 | `INERTIA_VERSION` | `inertia` |
@@ -86,6 +91,8 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `JWT_TTL` | `jwt-auth` |
 | `LEMON_SQUEEZY_WEBHOOK_SECRET` | `lemonsqueezy` |
 | `LOCALES` | `localization` |
+| `MAILCHIMP_API_KEY` | kernel `newsletter` |
+| `MAILCHIMP_SERVER_PREFIX` | kernel `newsletter` |
 | `MAILCOACH_BASE_URL` | kernel `mailcoach-mailer` |
 | `MAILCOACH_HOST` | kernel `mailcoach-mailer` |
 | `MAILCOACH_TOKEN` | kernel `mailcoach-mailer` |
@@ -94,6 +101,7 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `MAILGUN_SECRET` | `mailgun-mail`, `welcome-notification` |
 | `MAIL_PROVIDER` | `welcome-notification` |
 | `MCP_PROMPTS` | `mcp` |
+| `MCP_PROTOCOL_VERSION` | `mcp` |
 | `MCP_SERVER_NAME` | `mcp` |
 | `MCP_SERVER_VERSION` | `mcp` |
 | `MCP_TOOLS` | `mcp` |
@@ -112,6 +120,8 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `PASSPORT_KEY_ID` | `passport-oauth` |
 | `PASSPORT_PRIVATE_KEY` | `passport-oauth` |
 | `PASSPORT_PUBLIC_KEY` | `passport-oauth` |
+| `PDF_API_KEY` | `dompdf` |
+| `PDF_PROVIDER` | `dompdf` |
 | `POSTMARK_FROM` | `postmark-mail` |
 | `POSTMARK_STREAM` | `postmark-mail` |
 | `POSTMARK_TOKEN` | `postmark-mail`, `welcome-notification` |
@@ -136,10 +146,15 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `WEBHOOK_CLIENT_SECRET` | `webhook-client` |
 | `WEBHOOK_CLIENT_SIGNATURE_HEADER` | `webhook-client` |
 | `WEBHOOK_SERVER_SECRET` | `webhook-server` |
+| `WEBPUSH_TTL` | `webpush-notification` |
+| `WEBPUSH_URGENCY` | `webpush-notification` |
+| `WEBPUSH_VAPID_PRIVATE_KEY` | `webpush-notification` |
+| `WEBPUSH_VAPID_SUBJECT` | `webpush-notification` |
 | `XENDIT_CALLBACK_TOKEN` | `xendit-webhook` |
 | `ai_tool_runners` | `ai-sdk` |
 | `fetch` | kernel `ai` |
 | `fetchImpl` | `laravel-socialite-callback`, kernel `ai`, kernel `notify-http` |
+| `randomBytes` | `laravel-socialite-callback` |
 
 <!-- port-catalog:inventory:end -->
 

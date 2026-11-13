@@ -9,7 +9,7 @@
 // literals are statements, and how many distinct shapes one table name has.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { catalogOrder, statementsIn, summaryTable, tables } from '../port-catalog.mjs';
+import { catalogOrder, checkCuratedEnvRows, envReadsIn, statementsIn, summaryTable, tables } from '../port-catalog.mjs';
 
 test('port-catalog: comments are prose, every kind of literal is code', () => {
   const src = [
@@ -90,4 +90,55 @@ test('port-catalog: the summary follows the catalog, not the alphabet', () => {
   const doc = '## Catalog\n\n### 1. `zebra`\ndescription\n\n### 2. `alpha`\ndescription\n\n### 3. `ghost`\ndescription\n';
   assert.deepEqual(catalogOrder(doc, mods), ['zebra', 'alpha']);
   assert.deepEqual(catalogOrder(doc, [...mods, mod('mango', 'CREATE TABLE IF NOT EXISTS mango (id INTEGER)')]), ['zebra', 'alpha', 'mango']);
+});
+
+test('port-catalog: a `${...}` in a template does not desync the lexer', () => {
+  // The interpolation frame has to close on its own `}`, or the template's
+  // CLOSING backtick reads as an opening one and every read behind it is
+  // swallowed as string content - that is how the Inventory came to list 97 of
+  // the 112 names the two trees read.
+  const src = [
+    'export default async function handle(ctx, env = {}) {',
+    '  const cf = new URL(`https://${zone}/cdn-cgi/image`);',
+    '  const zone2 = env.CF_IMAGE_RESIZING_ZONE;',
+    '  const tpl = `x${env.APP_KEY}y`;',
+    '  //   env.GHOST_IN_A_COMMENT',
+    "  const url = env['APP_URL'];",
+    '  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS glide_cache (',
+    '    key TEXT NOT NULL',
+    '  )`).run();',
+    '}',
+  ].join('\n');
+  assert.deepEqual(envReadsIn(src), ['CF_IMAGE_RESIZING_ZONE', 'APP_KEY', 'DB', 'APP_URL']);
+  const found = statementsIn(src);
+  assert.deepEqual(
+    found.map((s) => [s.kind, s.name]),
+    [['table', 'glide_cache']]
+  );
+  // `statementsIn` slices the last statement up to the closing delimiter; the
+  // point is that the span is this ONE template - no `cdn-cgi` junk from a
+  // neighbouring literal merged into it.
+  assert.equal(found[0].text, 'CREATE TABLE IF NOT EXISTS glide_cache (\n    key TEXT NOT NULL\n  )');
+});
+
+test('port-catalog: a curated row that outlives its read fails the check', () => {
+  const modules = [{ tree: { dir: 'ports/packages', label: '' }, slug: 'real', env: ['REAL_VAR'] }];
+  const marker = (name, kind) => `<!-- port-catalog:${name}:${kind} -->`;
+  const doc = [
+    'front matter names `REAL_VAR`',
+    marker('counts', 'start'),
+    '**97**',
+    marker('counts', 'end'),
+    marker('inventory', 'start'),
+    '| `GENERATED_ONLY` | `port` |',
+    marker('inventory', 'end'),
+    '## Wajib',
+    '| `REAL_VAR` | yes |',
+    '| `DEAD_VAR` | yes |',
+  ].join('\n');
+  const failures = [];
+  checkCuratedEnvRows(doc, modules, (m) => failures.push(m));
+  // The curated tables sit BELOW the generated regions, so a check that reads
+  // only the front matter is a no-op; the generated Inventory cannot rot.
+  assert.deepEqual(failures, ['docs/ENV-SECRETS.md: the curated row `DEAD_VAR` names an env var neither tree reads']);
 });
