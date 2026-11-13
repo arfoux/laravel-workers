@@ -19,7 +19,7 @@
 //   { token?|topic?|condition?, notification?: {title, body, ...}, data?: {} }.
 // A message with none of token/topic/condition is a 422 — FCM would reject it.
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
-import { resolveFetch, mapProviderResponse, jsonPort } from '../../kernel/packages/notify-http.mjs';
+import { resolveFetch, jsonPort, deliverVia } from '../../kernel/packages/notify-http.mjs';
 import { mintFcmAccessToken } from '../../kernel/packages/fcm-oauth.mjs';
 
 function fcmSendUrl(projectId) {
@@ -92,13 +92,7 @@ export default async function handle(ctx, env) {
     body: JSON.stringify({ message }),
   };
 
-  try {
-    const resp = await doFetch(url, init);
-    const mapped = await mapProviderResponse(resp);
-    // FCM v1 returns 200 with a `name` field on success; surface the provider
-    // response verbatim so the caller can inspect `name`/error details.
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  // FCM v1 returns 200 with a `name` field on success; surface the provider
+  // response verbatim so the caller can inspect `name`/error details.
+  return deliverVia(doFetch, url, init);
 }

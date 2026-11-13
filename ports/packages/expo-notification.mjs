@@ -21,8 +21,8 @@
 // Provider response is mapped 1:1 to {status, headers, body}.
 import {
   resolveFetch,
-  mapProviderResponse,
   jsonPort,
+  deliverVia,
   bearerAuthHeader,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
@@ -83,13 +83,7 @@ export default async function handle(ctx, env) {
   // Auth is optional for Expo push; send a Bearer header only when configured.
   if (accessToken) init.headers['authorization'] = bearerAuthHeader(accessToken);
 
-  try {
-    const resp = await resolveFetch(env)(EXPO_SEND, init);
-    const mapped = await mapProviderResponse(resp);
-    // Expo returns 200 with { data: [...], errors?: [...] }; surface verbatim —
-    // the caller inspects `data`/`errors` per receipt.
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  // Expo returns 200 with { data: [...], errors?: [...] }; surface verbatim —
+  // the caller inspects `data`/`errors` per receipt.
+  return deliverVia(resolveFetch(env), EXPO_SEND, init);
 }

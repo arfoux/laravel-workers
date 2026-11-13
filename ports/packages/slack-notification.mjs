@@ -21,8 +21,8 @@
 // Provider response is mapped 1:1 to {status, headers, body}.
 import {
   resolveFetch,
-  mapProviderResponse,
   jsonPort,
+  deliverVia,
   bearerAuthHeader,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
@@ -89,13 +89,7 @@ export default async function handle(ctx, env) {
     return jsonPort({ error: 'missing Slack credential: set SLACK_WEBHOOK_URL or SLACK_BOT_TOKEN' }, 500);
   }
 
-  try {
-    const resp = await doFetch(url, init);
-    const mapped = await mapProviderResponse(resp);
-    // Slack returns 200 with {"ok":false,...} on app-level errors; surface that
-    // verbatim — the caller inspects `ok`.
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  // Slack returns 200 with {"ok":false,...} on app-level errors; surface that
+  // verbatim — the caller inspects `ok`.
+  return deliverVia(doFetch, url, init);
 }

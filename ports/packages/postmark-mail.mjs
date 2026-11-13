@@ -17,8 +17,8 @@
 // Provider response is mapped 1:1 to {status, headers, body}.
 import {
   resolveFetch,
-  mapProviderResponse,
   jsonPort,
+  deliverVia,
   normalisePayload,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
@@ -55,11 +55,5 @@ export default async function handle(ctx, env) {
     }),
   };
 
-  try {
-    const resp = await doFetch(POSTMARK_URL, init);
-    const mapped = await mapProviderResponse(resp);
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  return deliverVia(doFetch, POSTMARK_URL, init);
 }
