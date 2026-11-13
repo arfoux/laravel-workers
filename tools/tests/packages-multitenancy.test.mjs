@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import handler, { resolveTenant } from '../../ports/packages/multitenancy.mjs';
+import { splitTop } from './_helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Fake D1 (in-memory). Handles exactly the statements the handler emits:
@@ -17,19 +18,6 @@ import handler, { resolveTenant } from '../../ports/packages/multitenancy.mjs';
 // ---------------------------------------------------------------------------
 function stripIdent(s) {
   return s.replace(/^["'`\[]|["'`\]]$/g, '');
-}
-
-function splitTop(str) {
-  const out = [];
-  let depth = 0;
-  let cur = '';
-  for (const ch of str) {
-    if (ch === '(') depth += 1;
-    else if (ch === ')') depth -= 1;
-    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
-  }
-  if (cur.trim()) out.push(cur);
-  return out.map((s) => s.trim());
 }
 
 class FakeD1 {

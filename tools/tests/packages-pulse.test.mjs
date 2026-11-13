@@ -9,6 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pulse, { summarize, ensureSchema } from '../../ports/packages/pulse.mjs';
+import { makeCtx } from './_helpers.mjs';
 
 // ---- A compact in-memory D1 fake for the pulse SQL shapes ------------------
 
@@ -80,17 +81,6 @@ class FakeD1 {
 
 function makeEnv() {
   return { DB: new FakeD1() };
-}
-
-// Build a port ctx the way the kernel router would (already-normalised shape).
-function makeCtx({ method = 'GET', body, query, params } = {}) {
-  return {
-    request: { method },
-    method,
-    body: body ?? {},
-    query: query ?? {},
-    params: params ?? {},
-  };
 }
 
 const parse = (res) => JSON.parse(res.body);

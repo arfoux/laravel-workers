@@ -16,10 +16,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import handler from '../../ports/packages/midtrans-webhook.mjs';
+import { okCtx } from './_helpers.mjs';
 
 const SERVER_KEY = 'SB-Mid-server-rH-test-key-1234';
-
-const okCtx = (body) => ({ body, query: {}, params: {} });
 
 // Expected lowercase-hex signature: SHA512(order_id . status_code . gross_amount . serverKey).
 function expectedSig(serverKey, body) {

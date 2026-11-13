@@ -11,23 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import telegram from '../../ports/packages/telegram-notification.mjs';
-
-// Build a fake fetch that records the call and replies with a canned response.
-function makeFetch(status, jsonBody, { rawBody, headers } = {}) {
-  const calls = [];
-  const bodyText = rawBody !== undefined ? rawBody : JSON.stringify(jsonBody);
-  const fetchImpl = async (url, init) => {
-    calls.push({ url: String(url), init: init || {} });
-    return new Response(bodyText, {
-      status,
-      headers: headers || { 'content-type': 'application/json' },
-    });
-  };
-  fetchImpl.calls = calls;
-  return fetchImpl;
-}
-
-const okCtx = (body) => ({ body, query: {}, params: {} });
+import { makeFetch, okCtx } from './_helpers.mjs';
 
 // ---- Happy paths -----------------------------------------------------------
 
