@@ -1,7 +1,12 @@
 // kernel/encrypter.mjs - Encrypter (AES-256-CBC, Laravel-compatible)
 // Uses only web-standard globals: crypto.subtle, atob/btoa, TextEncoder/TextDecoder.
 
-import { bytesToHex, timingSafeEqual } from './digest.mjs';
+import {
+  bytesToHex,
+  timingSafeEqual,
+  base64ToBytes as b64DecodeToBytes,
+  bytesToBase64 as b64EncodeBytes,
+} from './digest.mjs';
 
 // Re-exported so the Encrypter's public surface (csrf.mjs, storage.mjs,
 // worker.mjs) is unchanged; the rule itself lives once in digest.mjs.
@@ -18,22 +23,6 @@ export class DecryptError extends Error {
     this.name = 'DecryptException';
     this.phpClass = 'Illuminate\\Contracts\\Encryption\\DecryptException';
   }
-}
-
-function b64EncodeBytes(bytes) {
-  let bin = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
-}
-
-function b64DecodeToBytes(b64) {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }
 
 function hexToBytes(hex) {
