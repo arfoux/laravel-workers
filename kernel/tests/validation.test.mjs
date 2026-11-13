@@ -22,6 +22,7 @@ import { handleHttp } from '../http.mjs';
 import { normalizeTable } from '../router.mjs';
 import { applyAuthenticatable } from '../auth.mjs';
 import { Model } from '../model.mjs';
+import { d1 } from './_helpers.mjs';
 
 // The kernel's session save() reads `auth.guard().id()` for the user_id column;
 // a fake authenticatable keeps the auth manager resolvable without a real app.
@@ -165,38 +166,6 @@ function baseConfig(overrides = {}) {
     'auth.guards.web': { driver: 'session', provider: 'users' },
     'auth.providers.users': { driver: 'eloquent', model: 'App\\Models\\User' },
     ...overrides,
-  };
-}
-
-function d1(sqlite) {
-  return {
-    prepare(sql) {
-      let params = [];
-      return {
-        bind(...p) {
-          params = p;
-          return this;
-        },
-        async all() {
-          const st = sqlite.prepare(sql);
-          const rows = params.length ? st.all(...params) : st.all();
-          return { results: rows.map((r) => ({ ...r })) };
-        },
-        async first() {
-          const st = sqlite.prepare(sql);
-          const row = params.length ? st.get(...params) : st.get();
-          return row ? { ...row } : null;
-        },
-        async run() {
-          const st = sqlite.prepare(sql);
-          const info = params.length ? st.run(...params) : st.run();
-          return {
-            success: true,
-            meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid ?? 0) },
-          };
-        },
-      };
-    },
   };
 }
 
