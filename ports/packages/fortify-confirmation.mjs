@@ -39,6 +39,7 @@ import { signPath, verifyPath } from '../../kernel/packages/signedurl.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 import { bytesToHex } from '../../kernel/digest.mjs';
+import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -53,7 +54,7 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const now = () => dateToSqlite(new Date());
 
 function json(status, payload) {
   return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };

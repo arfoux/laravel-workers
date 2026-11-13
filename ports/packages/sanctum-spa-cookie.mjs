@@ -37,6 +37,7 @@ import { signValue, verifyValue } from '../../kernel/packages/signedurl.mjs';
 import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -58,7 +59,7 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const now = () => dateToSqlite(new Date());
 const SESSION_COOKIE = 'laravel_session';
 const CSRF_COOKIE = 'XSRF-TOKEN';
 const SESSION_TTL = 60 * 60 * 2; // 2h rolling, Laravel's default lifetime

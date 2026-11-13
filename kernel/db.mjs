@@ -13,6 +13,28 @@ const ALLOWED_OPS = new Set([
 ]);
 const ALLOWED_JOIN_OPS = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
 
+/**
+ * A JS Date as the grammar's date format, 'Y-m-d H:i:s' — the exact text a
+ * SQLite/D1 TEXT column stores. Laravel's Connection::prepareBindings() binds a
+ * DateTimeInterface this way; an ISO string ('2024-01-02T03:04:05.000Z') never
+ * matches the stored column. The rule was written 13 times across the ports and
+ * this module; a fix to one copy silently missed the others (#697).
+ */
+export function dateToSqlite(d) {
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * A nullable date input as 'Y-m-d H:i:s', or null when absent/unparseable —
+ * the shape a webhook payload's timestamp field takes before it is bound.
+ * Written byte-identically in cashier-paddle.mjs and lemonsqueezy.mjs.
+ */
+export function sqliteOrNull(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : dateToSqlite(d);
+}
+
 // D1/SQLite only bind null | number | string | ArrayBuffer. Normalize the JS
 // values the builder accepts so callers can pass idiomatic JS: booleans become
 // 1/0 (a raw JS boolean throws in node:sqlite and is rejected by D1), Dates
@@ -23,12 +45,7 @@ function bindValue(value) {
   // `Connection::prepareBindings()` binds a DateTimeInterface with the
   // grammar's date format ('Y-m-d H:i:s'), which is exactly the stored text.
   if (value && typeof value === 'object' && value.__lwDateValue === true) return value._raw;
-  if (value instanceof Date) {
-    // Laravel's Connection::prepareBindings(): a DateTimeInterface is bound
-    // with the grammar's date format ('Y-m-d H:i:s') - an ISO string
-    // ('2024-01-02T03:04:05.000Z') never matches the stored TEXT column.
-    return value.toISOString().slice(0, 19).replace('T', ' ');
-  }
+  if (value instanceof Date) return dateToSqlite(value);
   if (value === undefined) return null;
   return value;
 }
@@ -767,4 +784,4 @@ export function table(db, name) {
 }
 
 export const DB = { table };
-export default { QueryBuilder, table, DB };
+export default { QueryBuilder, table, DB, dateToSqlite, sqliteOrNull };

@@ -34,6 +34,7 @@ import {
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import bcrypt from 'bcryptjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { dateToSqlite } from '../../kernel/db.mjs';
 
 // ---------------------------------------------------------------------------
 // Schema (mirrors Sanctum's migration verbatim; users = Laravel's default)
@@ -59,7 +60,7 @@ export async function ensureSchema(env) {
   )`).run();
 }
 
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const now = () => dateToSqlite(new Date());
 
 function json(status, payload) {
   return { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: JSON.stringify(payload) };

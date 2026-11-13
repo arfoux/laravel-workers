@@ -53,6 +53,7 @@ import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
 import { bytesToHex } from '../../kernel/digest.mjs';
+import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
@@ -100,7 +101,7 @@ export async function ensureSchema(env) {
   ).run();
 }
 
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const now = () => dateToSqlite(new Date());
 const sha256hex = async (text) => {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));
   return bytesToHex(new Uint8Array(d));
