@@ -22,9 +22,15 @@
 // string or template literal, and an env name is a read when it appears in code
 // (including inside a template's `${...}`), not in a comment.
 //
-//   node tools/port-catalog.mjs            # the generated markdown (stdout)
 //   node tools/port-catalog.mjs --write    # write the generated regions into the docs
 //   node tools/port-catalog.mjs --check    # the gate: fail when a doc no longer matches the code
+//
+// There is no stdout mode: the two documents ARE the artifact, `--check` proves
+// they match the code and `--write` regenerates them, so a third renderer would
+// be a second copy of the same tables. It shipped in this tool's own first
+// commit (S105) and had never run — it called `summaryTable()` without the
+// catalog's section order and threw on the first `order.forEach` — and nothing
+// in the repo or the docs ever asked it for the markdown.
 //
 // Only the regions between `<!-- port-catalog:... -->` markers are generated.
 // Everything outside them is hand-written and stays that way: the per-table
@@ -577,9 +583,8 @@ function main() {
     return;
   }
 
-  console.log(totalsBlock(modules) + '\n\n' + summaryTable(modules));
-  console.log('\n---\n');
-  console.log(countsBlock(modules) + '\n\n' + inventoryTable(modules));
+  console.error('port-catalog: pass --check (the gate) or --write (regenerate the two docs)');
+  process.exitCode = 2;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
