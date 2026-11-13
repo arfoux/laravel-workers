@@ -7,7 +7,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { resolveAppRoot, toNativePath } from './native-path.mjs';
 import {
-  classFile, parsePhpFile, parsePhpSource, nodeName, callMethodName, callArgs, argValue, readEnvFile, appPsr4Dirs,
+  classFile, parsePhpSource, nodeName, callMethodName, callArgs, argValue, readEnvFile, appPsr4Dirs,
+  PHP_BUILTIN_TYPES as BUILTINS, isNullType, fullName, parsedOf,
 } from './static.mjs';
 // The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore):
 // a constructor default recorded by the dump is what a compiled class defaults
@@ -25,7 +26,6 @@ let appDir = positional && existsSync(positional) ? positional : '';
 if (!appDir) appDir = resolveAppRoot() || '';
 if (!appDir) { process.stderr.write('event-dump.mjs: cannot find app root\n'); process.exit(1); }
 
-const BUILTINS = new Set(['int', 'float', 'string', 'bool', 'array', 'callable', 'iterable', 'object', 'mixed', 'void', 'null', 'true', 'false']);
 const normalize = (p) => p.replace(/\\/g, '/');
 const appRootReal = normalize(appDir).replace(/\/+$/, '');
 const isAppClass = (fqcn) => {
@@ -34,12 +34,6 @@ const isAppClass = (fqcn) => {
   if (!f) return false;
   const nf = normalize(f);
   return nf.startsWith(appRootReal + '/') && !nf.includes('/vendor/');
-};
-
-const parseCache = new Map();
-const parsedOf = (file) => {
-  if (!parseCache.has(file)) parseCache.set(file, parsePhpFile(file));
-  return parseCache.get(file);
 };
 
 const resolveName = (t, parsed) => {
@@ -69,7 +63,6 @@ const resolveName = (t, parsed) => {
   if (parsed && parsed.namespace && !t.includes('\\')) return parsed.namespace + '\\' + t;
   return t;
 };
-const fullName = (parsed, c) => ((parsed && parsed.namespace ? parsed.namespace + '\\' : '') + (c && c.name ? nodeName(c.name) : ''));
 const findCls = (parsed, fqcn) => (parsed && !parsed.error ? ((parsed.classes || []).find((c) => fullName(parsed, c) === fqcn) || null) : null);
 
 const scalarDefault = (node) => {
@@ -133,13 +126,6 @@ const appBindings = () => {
     walk(ast);
   }
   return bindingsGlobal;
-};
-
-const isNullType = (t) => {
-  if (!t) return false;
-  if (t.kind === 'typereference') return (t.name || t.raw) === 'null';
-  if (t.kind === 'name') return (t.name || '') === 'null';
-  return false;
 };
 
 /**

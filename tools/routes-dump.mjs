@@ -40,6 +40,7 @@ import { join, dirname } from 'node:path';
 import {
   appRouteFiles,
   parsePhpFile,
+  parsedOf,
   nodeName,
   callMethodName,
   callArgs,
@@ -932,12 +933,6 @@ function parse() {
       redirectStatus,
       ...(Object.keys(wheres).length ? { wheres } : {}),
     });
-  };
-
-  const parsedCache = new Map();
-  const parsedOf = (file) => {
-    if (!parsedCache.has(file)) parsedCache.set(file, parsePhpFile(file));
-    return parsedCache.get(file);
   };
 
   const registerGroup = (steps, file) => {
