@@ -33,7 +33,7 @@ import {
 } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import bcrypt from 'bcryptjs';
-import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 // ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ async function resolveUser(ctx, env) {
   const plain = bearerToken(ctx.request.headers.get('authorization'));
   if (plain) {
     const id = Number.parseInt(plain.split('|')[0], 10);
-    if (!Number.isFinite(id)) return { error: json(401, { message: 'Unauthenticated.' }) };
+    if (!Number.isFinite(id)) return { error: unauthorized() };
     const row = await env.DB.prepare(
       'SELECT t.token AS token_hash, t.tokenable_id AS uid FROM personal_access_tokens t WHERE t.id = ?'
     ).bind(id).first();
@@ -77,7 +77,7 @@ async function resolveUser(ctx, env) {
       const user = await env.DB.prepare('SELECT id, name, email FROM users WHERE id = ?').bind(row.uid).first();
       if (user) return { user };
     }
-    return { error: json(401, { message: 'Unauthenticated.' }) };
+    return { error: unauthorized() };
   }
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
   const { email, password } = body;
@@ -130,19 +130,19 @@ export async function handleVerify(ctx, env) {
   try {
     await ensureSchema(env);
     const plain = bearerToken(ctx.request.headers.get('authorization'));
-    if (!plain) return json(401, { message: 'Unauthenticated.' });
+    if (!plain) return unauthorized();
     const id = Number.parseInt(plain.split('|')[0], 10);
-    if (!Number.isFinite(id)) return json(401, { message: 'Unauthenticated.' });
+    if (!Number.isFinite(id)) return unauthorized();
 
     const row = await env.DB.prepare('SELECT * FROM personal_access_tokens WHERE id = ?').bind(id).first();
-    if (!row) return json(401, { message: 'Unauthenticated.' });
+    if (!row) return unauthorized();
 
     const abilities = row.abilities ? JSON.parse(row.abilities) : [];
     if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
       return json(401, { message: 'Token expired.' });
     }
     if (!(await verifyPersonalAccessToken(plain, row.token))) {
-      return json(401, { message: 'Unauthenticated.' });
+      return unauthorized();
     }
     await touch(env, row.id);
     return json(200, {

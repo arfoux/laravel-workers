@@ -36,7 +36,7 @@ import bcrypt from 'bcryptjs';
 import { signValue, verifyValue } from '../../kernel/packages/signedurl.mjs';
 import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
@@ -170,16 +170,16 @@ export async function handleUser(ctx, env) {
     return json(500, { error: String(err.message || err) });
   }
   const signed = readCookie(ctx, SESSION_COOKIE);
-  if (!signed) return json(401, { message: 'Unauthenticated.' });
+  if (!signed) return unauthorized();
 
   const { valid, value } = await verifyValue(signed, key);
-  if (!valid) return json(401, { message: 'Unauthenticated.' });
+  if (!valid) return unauthorized();
 
   const session = await env.DB.prepare('SELECT * FROM sessions WHERE id = ?1').bind(String(value)).first();
-  if (!session) return json(401, { message: 'Unauthenticated.' });
+  if (!session) return unauthorized();
 
   const user = await userById(env, session.user_id);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
 
   await env.DB.prepare('UPDATE sessions SET last_activity = ? WHERE id = ?').bind(now(), session.id).run();
   return json(200, { user: { id: user.id, email: user.email, name: user.name } });

@@ -1,4 +1,4 @@
-import { normalizePortCtx, guardUserId, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/permission.mjs — port of spatie/laravel-permission v8.5.0 seam.
 //
@@ -158,7 +158,7 @@ export default async function handle(ctx, env) {
     // model's roles (a role oracle) or grant itself `admin`. A caller-supplied
     // modelType/modelKey/body is never an identity: the guard decides, and its
     // absence is 401 — before any D1 write.
-    if ((await guardUserId(ctx)) == null) return json(401, { message: 'Unauthenticated.' });
+    if ((await guardUserId(ctx)) == null) return unauthorized();
     await ensureSchema(env);
     const modelType = (ctx.body && ctx.body.model_type) || (ctx.query && ctx.query.model_type) || DEFAULT_MODEL_TYPE;
     const modelKey = ctx.params && ctx.params.modelKey;

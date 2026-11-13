@@ -93,8 +93,11 @@ a caller, `POST /broadcast` triggers events on any channel with the app's Pusher
 Rule: **a seam route requires an authenticated caller.** The identity is the platform guard's
 (`ctx.user()` in `kernel/http.mjs`, or a `ctx.user_id` a `middlewarePorts` guard wrote —
 `guardUserId()` in `kernel/packages/port-ctx.mjs`); it is never a body/query/params value.
-No identity → `401` before any DB write, any signature, any outbound `fetch`. The port's exported
-functions stay ungated: an app's own job or Worker call is in-process, not an HTTP request.
+No identity → `401` before any DB write, any signature, any outbound `fetch` — answered through
+`unauthorized()` in `kernel/packages/port-ctx.mjs`, so the status, the shared JSON envelope and
+Laravel's own `Unauthenticated.` body (`kernel/auth.mjs`) are written once rather than per port.
+The port's exported functions stay ungated: an app's own job or Worker call is in-process, not an
+HTTP request.
 
 Currently gated this way: `permission` (all routes), `pusher` `/broadcast`, `webhook-server`
 `/webhook-server/send`, `pusher`/`reverb` on `/broadcasting/auth` (guarded channels only),

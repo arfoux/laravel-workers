@@ -214,3 +214,13 @@ export function jsonResponse(status, payload) {
 export function jsonError(status, message) {
   return jsonResponse(status, { ok: false, error: message });
 }
+
+/**
+ * The 401 a guard answers with when the caller is not authenticated. The body is
+ * Laravel's own `AuthenticationException` message (`kernel/auth.mjs`), so a port
+ * that answers through this cannot drift from the framework by a word — and the
+ * status/headers are the shared JSON envelope, not a hand-rolled copy.
+ */
+export function unauthorized() {
+  return jsonResponse(401, { message: 'Unauthenticated.' });
+}

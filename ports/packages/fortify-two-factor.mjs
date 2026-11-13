@@ -48,7 +48,7 @@ import {
   recoveryCodes,
   verifyTotp,
 } from '../../kernel/packages/totp.mjs';
-import { normalizePortCtx, guardUserId, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
@@ -89,7 +89,7 @@ async function currentUser(ctx, env) {
 export async function handleEnable(ctx, env) {
   await ensureSchema(env);
   const user = await currentUser(ctx, env);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
 
   const secret = generateSecret();
   const codes = recoveryCodes(8);
@@ -110,7 +110,7 @@ export async function handleConfirm(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
   const user = await currentUser(ctx, env);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
   if (!user.two_factor_secret) return json(422, { message: 'Two-factor is not enabled.' });
   if (typeof body.code !== 'string') return json(422, { errors: { code: ['The code field is required.'] } });
 
@@ -127,7 +127,7 @@ export async function handleChallenge(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
   const user = await currentUser(ctx, env);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
   if (!user.two_factor_secret || !user.two_factor_confirmed_at) {
     return json(422, { message: 'Two-factor authentication is not enabled for this account.' });
   }
@@ -144,7 +144,7 @@ export async function handleRecovery(ctx, env) {
   await ensureSchema(env);
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
   const user = await currentUser(ctx, env);
-  if (!user) return json(401, { message: 'Unauthenticated.' });
+  if (!user) return unauthorized();
   if (!user.two_factor_secret || !user.two_factor_recovery_codes) {
     return json(422, { message: 'No recovery codes for this account.' });
   }

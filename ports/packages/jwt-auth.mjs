@@ -31,7 +31,7 @@
 import bcrypt from 'bcryptjs';
 import { bearerToken } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as json, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { b64url, b64urlToBytes } from '../../kernel/packages/b64url.mjs';
 
 // Re-exported: these were this port's public surface before the shared
@@ -145,11 +145,11 @@ export async function handleUser(ctx, env) {
   try {
     await ensureSchema(env);
     const token = bearerToken(ctx.request.headers.get('authorization'));
-    if (!token) return json(401, { message: 'Unauthenticated.' });
+    if (!token) return unauthorized();
     const payload = await verifyJwt(token, env.JWT_SECRET);
-    if (!payload || !isFresh(payload)) return json(401, { message: 'Unauthenticated.' });
+    if (!payload || !isFresh(payload)) return unauthorized();
     const user = await env.DB.prepare('SELECT id, name, email FROM users WHERE id = ?').bind(Number(payload.sub)).first();
-    if (!user) return json(401, { message: 'Unauthenticated.' });
+    if (!user) return unauthorized();
     return json(200, { user });
   } catch (err) {
     return json(500, { message: String((err && err.message) || err) });
