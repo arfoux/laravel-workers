@@ -76,7 +76,7 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `EXCEL_EXPORT_TABLE` | `maatwebsite-excel` |
 | `EXPO_ACCESS_TOKEN` | `expo-notification` |
 | `FCM_PROJECT_ID` | `fcm-notification` |
-| `FCM_SERVICE_ACCOUNT_JSON` | `fcm-notification`, kernel `fcm-oauth` |
+| `FCM_SERVICE_ACCOUNT_JSON` | `fcm-notification` |
 | `FIREBASE_JWKS_URL` | `firebase-php-jwt` |
 | `FIREBASE_PROJECT_ID` | `firebase-php-jwt` |
 | `FLARE_KEY` | `flare` |

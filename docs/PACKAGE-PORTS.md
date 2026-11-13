@@ -117,7 +117,8 @@ whoever reaches the URL, so an app that maps them must put a guard in front (a s
 enforces it.
 
 The kernel-side helpers these ports lean on (`kernel/packages/`): `ai.mjs` (provider adapters +
-tool loop), `fcm-oauth.mjs` (service-account JWT → OAuth2 token), `webpush-crypto.mjs` (ECDH/HKDF/
+tool loop), `google-oauth.mjs` (Google service-account RS256 JWT → OAuth2 access token; the
+`fcm-oauth.mjs` binding is the same mint with the FCM scope and env var), `webpush-crypto.mjs` (ECDH/HKDF/
 AES-128-GCM + VAPID), `notify-http.mjs` (shared `fetch`/auth/response mapping), `port-ctx.mjs`
 (the `normalizePortCtx` every handler starts with), and the page-composition helpers `menu.mjs`,
 `navigation.mjs`, `html.mjs`, `options.mjs`, `csp.mjs`, `response-cache.mjs`, `honeypot.mjs`,
