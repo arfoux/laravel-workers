@@ -155,6 +155,26 @@ test('facebook callback: bad/missing state is rejected before any network call',
   assert.equal(fetchImpl.calls.length, 0); // never talked to Facebook
 });
 
+test('facebook callback: a malformed cookie escape is a state mismatch, not a throw', async () => {
+  const fetchImpl = facebookFetch();
+  const env = makeEnv(fetchImpl);
+  // readStateCookie ran before the handler's try block, so `decodeURIComponent('%')`
+  // escaped the route as an uncaught URIError.
+  const res = await callback(
+    {
+      params: { provider: 'facebook' },
+      query: { code: 'FB_CODE', state: 'st_123' },
+      request: new Request('https://app.test/auth/facebook/callback?code=FB_CODE&state=st_123', {
+        headers: { cookie: 'oauth_state=%' },
+      }),
+    },
+    env
+  );
+  assert.equal(res.status, 401);
+  assert.deepEqual(JSON.parse(res.body), { error: 'invalid state' });
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
 test('facebook callback: unconfigured provider (no creds) is a 400', async () => {
   const env = { DB: new FakeD1() }; // no FACEBOOK_* env
   const res = await callback(

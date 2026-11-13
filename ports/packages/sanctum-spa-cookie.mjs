@@ -37,6 +37,7 @@ import { signValue, verifyValue } from '../../kernel/packages/signedurl.mjs';
 import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx, unauthorized, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
+import { parseCookieHeader } from '../../kernel/cookies.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
@@ -76,13 +77,13 @@ function appKey(env) {
 
 function readCookie(ctx, name) {
   const header = (ctx.request && ctx.request.headers && ctx.request.headers.get('cookie')) || '';
-  for (const part of header.split(/;\s*/)) {
-    if (!part) continue;
-    const eq = part.indexOf('=');
-    if (eq === -1) continue;
-    if (part.slice(0, eq) === name) return decodeURIComponent(part.slice(eq + 1));
-  }
-  return null;
+  // One Cookie-header reader for the whole repo: `parseCookieHeader`
+  // (kernel/cookies.mjs). It keeps the LAST duplicate (PHP's parser
+  // overwrites), trims the name, nests `name[]=`, and does not throw on a
+  // malformed escape - `decodeURIComponent('%')` used to URIError out of here
+  // on a header the client controls.
+  const value = parseCookieHeader(header)[name];
+  return typeof value === 'string' ? value : null;
 }
 
 // Double-submit CSRF: cookie value must equal the X-XSRF-TOKEN header.
