@@ -1,7 +1,11 @@
 // kernel/encrypter.mjs - Encrypter (AES-256-CBC, Laravel-compatible)
 // Uses only web-standard globals: crypto.subtle, atob/btoa, TextEncoder/TextDecoder.
 
-import { bytesToHex } from './digest.mjs';
+import { bytesToHex, timingSafeEqual } from './digest.mjs';
+
+// Re-exported so the Encrypter's public surface (csrf.mjs, storage.mjs,
+// worker.mjs) is unchanged; the rule itself lives once in digest.mjs.
+export { timingSafeEqual };
 
 /**
  * Illuminate\Contracts\Encryption\DecryptException. Every decryption failure
@@ -36,27 +40,6 @@ function hexToBytes(hex) {
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
-}
-
-export function timingSafeEqual(a, b) {
-  const toBytes = (v) => {
-    if (v instanceof Uint8Array) return v;
-    if (typeof v === 'string') return new TextEncoder().encode(v);
-    if (typeof Buffer !== 'undefined' && v && Buffer.isBuffer(v)) return new Uint8Array(v);
-    return new TextEncoder().encode(String(v));
-  };
-  const aBytes = toBytes(a);
-  const bBytes = toBytes(b);
-  if (aBytes.length !== bBytes.length) return false;
-  try {
-    const f = globalThis.crypto && globalThis.crypto.timingSafeEqual;
-    if (typeof f === 'function' && typeof Buffer !== 'undefined') {
-      return f(Buffer.from(aBytes), Buffer.from(bBytes));
-    }
-  } catch {}
-  let diff = 0;
-  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
-  return diff === 0;
 }
 
 async function importAesKey(keyBytes) {

@@ -17,6 +17,32 @@ export function bytesToHex(bytes) {
   return hex;
 }
 
+// Constant-time compare of two secrets (strings, Uint8Array or Buffer). Does
+// not early-return on the first mismatch. This rule was written twice — the
+// Encrypter's MAC check (encrypter.mjs) and the bcrypt hash check (hash.mjs) —
+// byte-identically; a fix to one copy (the Buffer fast path, the length guard)
+// silently missed the other (#697).
+export function timingSafeEqual(a, b) {
+  const toBytes = (v) => {
+    if (v instanceof Uint8Array) return v;
+    if (typeof v === 'string') return new TextEncoder().encode(v);
+    if (typeof Buffer !== 'undefined' && v && Buffer.isBuffer(v)) return new Uint8Array(v);
+    return new TextEncoder().encode(String(v));
+  };
+  const aBytes = toBytes(a);
+  const bBytes = toBytes(b);
+  if (aBytes.length !== bBytes.length) return false;
+  try {
+    const f = globalThis.crypto && globalThis.crypto.timingSafeEqual;
+    if (typeof f === 'function' && typeof Buffer !== 'undefined') {
+      return f(Buffer.from(aBytes), Buffer.from(bBytes));
+    }
+  } catch {}
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
+  return diff === 0;
+}
+
 function utf8Bytes(str) {
   return enc.encode(String(str));
 }
@@ -357,4 +383,4 @@ export function hmacSha256Hex(data, key) {
   return bytesToHex(sha256Bytes(concatBytes(opad, inner)));
 }
 
-export default { bytesToHex, sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256Hex };
+export default { bytesToHex, timingSafeEqual, sha1Bytes, md5Bytes, sha256Bytes, sha1Hex, md5Hex, sha256Hex, hmacSha256Hex };
