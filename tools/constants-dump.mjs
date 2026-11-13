@@ -13,15 +13,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveAppRoot } from './native-path.mjs';
-import { classFile, parsePhpFile, classConstants } from './static.mjs';
+import { classFile, parsePhpFile, classConstants, nodeName } from './static.mjs';
 
-const nodeName = (n) => {
-  if (n == null) return '';
-  if (typeof n === 'string') return n;
-  if (typeof n.name === 'string') return n.name;
-  if (n.name && typeof n.name.name === 'string') return n.name.name;
-  return '';
-};
 
 const appDir = resolveAppRoot();
 

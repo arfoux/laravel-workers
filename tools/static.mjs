@@ -149,6 +149,9 @@ export function laravelVersion(appDir) {
   return null;
 }
 
+// The name of an AST node (a string or a `{ name }` object). One reader for the
+// compiler (classes/controller/policy) and the dump tools — the copies drifted
+// silently before (#697).
 export const nodeName = (n) => {
   if (n == null) return '';
   if (typeof n === 'string') return n;
