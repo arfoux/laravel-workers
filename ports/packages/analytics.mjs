@@ -23,7 +23,7 @@
 // Config (env): GA4_PROPERTY_ID (required), GA4_SERVICE_ACCOUNT_JSON (required;
 // raw or base64 service-account JSON).
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
-import { resolveFetch, mapProviderResponse, jsonPort, bearerAuthHeader } from '../../kernel/packages/notify-http.mjs';
+import { resolveFetch, jsonPort, deliverVia, bearerAuthHeader } from '../../kernel/packages/notify-http.mjs';
 import { mintGoogleAccessToken } from '../../kernel/packages/google-oauth.mjs';
 
 const GA4_API_BASE = 'https://analyticsdata.googleapis.com/v1beta';
@@ -97,14 +97,8 @@ export default async function handle(ctx, env) {
     body: JSON.stringify(buildRunReportRequest(query)),
   };
 
-  try {
-    const resp = await doFetch(runReportUrl(propertyId), init);
-    const mapped = await mapProviderResponse(resp);
-    // GA4 returns 200 with the report JSON ({dimensionHeaders, metricHeaders,
-    // rows}); surface it verbatim so callers see the full report, and so a
-    // non-2xx GA4 error JSON is preserved instead of wrapped.
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  // GA4 returns 200 with the report JSON ({dimensionHeaders, metricHeaders,
+  // rows}); surface it verbatim so callers see the full report, and so a
+  // non-2xx GA4 error JSON is preserved instead of wrapped.
+  return deliverVia(doFetch, runReportUrl(propertyId), init);
 }

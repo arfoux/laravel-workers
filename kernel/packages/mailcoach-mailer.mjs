@@ -32,8 +32,8 @@
 
 import {
   resolveFetch,
-  mapProviderResponse,
   jsonPort,
+  deliverVia,
   bearerAuthHeader,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
@@ -132,13 +132,7 @@ export async function sendMail(params, env = {}) {
     ),
   };
 
-  try {
-    const resp = await doFetch(endpoint, init);
-    const mapped = await mapProviderResponse(resp);
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  return deliverVia(doFetch, endpoint, init);
 }
 
 /** Route port: parse a request `ctx` into `sendMail` params and send.

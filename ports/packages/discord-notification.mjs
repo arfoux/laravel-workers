@@ -25,8 +25,8 @@
 // Provider response is mapped 1:1 to {status, headers, body}.
 import {
   resolveFetch,
-  mapProviderResponse,
   jsonPort,
+  deliverVia,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 
@@ -80,13 +80,7 @@ export default async function handle(ctx, env) {
     return jsonPort({ error: 'missing Discord credential: set DISCORD_WEBHOOK_URL or DISCORD_BOT_TOKEN' }, 500);
   }
 
-  try {
-    const resp = await doFetch(url, init);
-    const mapped = await mapProviderResponse(resp);
-    // Discord returns 200/204 with an app-level error body on failure; surface
-    // the provider response verbatim — the caller inspects `status`/body.
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  // Discord returns 200/204 with an app-level error body on failure; surface
+  // the provider response verbatim — the caller inspects `status`/body.
+  return deliverVia(doFetch, url, init);
 }

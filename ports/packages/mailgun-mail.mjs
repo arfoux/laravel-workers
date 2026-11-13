@@ -20,8 +20,8 @@
 // Provider response is mapped 1:1 to {status, headers, body}.
 import {
   resolveFetch,
-  mapProviderResponse,
   jsonPort,
+  deliverVia,
   basicAuthHeader,
   multipartForm,
   normalisePayload,
@@ -57,11 +57,5 @@ export default async function handle(ctx, env) {
     body: form,
   };
 
-  try {
-    const resp = await doFetch(url, init);
-    const mapped = await mapProviderResponse(resp);
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  return deliverVia(doFetch, url, init);
 }

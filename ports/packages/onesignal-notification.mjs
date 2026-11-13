@@ -26,8 +26,8 @@
 // Provider response is mapped 1:1 to {status, headers, body}.
 import {
   resolveFetch,
-  mapProviderResponse,
   jsonPort,
+  deliverVia,
   basicAuthHeader,
 } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
@@ -98,13 +98,7 @@ export default async function handle(ctx, env) {
     body: JSON.stringify(payload),
   };
 
-  try {
-    const resp = await resolveFetch(env)(ONESIGNAL_URL, init);
-    const mapped = await mapProviderResponse(resp);
-    // OneSignal returns 200 with { id, recipients, ... } on success and a 4xx
-    // with { errors: [...] } on failure; surface verbatim.
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  // OneSignal returns 200 with { id, recipients, ... } on success and a 4xx
+  // with { errors: [...] } on failure; surface verbatim.
+  return deliverVia(resolveFetch(env), ONESIGNAL_URL, init);
 }

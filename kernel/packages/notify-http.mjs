@@ -52,6 +52,18 @@ export function jsonPort(body, status = 200) {
   };
 }
 
+// Perform a provider request and map the response to the port envelope,
+// normalising a network throw into a 502 JSON error. Every HTTP notification
+// driver ends this way, so the rule lives here once instead of in each driver.
+export async function deliverVia(doFetch, url, init) {
+  try {
+    const resp = await doFetch(url, init);
+    return await mapProviderResponse(resp);
+  } catch (err) {
+    return jsonPort({ error: String((err && err.message) || err) }, 502);
+  }
+}
+
 // Basic auth header (Twilio REST uses `SID:TOKEN`). btoa is available in
 // Workers and Node >= 16.
 export function basicAuthHeader(user, pass) {

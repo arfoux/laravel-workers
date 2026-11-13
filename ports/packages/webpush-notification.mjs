@@ -23,7 +23,7 @@
 //   { payload?, ttl?, urgency?, topic? } — payload is any JSON-serialisable
 //   value; when omitted we send an empty body (a "signal" push).
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
-import { resolveFetch, mapProviderResponse, jsonPort } from '../../kernel/packages/notify-http.mjs';
+import { resolveFetch, jsonPort, deliverVia } from '../../kernel/packages/notify-http.mjs';
 import { encryptAes128Gcm, buildVapidHeader } from '../../kernel/packages/webpush-crypto.mjs';
 
 // D1 schema for stored push subscriptions (browser-supplied). `endpoint` is the
@@ -151,14 +151,8 @@ export default async function handle(ctx, env) {
   const init = { method: 'POST', headers };
   if (body) init.body = body;
 
-  try {
-    const resp = await doFetch(subscription.endpoint, init);
-    const mapped = await mapProviderResponse(resp);
-    // Push services return 201 (created) / 200 on success; surface verbatim.
-    return { status: mapped.status, headers: mapped.headers, body: mapped.body };
-  } catch (err) {
-    return jsonPort({ error: String((err && err.message) || err) }, 502);
-  }
+  // Push services return 201 (created) / 200 on success; surface verbatim.
+  return deliverVia(doFetch, subscription.endpoint, init);
 }
 
 // base64url -> Uint8Array (subset of the crypto helper, kept local to avoid a
