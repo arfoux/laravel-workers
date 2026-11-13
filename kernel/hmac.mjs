@@ -11,7 +11,7 @@
 // (storage.mjs) — and had already drifted (one copy used `globalThis.crypto`
 // and skipped the `String()` coercion). A second copy drifts silently (#697).
 
-import { bytesToHex } from './digest.mjs';
+import { bytesToHex, bytesToBase64 } from './digest.mjs';
 
 const enc = new TextEncoder();
 
@@ -33,4 +33,27 @@ export async function hmacSha256Hex(secret, message) {
   return bytesToHex(new Uint8Array(sig));
 }
 
-export default { hmacSha256Hex };
+/**
+ * HMAC-SHA256 over `message`, keyed with `secret`, as base64.
+ *
+ * The spatie webhook signature scheme: `base64(HMAC-SHA256(secret, rawBody))`.
+ * Written twice — the receiving endpoint (ports/packages/webhook-client.mjs)
+ * and the sending client (ports/packages/webhook-server.mjs) — with the same
+ * rule and only a loop style apart. One copy, so it cannot drift (#697).
+ * @param {string} secret
+ * @param {string} message
+ * @returns {Promise<string>}
+ */
+export async function hmacSha256Base64(secret, message) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(String(secret)),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
+  return bytesToBase64(new Uint8Array(sig));
+}
+
+export default { hmacSha256Hex, hmacSha256Base64 };

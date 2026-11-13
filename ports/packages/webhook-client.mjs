@@ -26,24 +26,9 @@
 
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
+import { hmacSha256Base64 } from '../../kernel/hmac.mjs';
 
 const SIGNATURE_HEADER_DEFAULT = 'webhook-signature';
-
-// base64(HMAC-SHA256(secret, message)) — the spatie signature scheme.
-async function hmacSha256Base64(secret, message) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(String(secret)),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
-  let bin = '';
-  for (const b of new Uint8Array(sig)) bin += String.fromCharCode(b);
-  return btoa(bin);
-}
 
 // D1 table (spatie's `webhook_calls` migration, trimmed to the edge-relevant
 // columns): id, name, payload, exception, processed_at.
