@@ -121,8 +121,11 @@ natively (no PHP session/Guard needed for the OAuth handshake).
 
 ### Test coverage
 
-`tools/tests/packages-data-export.test.mjs` — **17 tests, 17 pass / 0 fail**
-(`node --test tools/tests/packages-data-export.test.mjs`). Uses a fake in-memory
+`tools/tests/packages-data-export.test.mjs` — run it with
+`node --test tools/tests/packages-data-export.test.mjs`; the runner prints the
+count, and this file does not restate it (an earlier revision did: it said
+*17 tests, 17 pass / 0 fail* while the suite had already grown past that —
+README.md: *never hand-type a number this repo can compute*). Uses a fake in-memory
 D1 (`prepare().bind().all()/first()/run()` over a Map, incl. upsert) and a fake
 `fetch` that captures requests. Covers: validate pass/fail/absent-field rules,
 data 200+persist & 422 error bag, settings PUT/GET/upsert/unknown-group, CSV
