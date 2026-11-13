@@ -36,7 +36,7 @@ import bcrypt from 'bcryptjs';
 import { signValue, verifyValue } from '../../kernel/packages/signedurl.mjs';
 import { randomString } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx, unauthorized } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, unauthorized, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
@@ -64,13 +64,9 @@ const SESSION_COOKIE = 'laravel_session';
 const CSRF_COOKIE = 'XSRF-TOKEN';
 const SESSION_TTL = 60 * 60 * 2; // 2h rolling, Laravel's default lifetime
 
-function json(status, payload, headers = {}) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers },
-    body: JSON.stringify(payload),
-  };
-}
+// port-ctx owns the envelope (including the `no-store`); this port only adds
+// the extra headers it sets (`set-cookie`).
+const json = (status, payload, headers = {}) => jsonResponse(status, payload, { headers });
 
 function appKey(env) {
   const key = env.APP_KEY || env.SESSION_SECRET;

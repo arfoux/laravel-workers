@@ -195,14 +195,26 @@ export function readPortContext(ctx = {}) {
 
 /**
  * The JSON envelope a route port answers with: `content-type: application/json`
- * and `cache-control: no-store` (a port response is per-request state, never
- * cacheable). The rule lives here once — the same body was copied into every
- * port that answers JSON, and the copies drifted.
+ * and (by default) `cache-control: no-store`, because a port response is
+ * per-request state — a validation error, a D1 read, a settings dump.
+ *
+ * The rule lives here once. It used to be copied into every port that answers
+ * JSON, in **two** shapes: this one, and a copy without `cache-control` that
+ * nine ports carried in a local `json()` (plus inline triples in more). The
+ * copies drifted. `noStore: false` is the one axis they disagreed on, so it is
+ * an argument, not a second function: a route that means to leave caching to the
+ * platform says so at the call site (and is grep-able), and the policy can be
+ * changed in one place instead of twenty. `headers` adds the extra ones a few
+ * ports send on top (a `set-cookie`, a `link`).
  */
-export function jsonResponse(status, payload) {
+export function jsonResponse(status, payload, { noStore = true, headers = {} } = {}) {
   return {
     status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    headers: {
+      'content-type': 'application/json',
+      ...(noStore ? { 'cache-control': 'no-store' } : {}),
+      ...headers,
+    },
     body: JSON.stringify(payload),
   };
 }

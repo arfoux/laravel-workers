@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/site-search.mjs — spatie/laravel-site-search port.
 //
@@ -50,11 +50,8 @@ export async function searchMeilisearch(env, indexUid, searchParams, fetchImpl =
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
-  const json = (status, payload) => ({
-    status,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  // port-ctx owns the envelope; this port sends no cache-control.
+  const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
   // Validate `q` (required, non-empty) — Laravel JSON error bag on failure.
   const q = ctx.query && ctx.query.q != null ? String(ctx.query.q) : '';

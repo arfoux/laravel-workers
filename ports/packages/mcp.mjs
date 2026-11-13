@@ -32,7 +32,7 @@
 // / MCP_SERVER_VERSION / MCP_PROTOCOL_VERSION for the initialize response.
 // No D1 is required.
 
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 const JSONRPC_VERSION = '2.0';
 
@@ -45,26 +45,19 @@ const CODE = {
   INTERNAL_ERROR: -32603,
 };
 
-const JSON_HEADERS = { 'content-type': 'application/json' };
+// port-ctx owns the envelope; this port sends no cache-control. A JSON-RPC
+// error keeps the request's `id` when it could be read; a request so malformed
+// its id is unknowable answers with a null id (spec).
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 function rpcResult(id, result) {
-  return {
-    status: 200,
-    headers: { ...JSON_HEADERS },
-    body: JSON.stringify({ jsonrpc: JSONRPC_VERSION, id, result }),
-  };
+  return json(200, { jsonrpc: JSONRPC_VERSION, id, result });
 }
 
 function rpcError(id, code, message, data) {
-  // A JSON-RPC error keeps the request's `id` when it could be read; a request
-  // so malformed its id is unknowable answers with a null id (spec).
   const err = { code, message };
   if (data !== undefined) err.data = data;
-  return {
-    status: 200,
-    headers: { ...JSON_HEADERS },
-    body: JSON.stringify({ jsonrpc: JSONRPC_VERSION, id: id === undefined ? null : id, error: err }),
-  };
+  return json(200, { jsonrpc: JSONRPC_VERSION, id: id === undefined ? null : id, error: err });
 }
 
 // ---- registry normalisation ------------------------------------------------

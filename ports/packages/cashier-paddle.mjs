@@ -19,7 +19,7 @@
 // Free tier: ≤2 D1 writes per event, HMAC CPU negligible, 0 subrequests.
 
 import { verifyPaddleSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite, sqliteOrNull as isoOrNull } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
@@ -64,9 +64,9 @@ export async function ensureSchema(env) {
 
 const now = () => dateToSqlite(new Date());
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) };
-}
+// The JSON envelope lives in port-ctx; this route's answers carry no
+// `cache-control`, which is the one thing that differs from the default.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 async function recordEventOnce(env, event) {
   await ensureSchema(env);

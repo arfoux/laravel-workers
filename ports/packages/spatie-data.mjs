@@ -19,7 +19,7 @@
 //   from the handler (the table survives because workers share the binding).
 
 import { validate, hydrate, errorBag } from '../../kernel/packages/validate.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // The DTO. Mirrors a `UserData` class: plain constructor, declared typed fields
 // (nullable -> `undefined` when absent), a rules() method, and toJson().
@@ -71,11 +71,7 @@ export default async function handle(ctx, env) {
     const rules = UserData.rules();
     const result = validate(payload, rules);
     if (!result.valid) {
-      return {
-        status: 422,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(errorBag(result.errors)),
-      };
+      return jsonResponse(422, errorBag(result.errors), { noStore: false });
     }
 
     // Hydrate the validated bag into the DTO (drops unknown/undefined fields).
@@ -86,16 +82,8 @@ export default async function handle(ctx, env) {
       'INSERT INTO lw_dtos (name, email, age, raw_json) VALUES (?1, ?2, ?3, ?4)'
     ).bind(json.name, json.email, json.age, JSON.stringify(json)).run();
 
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data: json }),
-    };
+    return jsonResponse(200, { data: json }, { noStore: false });
   } catch (err) {
-    return {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: String((err && err.message) || err) }),
-    };
+    return jsonResponse(500, { error: String((err && err.message) || err) }, { noStore: false });
   }
 }

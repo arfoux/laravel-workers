@@ -1,4 +1,4 @@
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of maatwebsite/excel v4.0.6 — CSV export from a D1 table. The PHP
 // package's `Excel::download(new XlsxExport, 'file.xlsx')` writes a real
@@ -58,11 +58,7 @@ export default async function handle(ctx, env) {
   // The dump is unbounded app data, so it needs an identified caller (same
   // guard the seam routes use). Anonymous -> 401.
   if ((await guardUserId(ctx)) == null) {
-    return {
-      status: 401,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'Unauthenticated.' }),
-    };
+    return unauthorized();
   }
 
   const query = ctx.query || {};
@@ -70,11 +66,7 @@ export default async function handle(ctx, env) {
   if (format !== 'csv') {
     // Honest refusal: XLSX needs a proper spreadsheet writer, not a text
     // mime-type swap. (See doc paragraph for the substitute path.)
-    return {
-      status: 406,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'format not supported on the edge; use format=csv' }),
-    };
+    return jsonResponse(406, { error: 'format not supported on the edge; use format=csv' }, { noStore: false });
   }
 
   try {
@@ -101,10 +93,6 @@ export default async function handle(ctx, env) {
       body,
     };
   } catch (err) {
-    return {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: String((err && err.message) || err) }),
-    };
+    return jsonResponse(500, { error: String((err && err.message) || err) }, { noStore: false });
   }
 }

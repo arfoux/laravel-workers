@@ -57,11 +57,7 @@ export default async function handle(ctx, env) {
   const providerName = String(ctx.params && ctx.params.provider);
   const provider = resolveProvider(env, providerName);
   if (!provider) {
-    return {
-      status: 400,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'unknown or unconfigured provider' }),
-    };
+    return jsonResponse(400, { error: 'unknown or unconfigured provider' }, { noStore: false });
   }
 
   const query = ctx.query || {};
@@ -75,11 +71,7 @@ export default async function handle(ctx, env) {
   let stateOk = verifyState(cookieState, state);
   if (!stateOk) stateOk = await consumeState(env, state);
   if (!state || !stateOk) {
-    return {
-      status: 401,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'invalid state' }),
-    };
+    return jsonResponse(401, { error: 'invalid state' }, { noStore: false });
   }
 
   const doFetch = ctx.fetchImpl || env.fetchImpl || globalThis.fetch;
@@ -119,10 +111,6 @@ export default async function handle(ctx, env) {
       token_id: row.tokenable_id,
     });
   } catch (err) {
-    return {
-      status: 502,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: String((err && err.message) || err) }),
-    };
+    return jsonResponse(502, { error: String((err && err.message) || err) }, { noStore: false });
   }
 }

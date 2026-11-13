@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-query-builder v7.3.7 — request-driven query building
 // against an allowlist. In Laravel you configure a builder with
@@ -138,13 +138,9 @@ const POSTS_CONFIG = {
   },
 };
 
-function json(status, payload, extraHeaders = {}) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', ...extraHeaders },
-    body: JSON.stringify(payload),
-  };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload, extraHeaders = {}) =>
+  jsonResponse(status, payload, { noStore: false, headers: extraHeaders });
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);

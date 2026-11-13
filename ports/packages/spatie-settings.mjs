@@ -65,23 +65,11 @@ export default async function handle(ctx, env) {
              updated_at = datetime('now')`
         ).bind(group, key, JSON.stringify(payload[key])).run();
       }
-      return {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ group, updated: keys }),
-      };
+      return jsonResponse(200, { group, updated: keys }, { noStore: false });
     }
 
-    return {
-      status: 405,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'method not allowed' }),
-    };
+    return jsonResponse(405, { error: 'method not allowed' }, { noStore: false });
   } catch (err) {
-    return {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: String((err && err.message) || err) }),
-    };
+    return jsonResponse(500, { error: String((err && err.message) || err) }, { noStore: false });
   }
 }

@@ -20,7 +20,7 @@
 // default `handle` port maps them straight to a Laravel-shaped 422 JSON body
 // without a special-case ladder.
 
-import { normalizePortCtx } from './port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from './port-ctx.mjs';
 
 // --- currency table --------------------------------------------------------
 
@@ -177,12 +177,8 @@ export class Money {
 
 // --- port handler ----------------------------------------------------------
 
-const JSON_HEADERS = { 'content-type': 'application/json' };
-const json = (status, payload) => ({
-  status,
-  headers: JSON_HEADERS,
-  body: JSON.stringify(payload),
-});
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 const ok = (payload) => json(200, payload);
 const invalid = (message, errors = {}) => json(422, { ok: false, message, errors });
 

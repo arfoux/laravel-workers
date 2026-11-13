@@ -1,4 +1,4 @@
-import { normalizePortCtx, guardUserId } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-multitenancy v4 — multi-tenancy on the edge.
 //
@@ -37,13 +37,9 @@ export function ensureSchema(env) {
   ).run();
 }
 
-function json(status, payload, headers = {}) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(payload),
-  };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload, headers = {}) =>
+  jsonResponse(status, payload, { noStore: false, headers });
 
 function methodOf(ctx) {
   const m = String(ctx.method || (ctx.request && ctx.request.method) || 'GET').toUpperCase();

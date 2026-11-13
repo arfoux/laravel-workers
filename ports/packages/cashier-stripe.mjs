@@ -23,7 +23,7 @@
 // negligible, 0 subrequests (the event is fully self-describing).
 
 import { verifyStripeSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { dateToSqlite } from '../../kernel/db.mjs';
 
 // Cashier's `subscriptions` table (v16 columns incl. meter fields). `subscription_items`
@@ -63,9 +63,8 @@ export async function ensureSchema(env) {
 const now = () => dateToSqlite(new Date());
 const isoOrNull = (v) => (v ? new Date(typeof v === 'number' ? v * 1000 : v).toISOString().replace('T', ' ').slice(0, 19) : null);
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 // Idempotency: insert-or-ignore the event id. Returns true iff this is the FIRST
 // time we've seen it (so the caller should apply the state change).

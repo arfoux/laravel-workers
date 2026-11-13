@@ -28,7 +28,7 @@
 //
 // Free tier: 1 D1 write per accepted call, 0 subrequests, no crypto (static token).
 
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 
 // D1 table (the package's invoice/callback shape, trimmed to the edge-relevant
@@ -43,9 +43,8 @@ export async function ensureSchema(env) {
   )`).run();
 }
 
-function json(status, payload) {
-  return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) };
-}
+// port-ctx owns the envelope; this port sends no cache-control.
+const json = (status, payload) => jsonResponse(status, payload, { noStore: false });
 
 function nowIso() {
   return new Date().toISOString();

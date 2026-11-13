@@ -99,11 +99,7 @@ export default async function handle(ctx, env) {
       ...(json?.facetDistribution ? { facetDistribution: json.facetDistribution } : {}),
     });
   } catch (err) {
-    return {
-      status: 502,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: String((err && err.message) || err) }),
-    };
+    return jsonResponse(502, { error: String((err && err.message) || err) }, { noStore: false });
   }
 }
 

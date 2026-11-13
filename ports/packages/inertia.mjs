@@ -33,7 +33,7 @@
 // can carry the same attribute — this module is the fallback so a page renders
 // even when the Blade template is not the one compiled in.
 
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse as jsonEnvelope } from '../../kernel/packages/port-ctx.mjs';
 // The `data-page` attribute is escaped with Laravel's `e()` — the Blade
 // template Laravel's Inertia adapter serves is `data-page="{{ json_encode(...) }}"`.
 import { escapeHtml } from '../../kernel/str.mjs';
@@ -69,17 +69,10 @@ function versionIsStale(headerOf, env) {
   return clientVersion != null && String(clientVersion) !== serverVersion;
 }
 
-function jsonResponse(status, payload, headers = {}) {
-  return {
-    status,
-    headers: {
-      'content-type': 'application/json',
-      [INERTIA_HEADER]: 'true',
-      ...headers,
-    },
-    body: JSON.stringify(payload),
-  };
-}
+// port-ctx owns the envelope; an Inertia response differs only by the
+// `X-Inertia: true` header it always carries (and it sends no cache-control).
+const jsonResponse = (status, payload, headers = {}) =>
+  jsonEnvelope(status, payload, { noStore: false, headers: { [INERTIA_HEADER]: 'true', ...headers } });
 
 function htmlResponse(status, html, headers = {}) {
   return {
