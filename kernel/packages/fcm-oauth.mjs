@@ -35,6 +35,20 @@ function parseServiceAccount(raw) {
   return JSON.parse(new TextDecoder().decode(b64urlToBytes(text)));
 }
 
+// The Firebase project id, derived the way kreait's `Factory::getProjectId()`
+// does when no explicit one is configured: the service-account JSON's
+// `project_id` field. Returns '' when the blob is absent or unreadable — this
+// helper never throws, so the port keeps its own "cannot determine the project
+// id" guard (a malformed blob still fails louder at mint time).
+export function serviceAccountProjectId(raw) {
+  try {
+    const projectId = parseServiceAccount(raw).project_id;
+    return typeof projectId === 'string' ? projectId : '';
+  } catch {
+    return '';
+  }
+}
+
 // Build and sign the RS256 JWT the OAuth2 token endpoint expects.
 // Returns { assertion, header, payload } (the latter two base64url segments for
 // tests to assert on).

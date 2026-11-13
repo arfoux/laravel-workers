@@ -64,9 +64,9 @@ on the resolved verb + path. All of these are already in `registry.example.json`
 | `webhook-server` | `POST /webhook-server/send` | Sending side: signs `base64(HMAC-SHA256(secret, rawBody))` + `webhook-timestamp` header. Requires an authenticated caller (see *seam routes* below); caller-supplied `headers` can never replace the three canonical headers. |
 | `site-search` | `GET /site-search` | Proxies Meilisearch `POST /indexes/{uid}/search`; indexing is out-of-band (Searchable/Scout sync is vendor code, LW002). |
 | `telegram-notification` | `POST /notify/telegram` | Token rides in the URL path (`/bot{TOKEN}/sendMessage`). |
-| `discord-notification` | `POST /notify/discord` | Webhook wins over the Bot API when both are configured. |
+| `discord-notification` | `POST /notify/discord` | Webhook wins over the Bot API when both are configured; on the webhook path `to`/`channel` is a thread target (`?thread_id=`, Discord's query parameter — a JSON body field is dropped by Discord). |
 | `expo-notification` | `POST /notify/expo` | `EXPO_ACCESS_TOKEN` is optional (sends unauthenticated without it). |
-| `fcm-notification` | `POST /notify/fcm` | FCM v1 HTTP API only; the deprecated legacy server-key path is not ported. |
+| `fcm-notification` | `POST /notify/fcm` | FCM v1 HTTP API only; the deprecated legacy server-key path is not ported. The project id is `FCM_PROJECT_ID`, or the service account's own `project_id` when the env var is absent (kreait's `Factory::getProjectId()`). |
 | `webpush-notification` | `POST /notify/webpush`, `POST /webpush/subscribe` | RFC 8291 encrypt + RFC 8292 VAPID; `subscribe` stores the browser subscription in D1. |
 | `onesignal-notification` | `POST /notify/onesignal` | REST API key as HTTP Basic (username, no password). |
 | `jwt-auth` | `POST /auth/jwt/login`, `GET /auth/jwt/user` | HS256 (the stateless `tymon/jwt-auth` default), not Passport's RS256; bcryptjs verifies Laravel's `$2y$`. |

@@ -22,7 +22,7 @@ never in `registry.example.json`.
 
 **Generated from both trees** — the curated tables further down carry the operator-facing judgement: which variable a deploy cannot run without.
 - env names read by the two trees: **112**
-- read by a port in `ports/packages`: **101**
+- read by a port in `ports/packages`: **102**
 
 <!-- port-catalog:counts:end -->
 
@@ -76,7 +76,7 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `EXCEL_EXPORT_TABLE` | `maatwebsite-excel` |
 | `EXPO_ACCESS_TOKEN` | `expo-notification` |
 | `FCM_PROJECT_ID` | `fcm-notification` |
-| `FCM_SERVICE_ACCOUNT_JSON` | kernel `fcm-oauth` |
+| `FCM_SERVICE_ACCOUNT_JSON` | `fcm-notification`, kernel `fcm-oauth` |
 | `FIREBASE_JWKS_URL` | `firebase-php-jwt` |
 | `FIREBASE_PROJECT_ID` | `firebase-php-jwt` |
 | `FLARE_KEY` | `flare` |
