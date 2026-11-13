@@ -41,6 +41,7 @@
 
 import { phpFloat, orderedKeysOf } from './php-serialize.mjs';
 import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
+import { isPlainObject } from './own-key.mjs';
 
 export class PhpJsonError extends Error {
   constructor(message) {
@@ -84,12 +85,6 @@ export function tagPhpObjectDeep(value) {
   defineObjectMarker(value);
   for (const k of Object.keys(value)) tagPhpObjectDeep(value[k]);
   return value;
-}
-
-function isPlainObject(v) {
-  if (typeof v !== 'object' || v === null) return false;
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
 }
 
 const HEX4 = (c) => c.toString(16).padStart(4, '0');

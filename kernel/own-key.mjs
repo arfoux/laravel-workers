@@ -65,4 +65,16 @@ export function orderedSet(node, key, value) {
   return ownSet(node, key, value);
 }
 
-export default { ownSet, ownGet, ownHas, assignOwn, newOrderedBag, orderedKeys, orderedSet };
+/**
+ * A plain data object — `{}` or `Object.create(null)`, never an array, a class
+ * instance or a `__lwObject`-tagged PHP object. The rule was written three
+ * times (php-json.mjs, php-serialize.mjs, session.mjs) byte-identically; a fix
+ * to one copy silently missed the others (#697).
+ */
+export function isPlainObject(v) {
+  if (typeof v !== 'object' || v === null) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+export default { ownSet, ownGet, ownHas, assignOwn, newOrderedBag, orderedKeys, orderedSet, isPlainObject };

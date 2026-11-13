@@ -35,11 +35,15 @@
 // Handler I/O is async (D1 is), so start/save/migrate/invalidate/regenerate
 // return promises; everything else is synchronous like PHP.
 
-import { ownSet, ownGet } from './own-key.mjs';
+import { ownSet, ownGet, isPlainObject } from './own-key.mjs';
 import { phpJsonEncode, phpJsonDecode } from './php-json.mjs';
 import { phpSerialize, phpUnserialize } from './php-serialize.mjs';
 import { makeCookie } from './cookies.mjs';
 import { table } from './db.mjs';
+
+// Re-exported so the Session public surface is unchanged; the rule lives once
+// in own-key.mjs.
+export { isPlainObject };
 
 export class SessionError extends Error {
   constructor(message) {
@@ -56,11 +60,6 @@ export const SESSION_ID_LENGTH = 40;
 
 const INT_KEY_RE = /^-?(?:0|[1-9][0-9]*)$/;
 
-export function isPlainObject(v) {
-  if (typeof v !== 'object' || v === null) return false;
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
-}
 
 function isPhpArrayValue(v) {
   return Array.isArray(v) || isPlainObject(v);
