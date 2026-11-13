@@ -17,7 +17,7 @@ function makeEnv(fragment, creds) {
   return { ...fragment, ...creds };
 }
 
-test('azure: shape is Microsoft identity v2.0 with the tenant in each endpoint', () => {
+test('azure: shape is Microsoft identity v2.0 with the tenant in the login endpoints', () => {
   const env = makeEnv(
     { AZURE_TENANT: 'contoso' },
     { AZURE_CLIENT_ID: 'az-id', AZURE_CLIENT_SECRET: 'az-secret', AZURE_REDIRECT_URI: 'https://app.test/cb' }
@@ -26,7 +26,10 @@ test('azure: shape is Microsoft identity v2.0 with the tenant in each endpoint',
   assert.ok(p);
   assert.equal(p.authUrl, 'https://login.microsoftonline.com/contoso/oauth2/v2.0/authorize');
   assert.equal(p.tokenUrl, 'https://login.microsoftonline.com/contoso/oauth2/v2.0/token');
-  assert.equal(p.userUrl, 'https://login.microsoftonline.com/contoso/oauth2/v2.0/openid/userinfo');
+  // The userinfo endpoint lives on Graph, not on the login host: the
+  // tenant-agnostic discovery document names it, and both login-host
+  // candidates answer 404 (see the probe note in socialite-providers.mjs).
+  assert.equal(p.userUrl, 'https://graph.microsoft.com/oidc/userinfo');
   assert.equal(p.clientId, 'az-id');
   assert.equal(p.clientSecret, 'az-secret');
   assert.equal(p.redirectUri, 'https://app.test/cb');

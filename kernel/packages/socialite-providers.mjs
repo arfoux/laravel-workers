@@ -29,7 +29,12 @@ const SHAPES = {
   azure: {
     authPath: (tenant) => `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize`,
     tokenPath: (tenant) => `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,
-    userPath: (tenant) => `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/openid/userinfo`,
+    // The userinfo endpoint is NOT on the login host: the tenant-agnostic
+    // discovery document (`https://login.microsoftonline.com/common/v2.0/
+    // .well-known/openid-configuration`) names `https://graph.microsoft.com/
+    // oidc/userinfo`, and both `…/oauth2/v2.0/openid/userinfo` and
+    // `…/oauth2/v2.0/userinfo` answer 404 (probed). It needs no tenant.
+    userPath: () => 'https://graph.microsoft.com/oidc/userinfo',
     scope: 'openid email profile',
     mapUser: subEmailMap,
   },
