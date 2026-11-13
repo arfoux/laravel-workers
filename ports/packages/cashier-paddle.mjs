@@ -20,6 +20,7 @@
 
 import { verifyPaddleSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { dateToSqlite, sqliteOrNull as isoOrNull } from '../../kernel/db.mjs';
 
 export async function ensureSchema(env) {
   await ensureWebhookEventsTable(env);
@@ -61,12 +62,7 @@ export async function ensureSchema(env) {
   )`).run();
 }
 
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-const isoOrNull = (v) => {
-  if (!v) return null;
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d.toISOString().replace('T', ' ').slice(0, 19);
-};
+const now = () => dateToSqlite(new Date());
 
 function json(status, payload) {
   return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) };

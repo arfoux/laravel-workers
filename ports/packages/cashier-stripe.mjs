@@ -24,6 +24,7 @@
 
 import { verifyStripeSignature, ensureWebhookEventsTable, recordWebhookEventOnce } from '../../kernel/packages/webhook.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { dateToSqlite } from '../../kernel/db.mjs';
 
 // Cashier's `subscriptions` table (v16 columns incl. meter fields). `subscription_items`
 // is updated alongside for multi-price subscriptions.
@@ -59,7 +60,7 @@ export async function ensureSchema(env) {
   )`).run();
 }
 
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const now = () => dateToSqlite(new Date());
 const isoOrNull = (v) => (v ? new Date(typeof v === 'number' ? v * 1000 : v).toISOString().replace('T', ' ').slice(0, 19) : null);
 
 function json(status, payload) {

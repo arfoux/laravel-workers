@@ -33,6 +33,7 @@ import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, mapProviderResponse } from '../../kernel/packages/notify-http.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import { hmacSha256Hex as signatureFor } from '../../kernel/hmac.mjs';
+import { dateToSqlite } from '../../kernel/db.mjs';
 
 // Constant-time compare comes from kernel/packages/webhook.mjs (the one
 // `hash_equals()` mirror the other webhook verifiers use).
@@ -51,7 +52,7 @@ function json(status, payload) {
   };
 }
 
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const now = () => dateToSqlite(new Date());
 
 // Project a Mollie payment GET response onto a `mollie_payments` row.
 async function upsertPayment(env, payment) {
