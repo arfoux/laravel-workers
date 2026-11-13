@@ -46,7 +46,7 @@ The `Status` column this file used to carry (**NEW** = introduced by the port fl
 | 17 | `oauth_clients` | `passport-oauth` | — |
 | 18 | `oauth_refresh_tokens` | `passport-oauth` | — |
 | 19 | `permissions` | `permission` | — |
-| 20 | `personal_access_tokens` (2 variants) | `laravel-socialite-callback`, `sanctum` | — |
+| 20 | `personal_access_tokens` | `laravel-socialite-callback`, `sanctum` | — |
 | 21 | `posts` | `spatie-query-builder` | — |
 | 22 | `pulse_aggregates` | `pulse` | — |
 | 23 | `pulse_entries` | `pulse` | `pulse_entries_recorded_at_idx` |
@@ -370,22 +370,22 @@ CREATE TABLE IF NOT EXISTS permissions (
   )
 ```
 
-### 20. `personal_access_tokens` (2 variants)
-Ports: `sanctum` (canonical: creates it with `created_at`/`updated_at` and inserts both) and `laravel-socialite-callback` (its **own** shape, without those two columns, inserting five). The two statements are **not** the same — whichever port calls `ensureSchema()` first fixes the schema, and the other one's insert then fails on the missing column. The block below is `sanctum`'s.
+### 20. `personal_access_tokens`
+Ports: `sanctum` and `laravel-socialite-callback` — both run the **same** statement (Sanctum's migration verbatim, `created_at`/`updated_at` included), so whichever port calls `ensureSchema()` first provisions the table both then insert into. `sanctum` writes seven columns and updates two of them; the socialite port inserts five and leaves the timestamps NULL.
 
 ```sql
 CREATE TABLE IF NOT EXISTS personal_access_tokens (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tokenable_type TEXT NOT NULL,
-  tokenable_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  token TEXT NOT NULL UNIQUE,
-  abilities TEXT,
-  last_used_at TEXT,
-  expires_at TEXT,
-  created_at TEXT,
-  updated_at TEXT
-);
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tokenable_type TEXT NOT NULL,
+    tokenable_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    abilities TEXT,
+    last_used_at TEXT,
+    expires_at TEXT,
+    created_at TEXT,
+    updated_at TEXT
+  )
 ```
 
 ### 21. `posts`
@@ -883,6 +883,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 1. **`users` shape drift.** Seven ports each `CREATE TABLE IF NOT EXISTS users` with different columns — six distinct statements (`sanctum` and `jwt-auth` carry the same one). On a fresh database the first port to call `ensureSchema()` fixes the schema; later ports silently accept it. Combining an auth port that needs `two_factor_secret` with one that only provisions `(id,name,email,password)` will leave the 2FA column missing. Use one owning port's schema, or define `users` at the app level.
 2. **`webhook_calls` name collision.** `webhook-client` and `webhook-server` both create `webhook_calls` with incompatible primary keys (`TEXT` vs `INTEGER`) and column sets. Running both ports against the same D1 binding will make one of them fail at insert time. Rename one (e.g. `webhook_server_calls`) or namespace by port.
-3. **`personal_access_tokens` drift.** `laravel-socialite-callback` creates it without `created_at`/`updated_at` and inserts five columns; `sanctum` creates it with both and inserts all seven. First writer wins, so where the socialite port provisioned the table, `sanctum`'s token insert fails on the missing column.
-4. **`lw_webhook_events` is kernel-owned.** Kernel `webhook` is the only creator; `cashier-paddle`, `cashier-stripe` and `lemonsqueezy` insert into it as their replay guard. The Summary's `Port(s)` column lists creators, so a kernel-only row is not an omission.
-5. **Best-effort indexes.** The Summary's `Explicit indexes` column is the code's own count; `ai-sdk` wraps its `CREATE INDEX` in `try/catch` so minimal SQL fakes that don't parse index DDL still persist rows.
+3. **`lw_webhook_events` is kernel-owned.** Kernel `webhook` is the only creator; `cashier-paddle`, `cashier-stripe` and `lemonsqueezy` insert into it as their replay guard. The Summary's `Port(s)` column lists creators, so a kernel-only row is not an omission.
+4. **Best-effort indexes.** The Summary's `Explicit indexes` column is the code's own count; `ai-sdk` wraps its `CREATE INDEX` in `try/catch` so minimal SQL fakes that don't parse index DDL still persist rows.
+
+Settled elsewhere: `personal_access_tokens` used to be a third collision — `laravel-socialite-callback` created it without `created_at`/`updated_at` while `sanctum` inserted both, so sanctum's insert failed on a database the socialite port had provisioned first. Measured on `node:sqlite` (create from the socialite DDL, then run sanctum's own INSERT → `table personal_access_tokens has no column named created_at`). The socialite port now runs the same statement as `sanctum`, and the same measurement succeeds — the Summary above counts one variant, not two.
