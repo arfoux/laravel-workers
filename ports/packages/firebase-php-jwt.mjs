@@ -33,7 +33,7 @@
 
 import { resolveFetch } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
-import { b64urlToBytes } from '../../kernel/packages/b64url.mjs';
+import { b64urlToBytes, pemToDer } from '../../kernel/packages/b64url.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -91,21 +91,9 @@ function spkiFromCertificateDer(der) {
   return der.slice(spki.start, spki.end);
 }
 
-function pemBodyToBytes(pem) {
-  const body = String(pem)
-    .replace(/-----BEGIN [^-]+-----/, '')
-    .replace(/-----END [^-]+-----/, '')
-    .replace(/\s+/g, '');
-  if (!body) throw new Error('empty PEM');
-  const bin = atob(body);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
 // Import one PEM block (a certificate or a bare SPKI public key) as a verify key.
 async function importPem(pem) {
-  const der = pemBodyToBytes(pem);
+  const der = pemToDer(pem, 'Firebase key');
   let spki = der;
   try {
     spki = spkiFromCertificateDer(der);

@@ -17,7 +17,7 @@
 // we auto-detect). FCM_PROJECT_ID — falls back to the `project_id` field in the
 // service account when omitted.
 import { resolveFetch, bearerAuthHeader } from './notify-http.mjs';
-import { b64url as b64urlFromBytes, b64urlToBytes } from './b64url.mjs';
+import { b64url as b64urlFromBytes, b64urlToBytes, pemToDer } from './b64url.mjs';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
@@ -44,12 +44,8 @@ export async function buildServiceAccountJwt(serviceAccount, { now = Math.floor(
   if (!clientEmail) throw new Error('service account is missing client_email');
   if (!privateKeyPem) throw new Error('service account is missing private_key');
 
-  // PKCS8 PEM -> ArrayBuffer for importKey.
-  const pemBody = String(privateKeyPem)
-    .replace(/-----BEGIN PRIVATE KEY-----/, '')
-    .replace(/-----END PRIVATE KEY-----/, '')
-    .replace(/\s+/g, '');
-  const der = b64urlToBytes(pemBody);
+  // PKCS8 PEM (or the bare base64 body) -> DER bytes for importKey.
+  const der = pemToDer(privateKeyPem, 'FCM service-account private_key');
 
   const key = await crypto.subtle.importKey(
     'pkcs8',

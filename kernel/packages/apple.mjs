@@ -25,7 +25,7 @@
 // Config comes from the caller (the port reads env): teamId, clientId, the .p8
 // key and optionally the 10-char keyId.
 
-import { b64url as b64urlFromBytes, b64urlToBytes } from './b64url.mjs';
+import { b64url as b64urlFromBytes, b64urlToBytes, pemToDer } from './b64url.mjs';
 
 /** The Apple token endpoint an authorization code is exchanged at. */
 export const APPLE_TOKEN_URL = 'https://appleid.apple.com/auth/token';
@@ -40,16 +40,7 @@ export const APPLE_ISSUER = 'https://appleid.apple.com';
 // the PEM armour Apple's downloader wraps it in) into DER bytes. Exported so a
 // test can assert the parse directly.
 export function p8DerFromB64(raw) {
-  const text = String(raw || '').trim();
-  if (!text) throw new Error('Apple .p8 private key is empty');
-  const body = text
-    .replace(/-----BEGIN PRIVATE KEY-----/g, '')
-    .replace(/-----END PRIVATE KEY-----/g, '')
-    .replace(/-----BEGIN EC PRIVATE KEY-----/g, '')
-    .replace(/-----END EC PRIVATE KEY-----/g, '')
-    .replace(/\s+/g, '');
-  if (!body) throw new Error('Apple .p8 private key has no key body');
-  return b64urlToBytes(body);
+  return pemToDer(raw, 'Apple .p8 private key');
 }
 
 /**
