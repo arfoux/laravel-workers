@@ -37,18 +37,25 @@ export async function ensureSchema(env) {
       UNIQUE (provider, provider_id)
     )`
   ).run();
-  // Sanctum's token table (so the minted bearer can be verified later).
+  // Sanctum's token table (so the minted bearer can be verified later) — the
+  // SAME statement `sanctum.mjs` runs: the two ports share one table, and
+  // `CREATE TABLE IF NOT EXISTS` means the first port to provision it decides
+  // the columns for the other. A copy here that dropped `created_at` /
+  // `updated_at` made sanctum's own INSERT fail on a database this port had
+  // provisioned first (docs/D1-SCHEMA.md's caveat, before this fix).
   await env.DB.prepare(
     `CREATE TABLE IF NOT EXISTS personal_access_tokens (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tokenable_type TEXT NOT NULL,
-      tokenable_id INTEGER NOT NULL,
-      name TEXT NOT NULL,
-      token TEXT NOT NULL UNIQUE,
-      abilities TEXT,
-      last_used_at TEXT,
-      expires_at TEXT
-    )`
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tokenable_type TEXT NOT NULL,
+    tokenable_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    abilities TEXT,
+    last_used_at TEXT,
+    expires_at TEXT,
+    created_at TEXT,
+    updated_at TEXT
+  )`
   ).run();
 }
 
