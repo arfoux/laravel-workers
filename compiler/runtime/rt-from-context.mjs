@@ -2,7 +2,7 @@
 import { validationExceptionWithMessages, sessionErrorBag, DEFAULT_DONT_FLASH } from '../../kernel/validation.mjs';
 import { Validator } from '../../kernel/validator.mjs';
 import * as hashMod from '../../kernel/hash.mjs';
-import { str as strHelpers } from '../../kernel/str.mjs';
+import { str as strHelpers, escapeHtml } from '../../kernel/str.mjs';
 import { arr as arrHelpers } from '../../kernel/arr.mjs';
 import { LengthAwarePaginator } from '../../kernel/paginator.mjs';
 import { table as kernelTable } from '../../kernel/db.mjs';
@@ -168,12 +168,9 @@ export function buildRt(context, opts = {}) {
         ? v.toString()
         : 'Object';
     } else s = String(v);
-    return s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    // The escape chain is the shared `e()` rule (kernel/str.mjs); the coercion
+    // above is PHP's `(string)` cast, which the helper deliberately does not do.
+    return escapeHtml(s);
   };
 
   // ---- rt.str_replace ----

@@ -34,6 +34,9 @@
 // even when the Blade template is not the one compiled in.
 
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+// The `data-page` attribute is escaped with Laravel's `e()` — the Blade
+// template Laravel's Inertia adapter serves is `data-page="{{ json_encode(...) }}"`.
+import { escapeHtml } from '../../kernel/str.mjs';
 
 const INERTIA_HEADER = 'x-inertia';
 const VERSION_HEADER = 'x-inertia-version';
@@ -101,7 +104,7 @@ function renderShell(page) {
   <script>window.__inertia_page__ = ${pageJson};</script>
 </head>
 <body>
-  <div id="app" data-page="${pageJson.replace(/"/g, '&quot;')}"></div>
+  <div id="app" data-page="${escapeHtml(pageJson)}"></div>
 </body>
 </html>`;
 }
