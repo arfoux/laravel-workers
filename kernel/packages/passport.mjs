@@ -9,32 +9,20 @@
 // never live in code — the caller injects PEM (`PASSPORT_PRIVATE_KEY`,
 // `PASSPORT_PUBLIC_KEY`) from env secrets.
 
-import { b64url, b64urlToBytes } from './b64url.mjs';
+import { b64url, b64urlToBytes, pemToDer } from './b64url.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const RS_ALG = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
 
-// --- PEM → ArrayBuffer (PKCS#8 private / SPKI public) ----------------------
-
-function pemToBuffer(pem) {
-  const body = String(pem)
-    .replace(/-----BEGIN [^-]+-----/, '')
-    .replace(/-----END [^-]+-----/, '')
-    .replace(/\s+/g, '');
-  if (!body) throw new Error('empty PEM');
-  const bin = atob(body);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return bytes.buffer;
-}
+// --- PEM → DER (PKCS#8 private / SPKI public); see b64url.mjs#pemToDer ------
 
 export async function importPrivateKey(pemPkcs8) {
-  return crypto.subtle.importKey('pkcs8', pemToBuffer(pemPkcs8), RS_ALG, false, ['sign']);
+  return crypto.subtle.importKey('pkcs8', pemToDer(pemPkcs8, 'Passport private key'), RS_ALG, false, ['sign']);
 }
 
 export async function importPublicKey(pemSpki) {
-  return crypto.subtle.importKey('spki', pemToBuffer(pemSpki), RS_ALG, true, ['verify']);
+  return crypto.subtle.importKey('spki', pemToDer(pemSpki, 'Passport public key'), RS_ALG, true, ['verify']);
 }
 
 // --- RS256 JWT -------------------------------------------------------------

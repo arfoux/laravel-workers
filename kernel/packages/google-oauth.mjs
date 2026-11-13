@@ -18,7 +18,7 @@
 // Config: the service-account JSON is read from the env var named by `jsonEnv`
 // (default `GA4_SERVICE_ACCOUNT_JSON`), either raw or base64.
 import { resolveFetch } from './notify-http.mjs';
-import { b64url as b64urlFromBytes, b64urlToBytes } from './b64url.mjs';
+import { b64url as b64urlFromBytes, b64urlToBytes, pemToDer } from './b64url.mjs';
 
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const GA4_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly';
@@ -44,11 +44,8 @@ export async function buildGoogleServiceAccountJwt(serviceAccount, { scope = GA4
   if (!clientEmail) throw new Error('service account is missing client_email');
   if (!privateKeyPem) throw new Error('service account is missing private_key');
 
-  const pemBody = String(privateKeyPem)
-    .replace(/-----BEGIN PRIVATE KEY-----/, '')
-    .replace(/-----END PRIVATE KEY-----/, '')
-    .replace(/\s+/g, '');
-  const der = b64urlToBytes(pemBody);
+  // PKCS8 PEM (or the bare base64 body) -> DER bytes for importKey.
+  const der = pemToDer(privateKeyPem, 'Google service-account private_key');
 
   const key = await crypto.subtle.importKey(
     'pkcs8',
