@@ -19,7 +19,7 @@
 // is not compiled and the routes that use it stay blocked.
 import parser from 'php-parser';
 import { readFileSync } from 'node:fs';
-import { transpileControllerMethod, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES, JSON_RESPONSE_TYPES } from './transpiler.mjs';
+import { transpileControllerMethod, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES, JSON_RESPONSE_TYPES, vname, shortName } from './transpiler.mjs';
 import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapters.mjs';
 // The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore).
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
@@ -189,9 +189,6 @@ function needsAwait(code) {
   return /\bawait\b/.test(codeWithoutNoise(String(code || '')));
 }
 
-const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
-const shortName = (fqcn) => String(fqcn).split('\\').pop();
-const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
 
 // ---------------------------------------------------------------------------
 // the AST of the class file

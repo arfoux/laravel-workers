@@ -11,7 +11,7 @@
 //   emitController(source, method, meta) -> the final handler module source.
 import parser from 'php-parser';
 import { snake } from '../../kernel/str.mjs';
-import { transpileControllerMethod, uncompiledRuleOf, PORT_HINT } from './transpiler.mjs';
+import { transpileControllerMethod, uncompiledRuleOf, PORT_HINT, vname } from './transpiler.mjs';
 import { viewFileName } from './view-name.mjs';
 // The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore):
 // the same reader the config/const folders use, so a signature default cannot
@@ -650,7 +650,6 @@ function isPaginateCall(node) {
 // emit
 // ---------------------------------------------------------------------------
 
-const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 
 // The methods Laravel resolves a route-model binding through (an app that
 // overrides one of them binds a different row than the compiled lookup).
