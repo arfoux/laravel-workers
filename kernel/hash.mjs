@@ -1,28 +1,11 @@
 // kernel/hash.mjs � Hash (bcrypt)
 // Uses bcryptjs (pure JS, no native).
 import bcrypt from 'bcryptjs';
+import { timingSafeEqual } from './digest.mjs';
 
-// constant-time string/Uint8Array compare � does not early-return on first mismatch
-export function timingSafeEqual(a, b) {
-  const toBytes = (v) => {
-    if (v instanceof Uint8Array) return v;
-    if (typeof v === 'string') return new TextEncoder().encode(v);
-    if (typeof Buffer !== 'undefined' && v && Buffer.isBuffer(v)) return new Uint8Array(v);
-    return new TextEncoder().encode(String(v));
-  };
-  const aBytes = toBytes(a);
-  const bBytes = toBytes(b);
-  if (aBytes.length !== bBytes.length) return false;
-  try {
-    const f = globalThis.crypto && globalThis.crypto.timingSafeEqual;
-    if (typeof f === 'function' && typeof Buffer !== 'undefined') {
-      return f(Buffer.from(aBytes), Buffer.from(bBytes));
-    }
-  } catch {}
-  let diff = 0;
-  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
-  return diff === 0;
-}
+// Re-exported so the Hash public surface (auth.mjs, hash.test.mjs) is
+// unchanged; the rule itself lives once in digest.mjs.
+export { timingSafeEqual };
 
 export async function make(value, { rounds = 12 } = {}) {
   const salt = await bcrypt.genSalt(rounds);
