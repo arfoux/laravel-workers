@@ -17,6 +17,8 @@
 //   4. maps the provider `Response` to `{status, headers, body}` via
 //      `mapProviderResponse` — the same shape a Worker port returns.
 
+import { jsonResponse } from './port-ctx.mjs';
+
 // Resolve the fetch implementation. Tests inject `env.fetchImpl`; production
 // falls back to the Workers/Node global. Never capture `globalThis.fetch` at
 // module load — it must be read per call so a test can swap it in.
@@ -43,13 +45,11 @@ export async function mapProviderResponse(resp) {
   return { status, headers, body };
 }
 
-// Standard `{status,headers,body}` JSON port response.
+// Standard `{status,headers,body}` JSON port response — the envelope lives once
+// in `jsonResponse` (port-ctx.mjs); this keeps the notify cluster's
+// `(body, status)` call shape.
 export function jsonPort(body, status = 200) {
-  return {
-    status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(body),
-  };
+  return jsonResponse(status, body);
 }
 
 // Perform a provider request and map the response to the port envelope,

@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 
 // ports/packages/scout-algolia.mjs — laravel/scout (v11.9.0) +
@@ -86,18 +86,14 @@ export default async function handle(ctx, env) {
     }
 
     // Preserve Algolia's response contract: hits, nbHits, page, nbPages, params.
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-      body: JSON.stringify({
-        hits: json?.hits ?? [],
-        nbHits: json?.nbHits ?? 0,
-        page: json?.page ?? 0,
-        nbPages: json?.nbPages ?? 0,
-        ...(json?.params ? { params: json.params } : {}),
-        ...(json?.facets ? { facets: json.facets } : {}),
-      }),
-    };
+    return jsonResponse(200, {
+      hits: json?.hits ?? [],
+      nbHits: json?.nbHits ?? 0,
+      page: json?.page ?? 0,
+      nbPages: json?.nbPages ?? 0,
+      ...(json?.params ? { params: json.params } : {}),
+      ...(json?.facets ? { facets: json.facets } : {}),
+    });
   } catch (err) {
     return {
       status: 502,

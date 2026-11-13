@@ -206,3 +206,11 @@ export function jsonResponse(status, payload) {
     body: JSON.stringify(payload),
   };
 }
+
+/**
+ * The JSON error envelope a route port answers with: `jsonResponse` plus the
+ * `{ ok: false, error }` body the PDF/image ports share. Same rule, once.
+ */
+export function jsonError(status, message) {
+  return jsonResponse(status, { ok: false, error: message });
+}

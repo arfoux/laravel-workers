@@ -1,4 +1,4 @@
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/scout-meilisearch.mjs — laravel/scout (v11.9.0) +
 // meilisearch/meilisearch-php (v1.x) search port.
@@ -92,16 +92,12 @@ export default async function handle(ctx, env) {
 
     // Preserve Meilisearch's exact response shape — the client (and Scout's
     // hydration path) reads `hits` and `estimatedTotalHits` verbatim.
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-      body: JSON.stringify({
-        hits: json?.hits ?? [],
-        estimatedTotalHits: json?.estimatedTotalHits ?? 0,
-        ...(json?.processingTimeMs != null ? { processingTimeMs: json.processingTimeMs } : {}),
-        ...(json?.facetDistribution ? { facetDistribution: json.facetDistribution } : {}),
-      }),
-    };
+    return jsonResponse(200, {
+      hits: json?.hits ?? [],
+      estimatedTotalHits: json?.estimatedTotalHits ?? 0,
+      ...(json?.processingTimeMs != null ? { processingTimeMs: json.processingTimeMs } : {}),
+      ...(json?.facetDistribution ? { facetDistribution: json.facetDistribution } : {}),
+    });
   } catch (err) {
     return {
       status: 502,
