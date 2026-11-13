@@ -15,13 +15,11 @@
 // policy is not compiled, and the routes that check it stay blocked.
 import parser from 'php-parser';
 import { readFileSync } from 'node:fs';
-import { transpileControllerMethod } from './transpiler.mjs';
+import { transpileControllerMethod, vname, shortName } from './transpiler.mjs';
 import { nodeName } from '../../tools/static.mjs';
 
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
-const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
-const shortName = (fqcn) => String(fqcn).split('\\').pop();
 
 
 const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();

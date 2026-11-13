@@ -19,7 +19,8 @@ const PACKAGE_BINDING_INDEX = buildPackageBindingIndex();
 const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 // PHP variable names are mangled to JS identifiers so reserved words ($null, $new, ...) are safe.
-const vname = (name) => 'v_' + String(name).replace(/^\\$/, '').replace(/[^A-Za-z0-9_]/g, '_');
+const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
+const shortName = (fqcn) => String(fqcn).split('\\').pop();
 const fname = (name) => 'fn_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
 // The global helpers whose runtime name differs from the Laravel one.
 const RENAME_FUNCS = new Map([
@@ -3983,4 +3984,9 @@ export {
   COLLECTION_METHODS,
   VALIDATOR_METHODS,
   FILE_METHODS,
+  // The identifier manglers the compiler shares: `vname` (a PHP variable name ->
+  // a JS identifier) and `shortName` (a FQCN -> its class name). One reader for
+  // transpiler/classes/controller/policy — the copies drifted silently (#697).
+  vname,
+  shortName,
 };
