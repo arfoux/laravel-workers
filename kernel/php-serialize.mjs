@@ -13,6 +13,8 @@
 // never produced by Laravel's session payloads; everything else round-trips
 // byte-for-byte.
 
+import { isPlainObject } from './own-key.mjs';
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
@@ -25,12 +27,6 @@ export class PhpSerializeError extends Error {
 
 const INT_KEY_RE = /^(?:0|-?[1-9][0-9]*)$/;
 const SAFE = Number.MAX_SAFE_INTEGER;
-
-function isPlainObject(v) {
-  if (typeof v !== 'object' || v === null) return false;
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
-}
 
 // ---- encode ---------------------------------------------------------------
 
