@@ -26,7 +26,9 @@ test('run: a bare executable name stays unquoted so cmd resolves it through PATH
 
 test('run: an executable path with a space is quoted and escaped', () => {
   const line = commandLine('C:\\Program Files\\nodejs\\node.exe', ['-e', 'console.log(1)']);
-  assert.ok(line.startsWith('^"C:\\Program Files\\nodejs\\node.exe^" '), line);
+  // cmd's caret escape covers the space too (`Program^ Files`), which is the
+  // cross-spawn recipe this helper follows — the node children keep launching.
+  assert.ok(line.startsWith('^"C:\\Program^ Files\\nodejs\\node.exe^" '), line);
 });
 
 test('run: cmd metacharacters in an argument are neutralised, including % and !', () => {
