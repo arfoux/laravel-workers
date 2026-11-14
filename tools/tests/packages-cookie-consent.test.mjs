@@ -90,16 +90,24 @@ test('injectBanner: case-insensitive closing body tag is honoured', () => {
 // ---- buildSetCookie --------------------------------------------------------
 
 test('buildSetCookie: builds a far-future Set-Cookie value for the consent name', () => {
+  const t0 = Date.now();
   const header = buildSetCookie(100);
   assert.match(header, /^laravel_cookie_consent=1;/);
   assert.match(header, /Max-Age=100/);
   assert.match(header, /Expires=/);
   assert.match(header, /Path=\//);
   assert.match(header, /SameSite=Lax/);
-  // Expires lands ~100s in the future from build time.
-  const exp = header.match(/Expires=([^;]+)/i)[1];
-  const cutoff = Date.now() + 99 * 1000;
-  assert.ok(Date.parse(exp) > cutoff, 'expires is ~100s out');
+  // Expires lands ~100s in the future from build time. Two things make the
+  // expectation a BRACKET around a clock read taken BEFORE the call:
+  //   * an HTTP date has one-second resolution, so `Expires` is truncated (up
+  //     to 999ms of the 100s is lost) — reading the clock after the call and
+  //     demanding `> now + 99s` left as little as 1ms of slack and flaked
+  //     under the coverage instrument (CI run 43574640895, `# fail 1`);
+  //   * with `t0` before the call the lower bound can only grow, and the upper
+  //     bound rules out the one-year default (and any other unit mistake).
+  const exp = Date.parse(header.match(/Expires=([^;]+)/i)[1]);
+  assert.ok(exp > t0 + 99_000, 'expires is at least ~100s out');
+  assert.ok(exp < t0 + 120_000, 'expires is not minutes (or a year) out');
 });
 
 test('buildSetCookie: defaults to a one-year lifetime', () => {
