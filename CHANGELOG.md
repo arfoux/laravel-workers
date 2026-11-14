@@ -2,11 +2,35 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The live app was run, and the run found four defects
+
+Every claim in this repository had been measured on fixtures, the parity corpus or a probe
+worker. On 2026-11-14 a real app (`lw-showcase`, 138 routes, live at `lw-showcase.nietzsc.de`
+since 2026-11-13) was swept instead: 92 GET URIs against the deployed worker and against a
+local PHP 8.3.30 oracle, a full HTTP auth round trip, a D1 write over HTTP, a build from
+current `main`, and `deploy --plan --mode 3`. The record, with the commands and their output,
+is `docs/EVIDENCE.md`; the defects are **recorded, not fixed** here - each fix is its own
+change.
+
+| finding | evidence | status |
+|---|---|---|
+| `route()` with an **associative** params array answers `[object Object]` (`compiler/runtime/rt-from-context.mjs:1155` is positional; the transpiler emits one object) | `POST /crud` -> `302 Location: /crud/%5Bobject%20Object%5D` on the live worker **and** on a fresh `main` build under `wrangler dev`; the flash text and the log line carry the correct id (`Created post 46`, `crud.store {"id":46}`) | open - contradicts `COMPILED.md:860` (✅) and no test covers named params |
+| a path outside `_routes.json`'s 99 includes is answered by the assets layer, so the 404 has no body | live `GET /nonexistent-route-for-404` -> `404`, 0 B; the app's own 404 and PHP answer 218 B | open - document or add a catch-all |
+| prerendered `static` routes answer 307 to their trailing slash | live `GET /architecture` -> `307 /architecture/` -> `200`; PHP -> `200` | open (cosmetic) |
+| `status` is blind to a deploy it did not perform, and nothing records the source SHA | `status` -> `no deploy recorded` for a live app (`lw-state.json` absent); `wrangler deployments list` -> `Source: Unknown (deployment)` | open - report the case / record provenance |
+
+What the same run **did** verify: build exit 0 (85/86 controllers, 131 routes, 33 views
+byte-identical, `READINESS: RUNS ON THE EDGE`), `deploy --plan --mode 3` (zero-mutation,
+D1 entry resolved), the auth + session + CSRF + D1 round trip over HTTP, a D1 insert over
+HTTP, and 45/92 bodies template-identical after normalising only the origin and the CSRF
+token. Not verified, and said so there: `deploy --mode 3` end to end, the CPU numbers for
+that app, the `scheduled` handler's effect, `action/verdict`.
+
 ### The README was a manual, not an entrance
 
 `README.md` was 840 lines: a reader landing on the package page had to scroll past the CLI
 reference, the guided-deploy walkthrough, the build phases, the cache rules and the
-operability notes before learning what this is and how to try it. It is now 115 lines and
+operability notes before learning what this is and how to try it. It is now 116 lines and
 answers, in order: what it is, the three-command path, the counts, a table of every verb, what runs today, what is refused (each with its escape hatch), the honest limits, where to read next. Nothing was cut - the operator
 reference moved byte-identical to `docs/DEPLOY.md`, the file map and the 30-second
 architecture to `docs/INTERNALS.md`, the port recipes to `docs/PACKAGE-PORTS.md`, and the
@@ -16,7 +40,7 @@ reachable from the npm page.
 
 | change | why |
 |---|---|
-| `README.md`: 840 → 115 lines, user-only; the requirements table and the Cloudflare tiers moved to `docs/DEPLOY.md`, the per-construct detail stays in `COMPILED.md`/`MAP.md` and only an 8-row summary remains | measured: `git show c8d590d^:README.md \| wc -l` = 840, `wc -l README.md` = 115; `docs-counts` keeps every remaining number generated |
+| `README.md`: 840 → 116 lines, user-only; the requirements table and the Cloudflare tiers moved to `docs/DEPLOY.md`, the per-construct detail stays in `COMPILED.md`/`MAP.md` and only an 8-row summary remains | measured: `git show c8d590d^:README.md \| wc -l` = 840, `wc -l README.md` = 116; `docs-counts` keeps every remaining number generated |
 | `README.md`: the quick start's preview is `deploy --plan --mode 3 --d1-auto`, and the commands row states that plain `--plan` is mode 1 | measured in a real app: `deploy --plan` alone prints `mode 1 (build only)` / `build would run; --plan does not write dist/` / `state lw-state.json untouched` - no worker, no account, no D1; `--mode 3 --d1-auto` adds all of those and the blocker a real run would hit (`wrangler.jsonc has no D1 entry named "nearfind-db" - refusing to create an unbindable database`) |
 | `README.md`: the quick start is the three-verb path (`deploy --plan`, `build`, `deploy`), and a `## The commands` table after the pitch lists all nine public verbs with one line each | `bin/laravel-workers.mjs` passes `--strict` to `build.mjs` itself, so `build --strict` in a README asks the user for a flag that is already implied - and the rewrite had left the quick start with Cloudflare-touching verbs only |
 | `docs/DEPLOY.md` (new, 361 lines): CLI, guided deploy, zero-touch/CI, build phases + cache, fullstack, `RUNS ON THE EDGE`, Requirements + tiers | the text is the README's own paragraphs, moved verbatim (LF, no reflow) - a pointer, not a rewrite |
