@@ -15,6 +15,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# The skeleton the shadow harness installs is PINNED: an unpinned
+# `create-project` installs whatever laravel/laravel ships that day, so the
+# release gate could start proving something else without a commit here. Bump it
+# deliberately, when the new skeleton is verified. `ci.yml` pins the same
+# version, so the two never disagree.
+env:
+  LARAVEL_SKELETON: laravel/laravel:13.11.0
+
 # Release = a tag, not a version edit: `npm version patch` (omit
 # --no-git-tag-version) writes package.json, commits and creates the `v*` tag in
 # one act, then `git push && git push --follow-tags`. Editing package.json by
@@ -41,12 +49,7 @@ jobs:
           php-version: '8.3'
           extensions: pdo_sqlite, sqlite3
       - name: Create a fresh Laravel app (the oracle's app)
-        # The skeleton is PINNED: an unpinned `create-project` installs whatever
-        # laravel/laravel ships that day, so a change upstream could break the gate
-        # (or silently change what it proves) without a commit here. Bump it
-        # deliberately when the new skeleton is verified.
-        
-        run: composer create-project "laravel/laravel:13.11.0" shadow-app --no-interaction --prefer-dist
+        run: composer create-project "$LARAVEL_SKELETON" shadow-app --no-interaction --prefer-dist
       - name: Scaffold the fixture app the scenario replays
         # `shadow/scenarios/fresh-app.mjs` walks the login flow, the guarded
         # dashboard and the post list/detail, and its fixtures INSERT into a

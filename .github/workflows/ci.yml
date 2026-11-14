@@ -12,6 +12,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The skeleton every job installs is PINNED, and pinned in ONE place: an
+# unpinned `create-project` installs whatever laravel/laravel ships that day, so
+# a change upstream could break a gate (or silently change what it proves)
+# without a commit here. Bump it deliberately, when the new skeleton is
+# verified. `publish.yml` pins the same version for its shadow harness.
+env:
+  LARAVEL_SKELETON: laravel/laravel:13.11.0
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -56,12 +64,7 @@ jobs:
           php-version: '8.3'
           extensions: pdo_sqlite, sqlite3
       - name: Create a fresh Laravel app (the oracle's app)
-        # The skeleton is PINNED: an unpinned `create-project` installs whatever
-        # laravel/laravel ships that day, so a change upstream could break the gate
-        # (or silently change what it proves) without a commit here. Bump it
-        # deliberately when the new skeleton is verified.
-        
-        run: composer create-project "laravel/laravel:13.11.0" parity-app --no-interaction --prefer-dist
+        run: composer create-project "$LARAVEL_SKELETON" parity-app --no-interaction --prefer-dist
       - name: Prepare the app
         run: |
           cd parity-app
@@ -78,7 +81,7 @@ jobs:
       # routes named in the test. A fresh app is the point: the scan is
       # app-agnostic, so nothing app-specific is needed.
       - name: Create a fresh Laravel app (the route-scan oracle)
-        run: composer create-project "laravel/laravel:13.11.0" scan-app --no-interaction --prefer-dist
+        run: composer create-project "$LARAVEL_SKELETON" scan-app --no-interaction --prefer-dist
       - name: The route scan is total — its set equals route:list
         env:
           LW_LARAVEL_APP: ${{ github.workspace }}/scan-app
@@ -109,7 +112,7 @@ jobs:
           php-version: '8.3'
           extensions: pdo_sqlite, sqlite3
       - name: Create a fresh Laravel app
-        run: composer create-project "laravel/laravel:13.11.0" e2e-app --no-interaction --prefer-dist
+        run: composer create-project "$LARAVEL_SKELETON" e2e-app --no-interaction --prefer-dist
       - name: Prepare the app
         # The frontend needs building (Vite), and prerender/session need a real
         # sqlite file. APP_KEY is NOT prepared: build.mjs auto-generates it
