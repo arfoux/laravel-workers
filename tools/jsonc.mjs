@@ -324,6 +324,32 @@ export function setWranglerName(text, workerName) {
 }
 
 /**
+ * Read the D1 entry a config already binds, whatever its database_name is.
+ *
+ * `inspectD1Target(text, databaseRef)` matches on database_name, so a config
+ * whose name no longer matches the name a caller guessed reports `no-entry`
+ * even though it binds a real database. That gap is what let `deploy --d1-auto`
+ * create a fresh empty `<worker>-db` while the live app was bound to a database
+ * under another name (the app answered 500 until the id was restored).
+ *
+ * Same statuses as inspectD1Target, plus `ambiguous` when the config does not
+ * carry exactly one named entry - callers keep their own handling for those.
+ */
+export function inspectOnlyD1(text) {
+  const root = parseJsonc(text);
+  if (root.type !== 'object') return { status: 'invalid-root', root };
+  const d1 = properties(root, 'd1_databases');
+  if (d1.length === 0) return { status: 'no-d1', root };
+  if (d1.length > 1 || d1[0].value.type !== 'array') return { status: 'ambiguous', root };
+  const entries = d1[0].value.items;
+  if (entries.length !== 1 || entries[0].type !== 'object') return { status: 'ambiguous', root };
+  const name = oneProperty(entries[0], 'database_name');
+  if (name.count !== 1) return { status: 'ambiguous', root };
+  if (stringValue(name.value) === null) return { status: 'missing-name', root };
+  return inspectD1Target(text, stringValue(name.value));
+}
+
+/**
  * Locate the D1 entry a deploy would edit.
  *
  * A placeholder entry (database_id === "REPLACE_WITH_D1_ID") wins; otherwise
@@ -441,7 +467,16 @@ export function updateWranglerD1Id(text, databaseRef, databaseId) {
     return { text: next, status: 'set', changed: true };
   }
 
-  if (info.status !== 'ok') return { text, status: info.status, changed: false };
+  // A config that already binds exactly this id needs no edit, whatever its
+  // database_name says. The lookup above matches on database_name, so a database
+  // renamed in the account (or a config name that never matched the account's)
+  // would otherwise report no-entry and stop a deploy whose binding is correct.
+  if (info.status !== 'ok') {
+    const own = inspectOnlyD1(text);
+    if (own.status === 'ok' && own.id === databaseId) return { text, status: 'already', changed: false };
+    return { text, status: info.status, changed: false };
+  }
+
   if (info.id === databaseId) return { text, status: 'already', changed: false };
 
   const next = applyEdits(text, [{

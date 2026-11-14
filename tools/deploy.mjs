@@ -31,7 +31,7 @@ import { createInterface } from 'node:readline';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  inspectD1Target, inspectWranglerAccount, inspectWranglerName, JsoncError, setWranglerName,
+  inspectD1Target, inspectOnlyD1, inspectWranglerAccount, inspectWranglerName, JsoncError, setWranglerName,
 } from './jsonc.mjs';
 import {
   accountLabel, readCloudIdentity, selectAccount,
@@ -171,7 +171,8 @@ const USAGE = `Usage: npx laravel-workers deploy [flags]
   --mode 1|2|3        build only / + database / + database + deploy
   --deploy            shorthand for --mode 3
   --db                shorthand for --mode 2
-  --d1-auto           create or reuse <worker>-db (overrides recorded D1)
+  --d1-auto           create or reuse <worker>-db (overrides recorded D1;
+                      an id already written in wrangler.jsonc is kept)
   --d1-id <uuid>      use this existing D1 (overrides recorded D1)
   --skip-schema       never apply dist/schema.sql
   --schema=apply      apply dist/schema.sql even when the D1 has tables
@@ -989,9 +990,19 @@ function planWrangler(workerName, nameExplicit, databaseRef, plannedId) {
       uncertain = true;
     }
   } else {
-    const problem = wranglerD1TargetProblem(config.text, databaseRef);
-    if (problem) issues.push(problem);
-    d1Text = `${databaseRef}: ${d1Info.status}`;
+    // A plan that resolved a concrete id can tell a benign name mismatch from a
+    // missing entry: when the config itself already binds that exact id under a
+    // database_name the account reports differently (renamed database), nothing
+    // would be created or rewritten, so it is a note rather than a problem.
+    const own = plannedId ? inspectOnlyD1(config.text) : { status: 'skipped' };
+    if (plannedId && own.status === 'ok'
+      && String(own.id).toLowerCase() === String(plannedId).toLowerCase()) {
+      d1Text = `"${own.name}" database_id ${plannedId} (already; the account's name differs)`;
+    } else {
+      const problem = wranglerD1TargetProblem(config.text, databaseRef);
+      if (problem) issues.push(problem);
+      d1Text = `${databaseRef}: ${d1Info.status}`;
+    }
   }
 
   return { issues, nameText, d1Text, changes, uncertain };
@@ -1283,12 +1294,13 @@ async function main() {
   // --- 2. worker name (mode 2/3) ------------------------------------------
   // wrangler.jsonc is authoritative unless --name (or an interactive answer)
   // explicitly chooses another name. This keeps a manual rename in sync.
+  // Read once: the name step and the D1 step below both need it.
+  const config = readWranglerConfig();
   let nameExplicit = false;
   let nameChanged = false;
   let workerName = slugifyWorkerName(basename(appDir));
   if (mode >= 2) {
     nameExplicit = nameFlag !== undefined;
-    const config = readWranglerConfig();
     let configName = null;
     if (config) {
       try {
@@ -1333,6 +1345,26 @@ async function main() {
   }
 
   // --- 3. D1 choice (mode 2/3) --------------------------------------------
+  // A concrete database_id already written into wrangler.jsonc is the app's own
+  // recorded binding, so it is read before the "no state file" fallback.
+  // `auto` matches by NAME (`<worker>-db`); on a config whose database_name
+  // differs from that guess, auto created a second, empty database and rewrote
+  // database_id while the live app was bound to a database called differently
+  // (`lw-constructs-db`) - the app answered 500 until the id was restored. With
+  // the id honoured, a configured database that is missing from the account now
+  // fails loudly in the kind:'id' branch instead of provisioning a new one.
+  // Placeholders and an empty config still take the create path, and the
+  // explicit --d1-id / --d1-auto flags keep overriding this, as before.
+  let configuredD1Id = null;
+  if (config) {
+    try {
+      const info = inspectOnlyD1(config.text);
+      if (info.status === 'ok' && isValidD1Id(info.id)) configuredD1Id = String(info.id).toLowerCase();
+    } catch {
+      // The precise JSONC error is reported by planWrangler()/assertWranglerD1Target().
+    }
+  }
+
   let d1Decision = { kind: 'auto' };
   if (mode >= 2) {
     // Explicit flags are the user's decision, even when a state file exists.
@@ -1344,6 +1376,9 @@ async function main() {
       // Reuse the recorded D1 even when the worker is renamed: the state file
       // is app-scoped, and --d1-auto/--d1-id are the explicit ways to switch.
       d1Decision = { kind: 'id', id: String(state.d1.databaseId).toLowerCase() };
+    } else if (configuredD1Id) {
+      // No state file, but the config binds a database: never rebind by name.
+      d1Decision = { kind: 'id', id: configuredD1Id };
     } else if (!interactive) {
       d1Decision = { kind: 'auto' };
     } else {

@@ -1014,3 +1014,41 @@ test('a real deploy records the source identity and tags the version with it', (
   assert.equal(state.versionId, '9f1d0d1e-2b3c-4d5e-8f90-123456789abc');
   assert.match(result.stdout, /deployed → .* · 0123456 \(\+uncommitted changes\)/);
 });
+
+// A config that already binds a concrete database_id is honoured, even when its
+// database_name is not the name `auto` guesses (`<worker>-db`) and no state file
+// records a deploy yet. Matching by name is what created an empty `my-app-db`
+// and rewrote database_id while the live app was bound to a database renamed in
+// the account - the app answered 500 until the id was restored.
+test('deploy: a configured database_id wins over auto name matching', (t) => {
+  const concrete = `{
+  "name": "my-app",
+  "main": "./dist/src/worker.mjs",
+  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "legacy-db", "database_id": "${OTHER_ID}" },
+  ],
+}
+`;
+  const app = makeApp(t, {
+    config: concrete,
+    databases: [{ uuid: OTHER_ID, name: 'legacy-db', tables: 2 }],
+  });
+
+  const plan = app.run(['--plan', '--mode', '2']);
+  assert.equal(plan.status, 0, plan.stderr);
+  // the configured id is reused; `auto` would have planned a create-or-reuse of
+  // my-app-db instead, and the name the account knows is not resolved offline
+  assert.match(plan.stdout, /d1\s+11111111-2222-3333-4444-555555555555 — reuse/);
+  assert.doesNotMatch(plan.stdout, /create-or-reuse/);
+  assert.doesNotMatch(plan.stdout, /refusing to create/);
+
+  const result = app.run(['--mode', '2', '--yes', '--skip-schema']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(
+    !app.calls().some((call) => call.args?.[0] === 'd1' && call.args?.[1] === 'create'),
+    'the deploy must not create a database when the config binds one',
+  );
+  assert.equal(app.readConfig(), concrete, 'wrangler.jsonc must not be rewritten');
+  assert.equal(app.readState().d1.databaseId, OTHER_ID);
+});
