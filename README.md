@@ -18,22 +18,6 @@ npx laravel-workers deploy          # build → (D1) → (deploy), asking only w
 
 That is the whole setup: nothing to install (`npm i -D laravel-workers` only if you want the version pinned in the app), no PHP at the edge, no WASM, no container. `deploy --plan` and `build` never talk to Cloudflare — `deploy` is the only verb that does.
 
-### The commands
-
-| Command | What it does |
-|---|---|
-| `deploy --plan [--check]` | preview: no build, no writes, no prompts; `--check` adds read-only account/D1 checks |
-| `build` | compile to `dist/` — no cloud, strict (an unaccounted route fails the build); `--scaffold` writes `501` stubs |
-| `deploy` | build → (D1) → deploy; `--mode 1\|2\|3`, `--d1-auto`, `--d1-id <uuid>`, `--skip-schema`, `--yes` |
-| `status` | the recorded deploy state: worker, account, URL, deployed-at, D1 name/id, schema |
-| `doctor [--cloud]` | preflight: PHP, vendor, wrangler, deploy state |
-| `verify` | does this app boot under the build? |
-| `shadow --app <root>` | proof harness: the real PHP app against the compiled worker |
-| `init` | write `registry.json` + `wrangler.jsonc` up front (idempotent — a build scaffolds them when absent) |
-| `vendor:ensure` / `php:ensure` | CI prewarm: a composer-free vendor tree / the PHP interpreter |
-
-Every flag and exit code: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
-
 **What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. Every compiled page is checked **byte-identical against PHP 8.3 on your machine** during the build. Anything the compiler cannot handle **fails the build** — nothing silently wrong ships.
 
 ```
@@ -55,7 +39,25 @@ docs         105/105 pages with a verdict
 ```
 <!-- readme-counts:end -->
 
-Needs: PHP **≥ 8.3 on the build machine only**, Node ≥ 22, a Laravel ≥ 10 app, a Cloudflare account. **Free plan first** — the toolchain is shaped for it; R2 is the only product that asks for a card, and the build never turns it on by itself. Tested versions, the tier order and every flag: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+Needs: PHP **≥ 8.3 on the build machine only**, Node ≥ 22, a Laravel ≥ 10 app, a Cloudflare account. **Free plan first** — the toolchain is shaped for it; R2 is the only product that asks for a card, and the build never turns it on by itself.
+
+---
+
+## The commands
+
+| Command | What it does |
+|---|---|
+| `deploy --plan [--check]` | preview: no build, no writes, no prompts; `--check` adds read-only account/D1 checks |
+| `build` | compile to `dist/` — no cloud, strict (an unaccounted route fails the build); `--scaffold` writes `501` stubs |
+| `deploy` | build → (D1) → deploy; `--mode 1\|2\|3`, `--d1-auto`, `--d1-id <uuid>`, `--skip-schema`, `--yes` |
+| `status` | the recorded deploy state: worker, account, URL, deployed-at, D1 name/id, schema |
+| `doctor [--cloud]` | preflight: PHP, vendor, wrangler, deploy state |
+| `verify` | does this app boot under the build? |
+| `shadow --app <root>` | proof harness: the real PHP app against the compiled worker |
+| `init` | write `registry.json` + `wrangler.jsonc` up front (idempotent — a build scaffolds them when absent) |
+| `vendor:ensure` / `php:ensure` | CI prewarm: a composer-free vendor tree / the PHP interpreter |
+
+Every flag, the tested versions and the tier order: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 ---
 
