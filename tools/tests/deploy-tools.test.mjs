@@ -218,6 +218,12 @@ test('state fields with the wrong type are rejected in strict mode', (t) => {
 
   writeFileSync(join(dir, STATE_FILE), '{"schemaVersion":1,"d1":{"databaseId":5}}', 'utf8');
   assert.throws(() => readState(dir, { strict: true }), /invalid "d1\.databaseId"/);
+
+  // `sourceDirty` is tri-state (true/false/null); a string is a hand-edited file.
+  writeFileSync(join(dir, STATE_FILE), '{"schemaVersion":1,"sourceDirty":"yes"}', 'utf8');
+  assert.throws(() => readState(dir, { strict: true }), /invalid "sourceDirty"/);
+  writeFileSync(join(dir, STATE_FILE), '{"schemaVersion":1,"sourceSha":7}', 'utf8');
+  assert.throws(() => readState(dir, { strict: true }), /invalid "sourceSha"/);
   writeFileSync(join(dir, STATE_FILE), '{"schemaVersion":1}', 'utf8');
   assert.throws(() => writeState(dir, { workerName: 7 }), /refusing to write/);
   assert.throws(() => writeState(dir, { schemaVersion: 99 }), /refusing to write/);

@@ -42,6 +42,7 @@ import { viewFileName } from './compiler/src/view-name.mjs';
 import { slugifyRoute } from './tools/route-slug.mjs';
 import { buildRouteMap } from './tools/route-map.mjs';
 import { jsoncValue, stripTomlComments, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
+import { sourceIdentity } from './tools/git-sha.mjs';
 import { notTriggerableFindings, shiftedTriggerFindings } from './tools/schedule-gaps.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
@@ -3686,6 +3687,22 @@ if (bcryptSrc && existsSync(join(bcryptSrc, 'index.js'))) {
 cpSync(join(pkgDir, 'compiler', 'runtime'), join(dist, 'src', 'runtime'), { recursive: true });
 
 const builtAt = new Date().toISOString();
+
+// Provenance for the artifact: which commit this dist came from, and which tool
+// built it. `status` reads it back (dist/build-info.json), `deploy` records the
+// same identity in lw-state.json, and `deploy` tags the wrangler version with the
+// commit so Cloudflare's own `wrangler deployments list` can name the source
+// instead of `Unknown (deployment)` — the question this answers is "which commit
+// is live" (docs/EVIDENCE.md finding 4).
+//
+// Deliberately NOT served anywhere: `/health` carries `builtAt` only, because the
+// app's commit is the app's business and a public endpoint should not announce it.
+const toolVersion = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version;
+const source = sourceIdentity(appDir);
+writeFileSync(
+  join(dist, 'build-info.json'),
+  JSON.stringify({ toolVersion, builtAt, source }, null, 2) + '\n'
+);
 // A uri's base entry answers only its main verb; extra verbs (POST on a
 // snapshotted GET uri, etc.) get their own table entry below so router.routeKey()
 // — which keys a handler by the entry's first method — resolves each verb.
