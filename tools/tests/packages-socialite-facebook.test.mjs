@@ -188,3 +188,30 @@ test('facebook callback: unconfigured provider (no creds) is a 400', async () =>
   );
   assert.equal(res.status, 400);
 });
+
+test('state rows older than the cookie TTL are pruned by the next redirect', async () => {
+  const env = makeEnv(facebookFetch());
+  await rememberState(env, 'st_fresh');
+  // a flow whose callback never came (bot, closed tab): the row is there, the
+  // 600s cookie is long gone
+  await env.DB.prepare(
+    `INSERT INTO lw_oauth_state (state, created_at) VALUES (?1, datetime('now', '-601 seconds'))`
+  ).bind('st_abandoned').run();
+  assert.ok(await env.DB.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1').bind('st_abandoned').first());
+
+  const res = await redirect(
+    { params: { provider: 'facebook' }, query: {}, request: new Request('https://app.test/auth/facebook/redirect') },
+    env
+  );
+  assert.equal(res.status, 302);
+  // the stale row is gone; the live one - and the state this redirect planted - stay
+  assert.equal(
+    await env.DB.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1').bind('st_abandoned').first(),
+    null
+  );
+  assert.ok(await env.DB.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1').bind('st_fresh').first());
+  assert.equal(
+    (await env.DB.prepare('SELECT COUNT(*) AS n FROM lw_oauth_state').first()).n,
+    2
+  );
+});
