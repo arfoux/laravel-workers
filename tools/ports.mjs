@@ -4,7 +4,7 @@
 //   findStubPorts()   — stub detector: the build flags scaffold stubs so a
 //     "green" build never silently ships a 501 handler.
 //
-// Port contract (see README):
+// Port contract (see docs/PACKAGE-PORTS.md, "Writing your own port"):
 //   export default async function handle(ctx, env) { ... }
 //   return { status: 200, headers: {...}, body: 'string' }
 

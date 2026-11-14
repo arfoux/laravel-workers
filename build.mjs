@@ -3589,7 +3589,7 @@ if (missingGuardPorts.length)
   fail(
     'guard port file(s) missing in ' + portsSrc + ': ' +
       missingGuardPorts.map(([guardDriver, slug]) => `driver '${guardDriver}' -> ${slug}.mjs`).join(', ') +
-      ' — a guard port exports `default { async user(ctx) { return user | null } }` (see the README section on guard ports)'
+      ' — a guard port exports `default { async user(ctx) { return user | null } }` (see docs/PACKAGE-PORTS.md, "A guard port, in practice")'
   );
 if (existsSync(portsSrc)) {
   cpSync(portsSrc, join(dist, 'src/ports'), { recursive: true });
