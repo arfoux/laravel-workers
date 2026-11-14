@@ -20,7 +20,11 @@
 //     "databaseId": null | "<uuid>",
 //     "schemaAppliedAt": null | "<ISO timestamp>",
 //     "schemaHash": null | "<sha256 of dist/schema.sql>"
-//   }
+//   },
+//   "sourceSha": null | "<git HEAD of the app when it was built/deployed>",
+//   "sourceDirty": null | true | false,
+//   "toolVersion": null | "<laravel-workers version that built it>",
+//   "versionId": null | "<Cloudflare Worker Version id from wrangler deploy>"
 // }
 //
 // Consumers import this module. deploy, status, doctor, and writeState() use
@@ -62,6 +66,14 @@ export const emptyState = () => ({
     schemaAppliedAt: null,
     schemaHash: null,
   },
+  // Which source this app was built from, and which Worker version a deploy made
+  // of it (tools/git-sha.mjs + `wrangler deploy`). Null when the app is not a git
+  // work tree or nothing was recorded yet — `status` says "not recorded" rather
+  // than inventing one.
+  sourceSha: null,
+  sourceDirty: null,
+  toolVersion: null,
+  versionId: null,
 });
 
 function isPlainObject(value) {
@@ -72,7 +84,12 @@ function isNullableString(value) {
   return value === null || typeof value === 'string';
 }
 
-const TOP_LEVEL_STRINGS = ['deployedAt', 'workerName', 'workerUrl'];
+const TOP_LEVEL_STRINGS = [
+  'deployedAt', 'workerName', 'workerUrl', 'sourceSha', 'toolVersion', 'versionId',
+];
+// `sourceDirty` is the one tri-state: true/false from git, null when git could not
+// answer. A string there means a hand-edited file, so it is rejected like the rest.
+const TOP_LEVEL_BOOLEANS = ['sourceDirty'];
 const ACCOUNT_STRINGS = ['id', 'name', 'email'];
 const D1_STRINGS = ['binding', 'databaseName', 'databaseId', 'schemaAppliedAt', 'schemaHash'];
 const ACCOUNT_ID = /^[0-9a-f]{32}$/i;
@@ -93,6 +110,10 @@ function stateProblem(value) {
   if (value.d1 !== undefined && !isPlainObject(value.d1)) return 'has an invalid "d1" object';
   const topLevelBad = invalidStringField(value, TOP_LEVEL_STRINGS);
   if (topLevelBad) return `has an invalid "${topLevelBad}" value`;
+  const topLevelBoolBad = TOP_LEVEL_BOOLEANS.find(
+    (key) => key in value && value[key] !== null && typeof value[key] !== 'boolean'
+  );
+  if (topLevelBoolBad) return `has an invalid "${topLevelBoolBad}" value`;
   if (value.account) {
     const accountBad = invalidStringField(value.account, ACCOUNT_STRINGS);
     if (accountBad) return `has an invalid "account.${accountBad}" value`;

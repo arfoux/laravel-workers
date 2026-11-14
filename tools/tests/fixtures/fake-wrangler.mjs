@@ -194,13 +194,27 @@ if (verb === 'd1 execute') {
   process.exit(0);
 }
 
-if (verb === 'deploy' || (args[0] === 'deploy' && args.length === 1)) {
+// `deploy` may carry `--tag <sha>` and `--message <text>` (tools/deploy.mjs puts
+// the source identity on the version), so the dispatch matches the VERB, and the
+// fixture records the flags it was handed — a test can then assert what the deploy
+// actually asked wrangler to do. Real wrangler prints the version it created, so
+// the fixture does too: `tools/deploy.mjs` parses that line into `lw-state.json`.
+if (args[0] === 'deploy') {
   log();
   if (process.env.FAKE_DEPLOY_FAIL) {
     fail(`fake wrangler: deploy failed (${process.env.FAKE_DEPLOY_FAIL})`);
   }
+  const tagAt = args.indexOf('--tag');
+  const messageAt = args.indexOf('--message');
+  const tag = tagAt >= 0 ? String(args[tagAt + 1] || '') : '';
+  const message = messageAt >= 0 ? String(args[messageAt + 1] || '') : '';
+  if (process.env.FAKE_DEPLOY_ARGS_LOG) {
+    writeFileSync(process.env.FAKE_DEPLOY_ARGS_LOG, JSON.stringify({ tag, message }, null, 2) + '\n');
+  }
   const url = process.env.FAKE_DEPLOY_URL || 'https://my-app.example.workers.dev';
+  const versionId = process.env.FAKE_DEPLOY_VERSION_ID || '9f1d0d1e-2b3c-4d5e-8f90-123456789abc';
   console.log(`Deployed to ${url}`);
+  console.log(`Current Version ID: ${versionId}`);
   process.exit(0);
 }
 
