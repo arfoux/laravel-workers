@@ -167,7 +167,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 | `--mode 1\|2\|3` | force the mode (no prompt) |
 | `--deploy` | shorthand for `--mode 3` |
 | `--db` | shorthand for `--mode 2` |
-| `--d1-auto` | auto create/reuse `<worker>-db` (capped to D1's 63-char limit; overrides recorded D1; no prompt) |
+| `--d1-auto` | auto create/reuse `<worker>-db` (capped to D1's 63-char limit; overrides recorded D1; no prompt). A `database_id` already written in `wrangler.jsonc` is used as-is — `auto` matches by NAME, and a config that binds a database renamed in the account must not be rebound to a fresh empty one |
 | `--d1-id <uuid>` | use a specific existing D1 by id (overrides recorded D1; mutually exclusive with `--d1-auto`) |
 | `--skip-schema` | never apply `dist/schema.sql`; conflicts with `--schema=apply` |
 | `--schema=apply` | force-apply `dist/schema.sql`, even when the D1 has tables |
@@ -183,7 +183,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 - Non-TTY with neither `--mode` nor `--d1-*` → defaults to **mode 1 (build only)**, never touching Cloudflare.
 - `--name` alone is not a cloud mode: without `--mode 2|3` or a D1 flag it falls into mode 1 and is **rejected**, because build-only does not touch `wrangler.jsonc`.
 - A D1 flag without `--mode` on a non-TTY (or with `--yes`) implies **mode 2** — database only, no deploy.
-- Mode 2/3 on a non-TTY with no D1 flag → reuses the recorded D1, otherwise behaves like `--d1-auto`.
+- Mode 2/3 on a non-TTY with no D1 flag → reuses the recorded D1; with no recording, it uses the `database_id` already written in `wrangler.jsonc`; only a placeholder or a config without a D1 entry falls back to `--d1-auto`.
 - `--plan` never prompts: missing mode uses mode 1 (D1 flag → mode 2), and the worker name is the resolved default.
 
 ### When the tool refuses
