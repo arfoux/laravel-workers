@@ -179,14 +179,21 @@ worker broke".
 
 ## Re-running this
 
+The two scripts this audit used ship in `tools/audit/` so the numbers can be reproduced without
+rebuilding them:
+
 ```bash
-# 1. the sweep (both sides), then the normalised tally
-node sweep.mjs https://lw-showcase.nietzsc.de live ; node compare2.mjs
-# 2. the oracle
-php artisan serve --host=127.0.0.1 --port=8300        # in the app
-# 3. the build and the plan
-node bin/laravel-workers.mjs build ; node bin/laravel-workers.mjs deploy --plan --mode 3 --d1-auto
+# the app's own route list, then both sides
+php artisan route:list --json > /tmp/routes.json
+node tools/audit/sweep.mjs --routes /tmp/routes.json --base https://lw-showcase.nietzsc.de --out .audit/live \
+  --extras /nonexistent-route-for-404,/api/posts,/api/posts/1
+php artisan serve --host=127.0.0.1 --port=8300          # in the app; APP_DEBUG=false for error pages
+node tools/audit/sweep.mjs --routes /tmp/routes.json --base http://127.0.0.1:8300 --out .audit/oracle \
+  --extras /nonexistent-route-for-404,/api/posts,/api/posts/1
+node tools/audit/compare.mjs --live .audit/live --php .audit/oracle \
+  --origin A=https://lw-showcase.nietzsc.de --origin B=http://127.0.0.1:8300
 ```
 
 Two cautions for the next run: a GET sweep **writes** on this app (`/data/writes` inserts a
-row), and the local PHP server needs `APP_DEBUG=false` if error pages are to be compared.
+row), so either exclude it from the routes file or expect the `posts` count to move; and the
+local PHP server needs `APP_DEBUG=false` if error pages are to be compared.
