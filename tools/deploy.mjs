@@ -37,6 +37,7 @@ import {
   accountLabel, readCloudIdentity, selectAccount,
 } from './cloud-account.mjs';
 import { readState, writeState, emptyState } from './lw-state.mjs';
+import { sourceIdentity, sourceLabel } from './git-sha.mjs';
 import { NPX, runCapture, runInherit } from './run.mjs';
 
 // Re-exported for the unit tests and for callers that edited the old module.
@@ -226,6 +227,12 @@ function persistDeployState(why) {
         schemaAppliedAt: chosen.d1.schemaAppliedAt || null,
         schemaHash: chosen.d1.schemaHash || null,
       },
+      // Provenance: which source was built and which Worker version holds it. The
+      // patch is explicit, so a field missing here never reaches the file.
+      sourceSha: chosen.sourceSha || null,
+      sourceDirty: typeof chosen.sourceDirty === 'boolean' ? chosen.sourceDirty : null,
+      toolVersion: chosen.toolVersion || null,
+      versionId: chosen.versionId || null,
     });
   } catch (e) {
     fail(`${why ? why + ' — ' : ''}could not write lw-state.json: ${e.message}`, 2);
@@ -763,13 +770,43 @@ async function d1ApplySchema(dbName, d1Id) {
   console.log(`→ schema ${schemaRel} applied to "${dbName}"`);
 }
 
+// Provenance: the ARTIFACT knows which commit it was built from
+// (dist/build-info.json, written by build.mjs). Asking git here instead would be
+// wrong when `deploy` reuses a cached build — the tree may have moved on since.
+// A dist that predates build-info.json falls back to git, and a tree git cannot
+// read stays null rather than becoming a guess.
+function artifactSource() {
+  try {
+    const info = JSON.parse(readFileSync(join(appDir, 'dist', 'build-info.json'), 'utf8'));
+    if (info && info.source) return { source: info.source, toolVersion: info.toolVersion || null };
+  } catch {
+    /* no build-info.json: an older dist, or a dist this toolchain did not write */
+  }
+  return { source: sourceIdentity(appDir), toolVersion: null };
+}
+
 async function doDeploy() {
-  const res = wranglerCapture(['deploy'], { cwd: appDir });
+  // The source rides on the Worker VERSION itself (`--tag`), so Cloudflare's own
+  // `wrangler deployments list` answers "which commit is live" — its Source column
+  // read `Unknown (deployment)` before (docs/EVIDENCE.md finding 4). The message
+  // carries the same identity plus the tool version, and a dirty tree says so.
+  const { source, toolVersion } = artifactSource();
+  const tag = source && source.sha ? source.sha.slice(0, 12) : null;
+  const args = ['deploy'];
+  if (tag) {
+    args.push('--tag', tag, '--message', `${sourceLabel(source)} · laravel-workers ${toolVersion || '?'}`);
+  }
+  const res = wranglerCapture(args, { cwd: appDir });
   if (res.error) fail(`wrangler deploy: ${res.error.message}`, 1);
   if (res.status !== 0) {
     fail('wrangler deploy failed:\n' + (res.stderr || res.stdout).slice(0, 800), 1);
   }
-  const url = (res.stdout + res.stderr).match(/https:\/\/[a-z0-9][a-z0-9.-]*\.workers\.dev/i);
+  const out = res.stdout + res.stderr;
+  const url = out.match(/https:\/\/[a-z0-9][a-z0-9.-]*\.workers\.dev/i);
+  // `Current Version ID: <uuid>` — recording it is what lets `status` name the
+  // version Cloudflare shows, and what a rollback would name.
+  const version = out.match(/Current Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  chosen.versionId = version ? version[1] : null;
   return url ? url[0] : null;
 }
 
@@ -1511,12 +1548,23 @@ async function main() {
 
   // --- 8. persist state ---------------------------------------------------
   // Mode 1 is intentionally a pure build: it must not rewrite deploy state.
-  if (mode >= 2) persistDeployState();
+  if (mode >= 2) {
+    // The provenance the artifact carries (dist/build-info.json) is recorded here
+    // too, so `status` answers "which commit is live" without a git checkout.
+    const { source, toolVersion } = artifactSource();
+    chosen.sourceSha = (source && source.sha) || null;
+    chosen.sourceDirty = source && typeof source.dirty === 'boolean' ? source.dirty : null;
+    if (toolVersion) chosen.toolVersion = toolVersion;
+    persistDeployState();
+  }
   if (rl) rl.close();
 
+  const sourceNote = chosen.sourceSha
+    ? ` · ${sourceLabel({ sha: chosen.sourceSha, dirty: chosen.sourceDirty })}`
+    : '';
   const summary = mode === 3
-    ? (chosen.workerUrl ? `deployed → ${chosen.workerUrl}` : 'deployed (URL not detected)')
-    : mode === 2 ? 'built + database ready' : 'built';
+    ? (chosen.workerUrl ? `deployed → ${chosen.workerUrl}${sourceNote}` : `deployed (URL not detected)${sourceNote}`)
+    : mode === 2 ? `built + database ready${sourceNote}` : 'built';
   console.log(`\n✔ ${summary}`);
 }
 

@@ -981,3 +981,36 @@ test('--plan --check reports an old Wrangler as a blocking issue without mutatin
   assert.equal(app.readConfig(), beforeConfig);
   assert.equal(existsSync(app.statePath), true);
 });
+
+test('a real deploy records the source identity and tags the version with it', (t) => {
+  const app = makeApp(t, {
+    state: stateFor({ schemaHash: sha256(SCHEMA) }),
+    databases: [{ uuid: DB_ID, name: 'my-app-db', tables: 2 }],
+  });
+  // The provenance the BUILD wrote: deploy reads it from the artifact (a cached
+  // build may be older than HEAD, so asking git at deploy time would lie).
+  writeFileSync(join(app.dir, 'dist', 'build-info.json'), JSON.stringify({
+    toolVersion: '0.5.0',
+    builtAt: '2026-11-14T09:00:00.000Z',
+    source: { sha: '0123456789abcdef0123456789abcdef01234567', dirty: true },
+  }, null, 2) + '\n', 'utf8');
+  const argsLog = join(app.dir, 'deploy-args.json');
+
+  const result = app.run(['--mode', '3', '--yes', '--d1-auto', '--name', 'my-app'], {
+    FAKE_DEPLOY_ARGS_LOG: argsLog,
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  // wrangler was asked to put the identity on the version itself
+  const tagged = JSON.parse(readFileSync(argsLog, 'utf8'));
+  assert.equal(tagged.tag, '0123456789ab');
+  assert.equal(tagged.message, '0123456 (+uncommitted changes) · laravel-workers 0.5.0');
+
+  // ...and the same identity is in the state, with the version it created
+  const state = app.readState();
+  assert.equal(state.sourceSha, '0123456789abcdef0123456789abcdef01234567');
+  assert.equal(state.sourceDirty, true);
+  assert.equal(state.toolVersion, '0.5.0');
+  assert.equal(state.versionId, '9f1d0d1e-2b3c-4d5e-8f90-123456789abc');
+  assert.match(result.stdout, /deployed → .* · 0123456 \(\+uncommitted changes\)/);
+});
