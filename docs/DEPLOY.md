@@ -250,6 +250,12 @@ Cloudflare's null-body 404. An app whose config predates it gets a DECLARED find
 exact line to add, and an app that ships its own `public/404.html` keeps its file — see
 `COMPILED.md` §6 item 20 and `docs/EVIDENCE.md` finding 2.
 
+A prerendered page ships under both spellings it is reachable as (`about.html` and
+`about/index.html`): Cloudflare's default `html_handling` serves the flat file for `/about` and the
+folder file for `/about/`, which is the pair PHP answers `200` for — one file alone would make one
+of the two a `307` (`tools/snapshot-paths.mjs` is the rule; the `registry.json` `static` value an
+operator names gains its twin automatically).
+
 ### CI: the verdict people read, and the merge pipeline
 
 If the app lives on GitHub, `build --strict` alone answers "did it compile"; it does
