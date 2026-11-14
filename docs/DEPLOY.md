@@ -190,6 +190,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 
 - `deploy` not run from a Laravel app root (no `artisan`) → fails before prompting.
 - `lw-state.json` is unreadable/invalid or has a future `schemaVersion` → `deploy` stops; `status`/`doctor` report it and exit 2.
+- **Never `wrangler d1 delete <name>` on an app whose `wrangler.jsonc` binds a different `database_id`.** `wrangler` resolves the name against the configured binding, so the delete removes the database the app is *using* while echoing the config's name. Measured 2026-11-14: deleting the empty `lw-showcase-db` removed the bound `033e10f8` — which the account listed under another name — and the live app answered `error 1101`. Check `wrangler d1 info <uuid>` and the account's own name before any destructive D1 command.
 - `--mode` outside 1/2/3 → `invalid mode`.
 - `--mode` together with `--deploy`/`--db` → `use either --mode or --deploy/--db, not both`.
 - `--name` with mode 1 → fails; build-only never changes `wrangler.jsonc`.

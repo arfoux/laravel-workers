@@ -224,16 +224,46 @@ already records. The invocation tier is untouched: both names are plain assets, 
 of lying, which is right; `501`/`503` would say "the edge is not configured" rather than "the
 worker broke".
 
+**Reviewed 2026-11-14 — kept.** "`500` plus a named env var" is the repo-wide rule for a
+missing binding, not a `glide` accident: 13 response sites in 12 `ports/packages/` files
+(`apple-signin`, `cashier-paddle`, `cashier-stripe`, `dompdf` ×2, `firebase-php-jwt`,
+`glide`, `lemonsqueezy`, `midtrans-webhook`, `mollie-webhook`, `webhook-client`,
+`webhook-server`, `xendit-webhook`), plus the `throw` path in `auth0`, `echo`,
+`fortify-confirmation` and `jwt-auth`. The `501` in `tools/ports.mjs:28` marks a *stub
+handler* — a different meaning. Changing `glide` alone would leave twelve sites drifted
+silently, so a `503` here is a one-rule-wide decision (all 13 sites and the tests that pin
+them), not a sweep edit.
+
 **7 — the schedule is compiled, but nothing verifies it.** `dist/cron.json` for this app is
 `{"crons": [], "events": []}` (the app declares no schedule on purpose), while
 `wrangler.jsonc` declares `crons: ["*/5 * * * *"]`. `wrangler dev` + `POST
 /cdn-cgi/local/scheduled` answers 200 but the app has no observable cron side-effect, so the
 `scheduled` handler's behaviour is **NOT VERIFIED**.
 
+## Verified: the guided deploy end-to-end (2026-11-14)
+
+`laravel-workers deploy --mode 3 --yes --skip-schema` ran to completion on this Windows
+machine against `lw-showcase` (75.6 s): account detection, `wrangler d1 list`, the D1
+binding check, build, `wrangler deploy`, then `lw-state.json` — `toolVersion 0.5.0`,
+`sourceSha e330b2e`, `versionId cea8269b-7e94-46ee-8813-42eba9b7642e`, `databaseId
+6870bddd-8549-4c3e-b423-ebe6f5b3ad9a` — and the binding step printed
+`wrangler.jsonc: already points at "6870bddd-…" — left as-is` rather than resolving a
+name. Two defects surfaced by that run and were fixed the same day: the Windows `npx`
+invocation (the executable was quoted into a `Cannot find module …npm-prefix.js`
+failure; PR #178) and the name-based D1 selection that created an empty database in
+place of the bound one (PR #179).
+
+The schema hash is deliberately absent from that state: the schema was applied with
+`wrangler d1 execute DB --remote --file=dist/schema.sql` before the run, so `deploy`
+recorded no hash for it. `dist/schema.sql` is not idempotent (25 `CREATE TABLE`, one
+`IF NOT EXISTS`), so the honest state is "tables exist, no recorded hash": a later
+`--yes` run without `--skip-schema` stops on `unknown-schema`, which is the documented
+way to state intent.
+
 ## NOT VERIFIED (stated, not implied)
 
-- `deploy --mode 3` end-to-end on this machine (production would be replaced; the live bundle
-  came from `wrangler deploy` on 2026-11-13).
+- ~~`deploy --mode 3` end-to-end on this machine~~ — **verified 2026-11-14**, see
+  "Verified: the guided deploy end-to-end" above.
 - The `5 ms CPU p50 / 41 ms p95` numbers for **this** app — they come from the CPU probe, not
   from a measurement of `lw-showcase`.
 - The `scheduled` handler's effect (finding 7).
