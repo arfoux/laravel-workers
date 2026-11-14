@@ -217,9 +217,10 @@ jobs:
           nf=$(curl -s -o /tmp/nf.html -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/nonexistent-route-for-404)
           echo "unknown-path=$nf bytes=$(wc -c < /tmp/nf.html)"
           if [ "$nf" != "404" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
-          if ! cmp -s /tmp/nf.html e2e-app/dist/public/404.html; then
+          # this step already cd'd into the app: the path is relative to it
+          if ! cmp -s /tmp/nf.html dist/public/404.html; then
             echo "the unknown-path 404 body is not the app's 404 page:"
-            wc -c /tmp/nf.html e2e-app/dist/public/404.html
+            wc -c /tmp/nf.html dist/public/404.html
             exit 1
           fi
           kill %1 2>/dev/null || true
