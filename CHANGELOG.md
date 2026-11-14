@@ -2,6 +2,30 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### Two D1 result shapes the ports read wrong: a 500 and a silent zero
+
+Cloudflare D1's `run()` result is `{ success, results, meta: { duration, changes, last_row_id, rows_read, rows_written } }`
+— the counts live under `meta`, exactly as this repo's own normaliser reads them (`kernel/db.mjs`). Two ports
+read something else, and every test fake invented that field, so the suites stayed green while production
+did not:
+
+- `ports/packages/sanctum.mjs` read `reserved.meta?.lastInsertRowid ?? reserved.lastInsertRowid`. Neither name
+  exists in D1's result, so the id stayed `undefined` and the follow-up `UPDATE ... WHERE id = ?` bound
+  `undefined` — `POST /sanctum/token` answered **500** instead of `201`.
+- `ports/packages/permission.mjs` (4 sites) and `ports/packages/tags.mjs` (2) read `res.changes`, which D1 never
+  sends: `POST assign-role` always answered `{ assigned: 0 }`, and attaching tags always reported 0 changes.
+
+Both now use the convention the rest of the fleet already used — `res.last_row_id ?? res.meta?.last_row_id`
+and `res?.meta?.changes ?? res?.changes ?? 0`. Found by replacing the hand-written SQLite fakes in
+`tools/tests/` with one thin adapter over real SQLite, so a fake can no longer accept a field the engine
+does not return.
+
+| change | why |
+|---|---|
+| `ports/packages/permission.mjs` ×4, `ports/packages/tags.mjs` ×2 → `res?.meta?.changes ?? …` | measured against the D1-shaped result: `assigned: 0` where the suite asserts `1` |
+| `ports/packages/sanctum.mjs:114` → `reserved.last_row_id ?? reserved.meta?.last_row_id` | the old names made the id `undefined`; the binding error showed up as a 500 from `POST /sanctum/token` |
+| `tools/tests/`: 13 inline fakes + the shared 227-line fake → one 126-line adapter over `node:sqlite` | ~1,600 lines of hand-written SQL parsing deleted; the fake now shares the engine production uses |
+
 ### The two unread catalogues leave the shipped package
 
 `docs/PACKAGES-RESEARCH.md` (1,052 lines) and `docs/packages-data-export.md` (134) were hand-written
