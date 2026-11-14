@@ -161,7 +161,237 @@ port.
 
 ## The shape a handler answers
 
-See the README's *A route port, in practice* section. In short: `ctx.request` from the router is the
+See *A route port, in practice* below. In short: `ctx.request` from the router is the
 compiled kernel `Request` whose accessors are METHODS; every fleet handler starts with
 `ctx = normalizePortCtx(ctx)`, and `tools/tests/packages-wiring.test.mjs` proves the fleet answers on
 that ctx (not a hand-built one).
+
+## Writing your own port (guard, route, middleware) and worked examples
+
+Moved out of [`README.md`](../README.md). A **guard port** answers `auth()->user()` for a guard
+driver the app registers itself; a **route port** answers a route whose body the transpiler cannot
+compile; a **middleware port** runs around a compiled handler. All three are declared in
+`registry.json` and copied into `dist/src/ports/` verbatim.
+
+### A guard port, in practice (the recipe)
+
+The refusal is **config-level**, decided before any route is compiled, so `ignore`
+on the guarded routes does not help — `ignore` answers "who serves this route",
+and the question here is "what does `auth()->user()` mean". Two paths end green:
+
+1. **Declare the port.** `registry.json` at the app root
+   (`{"guards": {"seal": "seal-guard"}}`) plus `ports/seal-guard.mjs`. The build
+   resolves the slug, refuses an unknown slug or a port without `user()`, emits
+   `dist/src/guard-ports.generated.mjs` with a static `import` per declaration
+   (never a dynamic module load — the Workers runtime forbids it) and copies the
+   port file verbatim into `dist/src/ports/`. A bare import inside the port is
+   resolved by Wrangler when it bundles `dist/src/worker.mjs`, so declare that
+   dependency in the app's `package.json`.
+2. **Stop declaring the guard** — move the flow off `auth.guards` (a signed
+   cookie read in your own middleware). The refusal disappears with the
+   declaration; the PHP `Auth::extend()` registration can stay for local dev and
+   the test oracle, which is the path the fixture proves.
+
+The port module is exactly this shape:
+
+```js
+// ports/seal-guard.mjs
+export default {
+  async user(ctx) {
+    const id = await readToken(ctx.request, ctx.app.env.SEAL_KEY);
+    return id === null ? null : ctx.app.models.User.find(ctx.app.db, id);
+  },
+};
+```
+
+`user(ctx)` is required; `validate` / `login` / `logout` / `userById` are
+optional. `ctx` is
+`{ request, guard, driver, config, app: { config, db, models, env, session, cookieJar } }`
+(`kernel/auth.mjs`, `PortedGuard.portCtx`) — the app's bindings live under
+`ctx.app.*`, never at the top level, and the request object is the compiled
+request (its cookies through the same accessor the kernel's own session guard
+uses). Only the driver is yours: `auth:seal` still resolves through the compiled
+`Authenticate`, and `auth()->user()`, the `guest` middleware, 401/redirect and
+`Auth::viaRemember` remain compiled. `PortedGuard` calls the port **at most once
+per guard per request** and drops the memo on `setRequest()`; a port that throws
+keeps throwing (a failure must never degrade into "no user"), a port that answers
+`null` is a guest. `kernel/tests/http.test.mjs` drives that whole pipeline
+against a real port.
+
+`npx laravel-workers build --scaffold` writes a stub port (answering `501`) for
+every route that needs one — a guard port still has to be written by hand.
+
+**Do not hand-roll the token format the port verifies.** Implement the provider's
+`SPEC` and gate it with its official test vectors in both directions (PHP-minted
+token unseals in JS, and the reverse), or use the provider's SDK. For sealed
+`stseal.v1` cookies there is a worked example — keyring from the Worker bindings,
+fail-closed `unsealOrNull`, rotation — in the `stateless-seal` recipe:
+[`docs/recipes/laravel-workers.md`](https://github.com/arfoux/stateless-seal/blob/main/docs/recipes/laravel-workers.md).
+
+### A route port, in practice (the recipe)
+
+A **route port** is the other half of the guard port: a route whose body the
+transpiler cannot compile (or that you simply prefer to write in JS) is answered
+by a module instead of a compiled handler. Declare it in `registry.json`:
+
+```json
+{ "ports": { "/reports/{id}": "reports", "/reports": "reports" } }
+```
+
+The value is a **slug**, resolved to `<LW_PORTS_DIR>/<slug>.mjs` (the build copies
+it verbatim into `dist/src/ports/`); `LW_PORTS_DIR` defaults to the app's `ports/`.
+One module may answer several routes — the router hands it the same `ctx` for each,
+so dispatch on `ctx.request.path()` (see below). `--strict` fails if a declared
+route is not in `route:list`, or if a slug's file is missing.
+
+**The request object is the compiled kernel `Request`, and its accessors are
+METHODS.** A port that reads `ctx.request.url`, `ctx.request.method` or `ctx.body`
+as *properties* gets `undefined` and silently falls back to its own default — the
+classic trap. Either read the methods:
+
+```js
+export default async function handler(ctx, env) {
+  const id    = ctx.params.id;               // {param} captures only
+  const m     = ctx.request.method();        // 'GET' | 'POST' | ...
+  const body  = await ctx.request.json();    // parsed JSON (or null)
+  const q     = ctx.request.query('q');      // one query-string value
+  return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, m }) };
+}
+```
+
+or call `normalizePortCtx(ctx)` (from `kernel/packages/port-ctx.mjs`) at the top,
+which maps `ctx.request.method/url/pathInfo/header/query/json` onto `ctx.method`,
+`ctx.path`, `ctx.query`, `ctx.header`, `ctx.body` so a port written against the
+simpler shape works unchanged:
+
+```js
+import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+export default async function handler(ctx, env) {
+  ctx = normalizePortCtx(ctx);
+  return { status: 200, headers: {}, body: JSON.stringify({ path: ctx.path }) };
+}
+```
+
+Handlers return `{ status, headers, body }` (async). `env` is the Worker's
+bindings (`env.DB`, `env.APP_KEY`, ...). A port that answers a Wrangler-bundled
+import must not rely on the path-segment form; `--scaffold` writes a `501` stub
+for every route that needs a port.
+
+The package ships **reference ports** for the popular packages under
+`ports/packages/*.mjs`. Copy the ones you need into your app's ports dir and map
+their routes; each DB-backed port exports `ensureSchema` so `dist/schema.sql` can
+create its D1 tables. [`registry.example.json`](registry.example.json) maps the
+whole fleet — **47 route-port slugs → 81 route paths** — and
+[`docs/PACKAGE-PORTS.md`](docs/PACKAGE-PORTS.md) lists the secrets each handler
+reads and the route collisions (`/broadcasting/auth`, answered by both `pusher`
+and `reverb`). `tools/tests/packages-wiring.test.mjs` builds a real app with a
+subset wired and drives those routes on the router's own `ctx` — the guard against
+a port that only passes its unit test.
+
+#### A middleware port (runs around a handler)
+
+A **middleware port** is a route port that runs BEFORE the route's own handler
+instead of replacing it — the seam for a cross-cutting concern the transpiler
+cannot compile (a URL-locale redirect, a response cache). Declare it under
+`middlewarePorts`:
+
+```json
+{ "middlewarePorts": { "/localization": ["localization"] } }
+```
+
+The value is a **list of slugs** (ordering is explicit), resolved the same way
+`ports` slugs are. Each runs in order on the SAME `ctx` the handler receives, so
+state a port sets (`ctx.locale = 'es'`) is visible to the compiled controller
+behind it. A port that returns `null`/`undefined` **continues** the chain; a
+response (`{ status, headers, body }`) **short-circuits** it — the `localization`
+port's `302` fires before the route handler ever runs, and a response-cache port
+answers a cache hit the same way.
+
+The route still needs a request-time handler of its own (a compiled controller or
+a `ports` entry). `--strict` refuses a `middlewarePorts` route with none: a port
+declared for a snapshot or unhandled route would never run (the asset bundle
+answers first), which is the silent no-op the seam exists to erase.
+
+#### The fleet, by category
+
+| Category | Ports (`ports/packages/*.mjs`) |
+|---|---|
+| **Auth & identity** | `sanctum`, `sanctum-spa-cookie`, `passport-oauth`, `fortify-confirmation`, `fortify-two-factor`, `laravel-socialite-redirect`, `laravel-socialite-callback`, `jwt-auth` (`/auth/jwt/login`, `/auth/jwt/user`), `firebase-php-jwt` (`/auth/firebase/verify`), `auth0` (`/auth/auth0/callback`) |
+| **spatie** | `spatie-sitemap`, `spatie-settings`, `spatie-data`, `spatie-query-builder`, `spatie-translatable`, `spatie-enum`, `spatie-model-states`, `sluggable`, `tags`, `permission`, `activitylog` |
+| **Search** | `scout-meilisearch`, `scout-algolia`, `site-search` (`GET /site-search`) |
+| **Billing webhooks** | `cashier-stripe`, `cashier-paddle`, `lemonsqueezy` |
+| **Realtime** | `pusher`, `reverb` |
+| **Notifications** | `mailgun-mail`, `postmark-mail`, `slack-notification`, `twilio-sms`, `telegram-notification`, `discord-notification`, `expo-notification`, `fcm-notification`, `webpush-notification`, `onesignal-notification` |
+| **AI & agents** | `ai-sdk` (`POST /ai/chat` — the `laravel/ai` Prism chat/tool-loop path), `mcp` (`POST /mcp` — Model Context Protocol server) |
+| **Observability & ops** | `pulse` (`GET /pulse` dashboard + `POST /pulse/record`), `bugsnag` (`POST /bugsnag/notify`), `webhook-client` (`POST /webhooks/{name}`), `webhook-server` (`POST /webhook-server/send`) |
+| **Media & export** | `glide` (`GET /img/{path}`), `maatwebsite-excel` |
+| **Kernel-level (wired by the build, not the registry)** | `csp` (CSP headers), `honeypot` (bot trap), `response-cache`, `menu`, `navigation`, `html`, `options`, `seo`, `gtm`, `fcm-oauth`, `webpush-crypto`, `streaming-runtime` |
+
+Beyond the route ports above, `kernel/packages/*.mjs` carries the shared building
+blocks the fleet composes (`port-ctx`, `notify-http`, `ai`, `oauth`, `socialite`,
+`broadcast`, `token`, `totp`, `signedurl`, `webhook`, `validate`, …).
+
+#### Three ports in practice
+
+**Telegram notification** — `POST /notify/telegram`, a direct transport swap of
+`laravel-notification-channels/telegram`'s Guzzle call to the Bot API. Secret:
+`TELEGRAM_BOT_TOKEN`.
+
+```js
+// registry.json
+{ "ports": { "/notify/telegram": "telegram-notification" } }
+
+// the client POSTs the generic notification shape; `to` is the target chat_id
+const res = await fetch(`${worker}/notify/telegram`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ to: 123456789, text: 'Deploy finished', parse_mode: 'Markdown' }),
+});
+// → Telegram's own {"ok":true,...} envelope, mapped 1:1 to {status,headers,body}
+```
+
+**AI chat** — `POST /ai/chat`, the non-streaming `generate()`/`chat()` path of
+`laravel/ai` (the Prism SDK) including the tool-call loop. The provider key is
+chosen per model (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` /
+`GROQ_API_KEY`); the conversation is persisted best-effort to D1. Streaming (SSE)
+is **not** ported — that is the recorded runtime gap.
+
+```js
+// registry.json
+{ "ports": { "/ai/chat": "ai-sdk" } }
+
+const res = await fetch(`${worker}/ai/chat`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: 'Summarise this changelog…' }],
+    tools: [{ name: 'search_docs', description: '…', parameters: { /* JSON schema */ } }],
+  }),
+});
+// → the completion; tool_calls are dispatched to the compiled tool classes and
+//   fed back until the model finalises
+```
+
+**Pulse** — `GET /pulse` renders the dashboard summary, `POST /pulse/record`
+records one entry, both over the D1 `pulse_entries`/`pulse_aggregates` tables the
+port's `ensureSchema` creates.
+
+```js
+// registry.json
+{ "ports": { "/pulse": "pulse", "/pulse/record": "pulse" } }
+
+// record (a recorder, or your own middleware):
+await fetch(`${worker}/pulse/record`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ type: 'request', path: '/posts', status: 200, duration_ms: 12 }),
+});                                        // → 201 { entry: { id, ... } }
+
+// dashboard:
+const dash = await (await fetch(`${worker}/pulse?range=60`)).json();
+// → { requests_count, errors_count, avg_duration, top_routes, per_minute }
+```
+
+---
+
