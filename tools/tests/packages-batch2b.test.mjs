@@ -1,205 +1,18 @@
 // tools/tests/packages-batch2b.test.mjs — real tests for the batch-2b Spatie
 // data/utility cluster: query-builder, translatable, model-states, enum, sitemap.
 //
-// Drives each handler with a fake in-memory D1 (env.DB implementing
-// prepare(sql).bind(...).all()/first()/run() over a row map) supporting exactly
-// the SQL subset these handlers emit (CREATE TABLE, INSERT [ON CONFLICT],
-// UPDATE, DELETE, SELECT with =/IN/LIKE/json_extract, ORDER BY).
+// Drives each handler against real SQLite through the shared
+// `tools/tests/_fake-d1.mjs`. The ports own their DDL (`ensureSchema`), so the
+// ON CONFLICT / IN / LIKE / json_extract / ORDER BY semantics are SQLite's.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import qbHandler, { parseQueryBuilderRequest, buildSql } from '../../ports/packages/spatie-query-builder.mjs';
+import qbHandler, { parseQueryBuilderRequest, buildSql, ensureSchema } from '../../ports/packages/spatie-query-builder.mjs';
 import trHandler, { getTranslation } from '../../ports/packages/spatie-translatable.mjs';
 import msHandler, { allowedTargets, canTransitionTo } from '../../ports/packages/spatie-model-states.mjs';
 import enHandler, { defineEnum } from '../../ports/packages/spatie-enum.mjs';
 import smHandler, { renderSitemapXml } from '../../ports/packages/spatie-sitemap.mjs';
-
-// ---------------------------------------------------------------------------
-// Fake D1 — a small SQL interpreter for the statements this cluster emits.
-// ---------------------------------------------------------------------------
-class FakeD1 {
-  constructor() { this.tables = new Map(); this.autoinc = new Map(); }
-  _t(name) {
-    if (!this.tables.has(name)) this.tables.set(name, []);
-    return this.tables.get(name);
-  }
-  prepare(sql) {
-    const self = this;
-    const stmt = {
-      _sql: sql.trim().replace(/;\s*$/, ''),
-      _params: [],
-      bind(...p) { this._params = p; return this; },
-      async run() { return self._exec(this._sql, this._params); },
-      async all() { return self._exec(this._sql, this._params); },
-      async first() {
-        const r = await self._exec(this._sql, this._params);
-        return (r && Array.isArray(r.results)) ? (r.results[0] ?? null) : null;
-      },
-    };
-    return stmt;
-  }
-  _exec(sql, params) {
-    const u = sql.toUpperCase();
-    if (u.startsWith('CREATE TABLE')) return { changes: 0 };
-    if (u.startsWith('INSERT')) return this._insert(sql, params);
-    if (u.startsWith('UPDATE')) return this._update(sql, params);
-    if (u.startsWith('DELETE')) return this._delete(sql, params);
-    if (u.startsWith('SELECT')) return this._select(sql, params);
-    throw new Error(`FakeD1: unsupported: ${sql}`);
-  }
-  _insert(sql, params) {
-    const m = sql.match(/INSERT\s+INTO\s+"?(\w+)"?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]*)\)([\s\S]*)/i);
-    if (!m) throw new Error(`FakeD1: bad INSERT: ${sql}`);
-    const table = m[1];
-    const cols = m[2].split(',').map((c) => c.trim().replace(/"/g, ''));
-    const valueCount = m[3].split(',').length;
-    const tail = m[4] || '';
-    const rows = this._t(table);
-    // conflict target (only loc used here)
-    const cm = tail.match(/ON CONFLICT\s*\(?(\w+)\)?/i);
-    const conflictCol = cm ? cm[1] : null;
-    let row = {};
-    let pi = 0;
-    for (const c of cols) {
-      const v = params[pi++];
-      row[c] = v === undefined ? null : v;
-    }
-    if (conflictCol) {
-      const existing = rows.find((r) => r[conflictCol] === row[conflictCol]);
-      if (existing) {
-        for (const c of cols) {
-          if (c === conflictCol) continue;
-          // SET uses excluded.<col> -> take from the newly supplied row
-          if (tail.toLowerCase().includes(`excluded.${c}`)) existing[c] = row[c];
-        }
-        return { changes: 1, last_row_id: existing.id, meta: { changes: 1 } };
-      }
-    }
-    if (!('id' in row)) {
-      const id = (this.autoinc.get(table) || 0) + 1;
-      this.autoinc.set(table, id);
-      row.id = id;
-    }
-    rows.push(row);
-    return { changes: 1, last_row_id: row.id, meta: { changes: 1, last_row_id: row.id } };
-  }
-  _update(sql, params) {
-    const m = sql.match(/^UPDATE\s+"?(\w+)"?\s*SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+))?$/i);
-    if (!m) throw new Error(`FakeD1: bad UPDATE: ${sql}`);
-    const rows = this._t(m[1]);
-    let pi = 0;
-    const sets = m[2].split(',').map((s) => s.trim()).map((s) => {
-      const i = s.indexOf('=');
-      return { col: s.slice(0, i).trim(), expr: s.slice(i + 1).trim() };
-    });
-    const assign = {};
-    for (const s of sets) {
-      assign[s.col] = s.expr === '?' ? params[pi++] : evalLiteral(s.expr);
-    }
-    const where = m[3] ? compileWhere(m[3], params, pi) : () => true;
-    let changes = 0;
-    for (const r of rows) {
-      if (!where(r)) continue;
-      Object.assign(r, assign);
-      changes++;
-    }
-    return { changes, meta: { changes } };
-  }
-  _delete(sql, params) {
-    const m = sql.match(/^DELETE\s+FROM\s+"?(\w+)"?(?:\s+WHERE\s+([\s\S]+))?$/i);
-    if (!m) throw new Error(`FakeD1: bad DELETE: ${sql}`);
-    const rows = this._t(m[1]);
-    const where = m[2] ? compileWhere(m[2], params, 0) : () => true;
-    const before = rows.length;
-    const kept = rows.filter((r) => !where(r));
-    this.tables.set(m[1], kept);
-    return { changes: before - kept.length, meta: { changes: before - kept.length } };
-  }
-  _select(sql, params) {
-    const m = sql.match(/^SELECT\s+([\s\S]+?)\s+FROM\s+"?(\w+)"?([\s\S]*)$/i);
-    if (!m) throw new Error(`FakeD1: bad SELECT: ${sql}`);
-    const selectList = m[1].trim();
-    const rows = this._t(m[2]);
-    const rest = m[3] || '';
-    const wm = rest.match(/WHERE\s+([\s\S]+?)(?:\s+ORDER\s+BY\s+([\s\S]+))?$/i);
-    const orderClause = rest.match(/ORDER\s+BY\s+([\s\S]+)$/i);
-    let out = rows.slice();
-    if (wm) {
-      const pred = compileWhere(wm[1], params, 0);
-      out = out.filter(pred);
-    }
-    if (orderClause) {
-      const parts = orderClause[1].split(',').map((s) => s.trim().split(/\s+/));
-      out.sort((a, b) => {
-        for (const [col, dir] of parts) {
-          const av = a[col], bv = b[col];
-          if (av == null && bv == null) continue;
-          if (av == null) return -1;
-          if (bv == null) return 1;
-          if (av < bv) return dir && dir.toUpperCase() === 'DESC' ? 1 : -1;
-          if (av > bv) return dir && dir.toUpperCase() === 'DESC' ? -1 : 1;
-        }
-        return 0;
-      });
-    }
-    let mapped;
-    if (selectList === '*') {
-      mapped = out.map((r) => ({ ...r }));
-    } else {
-      const cols = selectList.split(',').map((c) => c.trim().replace(/"/g, ''));
-      mapped = out.map((r) => {
-        const o = {};
-        for (const c of cols) o[c] = r[c] ?? null;
-        return o;
-      });
-    }
-    return { results: mapped, meta: {} };
-  }
-}
-
-function evalLiteral(expr) {
-  if (/^datetime\(\s*'now'\s*\)$/i.test(expr)) return 'now';
-  const n = Number(expr);
-  return Number.isNaN(n) ? expr.replace(/^'|'$/g, '') : n;
-}
-
-// Compile a WHERE (AND-only) into a predicate. Consumes params starting at pi.
-function compileWhere(clause, params, startPi) {
-  const parts = clause.split(/\s+AND\s+/i);
-  let pi = startPi;
-  const preds = parts.map((raw) => {
-    const p = raw.trim();
-    let m;
-    if ((m = p.match(/^(\w+)\s*=\s*\?$/))) {
-      const col = m[1]; const val = params[pi++];
-      return (r) => r[col] === val || String(r[col]) === String(val);
-    }
-    if ((m = p.match(/^(\w+)\s*IN\s*\(([^)]*)\)$/i))) {
-      const col = m[1];
-      const n = m[2].split(',').length;
-      const vals = params.slice(pi, pi + n); pi += n;
-      return (r) => vals.includes(r[col]) || vals.map(String).includes(String(r[col]));
-    }
-    if ((m = p.match(/^(\w+)\s*LIKE\s*\?$/i))) {
-      const col = m[1]; const pat = params[pi++];
-      const rx = new RegExp('^' + escapeRx(pat).replace(/%/g, '.*').replace(/_/g, '.') + '$', 'i');
-      return (r) => rx.test(String(r[col] ?? ''));
-    }
-    if ((m = p.match(/^json_extract\(\s*(\w+)\s*,\s*'\$\.(\w+)'\s*\)\s*LIKE\s*\?$/i))) {
-      const col = m[1]; const locale = m[2]; const pat = params[pi++];
-      const rx = new RegExp('^' + escapeRx(pat).replace(/%/g, '.*').replace(/_/g, '.') + '$', 'i');
-      return (r) => {
-        let map = {};
-        try { map = r[col] ? JSON.parse(r[col]) : {}; } catch { map = {}; }
-        return rx.test(String(map[locale] ?? ''));
-      };
-    }
-    throw new Error(`FakeD1: unsupported WHERE clause: ${p}`);
-  });
-  return (r) => preds.every((f) => f(r));
-}
-
-function escapeRx(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+import { FakeD1 } from './_fake-d1.mjs';
 
 // ---------------------------------------------------------------------------
 // Context helper
@@ -246,7 +59,7 @@ test('query-builder: buildSql exact + partial + IN + sort + fields + allowlist',
 
 test('query-builder: handler filters, sorts, selects, appends', async () => {
   const e = env();
-  await qbHandler(makeCtx('POST', '/posts', { body: {} }), e).catch(() => {}); // ensureSchema via GET below
+  await ensureSchema(e); // the port's own DDL, applied before the direct seed
   // seed directly
   for (const p of [
     { title: 'Laravel tips', status: 'published', author_id: 1 },
@@ -270,6 +83,7 @@ test('query-builder: handler filters, sorts, selects, appends', async () => {
 
 test('query-builder: disallowed filter is ignored (returns unfiltered)', async () => {
   const e = env();
+  await ensureSchema(e);
   await e.DB.prepare('INSERT INTO posts (title, status, author_id) VALUES (?, ?, ?)').bind('A', 'draft', 1).run();
   await e.DB.prepare('INSERT INTO posts (title, status, author_id) VALUES (?, ?, ?)').bind('B', 'published', 1).run();
   const res = await qbHandler(makeCtx('GET', '/posts', { query: 'filter[secret_column]=x' }), e);

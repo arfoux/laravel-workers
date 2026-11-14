@@ -1,9 +1,10 @@
 // tools/tests/packages-auth-billing.test.mjs — the AUTH & BILLING cluster ports.
 //
-// Covers the four handlers with REAL logic under test against a fake in-memory D1
-// (`prepare(sql).bind(...).all()/first()/run()` over a table map) and a fake
-// `fetch` (captures requests, returns canned responses). Every assertion below is
-// driven by a signed webhook / a real handler call — no empty asserts.
+// Covers the four handlers with REAL logic under test against real SQLite through
+// the shared `tools/tests/_fake-d1.mjs` and a fake `fetch` (captures requests,
+// returns canned responses). The ports own their DDL (`ensureSchema`), so
+// ON CONFLICT / UNIQUE / ORDER BY semantics come from the engine. Every assertion
+// below is driven by a signed webhook / a real handler call — no empty asserts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
@@ -17,228 +18,10 @@ import {
   bearerToken,
   createPersonalAccessToken,
 } from '../../kernel/packages/token.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 // Node 18/20 lacks globalThis.crypto.subtle sign under some flags — pin webcrypto.
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
-
-// ---------------------------------------------------------------------------
-// Fake D1 — a tiny SQL subset over a table map, enough for every handler here.
-// Supports: CREATE TABLE IF NOT EXISTS, INSERT [OR IGNORE] ... ON CONFLICT DO
-// UPDATE, UPDATE .. SET .. WHERE k=v, DELETE .. WHERE k=v [AND k=v],
-// SELECT *|cols FROM t [WHERE k=v [AND k=v]] [ORDER BY col DESC],
-// SELECT COUNT(*) AS n, SELECT name FROM sqlite_master.
-// ---------------------------------------------------------------------------
-class FakeD1 {
-  constructor() {
-    this.tables = new Map();
-    this.seq = new Map();
-    this.uniq = new Map();
-  }
-  _t(name) {
-    if (!this.tables.has(name)) this.tables.set(name, []);
-    return this.tables.get(name);
-  }
-  // Parse a CREATE TABLE into its unique-key groups (PK + UNIQUE cols), so INSERT
-  // ... ON CONFLICT(col) and INSERT OR IGNORE behave like real SQLite.
-  _uniqueKeys(table, sql) {
-    if (this.uniq.has(table)) return this.uniq.get(table);
-    // Real DDL is often multi-line; collapse whitespace so `.*`/`\w+` match across lines.
-    const flat = String(sql).replace(/\s+/g, ' ');
-    const body = /CREATE TABLE IF NOT EXISTS \w+\s*\(([\s\S]*)\)/i.exec(flat);
-    const groups = [];
-    if (body) {
-      const defs = body[1].split(',').map((d) => d.trim()).filter(Boolean);
-      for (const d of defs) {
-        const pkInline = /^\w+\s+\w*.*PRIMARY KEY/i.test(d);
-        const m = /^PRIMARY KEY\s*\(([^)]*)\)/i.exec(d);
-        if (m) {
-          groups.push(m[1].split(',').map((c) => c.trim()));
-        } else if (pkInline) {
-          const col = /^\s*(\w+)/.exec(d);
-          if (col) groups.push([col[1]]);
-        } else {
-          const u = /^(\w+)\s+.*UNIQUE\b/i.exec(d);
-          if (u) groups.push([u[1]]);
-        }
-      }
-    }
-    this.uniq.set(table, groups);
-    return groups;
-  }
-  _nextId(name) {
-    const n = (this.seq.get(name) || 0) + 1;
-    this.seq.set(name, n);
-    return n;
-  }
-  prepare(sql) {
-    const self = this;
-    const norm = sql.replace(/\s+/g, ' ').trim();
-    let params = [];
-    const stmt = {
-      bind(...args) {
-        params = args;
-        return stmt;
-      },
-      async run() { return self._exec(norm, params); },
-      async all() { return { results: await self._query(norm, params) }; },
-      async first() {
-        const rows = await self._query(norm, params);
-        return rows.length ? rows[0] : null;
-      },
-    };
-    return stmt;
-  }
-  _where(row, where) {
-    return where.every(([k, v]) => String(row[k]) === String(v));
-  }
-  _colsValues(sql, params) {
-    const m = /INSERT(?: OR IGNORE)? INTO (\w+)\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)/i.exec(sql);
-    const table = m[1];
-    const cols = m[2].split(',').map((c) => c.trim());
-    const values = m[3].split(',').map((v) => v.trim());
-    const row = {};
-    cols.forEach((c, i) => {
-      if (values[i] === '?') row[c] = params.shift();
-      else row[c] = values[i].replace(/^'|'$/g, '');
-    });
-    return { table, row };
-  }
-  async _exec(sql, params) {
-    if (/^CREATE TABLE/i.test(sql)) {
-      const name = /CREATE TABLE IF NOT EXISTS (\w+)/i.exec(sql)[1];
-      this._t(name);
-      // Parse + cache unique-key groups from the REAL DDL here; later INSERTs then
-      // hit the cache-first guard in `_uniqueKeys` instead of matching against
-      // INSERT SQL (which has no CREATE TABLE and would cache an empty group list).
-      this._uniqueKeys(name, sql);
-      return { meta: { changes: 0 } };
-    }
-    if (/^INSERT/i.test(sql)) {
-      const { table, row } = this._colsValues(sql, params);
-      const rows = this._t(table);
-      const groups = this.uniq.get(table) || []; // cached from CREATE (see _exec)
-      const keyOf = (r, group) => group.map((c) => String(r[c])).join('\u0001');
-      const findConflict = (r) => {
-        for (const g of groups) {
-          if (g.some((c) => !(c in r) || r[c] === undefined)) continue;
-          const key = keyOf(r, g);
-          const hit = rows.find((existing) => keyOf(existing, g) === key);
-          if (hit) return hit;
-        }
-        return null;
-      };
-      if (/ OR IGNORE/i.test(sql)) {
-        if (findConflict(row)) return { meta: { changes: 0 } };
-        row.rowid = this._nextId(table);
-        if (!('id' in row)) row.id = row.rowid;
-        rows.push(row);
-        return { meta: { changes: 1, lastInsertRowid: row.rowid } };
-      }
-      const conflictTarget = /ON CONFLICT\s*\(([^)]*)\)/i.exec(sql);
-      const target = conflictTarget ? conflictTarget[1].split(',').map((c) => c.trim()) : null;
-      let existing = null;
-      if (target) existing = rows.find((r) => keyOf(r, target) === keyOf(row, target));
-      if (!existing && target) existing = findConflict(row);
-      if (existing) {
-        const setClause = /DO UPDATE SET (.*)$/i.exec(sql)[1];
-        const assignments = setClause.split(',').map((a) => a.trim());
-        for (const a of assignments) {
-          const eq = a.indexOf('=');
-          const col = a.slice(0, eq).trim();
-          const val = a.slice(eq + 1).trim();
-          const coalesce = /COALESCE\(excluded\.(\w+),\s*\w+\.\w+\)/i.exec(val);
-          const excludedRef = /^excluded\.(\w+)$/i.exec(val);
-          if (coalesce) existing[col] = row[coalesce[1]] ?? existing[col];
-          else if (excludedRef) existing[col] = row[excludedRef[1]] ?? existing[col];
-          else existing[col] = val === '?' ? params.shift() : val.replace(/^'|'$/g, '');
-        }
-        return { meta: { changes: 1, lastInsertRowid: existing.rowid } };
-      }
-      row.rowid = this._nextId(table);
-      if (!('id' in row)) row.id = row.rowid;
-      rows.push(row);
-      return { meta: { changes: 1, lastInsertRowid: row.rowid } };
-    }
-    if (/^UPDATE/i.test(sql)) {
-      const table = /UPDATE (\w+) SET/i.exec(sql)[1];
-      const rows = this._t(table);
-      const afterSet = sql.split(/ SET /i)[1];
-      const [setPart, wherePartRaw] = afterSet.split(/ WHERE /i);
-      const assignments = setPart.split(',').map((a) => a.trim());
-      // SET values come first in `params`, WHERE values after them.
-      let cursor = 0;
-      const setValues = {};
-      for (const a of assignments) {
-        const col = a.slice(0, a.indexOf('=')).trim();
-        const val = a.slice(a.indexOf('=') + 1).trim();
-        if (val === '?') setValues[col] = params[cursor++];
-        else setValues[col] = val.replace(/^'|'$/g, '');
-      }
-      const whereClauses = wherePartRaw ? wherePartRaw.split(/ AND /i) : [];
-      const where = [];
-      for (const c of whereClauses) {
-        const m = /(\w+)\s*=\s*\?/.exec(c);
-        if (!m) continue;
-        where.push([m[1], params[cursor++]]);
-      }
-      let changes = 0;
-      for (const r of rows) {
-        if (!this._where(r, where)) continue;
-        Object.assign(r, setValues);
-        changes += 1;
-      }
-      return { meta: { changes } };
-    }
-    if (/^DELETE/i.test(sql)) {
-      const table = /DELETE FROM (\w+)/i.exec(sql)[1];
-      const rows = this._t(table);
-      const wherePart = sql.split(/ WHERE /i)[1];
-      const where = wherePart ? this._parseWhere(wherePart, params, 'tail') : [];
-      const before = rows.length;
-      const kept = rows.filter((r) => !this._where(r, where));
-      this.tables.set(table, kept);
-      return { meta: { changes: before - kept.length } };
-    }
-    throw new Error('FakeD1._exec: unexpected statement: ' + sql);
-  }
-  _parseWhere(wherePart, params, mode) {
-    const clauses = wherePart.split(/ AND /i);
-    const out = [];
-    for (const c of clauses) {
-      const m = /(\w+)\s*=\s*\?/.exec(c);
-      if (!m) continue;
-      const v = mode === 'tail' ? params[params.length - clauses.length + out.length] : params[out.length];
-      out.push([m[1], v]);
-    }
-    return out;
-  }
-  async _query(sql, params) {
-    if (/sqlite_master/i.test(sql)) {
-      return [...this.tables.keys()].map((name) => ({ name }));
-    }
-    const table = /FROM (\w+)/i.exec(sql)[1];
-    const rows = this._t(table);
-    const wherePart = / WHERE /i.test(sql) ? sql.split(/ WHERE /i)[1] : null;
-    const orderDesc = /ORDER BY (\w+) DESC/i.test(sql);
-    let out = rows.slice();
-    if (wherePart) {
-      const orderIdx = wherePart.toUpperCase().indexOf('ORDER BY');
-      const pureWhere = orderIdx === -1 ? wherePart : wherePart.slice(0, orderIdx);
-      const where = this._parseWhere(pureWhere, params, 'head');
-      out = out.filter((r) => this._where(r, where));
-    }
-    if (orderDesc) out.reverse();
-    if (/^SELECT COUNT\(\*\) AS (\w+)/i.test(sql)) {
-      return [{ [sql.match(/^SELECT COUNT\(\*\) AS (\w+)/i)[1]]: out.length }];
-    }
-    const sel = /^SELECT (.+?) FROM/i.exec(sql)[1].trim();
-    if (sel !== '*') {
-      const cols = sel.split(',').map((c) => c.trim());
-      out = out.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]])));
-    }
-    return out;
-  }
-}
 
 function makeReq(method, { headers = {}, body = '' } = {}) {
   return new Request('https://edge.test/hook', {
@@ -576,7 +359,7 @@ test('lemon: subscription_created → 200 + subscription row (variant, status, c
   assert.equal(sub.user_id, 77);
   assert.equal(sub.status, 'active');
   assert.equal(sub.card_last_four, '4242');
-  assert.equal(sub.ls_variant_id, 3);
+  assert.equal(sub.ls_variant_id, '3'); // ls_variant_id is TEXT: SQLite TEXT affinity stores the id as the string '3'
 });
 
 test('lemon: bad X-Signature → 401; order_created idempotent by meta.event_id', async () => {

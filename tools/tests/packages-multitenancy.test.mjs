@@ -1,97 +1,12 @@
 // tools/tests/packages-multitenancy.test.mjs — spatie/laravel-multitenancy port.
-// Drives the handler against a fake in-memory D1 (prepare(sql).bind(...).all()/
-// first()/run() over a row map) with UNIQUE enforcement on `tenants.key`, then
-// asserts the real behavior: create, resolve/boot, and the 422/404/409 guards.
-// No network, no real D1.
+// Drives the handler against real SQLite (`tools/tests/_fake-d1.mjs`), including
+// UNIQUE enforcement on `tenants.key`, then asserts the real behavior: create,
+// resolve/boot, and the 422/404/409 guards. No network, no real D1.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import handler, { resolveTenant } from '../../ports/packages/multitenancy.mjs';
-import { splitTop } from './_helpers.mjs';
-
-// ---------------------------------------------------------------------------
-// Fake D1 (in-memory). Handles exactly the statements the handler emits:
-//   CREATE TABLE IF NOT EXISTS tenants (... key UNIQUE ...)
-//   INSERT INTO tenants (key,name,data_json) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING
-//   SELECT id,key,name,data_json,created_at FROM tenants WHERE key = ?1 [LIMIT 1]
-// `.run()` -> { success, meta: { changes, last_row_id } }; `.first()`/`.all()`.
-// ---------------------------------------------------------------------------
-function stripIdent(s) {
-  return s.replace(/^["'`\[]|["'`\]]$/g, '');
-}
-
-class FakeD1 {
-  constructor() { this.tables = new Map(); this.autoinc = new Map(); }
-  _rows(name) {
-    if (!this.tables.has(name)) { this.tables.set(name, []); this.autoinc.set(name, 0); }
-    return this.tables.get(name);
-  }
-  prepare(sql) {
-    const db = this;
-    const clean = sql.replace(/\s+/g, ' ').trim();
-    const createM = /^CREATE TABLE IF NOT EXISTS (\w+)/i.exec(clean);
-    const insertM = /^INSERT INTO (\w+)/i.exec(clean);
-    const selectM = /^SELECT .+ FROM (\w+)/i.exec(clean);
-    const table = createM ? createM[1] : insertM ? insertM[1] : selectM ? selectM[1] : null;
-    return {
-      sql: clean,
-      binds: [],
-      bind(...a) { this.binds = a; return this; },
-      async run() {
-        if (createM) {
-          db._ddl = db._ddl || new Map();
-          if (!db._ddl.has(table)) db._ddl.set(table, clean);
-          db._rows(table);
-          return { success: true, meta: { changes: 0 } };
-        }
-        if (insertM) {
-          const colsM = /^INSERT INTO \w+ \(([^)]+)\) VALUES \(([^)]+)\)/i.exec(clean);
-          if (!colsM) throw new Error(`unsupported insert: ${sql}`);
-          const cols = colsM[1].split(',').map((c) => stripIdent(c.trim()));
-          const row = {};
-          colsM[2].split(',').forEach((t, i) => {
-            const tok = t.trim();
-            row[cols[i]] = /^\?(\d+)$/.test(tok) ? this.binds[Number(tok.slice(1)) - 1] : JSON.parse(tok);
-          });
-          const rows = db._rows(table);
-          const conflictCols = /ON CONFLICT\s*\(([^)]+)\)/i.exec(clean);
-          if (conflictCols) {
-            const cc = conflictCols[1].split(',').map((c) => stripIdent(c.trim()));
-            const dup = rows.find((r) => cc.every((c) => r[c] === row[c]));
-            if (dup && /\bDO NOTHING\b/i.test(clean)) {
-              return { success: true, meta: { changes: 0, last_row_id: dup.id } };
-            }
-          }
-          let next = db.autoinc.get(table) + 1;
-          while (rows.some((r) => r.id === next)) next += 1;
-          db.autoinc.set(table, next);
-          row.id = next;
-          rows.push({ ...row });
-          return { success: true, meta: { changes: 1, last_row_id: next } };
-        }
-        return { success: true, meta: { changes: 0 } };
-      },
-      async all() {
-        const m = /^SELECT (.*?) FROM (\w+)(.*)$/is.exec(clean);
-        if (!m) return { results: [], success: true };
-        let rows = db._rows(m[2]).slice();
-        const whereM = /\bWHERE (.+?)(?: ORDER BY| LIMIT|$)/i.exec(m[3] || '');
-        if (whereM) {
-          const conds = [...whereM[1].matchAll(/("([^"]+)"|\w+)\s*=\s*\?(\d+)/g)]
-            .map((x) => ({ col: stripIdent(x[1]), value: this.binds[Number(x[3]) - 1] }));
-          rows = rows.filter((r) => conds.every((c) => r[c.col] === c.value));
-        }
-        if (m[1].trim() === '*') return { results: rows, success: true };
-        const cols = splitTop(m[1]).map(stripIdent);
-        return { results: rows.map((r) => { const o = {}; for (const c of cols) o[c] = r[c]; return o; }), success: true };
-      },
-      async first() {
-        const { results } = await this.all();
-        return results[0] ?? null;
-      },
-    };
-  }
-}
+import handler, { resolveTenant, ensureSchema } from '../../ports/packages/multitenancy.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 // Build a ctx matching the port contract (kernel-style request accessors).
 // `user_id` defaults to an authenticated caller: the handler answers 401 without
@@ -235,6 +150,7 @@ test('lookup: keyed path without a tenantKey segment is a 422', async () => {
 // ===========================================================================
 test('resolveTenant: exported helper returns null for missing key, boots data for present key', async () => {
   const db = new FakeD1();
+  await ensureSchema({ DB: db });
   assert.equal(await resolveTenant(db, 'ghost'), null);
   await db.prepare('INSERT INTO tenants (key, name, data_json) VALUES (?1, ?2, ?3)').bind('acme', 'Acme', '{"plan":"pro"}').run();
   const booted = await resolveTenant(db, 'acme');
@@ -244,6 +160,7 @@ test('resolveTenant: exported helper returns null for missing key, boots data fo
 
 test('lookup: empty / invalid data_json degrades to {} rather than throwing', async () => {
   const db = new FakeD1();
+  await ensureSchema({ DB: db });
   await db.prepare('INSERT INTO tenants (key, name, data_json) VALUES (?1, ?2, ?3)').bind('empty', 'E', '').run();
   const res = await handler(makeCtx({ method: 'GET', url: 'http://worker.test/tenants/empty', params: { tenantKey: 'empty' } }), { DB: db });
   assert.equal(res.status, 200);

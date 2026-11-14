@@ -12,7 +12,8 @@
 //     (iss/aud/exp/sub) asserted.
 //   - auth0: the code→token exchange against a fake token endpoint (captured
 //     body/auth asserted), plus error surfacing.
-// No network, no real D1 (in-memory fake). Passwords hashed with bcryptjs.
+// No network, no real D1: the auth seams run against real SQLite through the
+// shared `tools/tests/_fake-d1.mjs`. Passwords hashed with bcryptjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
@@ -25,160 +26,16 @@ import {
 import bcrypt from 'bcryptjs';
 
 import jwtAuth from '../../ports/packages/jwt-auth.mjs';
-import { verifyJwt as verifyHs256 } from '../../ports/packages/jwt-auth.mjs';
+import { verifyJwt as verifyHs256, ensureSchema } from '../../ports/packages/jwt-auth.mjs';
 import firebaseVerify from '../../ports/packages/firebase-php-jwt.mjs';
 import auth0 from '../../ports/packages/auth0.mjs';
 import { FIXTURE_CERT_PEM, FIXTURE_KEY_PEM } from './fixtures/firebase-x509-fixture.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 // ---------------------------------------------------------------------------
-// Fake D1 — a tiny SQL subset over a table map (identical to the shared
-// _batch2a-faked1 helper, inlined so this cluster test stays self-contained).
-// Supports CREATE TABLE IF NOT EXISTS, INSERT (literals + `?N` placeholders),
-// UPDATE .. SET .. WHERE, and SELECT [cols|*] FROM t [WHERE k=? [AND k=?]].
-// ---------------------------------------------------------------------------
-class FakeD1 {
-  constructor() {
-    this.tables = new Map();
-    this.unique = new Map();
-    this._seq = new Map();
-  }
-  _rows(name) {
-    if (!this.tables.has(name)) this.tables.set(name, []);
-    return this.tables.get(name);
-  }
-  prepare(sql) {
-    const self = this;
-    const norm = sql.replace(/\s+/g, ' ').trim().replace(/;$/, '');
-    const stmt = {
-      _p: [],
-      bind(...args) {
-        this._p = args.flat();
-        return this;
-      },
-      async run() {
-        return self._exec(norm, this._p);
-      },
-      async all() {
-        const rows = await self._exec(norm, this._p);
-        return { results: Array.isArray(rows) ? rows : [] };
-      },
-      async first() {
-        const rows = await self._exec(norm, this._p);
-        return Array.isArray(rows) && rows.length ? rows[0] : null;
-      },
-    };
-    return stmt;
-  }
-  _literal(tok, params, state) {
-    const t = String(tok).trim();
-    let m;
-    if ((m = /^\?(\d+)$/.exec(t))) return params[Number(m[1]) - 1];
-    if (t === '?') return params[state.seq++];
-    if (/^NULL$/i.test(t)) return null;
-    if (/^'.*'$/.test(t)) return t.slice(1, -1);
-    if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
-    return t;
-  }
-  _createTable(sql) {
-    const m = /CREATE TABLE IF NOT EXISTS "?(\w+)"?\s*\(([\s\S]+)\)/i.exec(sql);
-    if (!m) throw new Error('FakeD1: cannot parse CREATE TABLE: ' + sql);
-    const name = m[1];
-    this._rows(name);
-    const groups = [];
-    let hasId = false;
-    for (const def of m[2].split(',').map((p) => p.trim())) {
-      const cm = /^"?(\w+)"?\s+/.exec(def);
-      if (cm) {
-        const col = cm[1].toLowerCase();
-        if (col === 'id') hasId = true;
-        if (/\bUNIQUE\b/i.test(def)) groups.push([col]);
-      }
-      const um = /^UNIQUE\s*\(([^)]+)\)/i.exec(def);
-      if (um) groups.push(um[1].split(',').map((c) => c.trim().replace(/"/g, '').toLowerCase()));
-    }
-    this.unique.set(name, groups);
-    if (!this.idCol) this.idCol = new Map();
-    this.idCol.set(name, hasId);
-    return { changes: 0 };
-  }
-  _exec(sql, params = []) {
-    const upper = sql.toUpperCase();
-    if (upper.startsWith('CREATE TABLE')) return this._createTable(sql);
-    const state = { seq: 0 };
-    if (upper.startsWith('INSERT')) {
-      const m = /INSERT (?:OR IGNORE )?INTO "?(\w+)"?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]*)\)/i.exec(sql);
-      if (!m) throw new Error('FakeD1: cannot parse INSERT: ' + sql);
-      const table = m[1];
-      const cols = m[2].split(',').map((c) => c.trim().replace(/"/g, '').toLowerCase());
-      const vals = m[3].split(',').map((p) => p.trim());
-      const row = {};
-      cols.forEach((c, i) => {
-        row[c] = i < vals.length ? this._literal(vals[i], params, state) : null;
-      });
-      for (const group of this.unique.get(table) || []) {
-        const cand = group.map((c) => row[c] ?? null);
-        if (cand.every((v) => v == null)) continue;
-        if (this._rows(table).some((r) => group.every((c, i) => (r[c] ?? null) === cand[i]))) {
-          throw new Error('UNIQUE constraint failed');
-        }
-      }
-      const hasIdCol = (this.idCol && this.idCol.get(table)) || cols.includes('id');
-      if (row.id == null && hasIdCol) {
-        row.id = (this._seq.get(table) || 0) + 1;
-        this._seq.set(table, row.id);
-      }
-      this._rows(table).push(row);
-      return { changes: 1, meta: { changes: 1, last_row_id: row.id }, last_row_id: row.id };
-    }
-    if (upper.startsWith('UPDATE')) {
-      const m = /UPDATE "?(\w+)"?\s*SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+))?$/i.exec(sql);
-      if (!m) throw new Error('FakeD1: cannot parse UPDATE: ' + sql);
-      const where = m[3] ? this._parseWhere(m[3], params) : () => true;
-      let changes = 0;
-      for (const row of this._rows(m[1])) {
-        if (!where(row)) continue;
-        for (const a of m[2].split(',')) {
-          const eq = a.indexOf('=');
-          row[a.slice(0, eq).trim()] = this._literal(a.slice(eq + 1), params, state);
-        }
-        changes += 1;
-      }
-      return { changes, meta: { changes } };
-    }
-    if (upper.startsWith('SELECT')) {
-      const m = /^SELECT\s+(.+?)\s+FROM\s+"?(\w+)"?([\s\S]*)$/i.exec(sql);
-      if (!m) throw new Error('FakeD1: cannot parse SELECT: ' + sql);
-      const sel = m[1].trim();
-      let out = this._rows(m[2]).slice();
-      const tail = m[3] || '';
-      const wi = tail.toUpperCase().indexOf(' WHERE ');
-      if (wi !== -1) out = out.filter(this._parseWhere(tail.slice(wi + 7), params));
-      if (sel !== '*') {
-        const cols = sel.split(',').map((c) => c.trim());
-        out = out.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]])));
-      }
-      return out;
-    }
-    throw new Error('FakeD1: unsupported statement: ' + sql);
-  }
-  _parseWhere(clause, params) {
-    const preds = [];
-    for (const c of clause.split(/\s+AND\s+/i)) {
-      const mm = /^\s*(\w+)\s*=\s*(.+)\s*$/i.exec(c);
-      if (!mm) continue;
-      const col = mm[1];
-      const state = { seq: 0 };
-      const val = this._literal(mm[2], params, state);
-      preds.push((row) => String(row[col] ?? null) === String(val ?? null));
-    }
-    return (row) => preds.every((p) => p(row));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
+// Request / fetch helpers
 // ---------------------------------------------------------------------------
 const makeReq = (method, path, { body = '{}', headers = {} } = {}) => ({
   method,
@@ -250,9 +107,7 @@ test('jwt-auth: valid email+password mints an HS256 JWT with correct claims', as
     JWT_SECRET: 'test-secret-key',
     JWT_TTL: 1800,
   };
-  await env.DB.prepare(
-    'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL)'
-  ).run();
+  await ensureSchema(env);
   await env.DB.prepare('INSERT INTO users (id, name, email, password) VALUES (?1, ?2, ?3, ?4)')
     .bind(7, 'Ada Lovelace', 'ada@example.com', passwordHash).run();
 
@@ -278,7 +133,7 @@ test('jwt-auth: wrong password / unknown email → 422, no token minted', async 
     DB: new FakeD1(),
     JWT_SECRET: 'test-secret-key',
   };
-  await env.DB.prepare('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL)').run();
+  await ensureSchema(env);
   await env.DB.prepare('INSERT INTO users (id, name, email, password) VALUES (?1, ?2, ?3, ?4)')
     .bind(1, 'Ada', 'ada@example.com', await bcrypt.hash('right', 4)).run();
 
@@ -306,7 +161,7 @@ test('jwt-auth: /auth/jwt/user returns the user for a valid Bearer HS256 JWT', a
     DB: new FakeD1(),
     JWT_SECRET: 'test-secret-key',
   };
-  await env.DB.prepare('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL)').run();
+  await ensureSchema(env);
   await env.DB.prepare('INSERT INTO users (id, name, email, password) VALUES (?1, ?2, ?3, ?4)')
     .bind(11, 'Grace Hopper', 'grace@example.com', 'x').run();
 
@@ -332,7 +187,7 @@ test('jwt-auth: /auth/jwt/user rejects expired, tampered and missing tokens', as
     DB: new FakeD1(),
     JWT_SECRET: 'test-secret-key',
   };
-  await env.DB.prepare('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL)').run();
+  await ensureSchema(env);
   await env.DB.prepare('INSERT INTO users (id, name, email, password) VALUES (?1, ?2, ?3, ?4)')
     .bind(1, 'A', 'a@example.com', 'x').run();
 
