@@ -11,104 +11,9 @@ import settingsHandler from '../../ports/packages/spatie-settings.mjs';
 import excelHandler, { csvFromRows } from '../../ports/packages/maatwebsite-excel.mjs';
 import redirectHandler from '../../ports/packages/laravel-socialite-redirect.mjs';
 import callbackHandler from '../../ports/packages/laravel-socialite-callback.mjs';
-import { splitTop } from './_helpers.mjs';
-
-// ---------------------------------------------------------------------------
-// Fake D1: prepare(sql).bind(...).all()/first()/run() over an in-memory Map of
-// tables. Handles the statement shapes the handlers use (CREATE/INSERT/DELETE/
-// SELECT with WHERE + ORDER BY + ON CONFLICT upsert). Not a SQL engine — just
-// enough to exercise real read/write logic.
-// ---------------------------------------------------------------------------
-function stripIdent(s) {
-  return s.replace(/^["'`\[]|["'`\]]$/g, '');
-}
-
-function parseConds(str, args) {
-  const out = [];
-  const re = /("[^"]+"|\w+)\s*=\s*\?(\d+)/g;
-  let m;
-  while ((m = re.exec(str))) out.push({ col: stripIdent(m[1]), value: args[Number(m[2]) - 1] });
-  return out;
-}
-
-function execSelect(db, sql, args) {
-  const s = sql.trim();
-  const m = /^select\s+(.*?)\s+from\s+([a-z_"]+)(.*)$/is.exec(s);
-  if (!m) throw new Error(`unsupported select: ${sql}`);
-  const colsPart = m[1];
-  const table = stripIdent(m[2]);
-  const rest = m[3] || '';
-  let rows = (db.tables.get(table) || []).slice();
-  const where = /\bwhere\b(.*?)(?=\border\s+by\b|$)/is.exec(rest);
-  if (where) {
-    const conds = parseConds(where[1], args);
-    rows = rows.filter((r) => conds.every((c) => r[c.col] === c.value));
-  }
-  const order = /\border\s+by\s+([\w"]+)/i.exec(rest);
-  if (order) {
-    const col = stripIdent(order[1]);
-    rows.sort((a, b) => (a[col] < b[col] ? -1 : a[col] > b[col] ? 1 : 0));
-  }
-  if (colsPart.trim() === '*') return rows.map((r) => ({ ...r }));
-  const cols = splitTop(colsPart).map(stripIdent);
-  return rows.map((r) => {
-    const o = {};
-    for (const c of cols) o[c] = r[c];
-    return o;
-  });
-}
-
-function execMutate(db, sql, args) {
-  const s = sql.trim();
-  if (/^create\s+table/i.test(s)) return { success: true };
-  if (/^insert\s+into/i.test(s)) {
-    const m = /^insert\s+into\s+([a-z_"]+)\s*\(([^)]*)\)\s*values\s*\(([^)]*)\)/i.exec(s);
-    if (!m) throw new Error(`unsupported insert: ${sql}`);
-    const table = stripIdent(m[1]);
-    const cols = splitTop(m[2]).map(stripIdent);
-    const valToks = splitTop(m[3]);
-    const row = {};
-    cols.forEach((c, i) => {
-      const t = valToks[i].trim();
-      row[c] = /^\?(\d+)$/.test(t) ? args[Number(t.slice(1)) - 1] : JSON.parse(t);
-    });
-    let arr = db.tables.get(table);
-    if (!arr) { arr = []; db.tables.set(table, arr); }
-    const conflict = /on\s+conflict\s*\(([^)]*)\)/i.exec(s);
-    if (conflict) {
-      const ccols = splitTop(conflict[1]).map(stripIdent);
-      const found = arr.find((r) => ccols.every((c) => r[c] === row[c]));
-      if (found) {
-        for (const c of cols) if (!ccols.includes(c)) found[c] = row[c];
-        return { success: true };
-      }
-    }
-    arr.push(row);
-    return { success: true };
-  }
-  if (/^delete\s+from/i.test(s)) {
-    const m = /^delete\s+from\s+([a-z_"]+)\s*where\s+(.+)$/i.exec(s);
-    const table = stripIdent(m[1]);
-    const conds = parseConds(m[2], args);
-    db.tables.set(table, (db.tables.get(table) || []).filter((r) => !conds.every((c) => r[c.col] === c.value)));
-    return { success: true };
-  }
-  return { success: true };
-}
-
-class FakeD1 {
-  constructor() { this.tables = new Map(); }
-  prepare(sql) {
-    const db = this;
-    let args = [];
-    return {
-      bind(...a) { args = a; return this; },
-      async all() { return { results: execSelect(db, sql, args), success: true }; },
-      async first() { const r = execSelect(db, sql, args); return r[0] ?? null; },
-      async run() { return execMutate(db, sql, args); },
-    };
-  }
-}
+import { ensureSchema as ensureExcelSchema } from '../../ports/packages/maatwebsite-excel.mjs';
+import { rememberState } from '../../kernel/packages/socialite.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 // Build a ctx object matching the port contract.
 function makeCtx({ method = 'GET', url = 'http://worker.test/x', params = {}, query = {}, body, headers = {}, fetchImpl, randomBytes, user_id } = {}) {
@@ -283,6 +188,7 @@ test('excel: csvFromRows quotes RFC4180 cells (comma/quote/CR/LF)', () => {
 
 test('excel: GET /export?format=csv streams a CSV of D1 rows', async () => {
   const db = new FakeD1();
+  await ensureExcelSchema({ DB: db }); // the export's `users` table (production path)
   await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(1, 'Ada', 'ada@example.com').run();
   await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(2, 'Last, First', 'lf@example.com').run();
 
@@ -299,6 +205,7 @@ test('excel: GET /export?format=csv streams a CSV of D1 rows', async () => {
 
 test('excel: an anonymous export is a 401 and reads no rows', async () => {
   const db = new FakeD1();
+  await ensureExcelSchema({ DB: db });
   await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(1, 'Ada', 'ada@example.com').run();
 
   const res = await excelHandler(makeCtx({ query: { format: 'csv' } }), { DB: db });
@@ -308,6 +215,7 @@ test('excel: an anonymous export is a 401 and reads no rows', async () => {
 
 test('excel: ?table= cannot redirect the export; the table comes from env', async () => {
   const db = new FakeD1();
+  await ensureExcelSchema({ DB: db });
   await db.prepare('INSERT INTO users (id, name, email) VALUES (?1, ?2, ?3)').bind(1, 'Ada', 'ada@example.com').run();
   db.tables.set('secrets', [{ id: 1, value: 'leak' }]);
 
@@ -421,6 +329,9 @@ test('socialite callback: happy path -> verifies state, exchanges code, logs in'
 
 test('socialite callback: bad state -> 401 before any provider HTTP call', async () => {
   const db = new FakeD1();
+  // the redirect leg ran first and planted some state row (production path);
+  // nothing is stored for this request's `forged`.
+  await rememberState({ DB: db }, 'st_from-a-prior-flow');
   let called = false;
   const fetchImpl = async () => { called = true; return { ok: true, json: async () => ({}) }; };
   const res = await callbackHandler(

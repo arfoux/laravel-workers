@@ -13,10 +13,11 @@
 //   • the end-to-end login (user upsert + minted bearer token).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FakeD1 } from './_batch2a-faked1.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 import redirect from '../../ports/packages/laravel-socialite-redirect.mjs';
 import callback from '../../ports/packages/laravel-socialite-callback.mjs';
+import { rememberState } from '../../kernel/packages/socialite.mjs';
 
 function makeEnv(fetchImpl) {
   const DB = new FakeD1();
@@ -140,6 +141,8 @@ test('facebook callback: exchanges the code, fetches /me with Bearer, flattens p
 test('facebook callback: bad/missing state is rejected before any network call', async () => {
   const fetchImpl = facebookFetch();
   const env = makeEnv(fetchImpl);
+  // the redirect leg ran first and planted the state row (production path)
+  await rememberState(env, 'st_real');
   const res = await callback(
     {
       params: { provider: 'facebook' },
@@ -159,7 +162,9 @@ test('facebook callback: a malformed cookie escape is a state mismatch, not a th
   const fetchImpl = facebookFetch();
   const env = makeEnv(fetchImpl);
   // readStateCookie ran before the handler's try block, so `decodeURIComponent('%')`
-  // escaped the route as an uncaught URIError.
+  // escaped the route as an uncaught URIError. A prior flow's row exists, but
+  // nothing is stored for this query's `st_123`.
+  await rememberState(env, 'st_from-a-prior-flow');
   const res = await callback(
     {
       params: { provider: 'facebook' },

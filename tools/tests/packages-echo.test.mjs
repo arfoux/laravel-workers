@@ -11,8 +11,9 @@ import { webcrypto, createHmac } from 'node:crypto';
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 import handle, { ensureSchema } from '../../ports/packages/echo.mjs';
+import { ensureSchema as ensureSanctumSchema } from '../../ports/packages/sanctum.mjs';
 import { createPersonalAccessToken } from '../../kernel/packages/token.mjs';
-import { FakeD1 } from './_batch2a-faked1.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,11 +33,16 @@ function ctx({ auth = null, socketId = '1.1', channelName = 'private-room', body
 // Mint a Sanctum plaintext token (`{id}|{random}`) and persist its sha256 row,
 // exactly the shape kernel/packages/token.mjs + the `sanctum` port produce.
 async function seedToken(db, { id = 1, userId = 42, plain } = {}) {
+  // The Sanctum `personal_access_tokens` store is the `sanctum` port's table;
+  // create it the same way production does on the first request.
+  await ensureSanctumSchema({ DB: db });
   const { plain: minted, row } = await createPersonalAccessToken(userId, 'echo-test', [], { id });
   const usePlain = plain ?? minted;
   await db.prepare(
-    'INSERT INTO personal_access_tokens (id, tokenable_id, token) VALUES (?, ?, ?)'
-  ).bind(id, row.tokenable_id, row.token).run();
+    `INSERT INTO personal_access_tokens
+       (id, tokenable_type, tokenable_id, name, token, abilities, last_used_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, row.tokenable_type, row.tokenable_id, row.name, row.token, row.abilities, row.last_used_at, row.expires_at).run();
   return usePlain;
 }
 
