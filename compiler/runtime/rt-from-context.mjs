@@ -1202,11 +1202,21 @@ export function buildRt(context, opts = {}) {
   const missingParam = (name, uri, pname) => new Error(
     'Missing required parameter for [Route: ' + name + '] [URI: ' + uri + '] [Missing parameter: ' + pname + '].'
   );
+  const isModel = (v) => typeof v.get === 'function' && !!v.attributes && typeof v.attributes === 'object';
+  // PHP's keyed array and Laravel's model both arrive as one JS object, so the
+  // value has to say which one it is: the transpiler emits a PHP array literal as
+  // a plain object, and a model carries attributes + get() (the test
+  // modelRouteKey() makes too - kernel/model.mjs's Model is an instance, and the
+  // runtime's own model shim answers the same pair). So: a model is ONE value,
+  // Laravel's route('posts.show', $post); any other object is the keyed array.
+  // A plain object carrying a key the route does not name is therefore the array
+  // case and throws, which is what PHP does with route('crud.show', ['id' => 7]).
   const genUrl = (name, args) => {
     if (!routeMap || !Object.prototype.hasOwnProperty.call(routeMap, name)) return null;
     const uri = String(routeMap[name]);
     const given = args.length ? args[0] : undefined;
-    const map = given !== null && typeof given === 'object' && !Array.isArray(given) ? given : null;
+    const map = given !== null && typeof given === 'object' && !Array.isArray(given) && !isModel(given)
+      ? given : null;
     const list = map ? null : Array.isArray(given) ? given : args;
     const absolute = args.length > 1 ? args[1] !== false : true;
     const used = [];

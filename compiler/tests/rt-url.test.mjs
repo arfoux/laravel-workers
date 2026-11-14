@@ -105,6 +105,21 @@ test('rt-url: the third PHP argument (absolute: false) answers a relative URL', 
   assert.equal(rt.route('crud.show', { post: 1 }, true), 'http://localhost/crud/1');
 });
 
+test('rt-url: a model is one value (by route key), a plain object is the keyed array', () => {
+  const rt = makeRt();
+  // a hydrated model: the runtime's Model is an instance carrying attributes+get()
+  const model = { attributes: { id: 7 }, get: (k) => ({ id: 7 })[k] };
+  assert.equal(rt.route('crud.show', model), 'http://localhost/crud/7');
+  // ...and the same model as the value of the map's key
+  assert.equal(rt.route('crud.show', { post: model }), 'http://localhost/crud/7');
+  // a plain object is PHP's array literal, so a key the route does not name is
+  // the array case: route('crud.show', ['id' => 7]) throws in PHP too
+  assert.throws(() => rt.route('crud.show', { id: 7, title: 't' }), /Missing parameter: post/);
+  // an empty array argument on a route without parameters is just the route
+  assert.equal(rt.route('profile.index', {}), 'http://localhost/profil');
+  assert.equal(rt.route('routing.optional', { id: 4 }), 'http://localhost/routing/optional/4');
+});
+
 test('rt-url: a list with more values than the route has parameters drops the extras (documented gap)', () => {
   // PHP answers /crud/1?2 for route('crud.show', [1, 2]); the compiler never
   // emits the shape (PHP's signature takes one array) and "?2" is unpinned, so
