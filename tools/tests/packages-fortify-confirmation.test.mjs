@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { FakeD1 } from './_batch2a-faked1.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 

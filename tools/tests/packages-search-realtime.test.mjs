@@ -15,57 +15,7 @@ import algolia from '../../ports/packages/scout-algolia.mjs';
 import pusher, { handleBroadcastingAuth, triggerEvent } from '../../ports/packages/pusher.mjs';
 import reverb from '../../ports/packages/reverb.mjs';
 import { buildAuthQueryString, signChannelAuth } from '../../kernel/packages/broadcast.mjs';
-
-// ── Fake D1 (in-memory) ──────────────────────────────────────────────────────
-// Minimal prepare(sql).bind(...).all()/first()/run() over a map of tables. Only
-// the statements the handlers emit are supported: CREATE TABLE IF NOT EXISTS,
-// INSERT INTO ... VALUES (?, ?, ?), SELECT ... FROM t.
-class FakeD1 {
-  constructor() {
-    this.tables = new Map();
-    this.queries = [];
-  }
-  _ensure(name) {
-    if (!this.tables.has(name)) this.tables.set(name, []);
-    return this.tables.get(name);
-  }
-  prepare(sql) {
-    const self = this;
-    const clean = sql.replace(/\s+/g, ' ').trim();
-    const isCreate = /^CREATE TABLE IF NOT EXISTS (\w+)/i.exec(clean);
-    const isInsert = /^INSERT INTO (\w+)/i.exec(clean);
-    const isSelect = /^SELECT .+ FROM (\w+)/i.exec(clean);
-    const table = isCreate?.[1] ?? isInsert?.[1] ?? isSelect?.[1] ?? null;
-    return {
-      sql: clean,
-      binds: [],
-      bind(...args) { this.binds = args; return this; },
-      async run() {
-        self.queries.push({ sql: this.sql, binds: this.binds });
-        if (isCreate) { self._ensure(table); return { success: true }; }
-        if (isInsert) {
-          const rows = self._ensure(table);
-          const cols = /^INSERT INTO \w+ \(([^)]+)\)/i.exec(clean)?.[1].split(',').map((c) => c.trim()) ?? [];
-          const row = {};
-          cols.forEach((c, i) => { row[c] = this.binds[i]; });
-          row.id = rows.length + 1;
-          rows.push(row);
-          return { success: true, meta: { changes: 1 } };
-        }
-        return { success: true };
-      },
-      async all() {
-        await this.run();
-        const rows = table ? (self.tables.get(table) ?? []) : [];
-        return { results: rows };
-      },
-      async first() {
-        const { results } = await this.all();
-        return results[0] ?? null;
-      },
-    };
-  }
-}
+import { FakeD1 } from './_fake-d1.mjs';
 
 // ── Fake fetch ───────────────────────────────────────────────────────────────
 // Records every outgoing request; returns a canned response per URL pattern.

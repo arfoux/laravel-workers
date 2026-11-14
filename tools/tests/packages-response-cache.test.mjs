@@ -1,8 +1,7 @@
 // tools/tests/packages-response-cache.test.mjs — full-page response cache.
 // Exercises ports/packages/response-cache.mjs (the middleware handler) and the
-// storage helper kernel/packages/response-cache.mjs against an in-memory D1
-// fake that supports exactly the SQL the cluster emits (CREATE TABLE, SELECT,
-// DELETE by `?` key, INSERT). No network.
+// storage helper kernel/packages/response-cache.mjs, against real SQLite
+// (`tools/tests/_fake-d1.mjs`). No network.
 //
 // Scenarios:
 //   - GET on an empty cache -> handler returns `null` (pass-through to origin);
@@ -13,76 +12,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import handle from '../../ports/packages/response-cache.mjs';
-import { cacheKey, get, put, purge, init } from '../../kernel/packages/response-cache.mjs';
+import { cacheKey, get, put, purge, init, CACHE_RESPONSE_SCHEMA } from '../../kernel/packages/response-cache.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 function epoch() { return Math.floor(Date.now() / 1000); }
 
-// Stand the real SQL engine up. The module only issues these five statements;
-// we dispatch on the leading keyword so the storage semantics stay honest.
-const REAL = {
-  'CREATE': () => true,
-  'SELECT body, headers_json, expires_at FROM cache_response WHERE cache_key = ?': (db, params) => {
-    const row = db.rows.find((r) => r.cache_key === params[0]);
-    return row ? { body: row.body, headers_json: row.headers_json, expires_at: row.expires_at } : null;
-  },
-  'DELETE FROM cache_response WHERE cache_key = ?': (db, params) => {
-    const before = db.rows.length;
-    db.rows = db.rows.filter((r) => r.cache_key !== params[0]);
-    return { changes: before - db.rows.length, meta: { last_row_id: 0 } };
-  },
-  'DELETE FROM cache_response WHERE cache_key = ? OR cache_key LIKE ? ESCAPE ?': (db, params) => {
-    // Minimal LIKE matcher for the arg shape the kernel builds: `path?%` — an
-    // exact base path plus the trailing wildcard. Paths containing literal
-    // `%`/`_` are ESCAPE-quoted by the caller, so undo that before matching.
-    const exact = String(params[0]);
-    const prefix = String(params[1])
-      .replace(/\\\\/g, '\u0000').replace(/\\%/g, '%').replace(/\\_/g, '_').replace(/\u0000/g, '\\')
-      .slice(0, -1); // drop the trailing `%` wildcard
-    const before = db.rows.length;
-    db.rows = db.rows.filter((r) => r.cache_key !== exact && !r.cache_key.startsWith(prefix));
-    return { changes: before - db.rows.length, meta: { last_row_id: 0 } };
-  },
-  'DELETE FROM cache_response': (db) => {
-    const before = db.rows.length;
-    db.rows = [];
-    return { changes: before, meta: { last_row_id: 0 } };
-  },
-  'INSERT INTO cache_response (cache_key, body, headers_json, expires_at) VALUES (?, ?, ?, ?)': (db, params) => {
-    db.lastId += 1;
-    db.rows.push({ cache_key: params[0], body: params[1], headers_json: params[2], expires_at: params[3] });
-    return { changes: 1, meta: { last_row_id: db.lastId } };
-  },
-};
-
-class SqlFakeD1 {
-  constructor() {
-    this.rows = [];
-    this.lastId = 0;
-    this._sql = null;
-    this._params = [];
-  }
-  prepare(sql) {
-    const stmt = { sql: sql.trim().replace(/\s+/g, ' '), params: [], db: this };
-    stmt.bind = (...params) => { stmt.params = params; return stmt; };
-    stmt.first = async () => this._exec(stmt) || null;
-    stmt.all = async () => { const r = this._exec(stmt); return { results: r ? [r] : [] }; };
-    stmt.run = async () => { const r = this._exec(stmt); return { changes: (r && r.changes) || 0, meta: { last_row_id: this.lastId } }; };
-    return stmt;
-  }
-  _exec(stmt) {
-    const sql = stmt.sql;
-    const p = stmt.params || [];
-    if (sql.startsWith('CREATE')) return { changes: 0, meta: { last_row_id: 0 } };
-    const fn = REAL[sql];
-    if (!fn) throw new Error('unexpected SQL: ' + sql);
-    const res = fn(this, p);
-    if (res === null) return null;
-    if (res.meta && typeof res.meta.last_row_id === 'number') this.lastId = res.meta.last_row_id;
-    return res;
-  }
-}
-
-const newDb = () => new SqlFakeD1();
+const newDb = () => new FakeD1({ schema: CACHE_RESPONSE_SCHEMA });
+// The rows the handler stored, straight out of SQLite.
+const cachedRows = (db) => db.tables.get('cache_response') || [];
 
 // Build a router-like ctx for the handler: plain body/params/db plus a kernel
 // Request whose accessors are METHODS (method/pathInfo/getQueryString), which is
@@ -143,10 +80,9 @@ test('response-cache: ttl expiry is a miss and the row is removed', async () => 
 
   await put('/old', '', { status: 200, headers: {}, body: 'stale' }, db, 1);
   // force the stored row into the past
-  const row = db.rows.find((r) => r.cache_key === '/old');
-  row.expires_at = epoch() - 10;
+  await db.prepare('UPDATE cache_response SET expires_at = ? WHERE cache_key = ?').bind(epoch() - 10, '/old').run();
   assert.equal(await get('/old', '', db), null);
-  assert.equal(db.rows.some((r) => r.cache_key === '/old'), false); // self-cleans
+  assert.equal(cachedRows(db).some((r) => r.cache_key === '/old'), false); // self-cleans
 });
 
 // ---- middleware handler ---------------------------------------------
@@ -155,7 +91,7 @@ test('response-cache: GET on a cold cache passes through (returns null)', async 
   const db = newDb();
   const res = await handle(ctxFor(db, 'GET', '/posts'), {});
   assert.equal(res, null);
-  assert.equal(db.rows.length, 0);
+  assert.equal(cachedRows(db).length, 0);
 });
 
 test('response-cache: GET serves the cached body with a HIT header', async () => {
@@ -172,10 +108,9 @@ test('response-cache: GET serves the cached body with a HIT header', async () =>
 test('response-cache: an expired entry is not served – origin renders', async () => {
   const db = newDb();
   await put('/stale', '', { status: 200, headers: {}, body: 'stale' }, db, 5);
-  const row = db.rows.find((r) => r.cache_key === '/stale');
-  row.expires_at = epoch() - 1;
+  await db.prepare('UPDATE cache_response SET expires_at = ? WHERE cache_key = ?').bind(epoch() - 1, '/stale').run();
   assert.equal(await handle(ctxFor(db, 'GET', '/stale'), {}), null);
-  assert.equal(db.rows.length, 0);
+  assert.equal(cachedRows(db).length, 0);
 });
 
 test('response-cache: mutating verbs purge the path and pass through', async () => {
@@ -189,9 +124,9 @@ test('response-cache: mutating verbs purge the path and pass through', async () 
     const res = await handle(ctxFor(db, method, '/posts?page=2'), {});
     assert.equal(res, null, `${method}: origin must still run`);
     // this path is gone for every query variant…
-    assert.equal(db.rows.some((r) => r.cache_key.startsWith('/posts')), false, `${method}: /posts purged`);
+    assert.equal(cachedRows(db).some((r) => r.cache_key.startsWith('/posts')), false, `${method}: /posts purged`);
     // …but unrelated paths survive
-    assert.equal(db.rows.some((r) => r.cache_key === '/about'), true, `${method}: /about kept`);
+    assert.equal(cachedRows(db).some((r) => r.cache_key === '/about'), true, `${method}: /about kept`);
   }
 });
 

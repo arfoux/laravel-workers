@@ -13,11 +13,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
-import { FakeD1 } from './_batch2a-faked1.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
-import passport from '../../ports/packages/passport-oauth.mjs';
+import passport, { ensureSchema as ensurePassportSchema } from '../../ports/packages/passport-oauth.mjs';
 import { dispatch, normalizeTable } from '../../kernel/router.mjs';
 import { pkceChallenge, verifyPkce, generateCodeVerifier, verifyJwt } from '../../kernel/packages/passport.mjs';
 
@@ -50,6 +50,9 @@ function makeEnv() {
 }
 
 async function seedClient(env, { id = 'client-1', secret = '', redirect = 'https://app.test/cb', userId = 7 } = {}) {
+  // The oauth_* stores are this port's own tables; create them the same way
+  // production does on the first request, then plant the client row.
+  await ensurePassportSchema({ DB: env.DB });
   await env.DB.prepare(
     'INSERT INTO oauth_clients (id, user_id, name, secret, redirect) VALUES (?, ?, ?, ?, ?)'
   ).bind(id, userId, 'SPA', secret, redirect).run();

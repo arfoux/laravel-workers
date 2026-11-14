@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import handle from '../../ports/packages/ai-sdk.mjs';
-import { FakeD1 } from './_batch2a-faked1.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 const ctx = (body, db) => ({ body, query: {}, params: {}, ...(db ? { db } : {}) });
 

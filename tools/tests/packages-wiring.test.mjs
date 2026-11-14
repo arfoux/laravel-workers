@@ -31,6 +31,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { oracleAppRoot, oracleSkip } from '../../kernel/tests/oracle-app.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BUILD = path.join(repoRoot, 'build.mjs');
@@ -189,29 +190,8 @@ function kernelCtx({ method = 'GET', path: p = '/', query = '', headers = {}, js
   };
 }
 
-// A D1 stand-in good enough for the reads/writes the smoke paths make.
-class FakeD1 {
-  prepare() {
-    const rows = [];
-    return {
-      bind: () => ({
-        all: async () => ({ results: rows }),
-        first: async () => null,
-        run: async () => ({ success: true, meta: { changes: 0 } }),
-      }),
-      all: async () => ({ results: rows }),
-      first: async () => null,
-      run: async () => ({ success: true, meta: { changes: 0 } }),
-    };
-  }
-  // The session/cache stores drive `batch`/`exec` through the worker entry.
-  async batch() {
-    return [];
-  }
-  async exec() {
-    return { count: 0, duration: 0 };
-  }
-}
+// A D1 stand-in over real SQLite (tools/tests/_fake-d1.mjs): the smoke paths
+// below run the ports' own `ensureSchema` + reads/writes for real.
 
 test('the fleet ports build --strict: every route is served, none unhandled', { skip: noApp }, () => {
   const { status, log } = build();
