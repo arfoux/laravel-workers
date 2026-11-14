@@ -76,7 +76,6 @@
     "/notify/expo": "expo-notification",
     "/notify/fcm": "fcm-notification",
     "/notify/webpush": "webpush-notification",
-    "/webpush/subscribe": "webpush-notification",
     "/notify/onesignal": "onesignal-notification",
     "/auth/jwt/login": "jwt-auth",
     "/auth/jwt/user": "jwt-auth",
