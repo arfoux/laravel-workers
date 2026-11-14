@@ -2,6 +2,22 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The two unread catalogues leave the shipped package
+
+`docs/PACKAGES-RESEARCH.md` (1,052 lines) and `docs/packages-data-export.md` (134) were hand-written
+grep snapshots of the port fleet: no generator, no gate, and no reader anywhere in the repo — and the
+second one typed its own test count ("17 tests, 17 pass / 0 fail") while the suite had already grown
+past it. `docs/` ships in the npm package, so both moved to `docs/archive/` — the convention
+`docs/.npmignore` already applies to `AUDIT-*.md` and `SWEEP-FINDINGS.md`, so they stay in git and
+out of the tarball.
+
+| change | why |
+|---|---|
+| `docs/PACKAGES-RESEARCH.md`, `docs/packages-data-export.md` → `docs/archive/` | `npm pack --dry-run`: **220** files at HEAD with both present, **218** after the move with **0** under `docs/archive/` |
+| `CHANGELOG.md`: the "125-package verdict matrix" pointer follows the file | a release note pointing at a path that no longer exists is a dead pointer |
+
+No code, no gate, no test touches either file.
+
 ### The broadcasting-auth bodies are one rule, and pusher/reverb answer Laravel's error key
 
 `POST /broadcasting/auth` is a single path that three ports answer — `echo` for a Sanctum-token
@@ -613,7 +629,7 @@ stream through the Workers response instead of buffering it, so a streaming
 response no longer falls through to the kernel's "unsupported body" path.
 
 The full 125-package verdict matrix — what is ported, what the framework already
-covers, and what stays out of scope — is in `docs/PACKAGES-RESEARCH.md`.
+covers, and what stays out of scope — is in `docs/archive/PACKAGES-RESEARCH.md`.
 
 ## v0.5.0 — the package-port fleet, a package-aware compiler, route() parity fixes, and the mail/build foundations (2026-11-10)
 
