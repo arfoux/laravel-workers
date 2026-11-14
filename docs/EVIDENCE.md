@@ -151,7 +151,23 @@ body.** `GET /nonexistent-route-for-404` on the live worker → `404`, **0 B**. 
 404 (`GET /errors/404`) → `404`, 218 B, and PHP answers 218 B for the same unknown path. The
 131 include patterns are merged down to Cloudflare's 100-rule cap
 (`dist/public/_routes.json`, 99 include, 1 exclude), so anything outside them is answered by
-the assets layer. Documented or given a catch-all — a decision, not a silent behaviour.
+the assets layer.
+
+**Fixed.** The 404 body is a build artifact now: `build.mjs` writes `dist/public/404.html` from
+`tools/prerender.php --error 404` — Laravel's own exception path, so no route of the app can
+capture the request the page is rendered for, and the body comes from the CLI output buffer when
+the response carries none (the rule `tools/php-shadow-oracle.php` had already measured for its
+own 405/500) — with the same URL relativization every snapshot gets. The scaffolded
+`wrangler.jsonc` carries `assets.not_found_handling: "404-page"`, the Cloudflare switch that serves
+the nearest `404.html` with a 404 status, and an app whose config predates it gets a DECLARED
+finding naming the exact line to add. Measured after the change: a local `wrangler dev` and the
+live worker both answer `GET /nonexistent-route-for-404` with `404`, 218 B, `text/html`,
+byte-identical to `dist/public/404.html` — and that file is byte-identical to what PHP renders for
+the same unknown path. The e2e job asserts the artifact, the scaffolded switch, and the served
+bytes (`cmp` against `dist/public/404.html` under `wrangler dev`). Declared rather than fixed: the
+page renders with a synthetic `GET /` request, so a 404 view that prints the request path bakes
+that path, and the ASSETS layer has no `Accept` to branch on, so a JSON client receives the HTML
+page where PHP answers JSON.
 
 **3 — P3: `status` is blind to a deploy the tool did not perform.** `node bin/laravel-workers.mjs
 status` in `lw-showcase` prints `no deploy recorded for this app yet` while the app is live,

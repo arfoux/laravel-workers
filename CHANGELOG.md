@@ -2,6 +2,29 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A path outside `_routes.json` answers the app's own 404 page
+
+`GET /nonexistent-route-for-404` on a live app answered `404` with **no body** where PHP answers
+the app's own error view (218 B on the app that measured it — `docs/EVIDENCE.md` finding 2).
+`_routes.json` is an include allowlist: the request never reaches the worker, so none of the app's
+code runs to answer it, and `kernel/http.mjs` hands an unmatched path back to the assets binding
+even when it does. The fix is therefore a build artifact rather than a route — the build now
+writes `dist/public/404.html`, rendered by `tools/prerender.php --error 404` through Laravel's
+own exception path (the page a request that reaches no route is answered with, not one a route can
+capture; the body comes from the CLI output buffer when the response carries none, the rule the
+shadow oracle had already measured for its 405/500), with the same URL relativization every
+snapshot gets — and both scaffolded `wrangler.jsonc` templates carry
+`"not_found_handling": "404-page"` in their `assets` block, the Cloudflare switch that serves the
+nearest `404.html` with a 404 status. An app whose config predates the switch gets a DECLARED
+finding naming the exact line to add, and an app that ships its own `public/404.html` keeps its
+file. Measured after the change: a local `wrangler dev` and the live worker both answer that path
+with `404`, 218 B, byte-identical to `dist/public/404.html`, while `/` and `/favicon.ico` stay
+`200`. The e2e job now fails unless the artifact exists, the scaffolded switch is present, and the
+bytes served for an unknown path match the file. Two limits stay declared: the page is rendered
+with a synthetic `GET /` request (a 404 view that prints the request path bakes that path), and
+the asset layer has no `Accept` to branch on, so a JSON client receives the HTML page where PHP
+answers JSON.
+
 ### `route()` reads its parameters the way Laravel does
 
 `route('crud.show', ['post' => $id])` / `redirect()->route(...)` — the associative form, which
@@ -30,13 +53,13 @@ worker. On 2026-11-14 a real app (`lw-showcase`, 138 routes, live at `lw-showcas
 since 2026-11-13) was swept instead: 92 GET URIs against the deployed worker and against a
 local PHP 8.3.30 oracle, a full HTTP auth round trip, a D1 write over HTTP, a build from
 current `main`, and `deploy --plan --mode 3`. The record, with the commands and their output,
-is `docs/EVIDENCE.md`; the defects are **recorded** here - each fix is its own change, and
-finding 1 landed in this release (the entry above).
+is `docs/EVIDENCE.md`; the defects are **recorded** here - each fix is its own change, and findings
+1 and 2 have landed (the two entries above).
 
 | finding | evidence | status |
 |---|---|---|
 | `route()` with an **associative** params array answers `[object Object]` (`compiler/runtime/rt-from-context.mjs:1155` is positional; the transpiler emits one object) | `POST /crud` -> `302 Location: /crud/%5Bobject%20Object%5D` on the live worker **and** on a fresh `main` build under `wrangler dev`; the flash text and the log line carry the correct id (`Created post 46`, `crud.store {"id":46}`) | **fixed** - `genUrl` matches a map by name and `compiler/tests/rt-url.test.mjs` pins every measured case (this row was `open`: it contradicted `COMPILED.md:860` (✅) with no test covering named params) |
-| a path outside `_routes.json`'s 99 includes is answered by the assets layer, so the 404 has no body | live `GET /nonexistent-route-for-404` -> `404`, 0 B; the app's own 404 and PHP answer 218 B | open - document or add a catch-all |
+| a path outside `_routes.json`'s 99 includes is answered by the assets layer, so the 404 has no body | live `GET /nonexistent-route-for-404` -> `404`, **0 B** before the change and `404`, **218 B** after it (byte-identical to `dist/public/404.html`); the app's own 404 and PHP answer the same 218 B | **fixed** - the build writes `dist/public/404.html` from the framework's own 404 render and the scaffolded `wrangler.jsonc` carries `assets.not_found_handling: "404-page"`, the switch that serves it (this row was `open`: the platform's null-body 404 came back for every path outside the include list) |
 | prerendered `static` routes answer 307 to their trailing slash | live `GET /architecture` -> `307 /architecture/` -> `200`; PHP -> `200` | open (cosmetic) |
 | `status` is blind to a deploy it did not perform, and nothing records the source SHA | `status` -> `no deploy recorded` for a live app (`lw-state.json` absent); `wrangler deployments list` -> `Source: Unknown (deployment)` | open - report the case / record provenance |
 

@@ -57,6 +57,8 @@ Laravel app (dev truth)
   └─ golden tests         S3   Laravel render vs compiled render byte-identical
   └─ --strict gate        S4   uncovered route → fail
   └─ prerender            S5   clean GET → static snapshot (0-invocation tier)
+                               + the edge 404 page (the framework's own 404 render →
+                               public/404.html, served by `assets.not_found_handling`)
   └─ wrangler deploy      S6   deploy → Workers + D1
 ```
 

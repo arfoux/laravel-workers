@@ -246,6 +246,7 @@ Data comes after schema, as **data-only** SQL (no DDL), verified with
 | `worth knowing (n): N migration(s) mutate an EXISTING table` | `dist/schema.sql` is CREATE-only, so a `Schema::table` migration cannot reach a D1 that already has the table — nothing to do for a fresh D1, apply the `ALTER` by hand for a populated one |
 | `GET /up` 404 on the edge | health route registered in `bootstrap/app.php`, not a route file — declare it |
 | login works, no rate-limit | `CACHE_STORE=file` at build; the throttle port fails open |
+| an unknown path answers `404` with 0 B | the app's `wrangler.jsonc` has no `"not_found_handling": "404-page"` inside its `assets` block, so the ASSETS layer answers with Cloudflare's null-body 404 instead of `dist/public/404.html` — the build writes the file either way and names the line in a DECLARED finding |
 
 ## Badge
 
