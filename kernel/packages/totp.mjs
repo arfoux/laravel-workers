@@ -36,8 +36,8 @@ export function base32Decode(str) {
   return new Uint8Array(out);
 }
 
-// RFC 4648 base32 encode (padding omitted, canonical lower-case output up to
-// the caller). Used to mint secrets from CSPRNG bytes.
+// RFC 4648 base32 encode (padding omitted, canonical UPPER-case output in the
+// `A-Z2-7` alphabet). Used to mint secrets from CSPRNG bytes.
 export function base32Encode(bytes) {
   let bits = 0;
   let value = 0;

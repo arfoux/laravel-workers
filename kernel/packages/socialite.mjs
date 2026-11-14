@@ -6,7 +6,9 @@
 //
 // Parity target: laravel/socialite v5.31.0 builds the redirect URL and stores
 // the `state` in the session, then verifies it on the callback. Workers have no
-// PHP session; we carry `state` in a signed-by-randomness cookie AND a
+// PHP session; we carry `state` in an HttpOnly cookie holding a 40-char random
+// nonce (unguessable, NOT signed - there is no MAC; the D1 row beside it is the
+// second check) AND a
 // `lw_oauth_state` D1 row so the callback can check either (defense in depth).
 
 import { randomString } from './token.mjs';
@@ -19,11 +21,6 @@ import { parseCookieHeader } from '../cookies.mjs';
 // The provider *shape* (authUrl / tokenUrl / userUrl / mapUser) is code-side;
 // only credentials come from env, so secrets never appear in the repo.
 export function resolveProvider(env, name) {
-  const upper = String(name).toUpperCase();
-  const clientId = env[`${upper}_CLIENT_ID`];
-  const clientSecret = env[`${upper}_CLIENT_SECRET`];
-  if (!clientId || !clientSecret) return null;
-
   const base = {
     github: {
       authUrl: 'https://github.com/login/oauth/authorize',
@@ -58,13 +55,27 @@ export function resolveProvider(env, name) {
   }[name];
 
   if (!base) return null;
+  const shared = providerEnv(env, name, { scope: base.scope });
+  if (!shared) return null;
+  return { ...base, name, ...shared };
+}
+
+// The env half of a provider resolution: the standard `<PROVIDER>_CLIENT_ID` /
+// `_CLIENT_SECRET` / `_REDIRECT_URI` / `_SCOPES` reads plus the "unconfigured ->
+// null" guard, in ONE place. `socialite-providers.mjs` (azure, keycloak,
+// cognito, okta) merges the same four fields, so the rule is written once
+// instead of drifting in two files. `scope` is the caller's default for when
+// `<PROVIDER>_SCOPES` is absent (the base shape's scope, or the extra shape's).
+export function providerEnv(env, name, { scope } = {}) {
+  const upper = String(name).toUpperCase();
+  const clientId = env[`${upper}_CLIENT_ID`];
+  const clientSecret = env[`${upper}_CLIENT_SECRET`];
+  if (!clientId || !clientSecret) return null;
   return {
-    ...base,
-    name,
     clientId,
     clientSecret,
     redirectUri: env[`${upper}_REDIRECT_URI`] || '',
-    scope: env[`${upper}_SCOPES`] || base.scope,
+    scope: env[`${upper}_SCOPES`] || scope,
   };
 }
 
