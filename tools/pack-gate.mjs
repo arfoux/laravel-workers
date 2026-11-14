@@ -54,6 +54,16 @@ export const REQUIRED_DOCS = [
   'docs/PLAN-VENDOR.md',
   'docs/READINESS.md',
   'docs/BRAND.md',
+  // Linked by the README but absent from this list until 2026-11-14: the CI
+  // badge points at `docs/CI.md`, the port recipes point at
+  // `docs/PACKAGE-PORTS.md`, and the operator reference lives in
+  // `docs/DEPLOY.md` / `docs/INTERNALS.md`. All four ship (`files: docs`,
+  // `docs/.npmignore` excludes only `archive/`), so a dead link here would be
+  // the one thing this list exists to catch.
+  'docs/CI.md',
+  'docs/PACKAGE-PORTS.md',
+  'docs/DEPLOY.md',
+  'docs/INTERNALS.md',
 ];
 
 const here = dirname(fileURLToPath(import.meta.url));
