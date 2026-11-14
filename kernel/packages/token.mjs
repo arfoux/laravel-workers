@@ -55,6 +55,28 @@ export async function createPersonalAccessToken(userId, name, abilities = [], { 
   };
 }
 
+// The D1 `personal_access_tokens` table (Sanctum's migration verbatim), created
+// idempotently. ONE statement for every port that needs the table: with
+// `CREATE TABLE IF NOT EXISTS` the FIRST creator decides the columns for every
+// later one, so two ports provisioning it with different column sets is a real
+// failure mode — a copy that dropped `created_at`/`updated_at` made sanctum's own
+// INSERT fail on a database `laravel-socialite-callback` had provisioned first
+// (docs/D1-SCHEMA.md, "Settled elsewhere").
+export async function ensurePersonalAccessTokens(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS personal_access_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tokenable_type TEXT NOT NULL,
+    tokenable_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    abilities TEXT,
+    last_used_at TEXT,
+    expires_at TEXT,
+    created_at TEXT,
+    updated_at TEXT
+  )`).run();
+}
+
 // Verify a Bearer token against a stored SHA-256. Returns the abilities array
 // when it matches, else null. Constant-time on the digest (the digest is fixed
 // length, so `timingSafeEqual` never leaks length).

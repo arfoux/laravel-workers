@@ -23,7 +23,7 @@
 import { verifyState, exchangeCode, fetchUser } from '../../kernel/packages/oauth.mjs';
 import { resolveProvider, readStateCookie, consumeState } from '../../kernel/packages/socialite.mjs';
 import { resolveProviderExtra } from '../../kernel/packages/socialite-providers.mjs';
-import { createPersonalAccessToken } from '../../kernel/packages/token.mjs';
+import { createPersonalAccessToken, ensurePersonalAccessTokens } from '../../kernel/packages/token.mjs';
 import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 export async function ensureSchema(env) {
@@ -39,25 +39,12 @@ export async function ensureSchema(env) {
     )`
   ).run();
   // Sanctum's token table (so the minted bearer can be verified later) — the
-  // SAME statement `sanctum.mjs` runs: the two ports share one table, and
-  // `CREATE TABLE IF NOT EXISTS` means the first port to provision it decides
-  // the columns for the other. A copy here that dropped `created_at` /
-  // `updated_at` made sanctum's own INSERT fail on a database this port had
-  // provisioned first (docs/D1-SCHEMA.md's caveat, before this fix).
-  await env.DB.prepare(
-    `CREATE TABLE IF NOT EXISTS personal_access_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tokenable_type TEXT NOT NULL,
-    tokenable_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    abilities TEXT,
-    last_used_at TEXT,
-    expires_at TEXT,
-    created_at TEXT,
-    updated_at TEXT
-  )`
-  ).run();
+  // SAME statement `sanctum.mjs` runs, and it lives once in
+  // kernel/packages/token.mjs for exactly that reason: `CREATE TABLE IF NOT
+  // EXISTS` means the first port to provision it decides the columns for the
+  // other, and a copy here that dropped `created_at`/`updated_at` once made
+  // sanctum's own INSERT fail (docs/D1-SCHEMA.md, "Settled elsewhere").
+  await ensurePersonalAccessTokens(env);
 }
 
 export default async function handle(ctx, env) {
