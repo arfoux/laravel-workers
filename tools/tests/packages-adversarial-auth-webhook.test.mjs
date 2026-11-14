@@ -26,121 +26,20 @@
 //     - an injection-laden payload is signed AS-IS (verbatim, unescaped) so a
 //       receiver's HMAC over the raw body matches byte-for-byte
 //
-// No network, no real D1 (in-memory fakes, identical in spirit to the shared
-// _batch2a-faked1 helper).
+// No network and no real D1 binding: every D1-touching seam runs against real
+// SQLite through the shared `tools/tests/_fake-d1.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto, generateKeyPairSync, sign as nodeSign, createHmac } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 
-import jwtAuth from '../../ports/packages/jwt-auth.mjs';
+import jwtAuth, { ensureSchema } from '../../ports/packages/jwt-auth.mjs';
 import firebaseVerify from '../../ports/packages/firebase-php-jwt.mjs';
 import webhookClient from '../../ports/packages/webhook-client.mjs';
 import webhookServer from '../../ports/packages/webhook-server.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
-
-// ---------------------------------------------------------------------------
-// Fake D1 — a tiny SQL subset over a table map (users table for jwt-auth).
-// Supports CREATE TABLE IF NOT EXISTS, INSERT (?N placeholders), and
-// SELECT [cols|*] FROM t WHERE k=?.
-// ---------------------------------------------------------------------------
-class FakeD1 {
-  constructor() {
-    this.tables = new Map();
-    this._seq = new Map();
-    this.logins = 0; // counts successful credential lookups (for the brute-force test)
-  }
-  _rows(name) {
-    if (!this.tables.has(name)) this.tables.set(name, []);
-    return this.tables.get(name);
-  }
-  prepare(sql) {
-    const self = this;
-    const norm = sql.replace(/\s+/g, ' ').trim().replace(/;$/, '');
-    const stmt = {
-      _p: [],
-      bind(...args) {
-        this._p = args.flat();
-        return this;
-      },
-      async run() {
-        return self._exec(norm, this._p);
-      },
-      async all() {
-        const rows = await self._exec(norm, this._p);
-        return { results: Array.isArray(rows) ? rows : [] };
-      },
-      async first() {
-        const rows = await self._exec(norm, this._p);
-        return Array.isArray(rows) && rows.length ? rows[0] : null;
-      },
-    };
-    return stmt;
-  }
-  _literal(tok, params, state) {
-    const t = String(tok).trim();
-    let m;
-    if ((m = /^\?(\d+)$/.exec(t))) return params[Number(m[1]) - 1];
-    if (t === '?') return params[state.seq++];
-    if (/^NULL$/i.test(t)) return null;
-    if (/^'.*'$/.test(t)) return t.slice(1, -1);
-    if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
-    return t;
-  }
-  _exec(sql, params = []) {
-    const upper = sql.toUpperCase();
-    if (upper.startsWith('CREATE TABLE')) {
-      const m = /CREATE TABLE IF NOT EXISTS "?(\w+)"?/.exec(sql);
-      if (m) this._rows(m[1]);
-      return { changes: 0 };
-    }
-    const state = { seq: 0 };
-    if (upper.startsWith('INSERT')) {
-      const m = /INSERT INTO "?(\w+)"?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]*)\)/i.exec(sql);
-      if (!m) throw new Error('FakeD1: cannot parse INSERT: ' + sql);
-      const table = m[1];
-      const cols = m[2].split(',').map((c) => c.trim().replace(/"/g, '').toLowerCase());
-      const vals = m[3].split(',').map((p) => p.trim());
-      const row = {};
-      cols.forEach((c, i) => {
-        row[c] = i < vals.length ? this._literal(vals[i], params, state) : null;
-      });
-      if (row.id == null) {
-        const next = (this._seq.get(table) || 0) + 1;
-        this._seq.set(table, next);
-        row.id = next;
-      }
-      this._rows(table).push(row);
-      return { changes: 1, meta: { changes: 1, last_row_id: row.id }, last_row_id: row.id };
-    }
-    if (upper.startsWith('SELECT')) {
-      const m = /^SELECT\s+(.+?)\s+FROM\s+"?(\w+)"?([\s\S]*)$/i.exec(sql);
-      if (!m) throw new Error('FakeD1: cannot parse SELECT: ' + sql);
-      const sel = m[1].trim();
-      let out = this._rows(m[2]).slice();
-      const tail = m[3] || '';
-      const wi = tail.toUpperCase().indexOf(' WHERE ');
-      if (wi !== -1) out = out.filter(this._where(tail.slice(wi + 7), params));
-      if (sel !== '*') {
-        out = out.map((r) => Object.fromEntries(sel.split(',').map((c) => [c.trim(), r[c.trim()]])));
-      }
-      return out;
-    }
-    throw new Error('FakeD1: unsupported statement: ' + sql);
-  }
-  _where(clause, params) {
-    const preds = [];
-    for (const c of clause.split(/\s+AND\s+/i)) {
-      const mm = /^\s*(\w+)\s*=\s*(.+)\s*$/i.exec(c);
-      if (!mm) continue;
-      const state = { seq: 0 };
-      const val = this._literal(mm[2], params, state);
-      preds.push((row) => String(row[mm[1]] ?? null) === String(val ?? null));
-    }
-    return (row) => preds.every((p) => p(row));
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Request / fetch helpers
@@ -163,38 +62,18 @@ const makeReq = (method, path, { body = '{}', headers = {} } = {}) => ({
   host: () => 'port.local',
 });
 
-// Seed a users table with one account (id 1 / ada@example.com).
+// Seed a users table with one account (id 1 / ada@example.com). The port owns
+// the `users` DDL, so use its `ensureSchema` rather than restating it here.
 async function seedUser(env, { email = 'ada@example.com', password = 'correct-horse' } = {}) {
-  await env.DB.prepare(
-    'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL)'
-  ).run();
+  await ensureSchema(env);
   await env.DB.prepare('INSERT INTO users (id, name, email, password) VALUES (?1, ?2, ?3, ?4)')
     .bind(1, 'Ada Lovelace', email, await bcrypt.hash(password, 4))
     .run();
 }
 
-// Minimal D1 stub for the webhook cluster: records INSERT binds only.
-function makeWebhookDb() {
-  const rows = [];
-  let nextId = 1;
-  const stmt = (sql) => ({
-    bind: (...args) => ({
-      run: async () => {
-        if (/INSERT INTO webhook_calls/i.test(sql)) {
-          rows.push(args);
-          return { last_row_id: nextId++ };
-        }
-        return {};
-      },
-      first: async () => null,
-      all: async () => ({ results: [] }),
-    }),
-    run: async () => ({}),
-    first: async () => null,
-    all: async () => ({ results: [] }),
-  });
-  return { rows, prepare: stmt };
-}
+// The `webhook_calls` rows a port stored, straight out of SQLite. Both webhook
+// ports create their own table via `ensureSchema`, so an untouched DB has none.
+const storedCalls = (db) => db.tables.get('webhook_calls') || [];
 
 // Sign base64(HMAC-SHA256(secret, message)) — the spatie webhook signature.
 async function hmacB64(secret, message) {
@@ -449,7 +328,7 @@ const clientCtx = (rawBody, headers) => ({
 });
 
 test('webhook-client ADV: a wrong HMAC signature is rejected (400) and not stored', async () => {
-  const db = makeWebhookDb();
+  const db = new FakeD1();
   const wrong = await hmacB64('a-different-secret', RAW);
   const res = await webhookClient(clientCtx(RAW, { 'webhook-signature': wrong }), {
     WEBHOOK_CLIENT_SECRET: CLIENT_SECRET,
@@ -457,12 +336,12 @@ test('webhook-client ADV: a wrong HMAC signature is rejected (400) and not store
   });
   assert.equal(res.status, 400);
   assert.equal(JSON.parse(res.body).error, 'invalid signature');
-  assert.equal(db.rows.length, 0, 'a bad-signature call must never be persisted');
+  assert.equal(storedCalls(db).length, 0, 'a bad-signature call must never be persisted');
 });
 
 test('webhook-client ADV: a replay (valid signature, identical body re-sent) is accepted (200) and recorded', async () => {
   const sig = await hmacB64(CLIENT_SECRET, RAW);
-  const db = makeWebhookDb();
+  const db = new FakeD1();
   const env = { WEBHOOK_CLIENT_SECRET: CLIENT_SECRET, DB: db };
 
   const first = await webhookClient(clientCtx(RAW, { 'webhook-signature': sig }), env);
@@ -473,19 +352,19 @@ test('webhook-client ADV: a replay (valid signature, identical body re-sent) is 
   assert.equal(JSON.parse(replay.body).received, true);
 
   // Both deliveries are recorded (no dedup / nonce ledger).
-  assert.equal(db.rows.length, 2, 'FINDING: replays are not deduplicated — both calls are stored');
+  assert.equal(storedCalls(db).length, 2, 'FINDING: replays are not deduplicated — both calls are stored');
 });
 
 test('webhook-client ADV: a body tampered after signing is rejected (400) and not stored', async () => {
   const sig = await hmacB64(CLIENT_SECRET, RAW);
-  const db = makeWebhookDb();
+  const db = new FakeD1();
   const tampered = JSON.stringify({ event: 'payment.captured', data: { id: 'evt_adv', amount: 999999 } });
   const res = await webhookClient(clientCtx(tampered, { 'webhook-signature': sig }), {
     WEBHOOK_CLIENT_SECRET: CLIENT_SECRET,
     DB: db,
   });
   assert.equal(res.status, 400);
-  assert.equal(db.rows.length, 0, 'a post-sign tamper must never be persisted');
+  assert.equal(storedCalls(db).length, 0, 'a post-sign tamper must never be persisted');
 });
 
 // ===========================================================================
@@ -509,7 +388,7 @@ function makeFetch(status, jsonBody) {
 
 test('webhook-server ADV: non-HTTPS (plain http) target url is REFUSED (422)', async () => {
   const fetchImpl = makeFetch(200, { ok: true });
-  const db = makeWebhookDb();
+  const db = new FakeD1();
   const res = await webhookServer(serverCtx({ url: 'http://example.com/hook', payload: {} }), {
     fetchImpl,
     DB: db,
@@ -525,7 +404,7 @@ test('webhook-server ADV: non-HTTPS (plain http) target url is REFUSED (422)', a
   const ftpFetch = makeFetch(200, { ok: true });
   const ftpRes = await webhookServer(serverCtx({ url: 'ftp://example.com/hook', payload: {} }), {
     fetchImpl: ftpFetch,
-    DB: makeWebhookDb(),
+    DB: new FakeD1(),
     WEBHOOK_SERVER_SECRET: SERVER_SECRET,
   });
   assert.equal(ftpRes.status, 422, 'a non-http(s) scheme (ftp://) is refused');
@@ -534,7 +413,7 @@ test('webhook-server ADV: non-HTTPS (plain http) target url is REFUSED (422)', a
 
 test('webhook-server ADV: an injection-laden payload is signed as-is (unescaped)', async () => {
   const fetchImpl = makeFetch(200, { ok: true });
-  const db = makeWebhookDb();
+  const db = new FakeD1();
   // Every flavour of injection an attacker would plant in an outbound body.
   const payload = {
     comment: '<script>alert("xss")</script>',
@@ -574,8 +453,9 @@ test('webhook-server ADV: an injection-laden payload is signed as-is (unescaped)
   assert.notEqual(sigFromHeader, createHmac('sha256', SERVER_SECRET).update(sentBody + 'x').digest('base64'));
 
   // The stored row carries the same verbatim payload + matching signature.
-  assert.equal(db.rows.length, 1);
-  const stored = db.rows[0];
-  assert.equal(stored[2], sentBody, 'stored payload is the exact bytes sent');
-  assert.equal(stored[3], sigFromHeader);
+  const rows = storedCalls(db);
+  assert.equal(rows.length, 1);
+  const stored = rows[0];
+  assert.equal(stored.payload, sentBody, 'stored payload is the exact bytes sent');
+  assert.equal(stored.signature, sigFromHeader);
 });

@@ -1,454 +1,20 @@
 // tools/tests/packages-d-spatie.test.mjs — real tests for the Spatie cluster.
 //
-// Drives each handler with a fake in-memory D1 (`env.DB` implementing
-// prepare(sql).bind(...).all()/first()/run() over a table map) and a fake
-// `fetch`/Request, then asserts the actual behavior: role checks, tag
-// pivot mutations, unique-slug generation, activity record/replay.
+// Drives each handler against real SQLite through the shared
+// `tools/tests/_fake-d1.mjs`, then asserts the actual behavior: role checks,
+// tag pivot mutations, unique-slug generation, activity record/replay. The
+// ports own their DDL (`ensureSchema`), so UNIQUE / ON CONFLICT / LIKE /
+// ORDER BY / LIMIT semantics come from the engine.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import permissionHandler from '../../ports/packages/permission.mjs';
+import permissionHandler, { ensureSchema as ensurePermissionSchema } from '../../ports/packages/permission.mjs';
 import tagsHandler from '../../ports/packages/tags.mjs';
-import sluggableHandler from '../../ports/packages/sluggable.mjs';
+import sluggableHandler, { ensureSchema as ensureSluggableSchema } from '../../ports/packages/sluggable.mjs';
 import activitylogHandler from '../../ports/packages/activitylog.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 
 // ---------------------------------------------------------------------------
-// Fake D1 — a tiny SQL interpreter good enough for the statements these
-// handlers emit. Not a SQLite replacement; it enforces the constraints the
-// handlers actually rely on (UNIQUE, PK, NOT NULL, autoincrement).
-// ---------------------------------------------------------------------------
-class FakeD1 {
-  constructor() {
-    this.tables = new Map(); // name -> { columns: [{name,pk,notnull,unique}], rows: [], autoinc: 0 }
-    this.indexes = new Map();
-    this.execLog = [];
-  }
-
-  prepare(sql) {
-    const self = this;
-    const stmt = {
-      _sql: sql.trim().replace(/;\s*$/, ''),
-      _params: [],
-      bind(...params) {
-        this._params = params;
-        return this;
-      },
-      async run() {
-        return self._exec(this._sql, this._params);
-      },
-      async all() {
-        return self._exec(this._sql, this._params);
-      },
-      async first() {
-        const res = await self._exec(this._sql, this._params);
-        if (res && Array.isArray(res.results)) return res.results[0] ?? null;
-        return res;
-      },
-    };
-    return stmt;
-  }
-
-  _table(name) {
-    if (!this.tables.has(name)) this.tables.set(name, { columns: [], rows: [], autoinc: 0 });
-    return this.tables.get(name);
-  }
-
-  _exec(sql, params) {
-    this.execLog.push({ sql, params });
-    const upper = sql.toUpperCase();
-    if (upper.startsWith('CREATE TABLE')) return this._createTable(sql);
-    if (upper.startsWith('CREATE INDEX')) return { changes: 0 };
-    if (upper.startsWith('INSERT')) return this._insert(sql, params);
-    if (upper.startsWith('UPDATE')) return this._update(sql, params);
-    if (upper.startsWith('DELETE')) return this._delete(sql, params);
-    if (upper.startsWith('SELECT')) return this._select(sql, params);
-    throw new Error(`FakeD1: unsupported statement: ${sql}`);
-  }
-
-  _createTable(sql) {
-    // CREATE TABLE IF NOT EXISTS name ( col defs )
-    const m = sql.match(/CREATE TABLE IF NOT EXISTS\s+"?(\w+)"?\s*\(([\s\S]+)\)/i);
-    if (!m) throw new Error(`FakeD1: cannot parse CREATE TABLE: ${sql}`);
-    const name = m[1];
-    const t = this._table(name);
-    t.uniqueGroups = t.uniqueGroups || [];
-    if (t.columns.length) {
-      // Already exists — but still record table-level constraints a bare seed
-      // may have missed.
-      for (const raw of splitTopLevel(m[2])) {
-        const um = raw.trim().match(/^UNIQUE\s*\(([^)]+)\)/i);
-        const pm = raw.trim().match(/^PRIMARY KEY\s*\(([^)]+)\)/i);
-        const grp = um || pm;
-        if (grp) {
-          t.uniqueGroups.push(grp[1].split(',').map((c) => c.trim().replace(/"/g, '').toLowerCase()));
-        }
-      }
-      return { changes: 0 };
-    }
-    const body = m[2];
-    for (const raw of splitTopLevel(body)) {
-      const def = raw.trim();
-      const cm = def.match(/^"?(\w+)"?\s+(.+)$/i);
-      if (!cm) continue; // table-level constraint (UNIQUE/PRIMARY KEY) — handled below
-      const colName = cm[1].toLowerCase();
-      const rest = cm[2].toUpperCase();
-      if (/^(UNIQUE|PRIMARY|FOREIGN|CONSTRAINT|CHECK)\b/.test(def)) continue; // table-level constraint line
-      t.columns.push({
-        name: colName,
-        pk: /\bPRIMARY KEY\b/.test(rest) || colName === 'id',
-        notnull: /\bNOT NULL\b/.test(rest),
-        unique: /\bUNIQUE\b/.test(rest),
-        autoinc: /\bAUTOINCREMENT\b/.test(rest),
-      });
-      if (/\bUNIQUE\b/.test(rest)) t.uniqueGroups.push([colName]);
-    }
-    for (const raw of splitTopLevel(body)) {
-      const um = raw.trim().match(/^UNIQUE\s*\(([^)]+)\)/i);
-      const pm = raw.trim().match(/^PRIMARY KEY\s*\(([^)]+)\)/i);
-      const grp = um || pm;
-      if (grp) {
-        t.uniqueGroups.push(grp[1].split(',').map((c) => c.trim().replace(/"/g, '').toLowerCase()));
-      }
-    }
-    return { changes: 0 };
-  }
-
-  _cols(t) {
-    return t.columns.map((c) => c.name);
-  }
-
-  _insert(sql, params) {
-    const ignore = /INSERT\s+OR\s+IGNORE/i.test(sql);
-    const m = sql.match(/INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+"?(\w+)"?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]*)\)/i);
-    if (!m) throw new Error(`FakeD1: cannot parse INSERT: ${sql}`);
-    const t = this._table(m[1]);
-    const cols = m[2].split(',').map((c) => c.trim().replace(/"/g, '').toLowerCase());
-    // VALUES entries can be "?" placeholders or SQL literals (e.g. 0, 'x', NULL)
-    const valueSlots = splitTopLevel(m[3]);
-    const values = valueSlots.map((slot) => {
-      const s = slot.trim();
-      if (s === '?') return params.shift();
-      if (/^NULL$/i.test(s)) return null;
-      if (/^-?\d+(\.\d+)?$/i.test(s)) return Number(s);
-      if (/^'(?:[^']|'')*'$/i.test(s)) return s.slice(1, -1).replace(/''/g, "'");
-      throw new Error(`FakeD1: unsupported VALUES literal: ${s}`);
-    });
-    if (cols.length !== values.length) {
-      throw new Error(`FakeD1: INSERT column/value mismatch (${cols.length} cols, ${values.length} values): ${sql}`);
-    }
-
-    let row = {};
-    let explicitId = null;
-    cols.forEach((c, i) => {
-      const v = values[i];
-      if (c === 'id' && v != null) explicitId = Number(v);
-      row[c] = v === undefined ? null : v;
-    });
-
-    // UNIQUE / PK enforcement (constraints come from the stored CREATE TABLE)
-    const uniqueGroups = t.uniqueGroups || [];
-    for (const group of uniqueGroups) {
-      const cand = group.map((c) => row[c] ?? null);
-      if (cand.every((v) => v == null)) continue;
-      const dup = t.rows.find((r) => group.every((c, i) => (r[c] ?? null) === cand[i]));
-      if (dup) {
-        if (ignore) return { changes: 0, last_row_id: dup.id, meta: { changes: 0, last_row_id: dup.id } };
-        const err = new Error('UNIQUE constraint failed');
-        err.code = 'SQLITE_CONSTRAINT_UNIQUE';
-        throw err;
-      }
-    }
-
-    let id;
-    const hasIdCol = t.columns.length === 0 || t.columns.some((c) => c.name === 'id');
-    if (explicitId != null) {
-      id = explicitId;
-      row.id = id;
-    } else if (hasIdCol && !('id' in row)) {
-      id = ++t.autoinc;
-      row.id = id;
-    }
-    t.rows.push(row);
-    return { changes: 1, last_row_id: id, meta: { changes: 1, last_row_id: id } };
-  }
-
-  _update(sql, params) {
-    const m = sql.match(/^UPDATE\s+"?(\w+)"?\s*SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+))?$/i);
-    if (!m) throw new Error(`FakeD1: cannot parse UPDATE: ${sql}`);
-    const t = this._table(m[1]);
-    const sets = parseAssignments(m[2]);
-    const where = m[3] ? buildWhere(m[3]) : () => true;
-    let changes = 0;
-    for (const row of t.rows) {
-      if (!where(row, params)) continue;
-      let pi = 0;
-      const setPairs = m[2].split(',').map((s) => s.split('='));
-      void setPairs;
-      for (const [col] of sets) {
-        // params consumed left-to-right in SET order
-      }
-      // Assign: SET a = ?, b = ? consumes params[0..n-1]; WHERE consumes rest.
-      let offset = 0;
-      for (const col of sets) {
-        row[col] = params[offset++];
-      }
-      changes++;
-    }
-    return { changes, meta: { changes } };
-  }
-
-  _delete(sql, params) {
-    const m = sql.match(/^DELETE FROM\s+"?(\w+)"?(?:\s+WHERE\s+([\s\S]+))?$/i);
-    if (!m) throw new Error(`FakeD1: cannot parse DELETE: ${sql}`);
-    const t = this._table(m[1]);
-    const where = m[2] ? buildWhere(m[2]) : () => true;
-    const before = t.rows.length;
-    t.rows = t.rows.filter((row) => !where(row, params));
-    const changes = before - t.rows.length;
-    return { changes, meta: { changes } };
-  }
-
-  _select(sql, params) {
-    const parsed = parseSelect(sql);
-    parsed.table = this._table(parsed.tableName);
-    let combined = parsed.table.rows.map((row) => {
-      const c = {};
-      for (const k of Object.keys(row)) c[`${parsed.baseAlias}.${k}`] = row[k];
-      return c;
-    });
-    for (const join of parsed.joins) {
-      const jt = this._table(join.table);
-      const next = [];
-      for (const left of combined) {
-        let matched = false;
-        for (const right of jt.rows) {
-          const c = { ...left };
-          for (const k of Object.keys(right)) c[`${join.alias}.${k}`] = right[k];
-          const onLeft = evalExpr(join.onLeft, c, params);
-          const onRight = evalExpr(join.onRight, c, params);
-          if (onLeft === onRight) {
-            next.push(c);
-            matched = true;
-          }
-        }
-        if (!matched && join.kind === 'LEFT') {
-          const c = { ...left };
-          for (const col of jt.columns) c[`${join.alias}.${col.name}`] = null;
-          next.push(c);
-        }
-      }
-      combined = next;
-    }
-
-    const whereFn = buildWhere((parsed.wheres || []).map((w) => w.raw).join(' AND '));
-    let rows = combined.filter((row) => whereFn(row, params));
-
-    if (parsed.orderBy) {
-      const desc = parsed.orderBy.desc;
-      rows.sort((a, b) => {
-        const av = resolveCell(a, parsed.orderBy.col);
-        const bv = resolveCell(b, parsed.orderBy.col);
-        const cmp = av == null && bv == null ? 0 : av == null ? -1 : bv == null ? 1 : av < bv ? -1 : av > bv ? 1 : 0;
-        return desc ? -cmp : cmp;
-      });
-    }
-    if (parsed.count) {
-      return { results: [{ n: rows.length }], meta: {} };
-    }
-    // Limit may come from a literal (parsed.limit number) or a bind param.
-    let limitN = parsed.limit;
-    if (limitN === '?') {
-      limitN = params[params.length - 1];
-    }
-    if (parsed.limit !== null && parsed.limit !== undefined) rows = rows.slice(0, Number(limitN));
-
-    const out = rows.map((row) => {
-      if (parsed.star) {
-        const o = {};
-        for (const [k, v] of Object.entries(row)) o[k.includes('.') ? k.split('.')[1] : k] = v;
-        return o;
-      }
-      const o = {};
-      for (const item of parsed.select) {
-        if (item.alias) {
-          o[item.alias] = resolveCell(row, item.expr);
-        } else {
-          const key = item.expr.includes('.') ? item.expr.split('.')[1] : item.expr;
-          o[key] = resolveCell(row, item.expr);
-        }
-      }
-      return o;
-    });
-    return { results: out, meta: {} };
-  }
-}
-
-function splitTopLevel(body) {
-  const parts = [];
-  let depth = 0;
-  let cur = '';
-  for (const ch of body) {
-    if (ch === '(') depth++;
-    if (ch === ')') depth--;
-    if (ch === ',' && depth === 0) {
-      parts.push(cur);
-      cur = '';
-    } else cur += ch;
-  }
-  if (cur.trim()) parts.push(cur);
-  return parts;
-}
-
-function parseAssignments(setClause) {
-  // "a = ?, b = ?" → ['a','b'] (only ? placeholders supported)
-  return splitTopLevel(setClause).map((s) => s.split('=')[0].trim().replace(/"/g, '').toLowerCase());
-}
-
-function tokenizeWhere(clause) {
-  // Split on AND/OR at top level (no parens in our handlers' WHERE clauses).
-  const parts = clause.split(/\b(AND|OR)\b/i);
-  const tokens = [];
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) tokens.push({ op: parts[i].toUpperCase() });
-    else if (parts[i].trim()) tokens.push({ raw: parts[i].trim() });
-  }
-  return tokens;
-}
-
-function buildWhere(clause) {
-  const tokens = tokenizeWhere(clause);
-  const clauses = [];
-  for (const tk of tokens) {
-    if (tk.raw) clauses.push(tk.raw);
-  }
-  return (row, params) => {
-    let pi = 0; // one placeholder per clause, consumed left-to-right
-    return clauses.every((raw) => evalWhereRaw(raw, row, params, pi++));
-  };
-}
-
-// Evaluate a single comparison: "col OP ?" | "col IS ?" | "col IS NULL" | "col = ?"
-function evalWhereRaw(raw, row, params, paramIndex) {
-  const part = raw.trim();
-  const pv = params[paramIndex];
-  let m;
-  if ((m = part.match(/^(\w+(?:\.\w+)?)\s+IS\s+NULL$/i))) {
-    return resolveCell(row, m[1]) == null;
-  }
-  if ((m = part.match(/^(\w+(?:\.\w+)?)\s+IS\s+\?$/i))) {
-    const cell = resolveCell(row, m[1]);
-    return pv == null ? cell == null : cell === pv;
-  }
-  if ((m = part.match(/^(\w+(?:\.\w+)?)\s*(!=|<>)\s*\?$/i))) {
-    return resolveCell(row, m[1]) !== pv;
-  }
-  if ((m = part.match(/^(\w+(?:\.\w+)?)\s*=\s*\?$/i))) {
-    return resolveCell(row, m[1]) === pv;
-  }
-  if ((m = part.match(/^(\w+(?:\.\w+)?)\s+LIKE\s+\?$/i))) {
-    const pattern = pv;
-    const cell = String(resolveCell(row, m[1]) ?? '');
-    const re = new RegExp('^' + pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.') + '$', 'i');
-    return re.test(cell);
-  }
-  throw new Error(`FakeD1: unsupported WHERE fragment: "${part}"`);
-}
-
-function resolveCell(row, expr) {
-  if (expr.includes('.')) return row[expr] ?? null;
-  // unqualified: try exact, else any column ending in .expr or .TABLE.expr
-  if (expr in row) return row[expr];
-  const suffix = `.${expr}`;
-  const tqSuffix = `${suffix}`; // .expr  (matches alias.col and table.col keys)
-  let fallback = null;
-  for (const k of Object.keys(row)) {
-    if (k === expr) return row[k];
-    if (k.endsWith(tqSuffix)) {
-      // prefer the bare alias.col match; keep scanning for a TABLE.col match
-      if (fallback === null) fallback = row[k];
-    }
-  }
-  return fallback;
-}
-
-function evalExpr(expr, row, params) {
-  return resolveCell(row, expr.trim());
-}
-
-function parseSelect(sql) {
-  const fromRe = /^SELECT\s+([\s\S]+?)\s+FROM\s+"?(\w+)"?(?:\s+(?:AS\s+)?"?(?!(?:WHERE|ORDER|LIMIT|JOIN|ON|GROUP|HAVING|INNER|LEFT|RIGHT|CROSS|AS)\b)(\w+)"?)?\s*([\s\S]*)$/i;
-  const m = sql.match(fromRe);
-  if (!m) throw new Error(`FakeD1: cannot parse SELECT: ${sql}`);
-  const selectClause = m[1].trim();
-  const tableName = m[2];
-  const baseAlias = m[3] || tableName;
-  const rest = m[4] || '';
-  const table = null; // resolved by caller (FakeD1._select sets parsed.table)
-  const parsed = {
-    selectClause,
-    tableName,
-    baseAlias,
-    table,
-    joins: [],
-    wheres: [],
-    orderBy: null,
-    limit: null,
-    count: false,
-    star: false,
-    select: [],
-  };
-
-  if (/^COUNT\(\*\)\s+AS\s+n$/i.test(selectClause)) parsed.count = true;
-
-  // Peel off ORDER BY / LIMIT first so they don't confuse the JOIN scan.
-  let remaining = rest;
-  const lm = remaining.match(/\bLIMIT\s+(\d+|\?)\s*$/i);
-  if (lm) {
-    parsed.limit = lm[1] === '?' ? '?' : Number(lm[1]);
-    remaining = remaining.slice(0, lm.index).trim();
-  }
-  const om = remaining.match(/\bORDER BY\s+([\w.]+)(\s+DESC|\s+ASC)?(?:\s*,\s*[\w.]+(?:\s+(?:DESC|ASC))?)*\s*$/i);
-  if (om) {
-    parsed.orderBy = { col: om[1], desc: /DESC/i.test(om[2] || '') };
-    remaining = remaining.slice(0, om.index).trim();
-  }
-
-  const wm = remaining.match(/\bWHERE\s+([\s\S]+)$/i);
-  if (wm) {
-    remaining = remaining.slice(0, wm.index).trim();
-    parsed.wheres = tokenizeWhere(wm[1])
-      .filter((tk) => tk.raw)
-      .map((tk) => ({ raw: tk.raw, ops: tk.op ? [tk.op] : [] }));
-  }
-
-  // Remaining text (if any) is a chain of JOIN clauses.
-  const joinRe = /\b(INNER|LEFT)\s+JOIN\s+"?(\w+)"?(?:\s+(?:AS\s+)?"?(\w+)"?)?\s+ON\s+([\s\S]+?)(?=\b(INNER|LEFT)\s+JOIN\b|$)/gi;
-  let jm;
-  while ((jm = joinRe.exec(remaining)) !== null) {
-    const on = jm[4];
-    const eq = on.split('=');
-    parsed.joins.push({
-      table: jm[2],
-      alias: jm[3] || jm[2],
-      onLeft: eq[0].trim(),
-      onRight: (eq[1] || '').trim(),
-      kind: /LEFT/i.test(jm[1]) ? 'LEFT' : 'INNER',
-    });
-  }
-
-  if (!parsed.count) {
-    if (selectClause === '*') parsed.star = true;
-    else {
-      for (const raw of splitTopLevel(selectClause)) {
-        const am = raw.trim().match(/^([\w.*]+)\s+AS\s+(\w+)$/i);
-        if (am) parsed.select.push({ expr: am[1], alias: am[2] });
-        else parsed.select.push({ expr: raw.trim() });
-      }
-    }
-  }
-  return parsed;
-}
-
 // Fake request helper. `user_id` is what a `middlewarePorts` guard writes onto
 // ctx for an authenticated caller (kernel/packages/port-ctx.mjs guardUserId);
 // every permission route requires it.
@@ -480,6 +46,7 @@ test('permission: ensureSchema creates the five Spatie tables', async () => {
 
 test('permission: assign + hasRole + idempotent re-assign + revoke', async () => {
   const e = env();
+  await ensurePermissionSchema(e); // the port's own DDL, applied before the direct seed
   await e.DB.prepare('INSERT INTO roles (name, guard_name) VALUES (?, ?)').bind('editor', 'web').run();
 
   const assign = await permissionHandler(
@@ -523,6 +90,7 @@ test('permission: assign + hasRole + idempotent re-assign + revoke', async () =>
 
 test('permission: hasPermissionTo via direct + via role; missing permission → false', async () => {
   const e = env();
+  await ensurePermissionSchema(e);
   await e.DB.prepare('INSERT INTO permissions (name) VALUES (?)').bind('edit-posts').run();
   await e.DB.prepare('INSERT INTO roles (name) VALUES (?)').bind('author').run();
   const role = await e.DB.prepare('SELECT id FROM roles WHERE name = ?').bind('author').first();
@@ -560,6 +128,7 @@ test('permission: hasPermissionTo via direct + via role; missing permission → 
 
 test('permission: hasAnyPermission + hasAnyRole aggregations', async () => {
   const e = env();
+  await ensurePermissionSchema(e);
   await e.DB.prepare('INSERT INTO roles (name) VALUES (?)').bind('admin').run();
   await e.DB.prepare('INSERT INTO permissions (name) VALUES (?)').bind('a').run();
   await e.DB.prepare('INSERT INTO permissions (name) VALUES (?)').bind('b').run();
@@ -723,6 +292,7 @@ test('sluggable: custom separator', async () => {
 
 test('sluggable: exclude_id lets a row regenerate its own slug without self-collision', async () => {
   const e = env();
+  await ensureSluggableSchema(e);
   // seed a row (id=1) that already owns "my-post"
   await e.DB.prepare(
     'INSERT INTO slugs (slug_table, slug_column, slug, source) VALUES (?, ?, ?, ?)'

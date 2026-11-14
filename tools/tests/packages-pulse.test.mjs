@@ -1,83 +1,14 @@
 // tools/tests/packages-pulse.test.mjs — laravel/pulse observability port.
 //
-// Exercises the two seams with an in-memory D1 fake (no real D1 / network):
+// Exercises the two seams against real SQLite (`tools/tests/_fake-d1.mjs`),
+// no real D1 / network:
 //   - POST /pulse/record  -> inserts a row into `pulse_entries`; missing `type` -> 422.
 //   - GET  /pulse         -> aggregates `pulse_entries` into a JSON summary.
-// The fake supports exactly the SQL shapes `ports/packages/pulse.mjs` emits:
-// CREATE TABLE IF NOT EXISTS / CREATE INDEX (no-ops), INSERT ... VALUES (?,?,...),
-// and SELECT <cols> FROM <t>.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pulse, { summarize, ensureSchema } from '../../ports/packages/pulse.mjs';
+import { FakeD1 } from './_fake-d1.mjs';
 import { makeCtx } from './_helpers.mjs';
-
-// ---- A compact in-memory D1 fake for the pulse SQL shapes ------------------
-
-class FakeD1 {
-  constructor() {
-    this.tables = new Map(); // name -> [rows]
-    this.sequences = new Map(); // name -> next id
-    this._sql = null;
-    this._params = [];
-  }
-
-  prepare(sql) {
-    this._sql = sql;
-    this._params = [];
-    return this;
-  }
-
-  bind(...params) {
-    this._params = params;
-    return this;
-  }
-
-  async run() {
-    const sql = this._sql.replace(/\s+/g, ' ').trim();
-    const createTable = /^CREATE TABLE IF NOT EXISTS (\w+)/i.exec(sql);
-    if (createTable) {
-      if (!this.tables.has(createTable[1])) this.tables.set(createTable[1], []);
-      return { changes: 0, meta: {} };
-    }
-    if (/^CREATE INDEX/i.test(sql)) return { changes: 0, meta: {} };
-
-    const insert = /^INSERT INTO (\w+) \(([^)]+)\) VALUES \(([^)]+)\)$/i.exec(sql);
-    if (insert) {
-      const [, table, colsRaw, placeholders] = insert;
-      if (!this.tables.has(table)) this.tables.set(table, []);
-      const cols = colsRaw.split(',').map((c) => c.trim());
-      const row = {};
-      let pi = 0;
-      for (const ph of placeholders.split(',').map((p) => p.trim())) {
-        const col = cols[pi];
-        row[col] = ph === '?' ? this._params[pi] : undefined;
-        pi += 1;
-      }
-      const nextId = (this.sequences.get(table) || 0) + 1;
-      this.sequences.set(table, nextId);
-      row.id = nextId;
-      this.tables.get(table).push(row);
-      return { changes: 1, last_row_id: nextId, meta: { last_row_id: nextId } };
-    }
-    throw new Error(`FakeD1.run: unsupported SQL: ${sql}`);
-  }
-
-  async first() {
-    const { results } = await this.all();
-    return results[0] ?? null;
-  }
-
-  async all() {
-    const sql = this._sql.replace(/\s+/g, ' ').trim();
-    const sel = /^SELECT (.+?) FROM (\w+)$/i.exec(sql);
-    if (!sel) throw new Error(`FakeD1.all: unsupported SQL: ${sql}`);
-    const [, colsRaw, table] = sel;
-    const rows = this.tables.get(table) || [];
-    if (colsRaw.trim() === '*') return { results: rows.map((r) => ({ ...r })) };
-    const cols = colsRaw.split(',').map((c) => c.trim());
-    return { results: rows.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]]))) };
-  }
-}
 
 function makeEnv() {
   return { DB: new FakeD1() };
