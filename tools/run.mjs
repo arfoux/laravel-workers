@@ -43,8 +43,19 @@ function quoteWindowsArg(value) {
   return arg.replace(/([()%!^"<>&|;, *?])/g, '^$1');
 }
 
-function commandLine(cmd, args) {
-  return [cmd, ...args].map(quoteWindowsArg).join(' ');
+export function commandLine(cmd, args) {
+  // The COMMAND is quoted only when it needs it. Quoting a bare name changes how
+  // cmd.exe resolves it: `"npx.cmd" "wrangler" "--version"` answered
+  //   Error: Cannot find module '...\node_modules\npm\bin\npm-prefix.js'
+  // while `npx.cmd "wrangler" "--version"` answered 4.157.0 — same shell, same
+  // PATH, measured on the Windows audit machine. Every `deploy`/`doctor` wrangler
+  // call went through the quoted form, so the guided deploy could not start there
+  // (doctor reported "wrangler not found" while `npx wrangler` worked by hand).
+  // A command that carries a space or a cmd metacharacter (process.execPath is
+  // `C:\Program Files\nodejs\node.exe`) is still quoted and escaped as before —
+  // the node children keep working.
+  const head = /[\s%!^"<>&|;,()*?]/.test(String(cmd)) ? quoteWindowsArg(cmd) : String(cmd);
+  return [head, ...args.map(quoteWindowsArg)].join(' ');
 }
 
 function spawnOptions(opts) {
