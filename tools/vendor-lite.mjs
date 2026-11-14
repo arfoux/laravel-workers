@@ -17,12 +17,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveDependencies } from './composer-resolve.mjs';
 import { extractZip as extractZipJs } from './zip.mjs';
-import parser from 'php-parser';
-import { nodeName } from './static.mjs';
+import { nodeName, phpParser } from './static.mjs';
 import { toNativePath as normaliseShellPath } from './native-path.mjs';
-
-/** Same options as tools/static.mjs — positions are irrelevant here, docblocks are dropped. */
-const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 // A shell-supplied path ("/c/Users/...") normalised to a real Windows drive
 // path AND made absolute: this module uses the result as a cache key, so the

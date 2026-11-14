@@ -1,5 +1,4 @@
 // compiler/src/transpiler.mjs
-import parser from 'php-parser';
 import { Collection } from '../../kernel/collections.mjs';
 import { STR_METHODS } from '../../kernel/str.mjs';
 import { ARR_METHODS } from '../../kernel/arr.mjs';
@@ -9,14 +8,16 @@ import { KNOWN_RULES, SNIFFED_EXTENSIONS, SNIFFED_MIME_TYPES } from '../../kerne
 // the SAME reader the class/controller/view-name compilers use, so one literal
 // reads the same way everywhere.
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
+// The shared php-parser instance (tools/static.mjs): one options object for the
+// whole toolchain, so a `withPositions` drift cannot silently move the `loc`
+// this file reports on a refusal.
+import { phpParser } from '../../tools/static.mjs';
 // The package facade → primitive table (M3): the facades that ARE a thin
 // HTTP/DB call map onto the kernel/package primitives on rt; everything else
 // still falls through to the catch-all LW003 and refuses loudly.
 import { buildPackageBindingIndex } from '../package-bindings.mjs';
 
 const PACKAGE_BINDING_INDEX = buildPackageBindingIndex();
-
-const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 // PHP variable names are mangled to JS identifiers so reserved words ($null, $new, ...) are safe.
 const vname = (name) => 'v_' + String(name).replace(/[^A-Za-z0-9_]/g, '_');
