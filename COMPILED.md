@@ -525,14 +525,22 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
 20. **A path with no route at all** — `_routes.json` decides friend-or-asset
     before the Worker runs, so a request path outside its include list (an
     unmapped path, a vendor route the app never declared) is answered by the
-    static bundle: Cloudflare's plain 404, where PHP renders the app's
-    `resources/views/errors/404.blade.php`. The status agrees (404/404), the
-    body does not; the shadow harness declares the four such steps
-    `expect: 'diverges'` and asserts the status and the declared headers on both
-    sides (`shadow/run.mjs` - `diverges (known)` requires `expectStatusOk`).
-    Same class: a route whose handler the build refused (a declared refusal) is
-    not in the include list either *(escape: declare the URI in
-    `registry.json`)*.
+    static bundle. That answer is the app's own 404 page: the build writes
+    `dist/public/404.html` (`tools/prerender.php --error 404` renders it through
+    the framework's exception path, not through a route, so no route of the app
+    can capture the request) and the scaffolded `wrangler.jsonc` carries
+    `"assets": { …, "not_found_handling": "404-page" }`. Measured live before and
+    after — `GET /nonexistent-route-for-404`, `docs/EVIDENCE.md` finding 2:
+    `404`, **0 B** → `404`, **218 B byte-identical to `dist/public/404.html`**
+    (and to the page the app's own `/errors/404` route answers). Two deliberate
+    limits: the page is rendered with a synthetic `GET /` request, so a 404 view
+    that prints the request path bakes that path; and the ASSETS layer has no
+    `Accept` to branch on, so a client that asked for JSON still receives the HTML
+    page (PHP answers JSON for `Accept: application/json`). An app that ships its
+    own `public/404.html` keeps its file, and an app whose config predates the
+    knob gets a DECLARED finding naming the exact line to add. A route whose
+    handler the build refused (a declared refusal) is not in the include list
+    either *(escape: declare the URI in `registry.json`)*.
 21. **A requirement that cannot become a regex** — `->where($param, $expression)`
     stores the expression as given and Symfony compiles it into the path regex
     verbatim (`RouteCompiler::compilePattern()`, after `sanitizeRequirement()`

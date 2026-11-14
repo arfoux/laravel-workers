@@ -241,6 +241,13 @@ Works on any Laravel ≥ 10 project — a fresh clone or an app you've been runn
 
 `registry.json` and `wrangler.jsonc` are **optional** — the build uses sensible defaults and auto-writes `wrangler.jsonc` when absent (worker name from the app-dir slug; `database_id` is a placeholder). So even the scaffolding happens at build time.
 
+That scaffolded `assets` block also carries `"not_found_handling": "404-page"`: the build writes
+`dist/public/404.html` (the app's own 404 page, rendered through Laravel's exception path), and
+that switch is what makes the ASSETS layer serve it for a path outside `_routes.json` instead of
+Cloudflare's null-body 404. An app whose config predates it gets a DECLARED finding naming the
+exact line to add, and an app that ships its own `public/404.html` keeps its file — see
+`COMPILED.md` §6 item 20 and `docs/EVIDENCE.md` finding 2.
+
 ### CI: the verdict people read, and the merge pipeline
 
 If the app lives on GitHub, `build --strict` alone answers "did it compile"; it does
