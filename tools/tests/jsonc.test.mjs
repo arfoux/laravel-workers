@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   inspectD1Target,
+  inspectOnlyD1,
   inspectWranglerAccount,
   inspectWranglerName,
   JsoncError,
@@ -137,4 +138,49 @@ test('comments that look like fields do not become D1 entries', () => {
 }`;
   assert.equal(inspectD1Target(text, 'real-db').status, 'ok');
   assert.equal(inspectD1Target(text, 'fake').status, 'no-entry');
+});
+
+// inspectD1Target matches on database_name, so a config whose name is not the one
+// a caller guessed reads as no-entry even though it binds a real database.
+test('inspectOnlyD1 reads the single entry whatever its database_name', () => {
+  const text = `{
+  "name": "my-app",
+  "d1_databases": [
+    { "binding": "DB", "database_name": "renamed-in-the-account", "database_id": "${OTHER_ID}" },
+  ],
+}`;
+  assert.equal(inspectD1Target(text, 'my-app-db').status, 'no-entry');
+  const info = inspectOnlyD1(text);
+  assert.equal(info.status, 'ok');
+  assert.equal(info.id, OTHER_ID);
+  assert.equal(info.name, 'renamed-in-the-account');
+
+  // a placeholder is still reported as one, so the create path keeps working
+  const placeholder = `{
+  "d1_databases": [
+    { "binding": "DB", "database_name": "my-app-db", "database_id": "REPLACE_WITH_D1_ID" },
+  ],
+}`;
+  assert.equal(inspectOnlyD1(placeholder).status, 'placeholder');
+  // ambiguous shapes are refused rather than guessed
+  assert.equal(inspectOnlyD1('{ "name": "x" }').status, 'no-d1');
+  assert.equal(inspectOnlyD1(`{
+  "d1_databases": [
+    { "database_name": "a", "database_id": "${DB_ID}" },
+    { "database_name": "b", "database_id": "${OTHER_ID}" },
+  ],
+}`).status, 'ambiguous');
+});
+
+test('updateWranglerD1Id leaves an id-equal entry alone, name mismatch included', () => {
+  const text = `{
+  "name": "my-app",
+  "d1_databases": [
+    { "binding": "DB", "database_name": "renamed-in-the-account", "database_id": "${OTHER_ID}" },
+  ],
+}`;
+  const result = updateWranglerD1Id(text, 'my-app-db', OTHER_ID);
+  assert.equal(result.status, 'already');
+  assert.equal(result.changed, false);
+  assert.equal(result.text, text);
 });
