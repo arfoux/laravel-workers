@@ -2,6 +2,27 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### `route()` reads its parameters the way Laravel does
+
+`route('crud.show', ['post' => $id])` / `redirect()->route(...)` — the associative form, which
+is Laravel's normal one — built the URL positionally. The transpiler emits
+`rt.route("crud.show", {"post": id})`, one object in the first slot, and the runtime's `genUrl`
+walked the URI's slots whatever it was handed, so a compiled app answered
+`/crud/%5Bobject%20Object%5D` where PHP answers `/crud/46`. Found on the live app
+(`docs/EVIDENCE.md` finding 1: the `POST /crud` redirect, which is how a form-redirect app
+broke).
+
+`genUrl` now follows Laravel 13.37 / PHP 8.3, one probe per rule: a map is matched **by name**,
+a list positionally; a map key the URI does not consume becomes a query parameter in map order
+(null dropped, `true`/`false` as `1`/`0`, a nested array as `f%5Ba%5D=b`); an absent `{x?}`
+drops its segment instead of leaving an empty one; a missing required parameter throws the
+framework's own `Missing required parameter for [Route: ...] [URI: ...] [Missing parameter: ...]`;
+a parameter is `rawurlencode`d, so `%2F` survives a wildcard; the third PHP argument
+(`absolute: false`) answers a relative URL. `compiler/tests/rt-url.test.mjs` pins every line of
+that table, and the before/after is one call: old runtime `/crud/%5Bobject%20Object%5D`, new
+runtime `/crud/46`. A list with more values than the route has parameters is the one shape
+**not** mirrored (PHP answers `/crud/1?2`) — a documented gap, not a guess.
+
 ### The live app was run, and the run found four defects
 
 Every claim in this repository had been measured on fixtures, the parity corpus or a probe
@@ -9,12 +30,12 @@ worker. On 2026-11-14 a real app (`lw-showcase`, 138 routes, live at `lw-showcas
 since 2026-11-13) was swept instead: 92 GET URIs against the deployed worker and against a
 local PHP 8.3.30 oracle, a full HTTP auth round trip, a D1 write over HTTP, a build from
 current `main`, and `deploy --plan --mode 3`. The record, with the commands and their output,
-is `docs/EVIDENCE.md`; the defects are **recorded, not fixed** here - each fix is its own
-change.
+is `docs/EVIDENCE.md`; the defects are **recorded** here - each fix is its own change, and
+finding 1 landed in this release (the entry above).
 
 | finding | evidence | status |
 |---|---|---|
-| `route()` with an **associative** params array answers `[object Object]` (`compiler/runtime/rt-from-context.mjs:1155` is positional; the transpiler emits one object) | `POST /crud` -> `302 Location: /crud/%5Bobject%20Object%5D` on the live worker **and** on a fresh `main` build under `wrangler dev`; the flash text and the log line carry the correct id (`Created post 46`, `crud.store {"id":46}`) | open - contradicts `COMPILED.md:860` (✅) and no test covers named params |
+| `route()` with an **associative** params array answers `[object Object]` (`compiler/runtime/rt-from-context.mjs:1155` is positional; the transpiler emits one object) | `POST /crud` -> `302 Location: /crud/%5Bobject%20Object%5D` on the live worker **and** on a fresh `main` build under `wrangler dev`; the flash text and the log line carry the correct id (`Created post 46`, `crud.store {"id":46}`) | **fixed** - `genUrl` matches a map by name and `compiler/tests/rt-url.test.mjs` pins every measured case (this row was `open`: it contradicted `COMPILED.md:860` (✅) with no test covering named params) |
 | a path outside `_routes.json`'s 99 includes is answered by the assets layer, so the 404 has no body | live `GET /nonexistent-route-for-404` -> `404`, 0 B; the app's own 404 and PHP answer 218 B | open - document or add a catch-all |
 | prerendered `static` routes answer 307 to their trailing slash | live `GET /architecture` -> `307 /architecture/` -> `200`; PHP -> `200` | open (cosmetic) |
 | `status` is blind to a deploy it did not perform, and nothing records the source SHA | `status` -> `no deploy recorded` for a live app (`lw-state.json` absent); `wrangler deployments list` -> `Source: Unknown (deployment)` | open - report the case / record provenance |
