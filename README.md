@@ -101,6 +101,7 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 | guard / route / middleware ports, the 47-slug package fleet | [docs/PACKAGE-PORTS.md](docs/PACKAGE-PORTS.md) |
 | what the verdict badge means (the app-facing CI contract) | [docs/CI.md](docs/CI.md) |
 | what changed, when | [CHANGELOG.md](CHANGELOG.md) |
+| what was actually run against a real app — and what was not, with the commands and their output | [docs/EVIDENCE.md](docs/EVIDENCE.md) |
 | **working on the toolchain? start here** — the suite, the checks, the build internals, the full doc map | [docs/DEVELOPING.md](docs/DEVELOPING.md) |
 
 ## Philosophy

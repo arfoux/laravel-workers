@@ -65,6 +65,7 @@ export const REQUIRED_DOCS = [
   'docs/DEPLOY.md',
   'docs/INTERNALS.md',
   'docs/DEVELOPING.md',
+  'docs/EVIDENCE.md',
 ];
 
 const here = dirname(fileURLToPath(import.meta.url));
