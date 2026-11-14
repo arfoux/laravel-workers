@@ -35,7 +35,12 @@ import {
 } from './php-funcs.mjs';
 import { makeClosure, runConfigStatements } from './config-script.mjs';
 
-const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
+// The ONE php-parser instance: docblocks dropped, byte positions kept. It is
+// exported because three other modules used to spell the same options out again
+// (tools/vendor-lite.mjs, tools/routes-dump.mjs, compiler/src/transpiler.mjs) -
+// and a `withPositions` that drifted between them would silently change the
+// `loc` a refusal reports, which is exactly the class of bug #697 covers.
+export const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
 
 /**
  * Parse PHP source into an AST with the SHARED php-parser instance (3.x).

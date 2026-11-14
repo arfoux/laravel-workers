@@ -54,6 +54,7 @@ import {
   loadConfig,
   configGet,
   renestMixedChains,
+  phpParser,
 } from './static.mjs';
 import { singular as strSingular } from './inflect.mjs';
 import { slugifyRoute } from './route-slug.mjs';
@@ -1420,15 +1421,11 @@ function parse() {
   return { routes, errors };
 }
 
-// php-parser instance (module-local, matching static.mjs's config)
-import parser from 'php-parser';
-let _parser;
 function phpParse(source) {
-  _parser = _parser || new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
   // php-parser nests PHP 7's `.` precedence; route conditions are PHP, so the
   // tree is re-associated to PHP 8's (`.` below `+ - << >>`) exactly as the
   // config fold does (tools/static.mjs renestMixedChains()).
-  return renestMixedChains(_parser.parseCode(source));
+  return renestMixedChains(phpParser.parseCode(source));
 }
 
 const { routes, errors } = parse();
