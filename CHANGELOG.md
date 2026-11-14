@@ -2,6 +2,63 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### `deploy` binds the `database_id` the config already names
+
+The guided deploy chose the database by **name**. With no `lw-state.json` yet and no explicit
+`--d1-id`, the choice fell to `auto`, which resolves `<worker>-db` and **creates** it when the
+account has no database under that name — without ever reading a `database_id` already written into
+`wrangler.jsonc`. Measured on the live app, whose config bound `database_name: "lw-showcase-db"` with
+`database_id: "033e10f8-d1d8-4589-bbb9-954c6e672cf7"` while the account listed that id under the
+name `lw-constructs-db`:
+
+```
+→ created D1 "lw-showcase-db" (6870bddd-8549-4c3e-b423-ebe6f5b3ad9a)
+→ wrangler.jsonc: database_id updated
+```
+
+The app answered `500` on `/` and `/crud` from that moment on — the new database is empty and the
+schema was skipped — until the old id was restored. A concrete `database_id` is now read
+name-agnostically (`inspectOnlyD1()`) and sits between the recorded-state branch and the
+`!interactive` fallback, so `--d1-id` and an explicit `--d1-auto` keep winning in the same order; a
+configured id the account does not have fails loudly instead of provisioning a replacement, and a
+placeholder or a config without a D1 entry still creates. `updateWranglerD1Id()` answers `already`
+when the single entry binds the same id under another name — it used to stop with
+`wrangler.jsonc has no D1 entry named "<cloud name>"` on a database renamed in the account — and
+`--plan` reports that case as a note rather than `refusing to create an unbindable database`.
+
+Tests: `tools/tests/jsonc.test.mjs` (a name-agnostic read; an id-equal update is a no-op) and a
+`deploy-integration` case where the account holds `legacy-db`, the config binds that id under another
+name and no state file exists: the plan reuses the id, **no `d1 create` call** is made,
+`wrangler.jsonc` is byte-identical afterwards, and the state records the configured id.
+
+`docs/DEPLOY.md` also gained the hazard this produced: `wrangler d1 delete <name>` resolves the name
+against the configured binding, so on a config whose `database_name` differs from the account's it
+deletes the database the app is *using*. Check `wrangler d1 info <uuid>` before a destructive D1
+command.
+
+### The tool can reach `wrangler` on Windows again
+
+`deploy` and `doctor` invoke wrangler through one helper (`tools/run.mjs`), and that helper quoted
+**every** token for `cmd.exe`, the executable included. Quoting a bare name changes how cmd resolves
+it — measured in the same shell, the same PATH and the same working directory:
+
+```
+"npx.cmd" "wrangler" "--version"  → status 1
+    Error: Cannot find module '...\lw-showcase\node_modules\npm\bin\npm-prefix.js'
+npx.cmd "wrangler" "--version"    → status 0, 4.157.0
+```
+
+`doctor` therefore printed `wrangler not found` while `npx wrangler` answered by hand, and
+`deploy --mode 3` died on its version probe with that module error. The command is now quoted only
+when it carries a space or a cmd metacharacter (`process.execPath` is
+`C:\Program Files\nodejs\node.exe`, so the node children stay quoted and caret-escaped), and every
+argument keeps the full escaping — a `%` or a `!` in a `--message` still reaches the child
+literally.
+
+Tests: `tools/tests/run.test.mjs` pins the bare head, the escaped space (`Program^ Files`) and the
+argument escapes. Measured after the change: `doctor` prints `✓ wrangler 4.157.0`, and the guided
+deploy runs to completion (that run is what surfaced the D1 defect above).
+
 ### `status` names the deploy it does not know, and the source rides with the version
 
 An app that was LIVE printed `no deploy recorded for this app yet` — the same line a fresh app
