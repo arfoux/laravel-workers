@@ -2,6 +2,24 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### A prerendered page answers with and without its trailing slash
+
+`GET /architecture` on a live app answered `307 Location: /architecture/` and then `200`, where PHP
+answers `200` directly (`docs/EVIDENCE.md` finding 5). Cloudflare's default `html_handling`
+(`auto-trailing-slash`) answers `/about` from `about.html` and `/about/` from
+`about/index.html`, so a page that exists only as the folder file redirects the bare URL — and no
+`html_handling` mode answers both spellings without a redirect. PHP's matcher trims the trailing
+slash, so both are the same route and both are `200` (measured on the shadow oracle, `200/200`).
+The build therefore writes every prerendered page under **both** names it is reachable as, through
+one rule (`tools/snapshot-paths.mjs`) that the writer, the snapshot drop path (a compiled controller
+replaces a snapshot) and the generated route table all ask; a `registry.json` `static` value an
+operator names gains its twin automatically, and `tools/tests/snapshot-paths.test.mjs` pins the
+cases. Neither name enters `_routes.json`, so the 0-invocation tier is untouched. Measured after
+the change: a local `wrangler dev` and the live worker answer `/architecture` **and**
+`/architecture/` with `200`, no `Location`, the same 2553 bytes (`/quotas` the same 2470), while
+`/` stays `200` and the include list stays at 99. The `writePage` log line now reports bytes on
+disk instead of string length — the pages carry multi-byte characters, so it under-reported.
+
 ### A path outside `_routes.json` answers the app's own 404 page
 
 `GET /nonexistent-route-for-404` on a live app answered `404` with **no body** where PHP answers
@@ -60,7 +78,7 @@ is `docs/EVIDENCE.md`; the defects are **recorded** here - each fix is its own c
 |---|---|---|
 | `route()` with an **associative** params array answers `[object Object]` (`compiler/runtime/rt-from-context.mjs:1155` is positional; the transpiler emits one object) | `POST /crud` -> `302 Location: /crud/%5Bobject%20Object%5D` on the live worker **and** on a fresh `main` build under `wrangler dev`; the flash text and the log line carry the correct id (`Created post 46`, `crud.store {"id":46}`) | **fixed** - `genUrl` matches a map by name and `compiler/tests/rt-url.test.mjs` pins every measured case (this row was `open`: it contradicted `COMPILED.md:860` (✅) with no test covering named params) |
 | a path outside `_routes.json`'s 99 includes is answered by the assets layer, so the 404 has no body | live `GET /nonexistent-route-for-404` -> `404`, **0 B** before the change and `404`, **218 B** after it (byte-identical to `dist/public/404.html`); the app's own 404 and PHP answer the same 218 B | **fixed** - the build writes `dist/public/404.html` from the framework's own 404 render and the scaffolded `wrangler.jsonc` carries `assets.not_found_handling: "404-page"`, the switch that serves it (this row was `open`: the platform's null-body 404 came back for every path outside the include list) |
-| prerendered `static` routes answer 307 to their trailing slash | live `GET /architecture` -> `307 /architecture/` -> `200`; PHP -> `200` | open (cosmetic) |
+| prerendered `static` routes answer 307 to their trailing slash | live `GET /architecture` -> `307 /architecture/` -> `200`; PHP -> `200` | **fixed** - every prerendered page is written under both spellings it is reachable as (`about.html` + `about/index.html`, `tools/snapshot-paths.mjs`), so local `wrangler dev` and the live worker answer `/architecture` **and** `/architecture/` with `200`, no `Location` (this row was `open`: one file can only serve one spelling without the redirect) |
 | `status` is blind to a deploy it did not perform, and nothing records the source SHA | `status` -> `no deploy recorded` for a live app (`lw-state.json` absent); `wrangler deployments list` -> `Source: Unknown (deployment)` | open - report the case / record provenance |
 
 What the same run **did** verify: build exit 0 (85/86 controllers, 131 routes, 33 views

@@ -540,7 +540,11 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
     own `public/404.html` keeps its file, and an app whose config predates the
     knob gets a DECLARED finding naming the exact line to add. A route whose
     handler the build refused (a declared refusal) is not in the include list
-    either *(escape: declare the URI in `registry.json`)*.
+    either *(escape: declare the URI in `registry.json`)*. A PRERENDERED page is
+    written under both spellings it is reachable as
+    (`tools/snapshot-paths.mjs`): `/about` is answered from `about.html` and
+    `/about/` from `about/index.html`, so neither is a 307 — PHP trims the slash
+    and answers 200 for both.
 21. **A requirement that cannot become a regex** — `->where($param, $expression)`
     stores the expression as given and Symfony compiles it into the path regex
     verbatim (`RouteCompiler::compilePattern()`, after `sanitizeRequirement()`

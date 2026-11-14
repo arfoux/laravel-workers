@@ -185,6 +185,22 @@ top of `e330b2e`.
 the asset layer; PHP answers 200 directly. Harmless for a browser, visible to `curl` users,
 crawlers and any client that does not follow redirects.
 
+**Fixed.** A prerendered page is written under **both** names it is reachable as —
+`architecture.html` and `architecture/index.html` — because the ASSETS layer answers `/about`
+from the flat file and `/about/` from the folder one, and one file can only serve one of them
+without a redirect; PHP trims the trailing slash, so it answers 200 for both (measured: the
+shadow oracle, `200/200` on `/architecture` and on `/architecture/`). The rule lives once, in
+`tools/snapshot-paths.mjs`, and `build.mjs`'s writer, its drop path (a compiled controller
+replaces a snapshot) and the generated route table all ask it. Measured after the change, on a
+local `wrangler dev` and on the live worker: `/architecture` and `/architecture/` both answer
+`200` with no `Location`, the same 2553 bytes (`/quotas`, `/quotas/`: 2470), while `/` stays `200`
+and a path outside `_routes.json` still answers the app's 404 page. The proof is the status and
+the served bytes against the FILE, not the body against PHP's raw render: a snapshot's URLs are
+relativized at build time (`tools/snapshot-urls.mjs`), so PHP's own render carries
+`http://localhost` where the file carries `/` — the normalisation this document's 92-URI sweep
+already records. The invocation tier is untouched: both names are plain assets, and
+`_routes.json` still carries 99 include + 1 exclude.
+
 **6 — P6 (minor): a missing binding is reported as 500.** `GET /img/a.png` →
 `500 {"ok":false,"error":"CF_IMAGE_RESIZING_ZONE is not configured"}`. It fails loud instead
 of lying, which is right; `501`/`503` would say "the edge is not configured" rather than "the
