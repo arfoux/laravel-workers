@@ -560,15 +560,13 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
       const viewList =
         viteViews.length > 1 ? viteViews.length + ' Blade views (' + viteViews.join(', ') + ')' : viteViews[0];
       const candidates = manifestCandidates.map((p) => relPath(p)).join(', ');
-      // The framing both "no manifest" failures open with: name the views that
-      // call the frontend and the manifest paths that were looked for. One copy
-      // — the two sites differ in what to do next, not in the diagnosis.
+      // The diagnosis every fullstack failure opens with: name the views that
+      // call the frontend. One copy - each site appends what to do next.
+      // `fullstackNoManifest` is the two no-manifest renderings, which also name
+      // the manifest paths that were looked for.
+      const fullstackPrefix = (views) => 'this is a FULLSTACK app: ' + views + ' call @vite()/mix()';
       const fullstackNoManifest = (views, paths) =>
-        'this is a FULLSTACK app: ' +
-        views +
-        ' call @vite()/mix(), but no frontend manifest is built (' +
-        paths +
-        ')';
+        fullstackPrefix(views) + ', but no frontend manifest is built (' + paths + ')';
       let scripts = {};
       try {
         scripts = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8')).scripts || {};
@@ -639,9 +637,8 @@ if (!vendorDir && !existsSync(join(appDir, 'vendor/autoload.php'))) {
           runner = hadDeps ? 'npm run build' : 'npm install + npm run build';
         } catch (e) {
           fail(
-            'this is a FULLSTACK app: ' +
-              viewList +
-              ' call @vite()/mix(), and the automatic frontend build failed (' +
+            fullstackPrefix(viewList) +
+              ', and the automatic frontend build failed (' +
               (bunTried ? 'bun fell back to npm; ' : '') +
               'exit ' +
               exitOf(e) +
