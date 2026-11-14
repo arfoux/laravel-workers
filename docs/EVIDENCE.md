@@ -180,6 +180,24 @@ source SHA or the toolchain version, and `wrangler deployments list` shows `Sour
 (deployment)`. So "which commit is live" is unanswerable — the working tree here is dirty on
 top of `e330b2e`.
 
+**Fixed.** Three surfaces answer it now, and each says so when it does not know. The **build**
+writes `dist/build-info.json` — `{ toolVersion, builtAt, source: { sha, dirty } }` — from
+`tools/git-sha.mjs`, which answers `null` outside a git work tree instead of inventing a commit
+(measured on this app: `e330b2e`, `dirty: true`, which is exactly this tree). **`deploy`** records
+the same identity in `lw-state.json` (`sourceSha`, `sourceDirty`, `toolVersion`) plus the
+`versionId` wrangler prints, and tags the Worker Version with the short SHA — measured on the live
+app: `Tag: e330b2e6cfd0`, `Message: e330b2e (+uncommitted changes) · laravel-workers 0.5.0`. The
+`Source:` line still reads `Unknown (version_upload)`: that column describes HOW the version was
+uploaded, not what it contains, so the **tag** is what carries the answer. **`status`** tells the
+three cases apart — nothing recorded, no record but a `wrangler.jsonc`/`dist/` (the case this
+finding found mislabelled), and a recorded deploy with `commit :` and `version :` lines. On the
+live app it printed "this toolchain recorded no deploy for this app … dist/ was built from
+e330b2e (+uncommitted changes) … deployed outside laravel-workers … not known from here: the live
+worker, its URL, and its D1" where it used to say "no deploy recorded for this app yet".
+
+`/health` deliberately still reports `builtAt` only: the app's commit is not a public fact, so it
+is recorded in the artifact and in the deploy state rather than announced by a public endpoint.
+
 **5 — P5: prerendered static routes answer 307 before 200.** `GET /architecture` and
 `GET /quotas` (the two `static` routes) return `307 Location: /architecture/`, then 200 from
 the asset layer; PHP answers 200 directly. Harmless for a browser, visible to `curl` users,

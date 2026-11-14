@@ -2,6 +2,34 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### `status` names the deploy it does not know, and the source rides with the version
+
+An app that was LIVE printed `no deploy recorded for this app yet` — the same line a fresh app
+prints — and nothing anywhere said which commit had been deployed (`docs/EVIDENCE.md` finding 4).
+
+Three surfaces now share one rule (`tools/git-sha.mjs`, which answers `null` — never a guess —
+outside a git work tree, and flags a dirty tree because a deploy of uncommitted work is not a
+deploy of that commit):
+
+- the **build** writes `dist/build-info.json` (`toolVersion`, `builtAt`, `source: { sha, dirty }`),
+  so a dist carries its own provenance;
+- **`deploy`** records the same identity in `lw-state.json` (`sourceSha`, `sourceDirty`,
+  `toolVersion`) with the `versionId` wrangler printed, and tags the Worker Version with the short
+  SHA plus a message (`<label> · laravel-workers <version>`) — `wrangler versions list` then answers
+  which commit a version holds instead of `Tag: -`;
+- **`status`** tells the three cases apart: nothing recorded; no record but a `wrangler.jsonc` or
+  `dist/` (deployed outside the toolchain — and it names what it cannot know: the live worker, its
+  URL, its D1); and a recorded deploy, now with `commit :` and `version :` lines.
+
+Measured on the live app: its newest version carries `Tag: e330b2e6cfd0` and
+`Message: e330b2e (+uncommitted changes) · laravel-workers 0.5.0`, and `status` printed the
+"deployed outside laravel-workers" case with the dist's commit where it used to print the fresh-app
+line. `/health` deliberately still carries `builtAt` only — the app's commit is not a public fact.
+
+Tests: `tools/tests/git-sha.test.mjs`, `tools/tests/status.test.mjs` (the three cases plus a
+damaged state file), a `deploy-integration` case asserting the exact `--tag`/`--message` wrangler
+receives and the four fields that land in the state, and the tri-state `sourceDirty` rejection.
+
 ### A path outside `_routes.json` answers the app's own 404 page
 
 `GET /nonexistent-route-for-404` on a live app answered `404` with **no body** where PHP answers
@@ -54,14 +82,14 @@ since 2026-11-13) was swept instead: 92 GET URIs against the deployed worker and
 local PHP 8.3.30 oracle, a full HTTP auth round trip, a D1 write over HTTP, a build from
 current `main`, and `deploy --plan --mode 3`. The record, with the commands and their output,
 is `docs/EVIDENCE.md`; the defects are **recorded** here - each fix is its own change, and findings
-1 and 2 have landed (the two entries above).
+1, 2 and 4 have landed (the entries above).
 
 | finding | evidence | status |
 |---|---|---|
 | `route()` with an **associative** params array answers `[object Object]` (`compiler/runtime/rt-from-context.mjs:1155` is positional; the transpiler emits one object) | `POST /crud` -> `302 Location: /crud/%5Bobject%20Object%5D` on the live worker **and** on a fresh `main` build under `wrangler dev`; the flash text and the log line carry the correct id (`Created post 46`, `crud.store {"id":46}`) | **fixed** - `genUrl` matches a map by name and `compiler/tests/rt-url.test.mjs` pins every measured case (this row was `open`: it contradicted `COMPILED.md:860` (✅) with no test covering named params) |
 | a path outside `_routes.json`'s 99 includes is answered by the assets layer, so the 404 has no body | live `GET /nonexistent-route-for-404` -> `404`, **0 B** before the change and `404`, **218 B** after it (byte-identical to `dist/public/404.html`); the app's own 404 and PHP answer the same 218 B | **fixed** - the build writes `dist/public/404.html` from the framework's own 404 render and the scaffolded `wrangler.jsonc` carries `assets.not_found_handling: "404-page"`, the switch that serves it (this row was `open`: the platform's null-body 404 came back for every path outside the include list) |
 | prerendered `static` routes answer 307 to their trailing slash | live `GET /architecture` -> `307 /architecture/` -> `200`; PHP -> `200` | open (cosmetic) |
-| `status` is blind to a deploy it did not perform, and nothing records the source SHA | `status` -> `no deploy recorded` for a live app (`lw-state.json` absent); `wrangler deployments list` -> `Source: Unknown (deployment)` | open - report the case / record provenance |
+| `status` is blind to a deploy it did not perform, and nothing records the source SHA | `status` -> `no deploy recorded` for a live app (`lw-state.json` absent); `wrangler deployments list` -> `Source: Unknown (deployment)` | **fixed** - the build writes `dist/build-info.json` (commit + dirty flag + tool version), `deploy` records the same identity in `lw-state.json` and tags the Worker Version (`Tag: e330b2e6cfd0`, measured live), and `status` names the three cases instead of printing one line for all of them (this row was `open`: nothing recorded which commit was live) |
 
 What the same run **did** verify: build exit 0 (85/86 controllers, 131 routes, 33 views
 byte-identical, `READINESS: RUNS ON THE EDGE`), `deploy --plan --mode 3` (zero-mutation,

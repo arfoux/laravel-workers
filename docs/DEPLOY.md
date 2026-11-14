@@ -101,6 +101,8 @@ The build then runs with `--strict`. Only after it exits 0 does the tool provisi
 
 State is read strictly. A damaged, unreadable, or future-version `lw-state.json` stops `deploy` before any prompt or Cloudflare call; `status` and `doctor` report the file and exit 2 rather than pretending the app has no deployment. Fix the file or remove it deliberately.
 
+The same file carries **provenance**: `sourceSha` + `sourceDirty` (the commit the built artifact came from, from `tools/git-sha.mjs` — `null`, never a guess, outside a git work tree), `toolVersion`, and the `versionId` wrangler printed for the version it created. The build records the same identity in `dist/build-info.json`, `deploy` tags the Worker Version with the short SHA (`--tag`, message `<label> · laravel-workers <version>`) so `wrangler deployments list` can name the source, and `status` prints `commit :`/`version :` lines. When nothing was recorded but the app looks built/deployed (`wrangler.jsonc` or `dist/` present), `status` now says exactly that — "deployed outside laravel-workers" — instead of "no deploy recorded for this app yet", and names what it cannot know (the live worker, its URL, its D1).
+
 ```
 What should I do?
   [1] build only
