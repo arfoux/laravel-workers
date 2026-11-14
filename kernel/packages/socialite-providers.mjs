@@ -98,12 +98,3 @@ export function resolveProviderExtra(env, name) {
     mapUser: shape.mapUser,
   };
 }
-
-// Normalize a provider's raw user JSON into the standard Socialite-shaped
-// object `{ id, name, email, nickname, avatar }` without holding a full
-// resolved provider around. Returns `null` for an unknown provider name.
-export function mapUserExtra(name, data) {
-  const shape = SHAPES[name];
-  if (!shape || !data) return null;
-  return shape.mapUser(data);
-}
