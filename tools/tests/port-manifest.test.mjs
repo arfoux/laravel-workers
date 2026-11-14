@@ -11,8 +11,11 @@
 //
 // The manifest is the single source of truth for the ROUTES; the registry is the
 // single source of truth for what the example app actually maps. The two must
-// agree. (Secrets/D1 are informational here — they come from the port files
-// themselves, not from the registry, so there is nothing to compare them against.)
+// agree. (What each route reads from `env` / which tables it touches is NOT in
+// the manifest: `tools/port-catalog.mjs` compiles those two inventories out of
+// the port sources into `docs/ENV-SECRETS.md` + `docs/D1-SCHEMA.md`, gated by
+// `port-catalog --check`. There is nothing to compare a manifest copy against,
+// which is exactly why there is no copy.)
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +32,7 @@ function loadRegistryRoutes() {
   return raw.ports || {};
 }
 
-// A manifest is well-formed: structure, `file` shape, methods/d1/secrets types.
+// A manifest is well-formed: structure, `file` shape, methods types.
 test('the manifest is structurally valid', () => {
   assert.equal(validateManifest().ok, true, validateManifest().problems.join('\n'));
 });
