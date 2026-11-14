@@ -625,7 +625,7 @@ The new ports:
 - **Notifications** — `telegram-notification` (`POST /notify/telegram`),
   `discord-notification` (`POST /notify/discord`), `expo-notification`
   (`POST /notify/expo`), `fcm-notification` (`POST /notify/fcm`),
-  `webpush-notification` (`POST /notify/webpush` + `POST /webpush/subscribe`)
+  `webpush-notification` (`POST /notify/webpush`)
   and `onesignal-notification` (`POST /notify/onesignal`). The FCM port signs its
   OAuth JWT through `kernel/packages/fcm-oauth.mjs`, and the Web Push port builds
   its `Content-Encoding: aes128gcm` payloads through `kernel/packages/

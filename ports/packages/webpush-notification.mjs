@@ -13,6 +13,11 @@
 // a D1 `webpush_subscriptions` table (see ensureSchema). The helper does the
 // server-side encrypt + VAPID sign + send.
 //
+// Route wiring: `POST /notify/webpush` (send). There is NO subscribe route —
+// the upstream package ships none either, and the store step is the app's own
+// (`PushManager.getSubscription()` -> an `INSERT` into that table). This port
+// only READS that table (by `id`) or takes the subscription inline in the body.
+//
 // Config (env): WEBPUSH_VAPID_PRIVATE_KEY (base64url 32-byte private scalar),
 // WEBPUSH_VAPID_SUBJECT (a `mailto:` or `https:` contact URI, required by
 // RFC 8292). Optional WEBPUSH_TTL / WEBPUSH_URGENCY defaults.

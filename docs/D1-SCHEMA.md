@@ -724,7 +724,7 @@ CREATE TABLE IF NOT EXISTS webhook_calls (
 ```
 
 ### 39. `webpush_subscriptions`
-Port: `webpush-notification` (`POST /notify/webpush`, `POST /webpush/subscribe`) — Web Push VAPID endpoint subscriptions (endpoint + client keys).
+Port: `webpush-notification` (`POST /notify/webpush`) — Web Push VAPID endpoint subscriptions (endpoint + client keys).
 
 ```sql
 CREATE TABLE IF NOT EXISTS webpush_subscriptions (

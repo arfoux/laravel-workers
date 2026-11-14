@@ -138,7 +138,6 @@ export const PORT_MANIFEST = {
   '/notify/expo': { slug: 'expo-notification', methods: ['POST'], file: 'ports/packages/expo-notification.mjs' },
   '/notify/fcm': { slug: 'fcm-notification', methods: ['POST'], file: 'ports/packages/fcm-notification.mjs' },
   '/notify/webpush': { slug: 'webpush-notification', methods: ['POST'], file: 'ports/packages/webpush-notification.mjs' },
-  '/webpush/subscribe': { slug: 'webpush-notification', methods: ['POST'], file: 'ports/packages/webpush-notification.mjs' },
   '/notify/onesignal': { slug: 'onesignal-notification', methods: ['POST'], file: 'ports/packages/onesignal-notification.mjs' },
 
   // -- new fleet: auth extras / media -------------------------------------
