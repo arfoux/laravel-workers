@@ -2,6 +2,29 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The four extra Socialite providers were unreachable
+
+`kernel/packages/socialite-providers.mjs` shipped four complete shape-only providers (azure,
+keycloak, cognito, okta) with tests and its own fix entries below - but no request could reach
+it. Both socialite ports resolved the provider with `resolveProvider` alone, whose table is
+Laravel's own set (github/google/facebook); any other name resolved to `null`, so
+`/auth/{provider}/redirect` answered 400 however the app set `AZURE_TENANT` / `OKTA_ORG` / ... .
+The module's only importer in the whole repo was its own test.
+
+Both ports now try `resolveProvider` and fall back to `resolveProviderExtra`, so the four
+enterprise SSO shapes are servable through the same generic routes - no new route, and the core
+table's behaviour is unchanged. The env half of a resolution (`<PROVIDER>_CLIENT_ID` /
+`_CLIENT_SECRET` / `_REDIRECT_URI` / `_SCOPES` plus the unconfigured guard) had been written in
+both resolvers and now lives once as `providerEnv(env, name, { scope })`.
+
+| change | why |
+|---|---|
+| `ports/packages/laravel-socialite-redirect.mjs`, `...-callback.mjs`: `resolveProvider(...) \|\| resolveProviderExtra(...)` | measured: outside its own test nothing imported `resolveProviderExtra`, so the four shapes could not be reached by any request |
+| `kernel/packages/socialite.mjs`: new `providerEnv(...)` export, used by `resolveProvider` | the same four env reads + null guard sat in two files; the merge rule now lives once |
+| `tools/tests/packages-socialite-providers.test.mjs`: two route-level tests | drives the real redirect port with `provider=azure` (302 + tenant URL), and 400 for a name in neither table |
+| `kernel/packages/socialite.mjs:9`: "signed-by-randomness cookie" -> HttpOnly random nonce, no MAC | `stateCookie()` emits no signature; the D1 row, not the cookie, is the second check |
+| `kernel/packages/totp.mjs:39`: "canonical lower-case output" -> upper-case | observed `base32Encode(...)` = `AEBAGBAFAYDQQCIK`, and the suite pins `/^[A-Z2-7]+$/` |
+
 ### Two D1 result shapes the ports read wrong: a 500 and a silent zero
 
 Cloudflare D1's `run()` result is `{ success, results, meta: { duration, changes, last_row_id, rows_read, rows_written } }`

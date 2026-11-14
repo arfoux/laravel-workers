@@ -22,6 +22,7 @@
 
 import { verifyState, exchangeCode, fetchUser } from '../../kernel/packages/oauth.mjs';
 import { resolveProvider, readStateCookie, consumeState } from '../../kernel/packages/socialite.mjs';
+import { resolveProviderExtra } from '../../kernel/packages/socialite-providers.mjs';
 import { createPersonalAccessToken } from '../../kernel/packages/token.mjs';
 import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
@@ -62,7 +63,9 @@ export async function ensureSchema(env) {
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
   const providerName = String(ctx.params && ctx.params.provider);
-  const provider = resolveProvider(env, providerName);
+  // Same order as the redirect half: Laravel's own set first, the extra
+  // shape-only providers second.
+  const provider = resolveProvider(env, providerName) || resolveProviderExtra(env, providerName);
   if (!provider) {
     return jsonResponse(400, { error: 'unknown or unconfigured provider' }, { noStore: false });
   }

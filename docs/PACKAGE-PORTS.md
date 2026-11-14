@@ -26,7 +26,7 @@ NOT matched and fails the build.
 | `slack-notification` | `SLACK_WEBHOOK_URL` or the bot token |
 | `twilio-sms` | `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_FROM` |
 | `fortify-two-factor` | `APP_KEY` (TOTP secret encryption); D1 `two_factor_*` (via `ensureSchema`) |
-| `laravel-socialite-*` | per-provider client id/secret (`GITHUB_CLIENT_ID`, ...) |
+| `laravel-socialite-*` | per-provider client id/secret (`GITHUB_CLIENT_ID`, ...) for github/google/facebook; the extra shapes add a location var: `AZURE_TENANT`, `KEYCLOAK_BASE`+`KEYCLOAK_REALM`, `COGNITO_DOMAIN`+`COGNITO_REGION`, `OKTA_ORG` |
 | `ai-sdk` | per-provider LLM key, chosen per model: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`; D1 `agent_conversations`, `agent_conversation_messages` (via `ensureSchema`, best-effort) |
 | `mcp` | no secret — `MCP_TOOLS` / `MCP_PROMPTS` bindings (the tool/prompt registries), optional `MCP_SERVER_NAME` / `MCP_SERVER_VERSION` / `MCP_PROTOCOL_VERSION` |
 | `pulse` | no secret; D1 `pulse_entries`, `pulse_aggregates` (via `ensureSchema`) |

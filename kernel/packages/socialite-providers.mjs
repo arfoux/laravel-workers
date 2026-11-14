@@ -2,13 +2,20 @@
 // providers (azure, keycloak, cognito, okta) kept OUT of socialite.mjs so the
 // default resolver stays byte-for-byte identical. These follow the exact
 // `resolveProvider` contract from socialite.mjs: a code-side shape merged with
-// env-supplied credentials — secrets never appear in the repo.
+// env-supplied credentials - secrets never appear in the repo.
+//
+// Reachability: the two socialite ports try `resolveProvider` (Laravel's own
+// github/google/facebook shapes) first and fall back to `resolveProviderExtra`,
+// so azure/keycloak/cognito/okta are servable through the same generic
+// `/auth/{provider}/redirect` + `/auth/{provider}/callback` routes.
 //
 // Each provider's endpoints are derived from env *location* variables
 // (AZURE_TENANT / KEYCLOAK_BASE+KEYCLOAK_REALM / COGNITO_DOMAIN+REGION /
 // OKTA_ORG) plus the standard *_CLIENT_ID / *_CLIENT_SECRET / *_REDIRECT_URI /
 // *_SCOPES. A provider resolves to `null` when its credentials or a required
 // location param is missing, mirroring resolveProvider's unconfigured return.
+
+import { providerEnv } from './socialite.mjs';
 
 function subEmailMap(j) {
   const id = String(j.sub != null ? j.sub : j.id != null ? j.id : '').trim();
@@ -73,23 +80,18 @@ const LOCATION_KEYS = {
 // by kernel/packages/oauth.mjs (authorizeUrl / exchangeCode / fetchUser), or
 // null when unconfigured.
 export function resolveProviderExtra(env, name) {
-  const upper = String(name).toUpperCase();
-  const clientId = env[`${upper}_CLIENT_ID`];
-  const clientSecret = env[`${upper}_CLIENT_SECRET`];
-  if (!clientId || !clientSecret) return null;
-
   const shape = SHAPES[name];
   if (!shape) return null;
 
   const locs = (LOCATION_KEYS[name] || []).map((k) => env[k]);
   if (!locs.length || locs.some((v) => typeof v !== 'string' || !v)) return null;
 
+  const shared = providerEnv(env, name, { scope: shape.scope });
+  if (!shared) return null;
+
   return {
     name,
-    clientId,
-    clientSecret,
-    redirectUri: env[`${upper}_REDIRECT_URI`] || '',
-    scope: env[`${upper}_SCOPES`] || shape.scope,
+    ...shared,
     authUrl: shape.authPath(...locs),
     tokenUrl: shape.tokenPath(...locs),
     userUrl: shape.userPath(...locs),
