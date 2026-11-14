@@ -30,6 +30,7 @@ import {
   bearerToken,
   createPersonalAccessToken,
   verifyPersonalAccessToken,
+  ensurePersonalAccessTokens,
 } from '../../kernel/packages/token.mjs';
 import { timingSafeEqual } from '../../kernel/packages/webhook.mjs';
 import bcrypt from 'bcryptjs';
@@ -40,18 +41,10 @@ import { dateToSqlite } from '../../kernel/db.mjs';
 // Schema (mirrors Sanctum's migration verbatim; users = Laravel's default)
 // ---------------------------------------------------------------------------
 export async function ensureSchema(env) {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS personal_access_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tokenable_type TEXT NOT NULL,
-    tokenable_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    abilities TEXT,
-    last_used_at TEXT,
-    expires_at TEXT,
-    created_at TEXT,
-    updated_at TEXT
-  )`).run();
+  // The token table's statement lives once, in kernel/packages/token.mjs: this
+  // port and `laravel-socialite-callback` share the table, and `CREATE TABLE IF
+  // NOT EXISTS` means the first provisioner decides its columns for both.
+  await ensurePersonalAccessTokens(env);
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,

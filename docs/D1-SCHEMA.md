@@ -11,7 +11,7 @@ Where more than one module creates the same name with a different column set, th
 <!-- port-catalog:totals:start -->
 
 **Totals**
-- `CREATE TABLE IF NOT EXISTS` statements the code runs: **56**
+- `CREATE TABLE IF NOT EXISTS` statements the code runs: **55**
 - Distinct table names: **48**
 - Explicit indexes (`CREATE INDEX IF NOT EXISTS`): **6**
 
@@ -46,7 +46,7 @@ The `Status` column this file used to carry (**NEW** = introduced by the port fl
 | 17 | `oauth_clients` | `passport-oauth` | — |
 | 18 | `oauth_refresh_tokens` | `passport-oauth` | — |
 | 19 | `permissions` | `permission` | — |
-| 20 | `personal_access_tokens` | `laravel-socialite-callback`, `sanctum` | — |
+| 20 | `personal_access_tokens` | kernel `token` | — |
 | 21 | `posts` | `spatie-query-builder` | — |
 | 22 | `pulse_aggregates` | `pulse` | — |
 | 23 | `pulse_entries` | `pulse` | `pulse_entries_recorded_at_idx` |

@@ -68,7 +68,7 @@ variables (the binding table at the top of this file is the one that covers `DB`
 | `COOKIE_CONSENT_LIFETIME` | kernel `cookie-consent` |
 | `COOKIE_CONSENT_TITLE` | kernel `cookie-consent` |
 | `CSP_POLICY` | `csp-middleware` |
-| `DB` | `activitylog`, `cashier-paddle`, `cashier-stripe`, `echo`, `fortify-confirmation`, `fortify-two-factor`, `horizon-metrics`, `jwt-auth`, `laravel-socialite-callback`, `lemonsqueezy`, `maatwebsite-excel`, `midtrans-webhook`, `mollie-webhook`, `multitenancy`, `passport-oauth`, `permission`, `pulse`, `pusher`, `sanctum-spa-cookie`, `sanctum`, `scout-meilisearch`, `sluggable`, `spatie-data`, `spatie-model-states`, `spatie-query-builder`, `spatie-settings`, `spatie-sitemap`, `spatie-translatable`, `tags`, `webhook-client`, `webhook-server`, `webpush-notification`, `xendit-webhook`, kernel `socialite`, kernel `webhook` |
+| `DB` | `activitylog`, `cashier-paddle`, `cashier-stripe`, `echo`, `fortify-confirmation`, `fortify-two-factor`, `horizon-metrics`, `jwt-auth`, `laravel-socialite-callback`, `lemonsqueezy`, `maatwebsite-excel`, `midtrans-webhook`, `mollie-webhook`, `multitenancy`, `passport-oauth`, `permission`, `pulse`, `pusher`, `sanctum-spa-cookie`, `sanctum`, `scout-meilisearch`, `sluggable`, `spatie-data`, `spatie-model-states`, `spatie-query-builder`, `spatie-settings`, `spatie-sitemap`, `spatie-translatable`, `tags`, `webhook-client`, `webhook-server`, `webpush-notification`, `xendit-webhook`, kernel `socialite`, kernel `token`, kernel `webhook` |
 | `DEFAULT_LOCALE` | `localization` |
 | `DISCORD_BOT_TOKEN` | `discord-notification` |
 | `DISCORD_CHANNEL` | `discord-notification` |
