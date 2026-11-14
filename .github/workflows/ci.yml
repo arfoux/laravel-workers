@@ -172,8 +172,12 @@ jobs:
           test -f e2e-app/dist/src/worker.mjs
           test -f e2e-app/dist/src/routes.generated.mjs
           test -f e2e-app/dist/public/index.html
+          test -f e2e-app/dist/public/404.html
           test -f e2e-app/dist/schema.json
           test -f e2e-app/dist/schema.sql
+          # the zero-config build scaffolds the switch that makes the ASSETS layer
+          # serve that file for a path outside _routes.json
+          grep -q '"not_found_handling": "404-page"' e2e-app/wrangler.jsonc
       - name: The Worker entry obeys the runtime's handler contract
         # The built `dist/src/worker.mjs` is driven with the Workers runtime's
         # real call order — `scheduled(controller, env, ctx)` — and must read the
@@ -191,7 +195,7 @@ jobs:
           cd e2e-app
           cat > wrangler.jsonc <<'JSONC'
           { "name": "e2e-app", "main": "./dist/src/worker.mjs", "compatibility_date": "2026-10-01",
-            "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+            "assets": { "directory": "./dist/public", "binding": "ASSETS", "not_found_handling": "404-page" },
             "d1_databases": [ { "binding": "DB", "database_name": "e2e-app", "database_id": "placeholder" } ] }
           JSONC
           npx --yes wrangler@4.151.1 dev --port 8791 --ip 127.0.0.1 > dev.log 2>&1 &
@@ -206,5 +210,17 @@ jobs:
           root=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/)
           echo "root=$root"
           if [ "$root" != "200" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
+          # A path outside _routes.json is answered by the ASSETS layer, never by the
+          # worker: `not_found_handling: "404-page"` is what gives that answer the app's
+          # own 404 body instead of the platform's null-body 404 (measured on a live app
+          # before the knob: 404, 0 B — docs/EVIDENCE.md finding 2).
+          nf=$(curl -s -o /tmp/nf.html -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/nonexistent-route-for-404)
+          echo "unknown-path=$nf bytes=$(wc -c < /tmp/nf.html)"
+          if [ "$nf" != "404" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
+          if ! cmp -s /tmp/nf.html e2e-app/dist/public/404.html; then
+            echo "the unknown-path 404 body is not the app's 404 page:"
+            wc -c /tmp/nf.html e2e-app/dist/public/404.html
+            exit 1
+          fi
           kill %1 2>/dev/null || true
           pkill -f workerd 2>/dev/null || true

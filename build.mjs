@@ -41,7 +41,7 @@ import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mj
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { slugifyRoute } from './tools/route-slug.mjs';
 import { buildRouteMap } from './tools/route-map.mjs';
-import { jsoncValue, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
+import { jsoncValue, stripTomlComments, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
 import { notTriggerableFindings, shiftedTriggerFindings } from './tools/schedule-gaps.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
@@ -193,7 +193,7 @@ function ensureWranglerConfig() {
   "name": "${slug}",
   "main": "./dist/src/worker.mjs",
   "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+  "assets": { "directory": "./dist/public", "binding": "ASSETS", "not_found_handling": "404-page" },
   "d1_databases": [ { "binding": "DB", "database_name": "${dbSlug}", "database_id": "REPLACE_WITH_D1_ID" } ],
   "observability": { "enabled": true }
 }
@@ -989,12 +989,12 @@ const isRuntimeBindingError = isBuildEnvDbFailure;
 // Track E (prerender-batch): every route that will be rendered enters ONE
 // boot — one PHP process, one Laravel startup, N requests in order. The
 // marker still fences the payload (an error page can surround it on stdout).
-const prerenderBatch = (uris) => {
-  const byUri = new Map();
-  if (!uris.length) return byUri;
+// `renderErrorPage()` runs through the same helper with `--error 404`, so the
+// spawn, the marker fence and the failure messages live once.
+const runPrerender = (args, label) => {
   let out;
   try {
-    out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(pkgDir, 'tools', 'prerender.php'), ...uris], {
+    out = execFileSync(PHP, ['-d', 'display_errors=stderr', join(pkgDir, 'tools', 'prerender.php'), ...args], {
       cwd: appDir,
       env: childEnv(),
       maxBuffer: 1 << 28,
@@ -1003,7 +1003,7 @@ const prerenderBatch = (uris) => {
     const stderr = String(e.stderr || '').trim();
     const stdout = String(e.stdout || '').trim();
     const detail = (stderr || stdout || String(e.message || '')).slice(-2000);
-    fail(`prerender crashed (${uris.length} routes, first ${uris[0]})${detail ? `:\n${detail}` : ''}`);
+    fail(`prerender crashed (${label})${detail ? `:\n${detail}` : ''}`);
   }
   const idx = out.lastIndexOf(PRERENDER_MARKER);
   const jsonText = idx >= 0 ? out.slice(idx + PRERENDER_MARKER.length) : out;
@@ -1011,15 +1011,44 @@ const prerenderBatch = (uris) => {
   try {
     parsed = JSON.parse(jsonText);
   } catch {
-    fail(`prerender returned non-JSON for ${uris[0]} (+${uris.length - 1} more): ${jsonText.trim().slice(0, 200)}`);
+    fail(`prerender returned non-JSON for ${label}: ${jsonText.trim().slice(0, 200)}`);
   }
-  if (!Array.isArray(parsed) || parsed.length !== uris.length) {
+  if (!Array.isArray(parsed)) fail(`prerender returned no array for ${label}`);
+  return parsed;
+};
+const prerenderBatch = (uris) => {
+  const byUri = new Map();
+  if (!uris.length) return byUri;
+  const parsed = runPrerender(uris, `${uris.length} routes, first ${uris[0]}`);
+  if (parsed.length !== uris.length) {
     fail(
-      `prerender returned ${Array.isArray(parsed) ? parsed.length + ' result(s)' : 'no array'} for ${uris.length} route(s) — one boot must answer every URI`
+      `prerender returned ${parsed.length} result(s) for ${uris.length} route(s) — one boot must answer every URI`
     );
   }
   for (const p of parsed) byUri.set(typeof p.uri === 'string' ? p.uri : '', p);
   return byUri;
+};
+
+// The page the edge answers a path outside `_routes.json` with. It renders through the
+// framework's own error path, not through a route, so no route of the app can capture
+// the request the page is rendered for (`tools/prerender.php --error 404`).
+//
+// A render that does not produce an HTML 404 is NOT a build failure: the app shipped
+// without this page before, and a 404 view that needs the request, a session or a table
+// the build sandbox cannot reach (an API-only app whose 404 view answers JSON) is a
+// reason to say so, not to block a build that is otherwise correct. The caller reports
+// the problem and leaves the page out; the platform's null-body 404 is then what an
+// unknown path keeps.
+const renderErrorPage = () => {
+  const [page] = runPrerender(['--error', '404'], 'the 404 page');
+  if (!page) return { problem: 'prerender --error 404 returned no payload' };
+  if (page.error) return { problem: `the app could not render its 404 page: ${page.error}` };
+  if (page.status !== 404) return { problem: `the 404 page rendered as HTTP ${page.status}, not 404` };
+  if (!String(page.content_type || '').includes('text/html')) {
+    return { problem: `the 404 page rendered as ${page.content_type || '(no content type)'}, not HTML` };
+  }
+  if (!page.body) return { problem: 'the 404 page rendered empty' };
+  return { body: page.body };
 };
 
 // ---------- 3. dist skeleton + prerendered pages ----------
@@ -1523,22 +1552,53 @@ const authProviderFqcns = Object.entries(runtimeConfig)
 // `jsoncValue` lives in `tools/wrangler-crons.mjs` (imported above), which pins
 // it against `tools/jsonc.mjs` in tools/tests/wrangler-crons.test.mjs.
 
-function hasBinding(appRoot, product, name) {
+// The app's wrangler.jsonc as plain data, or null when there is none or it does not
+// parse. The read lives here once: both the binding check below and the assets check
+// after it answer the same question about the same file.
+function readWranglerJsonc(appRoot) {
   const jsonc = join(appRoot, 'wrangler.jsonc');
-  if (existsSync(jsonc)) {
+  if (!existsSync(jsonc)) return null;
+  try {
+    return jsoncValue(parseJsonc(readFileSync(jsonc, 'utf8')));
+  } catch {
+    /* a wrangler.jsonc we cannot parse is not a config we can rely on */
+    return null;
+  }
+}
+
+// Does the app ask the ASSETS layer to serve `public/404.html`? Cloudflare serves the
+// nearest `404.html` with a 404 status for a request that matches no asset only when
+// `assets.not_found_handling` says so ("Static Site Generation (SSG) and custom 404
+// pages"); the build writes the file, the app owns the switch in its own config.
+function servesCustom404(appRoot) {
+  const cfg = readWranglerJsonc(appRoot);
+  if (cfg && cfg.assets && typeof cfg.assets === 'object') {
+    if (cfg.assets.not_found_handling === '404-page') return true;
+  }
+  const toml = join(appRoot, 'wrangler.toml');
+  if (existsSync(toml)) {
     try {
-      const cfg = jsoncValue(parseJsonc(readFileSync(jsonc, 'utf8')));
-      // `d1_databases` and `r2_buckets` are arrays of `{ binding, ... }`;
-      // Queues nests its bindings instead —
-      // {"queues":{"producers":[{"queue":"...","binding":"QUEUE"}]}}
-      // (docs/queues/configuration/configure-queues). Reading `cfg.queues` as
-      // an array answered `false` no matter what the app bound, so the
-      // schedule note below fired for every app with cron triggers.
-      const list = product === 'queues' ? cfg.queues && cfg.queues.producers : cfg[product];
-      if (Array.isArray(list) && list.some((b) => b && b.binding === name)) return true;
+      const text = stripTomlComments(readFileSync(toml, 'utf8'));
+      const assets = text.split(/^\s*\[assets\]\s*$/m)[1] || '';
+      return /^\s*not_found_handling\s*=\s*["']404-page["']/m.test(assets.split(/^\s*\[/m)[0]);
     } catch {
-      /* a wrangler.jsonc we cannot parse is not a binding we can rely on */
+      /* ignore */
     }
+  }
+  return false;
+}
+
+function hasBinding(appRoot, product, name) {
+  const cfg = readWranglerJsonc(appRoot);
+  if (cfg) {
+    // `d1_databases` and `r2_buckets` are arrays of `{ binding, ... }`;
+    // Queues nests its bindings instead —
+    // {"queues":{"producers":[{"queue":"...","binding":"QUEUE"}]}}
+    // (docs/queues/configuration/configure-queues). Reading `cfg.queues` as
+    // an array answered `false` no matter what the app bound, so the
+    // schedule note below fired for every app with cron triggers.
+    const list = product === 'queues' ? cfg.queues && cfg.queues.producers : cfg[product];
+    if (Array.isArray(list) && list.some((b) => b && b.binding === name)) return true;
   }
   const toml = join(appRoot, 'wrangler.toml');
   if (existsSync(toml)) {
@@ -3933,6 +3993,53 @@ const routesJson = buildRoutesJson(
 );
 writeFileSync(join(dist, 'public', '_routes.json'), JSON.stringify(routesJson, null, 2) + '\n');
 console.log(`  -> dist/public/_routes.json (${(routesJson.include || []).length} include, ${(routesJson.exclude || []).length} exclude)`);
+
+// 5c. the edge's 404 body. A path in neither `include` nor `exclude` is answered by
+// the ASSETS layer, so the app's 404 page has to BE an asset: with
+// `assets.not_found_handling: "404-page"` Cloudflare serves the nearest `404.html`
+// with a 404 status, and without it the platform's null-body 404 comes back —
+// measured live as `GET /nonexistent-route-for-404` -> 404, 0 B while PHP answers the
+// app's own page (docs/EVIDENCE.md finding 2).
+//
+// Written HERE, beside `_routes.json`, because section 4 copies the app's `public/`
+// over `dist/public` AFTER the snapshots: a step-3 write would be overwritten by an
+// app that ships its own `public/404.html`. Such an app keeps its file — it is the
+// app's own choice of 404 page, and the knob serves whichever one is there.
+const appFourOhFour = join(appDir, 'public', '404.html');
+let servesFourOhFour = false;
+if (existsSync(appFourOhFour)) {
+  servesFourOhFour = true;
+  console.log('  -> public/404.html ships from the app - used as the edge 404 page as-is');
+} else {
+  const page = renderErrorPage();
+  if (page.problem) {
+    console.log(`  WARN the edge 404 page was not written: ${page.problem}`);
+    note({
+      route: null,
+      area: 'route',
+      severity: DECLARED,
+      cause: `a path outside _routes.json keeps the platform's null-body 404: ${page.problem}`,
+      fix:
+        'make resources/views/errors/404.blade.php renderable at BUILD time - the build renders it through Laravel\'s exception handler, so a view that needs a live database, a session or the request cannot be baked into dist/public/404.html - or ship a public/404.html of your own, which the build uses as the edge 404 page as-is',
+    });
+  } else {
+    const written = writePage('404.html', page.body);
+    servesFourOhFour = true;
+    console.log(`  -> dist/public/404.html (${written.bytes} bytes, the app's own 404 page)`);
+  }
+}
+if (servesFourOhFour && !servesCustom404(appDir)) {
+  console.log('  -> add "not_found_handling": "404-page" to the "assets" block in wrangler.jsonc to serve it');
+  note({
+    route: null,
+    area: 'config',
+    severity: DECLARED,
+    cause:
+      'the build writes dist/public/404.html (the page PHP answers an unknown path with), but the app\'s wrangler config does not ask the ASSETS layer to serve it, so a path outside _routes.json still gets the platform\'s null-body 404',
+    fix:
+      'add "not_found_handling": "404-page" inside the "assets" block of wrangler.jsonc (or `not_found_handling = "404-page"` under [assets] in wrangler.toml). Cloudflare then serves dist/public/404.html with a 404 status for a request that matches no asset and no include rule. The file ships either way - the switch is the app\'s.',
+  });
+}
 
 // `needsPortFix(n)` (tools/route-gaps.mjs) turns the reason a route was not
 // handled into WHAT TO DO. It lives beside `SKIP_REASONS`/`RUNTIME_REASONS` —
