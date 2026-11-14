@@ -30,7 +30,7 @@ if (!existsSync(wranglerPath)) {
   "name": "${slug}",
   "main": "./dist/src/worker.mjs",
   "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./dist/public", "binding": "ASSETS" },
+  "assets": { "directory": "./dist/public", "binding": "ASSETS", "not_found_handling": "404-page" },
   "d1_databases": [ { "binding": "DB", "database_name": "${dbSlug}", "database_id": "REPLACE_WITH_D1_ID" } ],
     // The Storage facade (Storage::put/get/exists/delete) writes to R2 — the edge
     // has no local filesystem. Uncomment and fill in a bucket:

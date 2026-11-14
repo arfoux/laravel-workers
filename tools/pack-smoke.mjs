@@ -168,8 +168,24 @@ try {
       }
     };
     walk(join(appRoot, 'dist', 'src'));
-    if (baked.length) throw new Error(`a dev-server URL was baked into the compiled output: ${baked.join(', ')}`);
+    if (baked.length) throw new Error(`a dev URL was baked into the compiled output: ${baked.join(', ')}`);
     console.log('  no dev marker in dist/public, no dev URL in dist/src, public/hot restored');
+  });
+
+  // 3c. the 404 body. `_routes.json` is an include allowlist, so a path outside it is
+  //     answered by the ASSETS layer and never reaches the worker — the app's own 404
+  //     page has to BE an asset for that answer to have a body
+  //     (`assets.not_found_handling: "404-page"` serves the nearest 404.html). Measured
+  //     on a live app without it: `GET /nonexistent-route-for-404` -> 404, 0 B, while
+  //     PHP answers the app's own page (docs/EVIDENCE.md finding 2).
+  step('the edge 404 page ships as an asset', () => {
+    const page = join(appRoot, 'dist', 'public', '404.html');
+    if (!existsSync(page)) {
+      throw new Error('dist/public/404.html is missing — a path outside _routes.json answers an empty 404');
+    }
+    const html = readFileSync(page, 'utf8');
+    if (!/<!DOCTYPE\s+html/i.test(html)) throw new Error(`dist/public/404.html is not an HTML document (${html.length} bytes)`);
+    console.log(`  dist/public/404.html ships (${Buffer.byteLength(html)} bytes)`);
   });
 
   // 4. the cron gate on the BUILT worker. `POST /__lw/cron` is the schedule's

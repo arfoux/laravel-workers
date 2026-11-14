@@ -2,9 +2,18 @@
 
 // Prerender a page with the real Laravel app — the boot happens HERE, at build time.
 // Usage: php tools/prerender.php <uri...>   (Track E: every URI in ONE boot)
+//        php tools/prerender.php --error 404
 // Output: JSON [{uri, status, content_type, location?, body?, error?}...] on stdout.
 //   - body is included only for 2xx
 //   - location is included only for 3xx
+//
+// `--error 404` renders the page the framework answers a request that reaches no
+// route with, so the build can write it to public/404.html: the ASSETS layer serves
+// that file for any path outside `_routes.json` once the app sets
+// `assets.not_found_handling: "404-page"` (docs/EVIDENCE.md finding 2). Unlike a URI,
+// it never goes through the router, so no route of the app can capture the request
+// the page is rendered for. Only 404 is rendered — public/404.html is the one page the
+// asset router serves, so any other status would be dead weight.
 
 require_once __DIR__ . '/_root.php';
 $root = lw_app_root();
@@ -26,9 +35,65 @@ $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
 // and the build dies before it renders anything. Found on BookStack, whose
 // AppServiceProvider::boot() calls URL::forceRootUrl(). The loop below rebinds
 // the real request per URI through $kernel->handle(), exactly like Laravel.
-$app->instance('request', Illuminate\Http\Request::create($argv[1] ?? '/', 'GET'));
+//
+// `--error` is a MODE, not a path: without this check the flag itself would be
+// bound as the path the app boots with (`Request::create('--error')`).
+$errorMode = ($argv[1] ?? '') === '--error';
+$bootUri = $errorMode ? '/' : ($argv[1] ?? '/');
+$app->instance('request', Illuminate\Http\Request::create($bootUri, 'GET'));
 Illuminate\Support\Facades\Facade::clearResolvedInstance('request');
 $kernel->bootstrap();
+
+if ($errorMode) {
+    $status = (int) ($argv[2] ?? 0);
+    if ($status !== 404) {
+        fwrite(STDERR, "prerender.php --error: only 404 is rendered (public/404.html is the one page the asset router serves), got {$argv[2]}\n");
+        exit(2);
+    }
+
+    // The page renders for NO path in particular: the asset layer answers every
+    // unmatched path with this one file, so `GET /` is the least surprising request
+    // to render it with. An error view that prints the request path therefore bakes
+    // that `/` — the build log and docs/COMPILED.md say so.
+    $request = Illuminate\Http\Request::create('/', 'GET');
+    $handler = $app->make(Illuminate\Contracts\Debug\ExceptionHandler::class);
+
+    // Laravel renders an error page into the PHP output buffer in a CLI boot, not
+    // into the response body. The shadow oracle measured the same thing for its 405
+    // and 500 ("the buffer is the body when the response carries none",
+    // tools/php-shadow-oracle.php), so the buffer is kept and used as the body when
+    // the response carries none of its own — `ob_end_clean()` here would ship an
+    // empty 404.html.
+    ob_start();
+    try {
+        $response = $handler->render($request, new Symfony\Component\HttpKernel\Exception\NotFoundHttpException());
+    } catch (Throwable $e) {
+        ob_end_clean();
+        echo "\n---LW-PRERENDER-JSON---\n";
+        echo json_encode([[
+            'uri' => '/',
+            'status' => 500,
+            'content_type' => 'text/plain',
+            'error' => get_class($e) . ': ' . $e->getMessage(),
+        ]], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit(0);
+    }
+    $echoed = ob_get_clean();
+
+    $body = (string) $response->getContent();
+    if ($body === '' && $echoed !== '') {
+        $body = $echoed;
+    }
+
+    echo "\n---LW-PRERENDER-JSON---\n";
+    echo json_encode([[
+        'uri' => '/',
+        'status' => $response->getStatusCode(),
+        'content_type' => (string) $response->headers->get('Content-Type'),
+        'body' => $body,
+    ]], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    exit(0);
+}
 
 // Track E: every URI renders in this ONE boot — one process, one Laravel
 // startup, one kernel. argv carries the URIs, in order; output is an array
