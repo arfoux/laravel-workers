@@ -12,11 +12,12 @@
 ```bash
 cd my-laravel-app                    # a real app: Laravel ≥ 10, with vendor/
 npx laravel-workers deploy --plan    # what would happen — no build, no writes, no prompts
+npx laravel-workers build --strict   # compile only, local — an unaccounted route fails the build
 npx laravel-workers deploy           # build → (D1) → (deploy), asking only what it cannot decide
 npx laravel-workers status           # what is deployed, which D1, which account, when
 ```
 
-That is the whole setup: nothing to install (`npm i -D laravel-workers` only if you want the version pinned in the app), no PHP at the edge, no WASM, no container.
+That is the whole setup: nothing to install (`npm i -D laravel-workers` only if you want the version pinned in the app), no PHP at the edge, no WASM, no container. `deploy --plan` and `build --strict` never talk to Cloudflare — `deploy` is the only verb that does.
 
 **What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. Every compiled page is checked **byte-identical against PHP 8.3 on your machine** during the build. Anything the compiler cannot handle **fails the build** — nothing silently wrong ships.
 
