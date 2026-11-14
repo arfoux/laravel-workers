@@ -41,6 +41,13 @@ import { NPX, runCapture, runInherit } from './run.mjs';
 
 // Re-exported for the unit tests and for callers that edited the old module.
 import { updateWranglerD1Id } from './jsonc.mjs';
+// The Worker/D1 naming rule has one home (`app-name.mjs`): `build.mjs` and
+// `init.mjs` derive the same names, and a second copy here could scaffold, build
+// and deploy one app under different databases. Re-exported because this
+// module's own callers and tests import the two helpers from `deploy`.
+import { slugifyWorkerName, autoD1Name } from './app-name.mjs';
+
+export { slugifyWorkerName, autoD1Name };
 export { updateWranglerD1Id };
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -249,18 +256,6 @@ function requireApp() {
   }
 }
 
-export function slugifyWorkerName(raw) {
-  const slug = String(raw || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/-{2,}/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 63)
-    .replace(/-+$/g, '');
-  return slug || 'laravel-workers-app';
-}
-
 export function isValidWorkerName(name) {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(String(name || ''));
 }
@@ -271,15 +266,6 @@ export function isValidD1Id(id) {
 
 export function isValidD1Name(name) {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(String(name || ''));
-}
-
-/** The automatic database name, capped to D1's 63-character limit. */
-export function autoD1Name(workerName) {
-  const suffix = '-db';
-  const base = String(workerName || '')
-    .slice(0, 63 - suffix.length)
-    .replace(/-+$/g, '');
-  return (base || 'laravel-workers-app') + suffix;
 }
 
 /** Extract the uuid from `wrangler d1 create`/`execute` output. */

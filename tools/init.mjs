@@ -2,8 +2,9 @@
 // tools/init.mjs — Scaffold registry.json + wrangler.jsonc for a Laravel app.
 // Run from the Laravel app root: npx laravel-workers init
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { workerNames } from './app-name.mjs';
 
 const appDir = process.cwd();
 
@@ -11,13 +12,7 @@ if (!existsSync(join(appDir, 'artisan'))) {
   console.warn('warning: artisan not found in ' + appDir + ' — run init from your Laravel app root.');
 }
 
-const appSlug = basename(appDir)
-  .toLowerCase()
-  .replace(/[^a-z0-9-]+/g, '-')
-  .replace(/-{2,}/g, '-')
-  .replace(/^-+|-+$/g, '');
-const slug = appSlug.slice(0, 63).replace(/-+$/g, '') || 'laravel-workers-app';
-const dbSlug = (slug.slice(0, 60).replace(/-+$/g, '') || 'laravel-workers-app') + '-db';
+const { worker: slug, database: dbSlug } = workerNames(appDir);
 
 // registry.json — tier maps read by build.mjs
 const registryPath = join(appDir, 'registry.json');

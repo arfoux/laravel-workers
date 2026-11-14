@@ -17,6 +17,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { buildRoutesJson } from './tools/routes-json.mjs';
+import { workerNames } from './tools/app-name.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import {
   STUB_MARKER,
@@ -186,13 +187,7 @@ function ensureWranglerConfig() {
     console.log('  -> wrangler.jsonc already exists - left as-is (run `npx laravel-workers deploy` to provision/fill database_id)');
     return;
   }
-  const appSlug = basename(appDir)
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/-{2,}/g, '-')
-    .replace(/^-+|-+$/g, '');
-  const slug = appSlug.slice(0, 63).replace(/-+$/g, '') || 'laravel-workers-app';
-  const dbSlug = (slug.slice(0, 60).replace(/-+$/g, '') || 'laravel-workers-app') + '-db';
+  const { worker: slug, database: dbSlug } = workerNames(appDir);
   writeFileSync(wranglerPath, `{
   "name": "${slug}",
   "main": "./dist/src/worker.mjs",
