@@ -1152,17 +1152,91 @@ export function buildRt(context, opts = {}) {
     if (html.indexOf('="/') === -1 && html.indexOf("='/") === -1) return html;
     return html.replace(/\s(href|src)=(["'])\/(?!\/)/g, (_m, attr, q) => ` ${attr}=${q}${origin}/`);
   };
+  // UrlGenerator::route() — measured on Laravel 13.37 / PHP 8.3, one probe per
+  // line (http://localhost:8000 is the request host):
+  //   route('crud.show', ['post' => 1])                           -> /crud/1
+  //   route('crud.show', [1])                                     -> /crud/1
+  //   route('crud.show', ['post' => 1, 'z' => '1', 'utm' => '2'])  -> /crud/1?z=1&utm=2
+  //   route('crud.show', ['post' => 1, 'q' => null])               -> /crud/1
+  //   route('crud.show', ['post' => 1, 'b' => true, 'c' => false]) -> /crud/1?b=1&c=0
+  //   route('crud.show', ['post' => 1, 'f' => ['a' => 'b']])       -> /crud/1?f%5Ba%5D=b
+  //   route('crud.show', ['post' => 1, 'q' => ''])                 -> /crud/1?q=
+  //   route('crud.show', ['post' => 1, 'q' => 'a b'])              -> /crud/1?q=a%20b
+  //   route('crud.show', ['post' => 'a b/c'])                      -> /crud/a%20b/c
+  //   route('crud.show', ['post' => 0])                            -> /crud/0
+  //   route('crud.show', ['post' => 1], false)                     -> /crud/1  (relative)
+  //   route('routing.optional') / ['id' => null]                   -> /routing/optional
+  //   route('crud.show') / ['post' => null] / [null]  -> UrlGenerationException:
+  //      Missing required parameter for [Route: crud.show] [URI: crud/{post}] [Missing parameter: post].
+  // So: a map is matched BY NAME, a list positionally; a map key the URI does
+  // not consume becomes a query parameter, in map order. The old code walked the
+  // URI positionally whatever it was handed, so the transpiler's own emission
+  // for the documented idiom — rt.route("crud.show", {"post": id}), see
+  // COMPILED.md "The Redirect facade" — answered /crud/%5Bobject%20Object%5D on
+  // the live app (docs/EVIDENCE.md finding 1).
+  // NOT mirrored: a list with more values than the route has parameters
+  // (route('crud.show', [1, 2]) answers /crud/1?2 on PHP; the extras drop here).
+  // The compiler never emits it — PHP's own signature takes one array — and the
+  // mechanism behind "?2" (not "1=2") was not pinned down, so it stays a
+  // documented gap rather than a guess.
+  const rawUrlEncode = (v) => encodeURIComponent(String(v))
+    // rawurlencode() leaves A-Za-z0-9-_.~ alone; encodeURIComponent() also
+    // leaves !'()* , which PHP would have encoded.
+    .replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+    // Symfony restores %2F so a wildcard parameter can carry a path.
+    .replace(/%2F/gi, '/');
+  const queryValue = (v) => (v === true ? '1' : v === false ? '0' : String(v));
+  const queryFrom = (map, keys) => {
+    const parts = [];
+    const walk = (key, value) => {
+      if (value !== null && value !== undefined && typeof value === 'object') {
+        for (const k of Object.keys(value)) walk(key + '[' + k + ']', value[k]);
+        return;
+      }
+      if (value === null || value === undefined) return; // http_build_query() drops null
+      parts.push(rawUrlEncode(key) + '=' + rawUrlEncode(queryValue(value)));
+    };
+    for (const k of keys) walk(k, map[k]);
+    return parts.join('&');
+  };
+  const missingParam = (name, uri, pname) => new Error(
+    'Missing required parameter for [Route: ' + name + '] [URI: ' + uri + '] [Missing parameter: ' + pname + '].'
+  );
   const genUrl = (name, args) => {
     if (!routeMap || !Object.prototype.hasOwnProperty.call(routeMap, name)) return null;
     const uri = String(routeMap[name]);
+    const given = args.length ? args[0] : undefined;
+    const map = given !== null && typeof given === 'object' && !Array.isArray(given) ? given : null;
+    const list = map ? null : Array.isArray(given) ? given : args;
+    const absolute = args.length > 1 ? args[1] !== false : true;
+    const used = [];
+    const segs = [];
     let i = 0;
-    const path = uri.split('/').map((seg) => {
-      const m = /^\{([A-Za-z_][A-Za-z0-9_]*)\??\}$/.exec(seg);
-      if (!m) return seg;
-      const raw = modelRouteKey(args[i++]);
-      return encodeURIComponent(raw == null ? '' : String(raw));
-    }).join('/');
-    return joinRoot(path);
+    for (const seg of uri.split('/')) {
+      const m = /^\{([A-Za-z_][A-Za-z0-9_]*)(\?)?\}$/.exec(seg);
+      if (!m) { segs.push(seg); continue; }
+      const pname = m[1];
+      let raw;
+      if (map) {
+        if (!Object.prototype.hasOwnProperty.call(map, pname)) {
+          if (m[2]) continue; // {x?} absent: the segment goes away
+          throw missingParam(name, uri, pname);
+        }
+        raw = map[pname];
+        used.push(pname);
+      } else {
+        raw = list[i++];
+      }
+      if (raw === null || raw === undefined) {
+        if (m[2]) continue;
+        throw missingParam(name, uri, pname);
+      }
+      segs.push(rawUrlEncode(modelRouteKey(raw)));
+    }
+    const leftover = map ? Object.keys(map).filter((k) => used.indexOf(k) === -1) : [];
+    const query = leftover.length ? queryFrom(map, leftover) : '';
+    const path = segs.join('/') + (query ? '?' + query : '');
+    return absolute ? joinRoot(path) : '/' + path.replace(/^\/+/, '');
   };
   const lookupUrl = (key) => {
     if (!Object.prototype.hasOwnProperty.call(urlsCtx, key)) {
