@@ -64,6 +64,7 @@ export const REQUIRED_DOCS = [
   'docs/PACKAGE-PORTS.md',
   'docs/DEPLOY.md',
   'docs/INTERNALS.md',
+  'docs/DEVELOPING.md',
 ];
 
 const here = dirname(fileURLToPath(import.meta.url));
