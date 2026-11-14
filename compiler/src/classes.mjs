@@ -17,16 +17,13 @@
 //
 // Anything the compiled rung cannot answer exactly fails loud here: the class
 // is not compiled and the routes that use it stay blocked.
-import parser from 'php-parser';
-import { readFileSync } from 'node:fs';
 import { transpileControllerMethod, VALIDATOR_TYPES, RESOURCE_REQUEST_TYPES, JSON_RESPONSE_TYPES, vname, shortName } from './transpiler.mjs';
 import { SERVICE_ADAPTERS, REFUSED_SERVICES } from '../../kernel/service-adapters.mjs';
 // The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore).
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
-// The AST-node name reader (`nodeName`) lives once in tools/static.mjs.
-import { nodeName } from '../../tools/static.mjs';
-
-const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
+// The AST-node name reader (`nodeName`) and the PHP parse rule live once in
+// tools/static.mjs.
+import { nodeName, readPhpAst } from '../../tools/static.mjs';
 
 // The Laravel BUS traits a job (and a queued listener) uses:
 // `use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;`.
@@ -195,22 +192,9 @@ function needsAwait(code) {
 // ---------------------------------------------------------------------------
 
 function parseClassFile(file) {
-  let source;
-  try {
-    source = readFileSync(file, 'utf8');
-  } catch (e) {
-    return { error: 'the class file could not be read: ' + (e.message || e) };
-  }
-  let ast;
-  try {
-    ast = phpParser.parseCode(source);
-  } catch (e) {
-    return { error: 'parse error: ' + (e.message || String(e)) };
-  }
-  if (ast && ast.errors && ast.errors.length) {
-    const first = ast.errors[0];
-    return { error: 'parse error: ' + (first.msg || first.message || JSON.stringify(first)) };
-  }
+  const parsed = readPhpAst(file, 'class');
+  if (parsed.error) return { error: parsed.error };
+  const ast = parsed.ast;
   const classes = [];
   // The namespace of the file and its imports (`use`): a type written short
   // (`Mailer`) resolves through them (PHP's own resolution).

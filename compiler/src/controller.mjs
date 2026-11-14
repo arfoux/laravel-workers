@@ -9,7 +9,6 @@
 //   extractController(source, method) -> what the build needs to resolve
 //     (params, model classes, view names) before it can emit code;
 //   emitController(source, method, meta) -> the final handler module source.
-import parser from 'php-parser';
 import { snake } from '../../kernel/str.mjs';
 import { transpileControllerMethod, uncompiledRuleOf, PORT_HINT, vname } from './transpiler.mjs';
 import { viewFileName } from './view-name.mjs';
@@ -17,9 +16,7 @@ import { viewFileName } from './view-name.mjs';
 // the same reader the config/const folders use, so a signature default cannot
 // bake a different number than PHP's.
 import { phpNumberLiteral } from '../../tools/php-funcs.mjs';
-import { nodeName } from '../../tools/static.mjs';
-
-const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
+import { nodeName, parsePhpAst } from '../../tools/static.mjs';
 
 // A rule *object* (`Rule::unique('profiles','username')->ignore($id)`,
 // `File::types([...])`, `Rules\Password::defaults()`) is a class: the compiled
@@ -184,17 +181,10 @@ function lwErr(code, message, loc, hint) {
 }
 
 function parseSource(source) {
-  let ast;
-  try {
-    ast = phpParser.parseCode(source);
-  } catch (e) {
-    return { error: lwErr('LW004', 'parse error: ' + (e.message || String(e)), null) };
-  }
-  if (ast && ast.errors && ast.errors.length) {
-    const first = ast.errors[0];
-    return { error: lwErr('LW004', 'parse error: ' + (first.msg || first.message || JSON.stringify(first)), first.loc) };
-  }
-  return { ast };
+  const parsed = parsePhpAst(source);
+  // The build's own error channel: the parser's wording, carrying LW004.
+  if (parsed.error) return { error: lwErr('LW004', parsed.error, parsed.loc) };
+  return { ast: parsed.ast };
 }
 
 
