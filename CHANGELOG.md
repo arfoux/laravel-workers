@@ -24,6 +24,7 @@ both resolvers and now lives once as `providerEnv(env, name, { scope })`.
 | `tools/tests/packages-socialite-providers.test.mjs`: two route-level tests | drives the real redirect port with `provider=azure` (302 + tenant URL), and 400 for a name in neither table |
 | `kernel/packages/socialite.mjs:9`: "signed-by-randomness cookie" -> HttpOnly random nonce, no MAC | `stateCookie()` emits no signature; the D1 row, not the cookie, is the second check |
 | `kernel/packages/totp.mjs:39`: "canonical lower-case output" -> upper-case | observed `base32Encode(...)` = `AEBAGBAFAYDQQCIK`, and the suite pins `/^[A-Z2-7]+$/` |
+| `kernel/packages/socialite-providers.mjs`: `mapUserExtra` dropped | 0 runtime callers - the ports map the profile through the resolved provider's `mapUser`; the two tests that only exercised this wrapper now drive `resolveProviderExtra(...).mapUser(...)`, and the unknown-name case is already covered by `resolveProviderExtra`'s own null test |
 
 ### Two D1 result shapes the ports read wrong: a 500 and a silent zero
 

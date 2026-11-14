@@ -6,7 +6,7 @@
 // Socialite's `mapUserToObject` does. These tests assert, per provider:
 //   • the derived authorize/token/user endpoints,
 //   • the credentials + scope merged from env,
-//   • mapUserExtra flattening of the raw sub/email JSON,
+//   • the shapes' mapUser flattening of the raw sub/email JSON,
 //   • the unconfigured null returns (missing creds / missing location / unknown),
 //   • and (reachability) that the generic laravel-socialite-redirect route
 //     actually serves an extra provider, with a 400 for a name in neither table.
@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { FakeD1 } from './_fake-d1.mjs';
-import { resolveProviderExtra, mapUserExtra } from '../../kernel/packages/socialite-providers.mjs';
+import { resolveProviderExtra } from '../../kernel/packages/socialite-providers.mjs';
 import redirect from '../../ports/packages/laravel-socialite-redirect.mjs';
 
 function makeEnv(fragment, creds) {
@@ -88,32 +88,45 @@ test('okta: shape is the {org}.okta.com oauth2/v1 endpoints', () => {
   assert.equal(p.userUrl, 'https://dev-123456.okta.com/oauth2/v1/userinfo');
 });
 
-test('mapUserExtra: azure flattens sub/preferred_username/picture', () => {
-  const u = mapUserExtra('azure', {
-    sub: 'a1b2c3',
-    name: 'Ada Lovelace',
-    email: 'ada@example.com',
-    preferred_username: 'ada@example.com',
-    picture: 'https://id.example.com/ada.jpg',
-  });
-  assert.deepEqual(u, {
-    id: 'a1b2c3',
-    name: 'Ada Lovelace',
-    email: 'ada@example.com',
-    nickname: 'ada@example.com',
-    avatar: 'https://id.example.com/ada.jpg',
-  });
+test('azure mapUser: flattens sub/preferred_username/picture', () => {
+  const p = resolveProviderExtra(
+    makeEnv(
+      { AZURE_TENANT: 'contoso' },
+      { AZURE_CLIENT_ID: 'az-id', AZURE_CLIENT_SECRET: 'az-secret' }
+    ),
+    'azure'
+  );
+  assert.ok(p);
+  assert.deepEqual(
+    p.mapUser({
+      sub: 'a1b2c3',
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      preferred_username: 'ada@example.com',
+      picture: 'https://id.example.com/ada.jpg',
+    }),
+    {
+      id: 'a1b2c3',
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      nickname: 'ada@example.com',
+      avatar: 'https://id.example.com/ada.jpg',
+    }
+  );
 });
 
-test('mapUserExtra: falls back to email for id when sub is absent', () => {
-  const u = mapUserExtra('keycloak', { email: 'k@example.com', name: 'Grace' });
+test('keycloak mapUser: falls back to email for id when sub is absent', () => {
+  const p = resolveProviderExtra(
+    makeEnv(
+      { KEYCLOAK_BASE: 'https://kc.example.com', KEYCLOAK_REALM: 'acme' },
+      { KEYCLOAK_CLIENT_ID: 'kc-id', KEYCLOAK_CLIENT_SECRET: 'kc-secret' }
+    ),
+    'keycloak'
+  );
+  assert.ok(p);
+  const u = p.mapUser({ email: 'k@example.com', name: 'Grace' });
   assert.equal(u.id, 'k@example.com');
   assert.equal(u.nickname, 'k@example.com');
-});
-
-test('mapUserExtra: provider name is case-sensitive and unknown names return null', () => {
-  assert.equal(mapUserExtra('Azure', { sub: 'x', email: 'e@x.com' }), null);
-  assert.equal(mapUserExtra('notaprovider', { sub: 'x', email: 'e@x.com' }), null);
 });
 
 test('resolveProviderExtra: missing credentials returns null', () => {
