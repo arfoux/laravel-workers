@@ -88,7 +88,12 @@ export function randomState() {
 
 const COOKIE_NAME = 'oauth_state';
 
-export function stateCookie(state, { maxAgeSeconds = 600, secure = true } = {}) {
+// The window a `state` is worth remembering: the cookie's Max-Age, and the age
+// at which `rememberState` prunes the D1 row (one constant so the two cannot
+// drift - a row outliving its cookie is dead weight in D1).
+const STATE_TTL_SECONDS = 600;
+
+export function stateCookie(state, { maxAgeSeconds = STATE_TTL_SECONDS, secure = true } = {}) {
   return `${COOKIE_NAME}=${state}; Path=/; HttpOnly; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
 }
 
@@ -104,13 +109,19 @@ export function readStateCookie(ctx) {
 }
 
 // Persist the state so the callback can double-check when the cookie is absent
-// (cross-domain or a privacy browser). One row per state; short-lived.
+// (cross-domain or a privacy browser). One row per state; short-lived - the row
+// is pruned once it is older than the cookie's own window, because a flow whose
+// callback never comes (a bot hitting `/auth/{provider}/redirect`, a closed tab)
+// otherwise leaves it behind for good.
 export async function rememberState(env, state) {
   await env.DB.prepare(
     `CREATE TABLE IF NOT EXISTS lw_oauth_state (
       state TEXT PRIMARY KEY,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`
+  ).run();
+  await env.DB.prepare(
+    `DELETE FROM lw_oauth_state WHERE created_at < datetime('now', '-${STATE_TTL_SECONDS} seconds')`
   ).run();
   await env.DB.prepare('INSERT INTO lw_oauth_state (state) VALUES (?1)').bind(state).run();
 }

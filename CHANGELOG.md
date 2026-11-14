@@ -2,6 +2,21 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### `lw_oauth_state` rows had no expiry
+
+`kernel/packages/socialite.mjs` calls its state row "short-lived" - the cookie is `Max-Age=600` - but the only
+`DELETE` in the repo sat inside `consumeState()`, i.e. delete-on-use. A flow whose callback never comes (a bot
+hitting the public `GET /auth/{provider}/redirect`, a closed tab) left its row behind for good, so the table grew
+with traffic instead of with live flows. `rememberState` now prunes rows older than the cookie's own window on
+the way in, and that window is one constant (`STATE_TTL_SECONDS`) shared by the cookie and the prune so the two
+cannot drift.
+
+| change | why |
+|---|---|
+| `kernel/packages/socialite.mjs`: `STATE_TTL_SECONDS = 600`, and `rememberState` deletes rows older than it | measured: `grep -rn "lw_oauth_state"` across the repo (minus `node_modules`/`dist`) showed the only cleanup was delete-on-use - nothing ever removed an abandoned row |
+| `tools/tests/packages-socialite-facebook.test.mjs`: a 601s-old row is gone after the next redirect, a live row survives | the prune is a D1 statement on the redirect path, so it is asserted against the fake engine the suite already runs on |
+| `docs/D1-SCHEMA.md`: the `lw_oauth_state` note names the pruning window | the prose is hand-written (the generator only owns the DDL regions), so it was the one place claiming the rows are short-lived |
+
 ### The four extra Socialite providers were unreachable
 
 `kernel/packages/socialite-providers.mjs` shipped four complete shape-only providers (azure,

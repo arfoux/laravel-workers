@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS lw_dtos (
 ```
 
 ### 10. `lw_oauth_state`
-Kernel: `socialite` — OAuth `state` nonces for Laravel Socialite CSRF verification.
+Kernel: `socialite` — OAuth `state` nonces for Laravel Socialite CSRF verification. The cookie carries `Max-Age=600` and `rememberState` prunes rows older than that window on the way in, so the table holds the last ten minutes of flows rather than every flow ever started.
 
 ```sql
 CREATE TABLE IF NOT EXISTS lw_oauth_state (
