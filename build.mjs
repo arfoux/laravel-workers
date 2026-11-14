@@ -42,6 +42,7 @@ import { viewFileName } from './compiler/src/view-name.mjs';
 import { slugifyRoute } from './tools/route-slug.mjs';
 import { buildRouteMap } from './tools/route-map.mjs';
 import { jsoncValue, stripTomlComments, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
+import { snapshotFiles } from './tools/snapshot-paths.mjs';
 import { notTriggerableFindings, shiftedTriggerFindings } from './tools/schedule-gaps.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
 import { ORACLE_PHP, resolvePhp } from './tools/php-runtime.mjs';
@@ -1120,7 +1121,9 @@ const writePage = (file, html) => {
   const outPath = join(dist, 'public', file);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, rel);
-  return { bytes: rel.length, fixed };
+  // The size on disk, not the string length: the log says "bytes" and the pages
+  // carry multi-byte characters (an em dash is 1 char, 3 bytes).
+  return { bytes: Buffer.byteLength(rel), fixed };
 };
 
 // A compiled view's captured context carries the same dev origin the snapshots
@@ -1205,8 +1208,15 @@ for (const [route, file] of staticMap) {
     note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: rawDetail.includes('key:generate') ? 'run `npx laravel-workers init` to write .env + APP_KEY' : isRuntimeBindingError(rawDetail) ? 'this static entry reads a D1 binding, or a database, that the build cannot reach -- a static entry must prerender clean, so give the app a local sqlite fallback for the build (config/database.php) or make the route dynamic' : rawDetail.includes('database') ? 'prerender renders this route for real, so it needs live data: prepare a local DB with data (touch database/database.sqlite && php artisan migrate --seed). Note: the D1 schema itself does NOT need this — schema-compile derives it from migrations in memory' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
     fail(`static route ${route} returned HTTP ${res.status}${detail}`);
   }
-  const { bytes, fixed } = writePage(file, res.body);
-  console.log(`• static ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
+  // The page lands under both spellings it is reachable as (tools/snapshot-paths.mjs):
+  // `/docs/guide` from the flat file, `/docs/guide/` from the folder one. Under
+  // Cloudflare's default `html_handling` a single spelling would answer the other
+  // with a 307, where PHP answers 200 for both.
+  const files = snapshotFiles(route, file);
+  const written = files.map((f) => writePage(f, res.body));
+  console.log(
+    `• static ${route} -> public/${files.join(' + public/')} (${written[0].bytes} bytes, ${written.reduce((n, w) => n + w.fixed, 0)} URL(s) made relative)`
+  );
   if (otherMethods(route).length) partials.push({ route, methods: otherMethods(route) });
 }
 
@@ -1222,10 +1232,12 @@ for (const route of routes) {
   const res = prerender(route);
   const isHtml = String(res.content_type || '').includes('text/html');
   if (res.status >= 200 && res.status < 300 && isHtml) {
-    const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
-    const { bytes, fixed } = writePage(file, res.body);
+    const files = snapshotFiles(route);
+    const written = files.map((f) => writePage(f, res.body));
     snapshots.push(route);
-    console.log(`• snapshot ${route} -> public/${file} (${bytes} bytes, ${fixed} URL(s) made relative)`);
+    console.log(
+      `• snapshot ${route} -> public/${files.join(' + public/')} (${written[0].bytes} bytes, ${written.reduce((n, w) => n + w.fixed, 0)} URL(s) made relative)`
+    );
     if (others.length) partials.push({ route, methods: others });
   } else if (res.status >= 200 && res.status < 300) {
     needsPort.push({ route, reason: RUNTIME_REASONS.nonHtml(res.status, res.content_type) });
@@ -3426,11 +3438,12 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       for (const route of [...snapshots]) {
         if (!controllerRoutes.has(route)) continue;
         snapshots.splice(snapshots.indexOf(route), 1);
-        const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
-        try {
-          rmSync(join(dist, 'public', file), { force: true });
-        } catch {
-          /* the page was never written */
+        for (const file of snapshotFiles(route)) {
+          try {
+            rmSync(join(dist, 'public', file), { force: true });
+          } catch {
+            /* the page was never written */
+          }
         }
         console.log(`  snapshot ${route} dropped - the compiled controller serves it`);
       }
@@ -3750,11 +3763,10 @@ const routeTable = routes.map((route) => {
   }
   if (registryEntry(staticMap, route)) {
     const file = registryEntry(staticMap, route)[1];
-    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'snapshot', snapshot: file };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'snapshot', snapshot: snapshotFiles(route, file)[0] };
   }
   if (snapshots.includes(route)) {
-    const file = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
-    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'snapshot', snapshot: file };
+    return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'snapshot', snapshot: snapshotFiles(route)[0] };
   }
   return { uri: route, ...metaForRoute(route), methods: baseMethodsFor(route), kind: 'unhandled' };
 });
