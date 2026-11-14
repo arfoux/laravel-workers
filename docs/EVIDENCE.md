@@ -132,6 +132,20 @@ test covers named params (`grep -rn "route('.*', *\[" tools/tests kernel/tests` 
 Impact: the idiom is Laravel's normal one, so a compiled app cannot redirect to a created
 resource.
 
+**Fixed.** `genUrl` reads a map by name now: the same call answered
+`http://localhost/crud/%5Bobject%20Object%5D` before the change (the exact string the live
+worker's `Location` header carried) and answers `http://localhost/crud/46` after it.
+
+The rule table — one PHP 8.3 probe per line: map by name, list positional, leftover keys →
+query in map order, `{x?}` absent drops its segment, missing required → the framework's own
+exception, `rawurlencode` with `%2F` restored, `absolute: false` → a relative URL — is the
+comment above `genUrl` in `compiler/runtime/rt-from-context.mjs`, and
+`compiler/tests/rt-url.test.mjs` pins every line of it. One PHP shape is deliberately **not**
+mirrored: a list with more values than the route has parameters
+(`route('crud.show', [1, 2])` answers `/crud/1?2` on PHP; the extras drop here) — the compiler
+never emits it and the mechanism behind `?2` was not pinned down, so it is a documented gap
+rather than a guess.
+
 **2 — P2: a path that is not in `_routes.json` never reaches the worker, so the 404 has no
 body.** `GET /nonexistent-route-for-404` on the live worker → `404`, **0 B**. The app's own
 404 (`GET /errors/404`) → `404`, 218 B, and PHP answers 218 B for the same unknown path. The
