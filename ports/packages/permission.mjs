@@ -202,13 +202,13 @@ export default async function handle(ctx, env) {
           .prepare('INSERT OR IGNORE INTO model_has_roles (role_id, model_type, model_key) VALUES (?, ?, ?)')
           .bind(role.id, modelType, modelKey)
           .run();
-        return json(200, { assigned: (res && res.changes) || 0 });
+        return json(200, { assigned: res?.meta?.changes ?? res?.changes ?? 0 });
       }
       const res = await env.DB
         .prepare('DELETE FROM model_has_roles WHERE role_id = ? AND model_type = ? AND model_key = ?')
         .bind(role.id, modelType, modelKey)
         .run();
-      return json(200, { revoked: (res && res.changes) || 0 });
+      return json(200, { revoked: res?.meta?.changes ?? res?.changes ?? 0 });
     }
 
     if (action === 'give-permission' || action === 'revoke-permission') {
@@ -220,13 +220,13 @@ export default async function handle(ctx, env) {
           .prepare('INSERT OR IGNORE INTO model_has_permissions (permission_id, model_type, model_key) VALUES (?, ?, ?)')
           .bind(perm.id, modelType, modelKey)
           .run();
-        return json(200, { given: (res && res.changes) || 0 });
+        return json(200, { given: res?.meta?.changes ?? res?.changes ?? 0 });
       }
       const res = await env.DB
         .prepare('DELETE FROM model_has_permissions WHERE permission_id = ? AND model_type = ? AND model_key = ?')
         .bind(perm.id, modelType, modelKey)
         .run();
-      return json(200, { revoked: (res && res.changes) || 0 });
+      return json(200, { revoked: res?.meta?.changes ?? res?.changes ?? 0 });
     }
 
     return json(400, { error: 'unknown action' });

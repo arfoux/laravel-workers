@@ -85,7 +85,7 @@ async function attach(env, tagId, modelType, modelKey) {
     .prepare('INSERT INTO taggables (tag_id, taggable_type, taggable_id) VALUES (?, ?, ?)')
     .bind(tagId, modelType, modelKey)
     .run();
-  return (res && res.changes) || 0;
+  return res?.meta?.changes ?? res?.changes ?? 0;
 }
 
 async function detach(env, tagId, modelType, modelKey) {
@@ -93,7 +93,7 @@ async function detach(env, tagId, modelType, modelKey) {
     .prepare('DELETE FROM taggables WHERE tag_id = ? AND taggable_type = ? AND taggable_id = ?')
     .bind(tagId, modelType, modelKey)
     .run();
-  return (res && res.changes) || 0;
+  return res?.meta?.changes ?? res?.changes ?? 0;
 }
 
 async function currentTagNames(env, modelType, modelKey, type) {

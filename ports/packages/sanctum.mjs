@@ -111,7 +111,7 @@ export async function handleCreate(ctx, env) {
     const reserved = await env.DB.prepare(
       'INSERT INTO personal_access_tokens (tokenable_type, tokenable_id, name, token, abilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind('App\\Models\\User', user.id, name, `__reserved__${Date.now()}-${Math.random()}`, JSON.stringify(abilities), now(), now()).run();
-    const tokenId = reserved.meta?.lastInsertRowid ?? reserved.lastInsertRowid;
+    const tokenId = reserved.last_row_id ?? reserved.meta?.last_row_id;
 
     const { plain, row } = await createPersonalAccessToken(user.id, name, abilities, { id: tokenId });
     await env.DB.prepare(
