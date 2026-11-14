@@ -2,6 +2,29 @@
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
 ## Unreleased
 
+### The README was a manual, not an entrance
+
+`README.md` was 840 lines: a reader landing on the package page had to scroll past the CLI
+reference, the guided-deploy walkthrough, the build phases, the cache rules and the
+operability notes before learning what this is and how to try it. It is now 95 lines and
+answers, in order: what it is, the four commands, what runs today, what is refused (each with
+its escape hatch), the honest limits, where to read next. Nothing was cut - the operator
+reference moved byte-identical to `docs/DEPLOY.md`, the file map and the 30-second
+architecture to `docs/INTERNALS.md`, the port recipes to `docs/PACKAGE-PORTS.md`, and the
+developer story (checkout, suite, `gate:ci`, the checks behind each claim, the full doc map)
+is a new `docs/DEVELOPING.md` that the README's *Where to read next* table links, so it stays
+reachable from the npm page.
+
+| change | why |
+|---|---|
+| `README.md`: 840 → 95 lines, user-only; the requirements table and the Cloudflare tiers moved to `docs/DEPLOY.md`, the per-construct detail stays in `COMPILED.md`/`MAP.md` and only an 8-row summary remains | measured: the quick start sat under a 300-line operator reference; `docs-counts` keeps every remaining number generated |
+| `docs/DEPLOY.md` (new, 389 lines): CLI, guided deploy, zero-touch/CI, build phases + cache, fullstack, `RUNS ON THE EDGE`, Requirements + tiers | the text is the README's own paragraphs, moved verbatim (LF, no reflow) - a pointer, not a rewrite |
+| `docs/INTERNALS.md` (new): `What's inside` + `Architecture (30 s)` | same move; the file map is read by contributors, not by a first-time user |
+| `docs/PACKAGE-PORTS.md` (+231 lines): the guard/route/middleware recipes and the ai-sdk + Pulse worked examples | same move; the port recipes belong beside the port catalog they reference |
+| `docs/DEVELOPING.md` (new): from checkout, the suite, `gate:ci`, the checks behind the claims, the full doc map, "who reads what" | the developer half had been interleaved with the operator half; one page now carries the contributor path and names `PROCESS.md` first |
+| `tools/pack-gate.mjs`: `REQUIRED_DOCS` gains `docs/CI.md`, `docs/PACKAGE-PORTS.md`, `docs/DEPLOY.md`, `docs/INTERNALS.md`, `docs/DEVELOPING.md` | the list exists to catch dead links; five README-linked docs had never been on it (verified: all five ship - 223 files in the tarball) |
+| `build.mjs:3592` and `tools/ports.mjs:7`: the two stale port pointers -> `docs/PACKAGE-PORTS.md`, "A guard port, in practice" / "Writing your own port" | measured: `git grep` on `origin/main` finds `(see the README section on guard ports)` and `// Port contract (see README)` in exactly those two lines; that heading sat at `README.md:530` and now lives at `docs/PACKAGE-PORTS.md:176` |
+
 ### `lw_oauth_state` rows had no expiry
 
 `kernel/packages/socialite.mjs` calls its state row "short-lived" - the cookie is `Max-Age=600` - but the only
