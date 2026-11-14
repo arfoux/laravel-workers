@@ -1,6 +1,6 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
-## v0.5.1 — endpoints stop trusting the request body, the route requirements reach the Worker, and the README becomes an entrance (2026-11-14)
+## v0.5.1 — endpoints stop trusting the request body, the route requirements reach the Worker, the deploy knows its commit and binds the database the config names, and the README becomes an entrance (2026-11-14)
 
 ### `deploy` binds the `database_id` the config already names
 
