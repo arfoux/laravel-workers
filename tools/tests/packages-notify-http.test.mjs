@@ -81,9 +81,22 @@ test('slack: webhook needs no channel — omitting `to` still sends', async () =
 test('slack: passes blocks/attachments through verbatim', async () => {
   const fetchImpl = makeFetch(200, { ok: true });
   const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'yo' } }];
-  await slack(okCtx({ to: 'C1', body: 'yo', blocks }), { fetchImpl, SLACK_WEBHOOK_URL: 'https://hooks.slack.com/services/x' });
+  const attachments = [{ color: 'danger', text: 'boom' }];
+  await slack(okCtx({ to: 'C1', body: 'yo', blocks, attachments }), { fetchImpl, SLACK_WEBHOOK_URL: 'https://hooks.slack.com/services/x' });
   const sent = JSON.parse(fetchImpl.calls[0].init.body);
   assert.deepEqual(sent.blocks, blocks);
+  assert.deepEqual(sent.attachments, attachments);
+});
+
+test('slack: the chat.postMessage branch carries blocks/attachments too', async () => {
+  const fetchImpl = makeFetch(200, { ok: true });
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'hi' } }];
+  const attachments = [{ color: 'good', text: 'ok' }];
+  await slack(okCtx({ to: 'C9', body: 'hi', blocks, attachments }), { fetchImpl, SLACK_BOT_TOKEN: 'xoxb' });
+  const sent = JSON.parse(fetchImpl.calls[0].init.body);
+  assert.equal(sent.channel, 'C9');
+  assert.deepEqual(sent.blocks, blocks);
+  assert.deepEqual(sent.attachments, attachments);
 });
 
 // ---- Twilio ----------------------------------------------------------------

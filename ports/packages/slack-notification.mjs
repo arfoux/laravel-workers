@@ -70,8 +70,8 @@ export default async function handle(ctx, env) {
     init.body = JSON.stringify({
       text,
       ...(channel ? { channel } : {}),
-      ...((ctx && ctx.body && ctx.body.blocks) ? { blocks: ctx.body.blocks } : {}),
-      ...((ctx && ctx.body && ctx.body.attachments) ? { attachments: ctx.body.attachments } : {}),
+      ...(payload.blocks ? { blocks: payload.blocks } : {}),
+      ...(payload.attachments ? { attachments: payload.attachments } : {}),
     });
   } else if (botToken) {
     // Web API: bearer bot token + explicit channel required.
@@ -82,8 +82,8 @@ export default async function handle(ctx, env) {
     init.body = JSON.stringify({
       channel,
       text,
-      ...((ctx && ctx.body && ctx.body.blocks) ? { blocks: ctx.body.blocks } : {}),
-      ...((ctx && ctx.body && ctx.body.attachments) ? { attachments: ctx.body.attachments } : {}),
+      ...(payload.blocks ? { blocks: payload.blocks } : {}),
+      ...(payload.attachments ? { attachments: payload.attachments } : {}),
     });
   } else {
     return jsonPort({ error: 'missing Slack credential: set SLACK_WEBHOOK_URL or SLACK_BOT_TOKEN' }, 500);
