@@ -6,9 +6,8 @@ The change-by-change record of laravel-workers (M1–M70 and the A-series audit 
 
 `README.md` was 840 lines: a reader landing on the package page had to scroll past the CLI
 reference, the guided-deploy walkthrough, the build phases, the cache rules and the
-operability notes before learning what this is and how to try it. It is now 110 lines and
-answers, in order: what it is, the three-command path plus a table of every verb, what runs today, what is refused (each with
-its escape hatch), the honest limits, where to read next. Nothing was cut - the operator
+operability notes before learning what this is and how to try it. It is now 112 lines and
+answers, in order: what it is, the three-command path, the counts, a table of every verb, what runs today, what is refused (each with its escape hatch), the honest limits, where to read next. Nothing was cut - the operator
 reference moved byte-identical to `docs/DEPLOY.md`, the file map and the 30-second
 architecture to `docs/INTERNALS.md`, the port recipes to `docs/PACKAGE-PORTS.md`, and the
 developer story (checkout, suite, `gate:ci`, the checks behind each claim, the full doc map)
@@ -17,9 +16,9 @@ reachable from the npm page.
 
 | change | why |
 |---|---|
-| `README.md`: 840 → 110 lines, user-only; the requirements table and the Cloudflare tiers moved to `docs/DEPLOY.md`, the per-construct detail stays in `COMPILED.md`/`MAP.md` and only an 8-row summary remains | measured: `git show c8d590d^:README.md \| wc -l` = 840, `wc -l README.md` = 110; `docs-counts` keeps every remaining number generated |
-| `README.md`: the quick start is the three-verb path (`deploy --plan`, `build`, `deploy`), and a `The commands` table below it lists all nine public verbs with one line each | `bin/laravel-workers.mjs` passes `--strict` to `build.mjs` itself, so `build --strict` in a README asks the user for a flag that is already implied - and the rewrite had left the quick start with Cloudflare-touching verbs only |
-| `docs/DEPLOY.md` (new, 389 lines): CLI, guided deploy, zero-touch/CI, build phases + cache, fullstack, `RUNS ON THE EDGE`, Requirements + tiers | the text is the README's own paragraphs, moved verbatim (LF, no reflow) - a pointer, not a rewrite |
+| `README.md`: 840 → 112 lines, user-only; the requirements table and the Cloudflare tiers moved to `docs/DEPLOY.md`, the per-construct detail stays in `COMPILED.md`/`MAP.md` and only an 8-row summary remains | measured: `git show c8d590d^:README.md \| wc -l` = 840, `wc -l README.md` = 112; `docs-counts` keeps every remaining number generated |
+| `README.md`: the quick start is the three-verb path (`deploy --plan`, `build`, `deploy`), and a `## The commands` table after the pitch lists all nine public verbs with one line each | `bin/laravel-workers.mjs` passes `--strict` to `build.mjs` itself, so `build --strict` in a README asks the user for a flag that is already implied - and the rewrite had left the quick start with Cloudflare-touching verbs only |
+| `docs/DEPLOY.md` (new, 361 lines): CLI, guided deploy, zero-touch/CI, build phases + cache, fullstack, `RUNS ON THE EDGE`, Requirements + tiers | the text is the README's own paragraphs, moved verbatim (LF, no reflow) - a pointer, not a rewrite |
 | `docs/INTERNALS.md` (new): `What's inside` + `Architecture (30 s)` | same move; the file map is read by contributors, not by a first-time user |
 | `docs/PACKAGE-PORTS.md` (+231 lines): the guard/route/middleware recipes and the ai-sdk + Pulse worked examples | same move; the port recipes belong beside the port catalog they reference |
 | `docs/DEVELOPING.md` (new): from checkout, the suite, `gate:ci`, the checks behind the claims, the full doc map, "who reads what" | the developer half had been interleaved with the operator half; one page now carries the contributor path and names `PROCESS.md` first |
