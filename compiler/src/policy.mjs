@@ -13,12 +13,8 @@
 //
 // Anything the compiled rung cannot answer exactly fails loud here — the
 // policy is not compiled, and the routes that check it stay blocked.
-import parser from 'php-parser';
-import { readFileSync } from 'node:fs';
 import { transpileControllerMethod, vname, shortName } from './transpiler.mjs';
-import { nodeName } from '../../tools/static.mjs';
-
-const phpParser = new parser({ parser: { extractDoc: false }, ast: { withPositions: true } });
+import { nodeName, readPhpAst } from '../../tools/static.mjs';
 
 
 
@@ -29,22 +25,9 @@ const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
 // ---------------------------------------------------------------------------
 
 function parsePolicyFile(file, policyFqcn) {
-  let source;
-  try {
-    source = readFileSync(file, 'utf8');
-  } catch (e) {
-    return { error: 'the policy file could not be read: ' + (e.message || e) };
-  }
-  let ast;
-  try {
-    ast = phpParser.parseCode(source);
-  } catch (e) {
-    return { error: 'parse error: ' + (e.message || String(e)) };
-  }
-  if (ast && ast.errors && ast.errors.length) {
-    const first = ast.errors[0];
-    return { error: 'parse error: ' + (first.msg || first.message || JSON.stringify(first)) };
-  }
+  const parsed = readPhpAst(file, 'policy');
+  if (parsed.error) return { error: parsed.error };
+  const ast = parsed.ast;
   // The dump names the policy by FQCN; a file may legally declare other classes
   // FIRST (autoloading only needs the FQCN to exist somewhere in it), so taking
   // the first `class` node compiled whatever class came first - the abilities

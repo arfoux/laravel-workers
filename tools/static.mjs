@@ -318,27 +318,60 @@ export function classFile(appDir, fqcn) {
 }
 
 /**
+ * Parse PHP source into an AST, or name the failure. Returns `{ ast }` or
+ * `{ error, loc }` — `error` is the operator-facing string (the same wording the
+ * parser throws with), `loc` the parser node the refusal points at (null when
+ * the parser threw). One reader for the whole build: the class/policy dumps in
+ * `compiler/src/` and the config fold here used to carry their own copy of the
+ * "parseCode, then read ast.errors" rule (#697 class).
+ *
+ * The tree is php-parser's PHP 7 nesting — a caller that will EVALUATE an
+ * expression must re-associate it with `renestMixedChains()` first (see there).
+ */
+export function parsePhpAst(source) {
+  let ast;
+  try {
+    ast = phpParser.parseCode(String(source));
+  } catch (e) {
+    return { error: 'parse error: ' + (e.message || String(e)), loc: null };
+  }
+  if (ast && ast.errors && ast.errors.length) {
+    const first = ast.errors[0];
+    return { error: 'parse error: ' + (first.msg || first.message || JSON.stringify(first)), loc: first.loc || null };
+  }
+  return { ast, loc: null };
+}
+
+/**
+ * Read a PHP file and parse it. `label` names the file in a read failure
+ * ("the <label> file could not be read") so the message stays about the thing
+ * the operator wrote. Returns `{ source, ast, loc }` or `{ error, loc }` —
+ * `source` is handed back because the callers that resolve names also re-parse
+ * it for themselves.
+ */
+export function readPhpAst(file, label) {
+  let source;
+  try {
+    source = readFileSync(file, 'utf8');
+  } catch (e) {
+    return { error: 'the ' + label + ' file could not be read: ' + (e.message || e), loc: null };
+  }
+  const parsed = parsePhpAst(source);
+  return parsed.error ? parsed : { source, ast: parsed.ast, loc: null };
+}
+
+/**
  * Parse a PHP file. Returns { namespace, imports, classes, error } — `imports`
  * is short-name -> FQCN from the file-level `use` statements; `classes` holds the
  * class/interface/trait nodes (in source order).
  */
 export function parsePhpFile(file) {
-  let source;
-  try {
-    source = readFileSync(file, 'utf8');
-  } catch (e) {
-    return { error: 'the class file could not be read: ' + (e.message || e) };
-  }
-  let ast;
-  try {
-    ast = renestMixedChains(phpParser.parseCode(source));
-  } catch (e) {
-    return { error: 'parse error: ' + (e.message || String(e)) };
-  }
-  if (ast && ast.errors && ast.errors.length) {
-    const first = ast.errors[0];
-    return { error: 'parse error: ' + (first.msg || first.message || JSON.stringify(first)) };
-  }
+  const parsed = readPhpAst(file, 'class');
+  if (parsed.error) return { error: parsed.error };
+  const source = parsed.source;
+  // This reader returns the tree to callers that FOLD expressions (the config
+  // eval, the facade/route scans), so it applies PHP 8's chain precedence here.
+  const ast = renestMixedChains(parsed.ast);
   let namespace = '';
   const imports = {};
   const classes = [];
