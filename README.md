@@ -10,13 +10,16 @@
 ---
 
 ```bash
-cd my-laravel-app                   # a real app: Laravel ≥ 10, with vendor/
-npx laravel-workers deploy --plan   # what would happen — no build, no writes, no prompts
-npx laravel-workers build           # compile only, no cloud — strict: an unaccounted route fails
-npx laravel-workers deploy          # build → (D1) → (deploy), asking only what it cannot decide
+cd my-laravel-app        # a real app: Laravel ≥ 10, with vendor/
+
+npx laravel-workers deploy --plan --mode 3 --d1-auto   # the whole deploy on paper: no build, no writes
+npx laravel-workers build                             # compile only, no cloud — strict
+npx laravel-workers deploy                            # build → (D1) → (deploy), asking only what it cannot decide
 ```
 
 That is the whole setup: nothing to install (`npm i -D laravel-workers` only if you want the version pinned in the app), no PHP at the edge, no WASM, no container. `deploy --plan` and `build` never talk to Cloudflare — `deploy` is the only verb that does.
+
+A plan is the whole deploy on paper: the worker name, the account a real run would target, the D1 action and identity, the schema decision, the files it would touch and the cloud calls it would make — and it stops on the things a real run would stop on. Ran without `--mode 3`, `--plan` previews mode 1 (build only), which is why the line above passes it.
 
 **What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. Every compiled page is checked **byte-identical against PHP 8.3 on your machine** during the build. Anything the compiler cannot handle **fails the build** — nothing silently wrong ships.
 
@@ -47,7 +50,7 @@ Needs: PHP **≥ 8.3 on the build machine only**, Node ≥ 22, a Laravel ≥ 10 
 
 | Command | What it does |
 |---|---|
-| `deploy --plan [--check]` | preview: no build, no writes, no prompts; `--check` adds read-only account/D1 checks |
+| `deploy --plan [--mode 3] [--check]` | preview: no build, no writes, no prompts; `--mode 3` previews the deploy (plain `--plan` is mode 1 = build only); `--check` adds read-only account/D1 checks |
 | `build` | compile to `dist/` — no cloud, strict (an unaccounted route fails the build); `--scaffold` writes `501` stubs |
 | `deploy` | build → (D1) → deploy; `--mode 1\|2\|3`, `--d1-auto`, `--d1-id <uuid>`, `--skip-schema`, `--yes` |
 | `status` | the recorded deploy state: worker, account, URL, deployed-at, D1 name/id, schema |
