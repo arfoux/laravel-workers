@@ -634,6 +634,26 @@ function tx(node) {
   }
 }
 
+// PHP's `??` tolerates null anywhere in an offset chain: `$a['b']['c'] ?? 'd'`
+// answers 'd' when $a (or $a['b']) is null. Native JS throws a TypeError on
+// `null['b']`. Under `??` the offset links become optional-chained reads, so a
+// null/undefined base yields undefined and the native `??` takes the fallback.
+// Leaving the right arm as a native `??` operand preserves PHP's short-circuit
+// (the fallback is never evaluated when the left side is set) and evaluates
+// the base once. Outside `??` the plain `[...]` read is unchanged - a normal
+// read over null keeps PHP's warning-on-null surface instead of being silently
+// null-safe.
+function txCoalesceLeft(node) {
+  if (!node) return tx(node);
+  if (node.kind === 'offsetlookup' && node.offset) {
+    const off = node.offset;
+    // A negative string offset already routes through the null-safe rt.strOffset().
+    if (off.kind === 'unary' && off.type === '-') return tx(node);
+    return '(' + txCoalesceLeft(node.what) + ')?.[' + txOffsetKey(off) + ']';
+  }
+  return tx(node);
+}
+
 function txBin(node) {
   const t = node.type;
   const L = () => tx(node.left);
@@ -645,8 +665,9 @@ function txBin(node) {
     case '??':
       // PHP's `??` short-circuits: the right side runs only when the left is
       // null. The native JS `??` does the same (and the left side is
-      // evaluated once).
-      return '(' + L() + ' ?? ' + R() + ')';
+      // evaluated once). An offset read on a null base must become an
+      // optional-chained read first (PHP tolerates it, JS throws).
+      return '(' + txCoalesceLeft(node.left) + ' ?? ' + R() + ')';
     case '||':
       return '(' + L() + ' || ' + R() + ')';
     case '&&':
