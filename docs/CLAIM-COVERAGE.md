@@ -52,24 +52,46 @@ A verdict of **PROVEN** means at least one tier above actually exercised the cla
 | 33 | **Cloudflare Workers CPU benchmark** (5 ms p50 / 41 ms p95) | `COMPILED.md` → benchmarks, `docs/EVIDENCE.md`; `npm run bench` is a **Node proxy**, not workerd CPU; no app measurement | — | NOT VERIFIED (out of scope) |
 | 34 | **Non-Cloudflare targets** | `README.md` scopes the product to a Cloudflare Worker; no file or command in this pass targets another platform | — | NOT VERIFIED |
 
-Totals: **PROVEN 18 · PARTIAL 13 · NOT VERIFIED 3** (34 rows).
+| 35 | **Strict build green on a skipped controller (P7)** — published 0.5.1 skips a declared `POST /edge/upload` after LW002 yet `build --strict` exits 0 and reports all 131 routes handled | `docs/EVIDENCE.md` "P7 — a declared POST route was silently dropped by the published build": published 0.5.1 `build_exit=0`, worker answers 405. **Fixed on main after 0.5.1, not yet published:** scratch strict build prints `CONTROLLER FAILED POST /edge/upload`, `BUILD FAILED: coverage check failed (--strict) — 1 finding(s)`, `BUILD_EXIT=1`; `--scaffold` run writes `ports/edge-upload--post.mjs`, adds the registry entry, `BUILD_EXIT=0` | T1, T4 | REFUTED (published 0.5.1) |
+| 36 | **README philosophy "No silent gaps"** (`README.md:110`) — same P7 counterexample: a declared POST route vanished with a green strict build | `README.md:110`; `docs/EVIDENCE.md` "P7 ..."; this matrix row 9 and the Philosophy agent report. Qualified in README; the local fix is **unreleased** | T1, T4 | REFUTED (published 0.5.1) |
+| 37 | **Byte-identical claim** — Blade corpus and live view parity | `npm run check:docs` → `docs-counts PASS ... corpus 55`; 55/55 corpus and 33 non-data shadow views byte-identical; data-rendering pages differ by design (the two databases differ) and the shadow replay logs those divergences as documented, not unexplained (`docs/EVIDENCE.md` shadow replay; `shadow/scenarios/lw-showcase.mjs`) | T1, T3, T4 | PARTIAL |
+| 38 | **Facade 47/47 and docs 105/105 counts** — self-consistency proxies, not correctness proofs | `npm run check:docs` (run in this audit) → `docs-check PASS: 105/105 rows`, `docs-counts PASS: README counts match the code (118 constructs, 47/47 facades, corpus 55, 105 docs)`; both gates compare repo artifacts with the code, not deployed behaviour | T1 | PARTIAL |
+| 39 | **CPU claim** — 5 ms p50 / 41 ms p95 | `COMPILED.md` → benchmarks records platform `cpuTime` probe numbers; `kernel/tests/budget.test.mjs` Node budget tests are explicitly a **proxy** and must not be cited as workerd CPU. **Cloudflare Workers CPU benchmarks remain excluded by user decision; `npm run bench` is a Node proxy, never workerd CPU** | — (out of scope) | PARTIAL (probe-only) |
+| 40 | **P3/P4/P5 shadow root causes** — string-key `array_values()` data loss, `Route::has()` with `buildRt(null,{routeMap})`, query `%2F` vs wildcard `/a/b` | **Fixed on main after 0.5.1, not yet published:** `compiler/runtime/rt-from-context.mjs` uses `phpKeys()`/`phpEncode()` and a `routeMap` fallback; new emitter+runtime oracle `compiler/tests/rt-array-string-keys.test.mjs` and `compiler/tests/rt-url.test.mjs` pass (RuntimeParityFix report: 17/17, 21/21, corpus 55/55); shadow scenario divergences for `/misc/collection` and `/routing` removed (scenario lines 68, 87). The app fixture `lw-showcase-gaps.mjs:32` remains stale and was **NOT edited** (app repo is user-owned) | T1, T2, T3 | FIXED-LOCAL |
+| 41 | **Shadow harness `?N` binding / `/tenants/acme` reason** | **Fixed on main after 0.5.1, not yet published:** `shadow/run.mjs` binds `?N` SQL with keyed objects like `tools/tests/_fake-d1.mjs`; scenario line 103 reason corrected. Focused replay (ShadowHarnessFix report): PHP 200 vs worker 404 `tenant not found`, `0 unexplained`; positional binding previously threw `ERR_SQLITE_ERROR column index out of range` | T2, T3 | FIXED-LOCAL |
+| 42 | **`verify` missing-sha registry gate and JSON mode** | **Fixed on main after 0.5.1, not yet published:** missing sha registry now FAILs with the narrow `--pin-sha` / `LW_VERIFY_PIN_SHA=1` opt-in; JSON mode enforces the same gate; PHP resolution follows `composer.json` `require.php`. VerifyFix report: `php -l` OK, `node --test tools/tests/verify-fix.test.mjs` → 10/10 pass | T1, T2, T4 | FIXED-LOCAL |
+| 43 | **`deploy --plan --check` mode gate, `doctor --strict`, help, DEPLOY links** | **Fixed on main after 0.5.1, not yet published:** `--check` requires mode >= 2 (exit 2, not a silent no-op); `doctor --strict` upgrades prerequisite WARNs; shadow/doctor help corrected; `docs/DEPLOY.md` text and two broken links fixed. DeployCliFix report: `node --test tools/tests/deploy-integration.test.mjs tools/tests/doctor-strict.test.mjs tools/tests/cli-help.test.mjs` → 48 pass / 0 fail | T1, T2 | FIXED-LOCAL |
+| 44 | **CI/release pinning and gates** | **Fixed on main after 0.5.1, not yet published:** `verdict@v1` → `@v0.5.1` in `docs/CI.md` and both app workflows; publish-gpr tag check; `release` needs both publish jobs; tarball gate added; npm pinned `12.2.2`; `npm ci` on release path. CiReleaseFix report: YAML parse OK, grep `verdict@v1` → 0 matches; this audit's grep confirms 0 in the three local files. The **published `v0.5.1` tag still contains stale `@v1`** (verified live raw GitHub by CiReleaseFix/PublishedVsMain) — fix is unreleased | T1 | FIXED-LOCAL |
+| 45 | **Security hardening** | **Fixed on main after 0.5.1, not yet published:** prototype pollution in `wrangler-crons`/`order-json`, `childEnv` secrets, config credential emission, verdict raw-log disclosure and error-text leakage fixed. SecurityFix report: focused suite 96 pass / 0 fail / 3 skip; canary build → 0 canary tokens in the build log and 0 in `dist/` | T1, T2 | FIXED-LOCAL |
+| 46 | **Artifact hygiene** | **Fixed on main after 0.5.1, not yet published:** `registry.example.json` ships; `tools/audit/` and dev-only oracles excluded; Markdown links checked; tarball 213 files. ArtifactFix report: `node tools/pack-gate.mjs` → `pack-gate OK: ... (213 files in the tarball; local links checked in 17 Markdown files)`; `node --test tools/tests/pack-gate.test.mjs` → 4/4 | T1 | FIXED-LOCAL |
+| 47 | **Docs drift** | **Fixed on main after 0.5.1, not yet published:** FormRequest/Log/timezone/corpus/handler counts, retired `ship`, `CACHE_STORE`, links corrected. DocsDriftFix report and this audit's own run: `npm run check:docs` → `docs-check PASS: 105/105 rows`, `gate PASS` | T1 | FIXED-LOCAL |
+| 48 | **P6 snapshot output-file collision** | **Fixed on main after 0.5.1, not yet published:** guard added before the first write (`tools/snapshot-paths.mjs` + `build.mjs`). SnapshotCollisionFix report: `node --test tools/tests/snapshot-paths.test.mjs` → 10/10 pass; direct guard output names both claimants. Published 0.5.1 still allows one page to overwrite another | T1, T2 | FIXED-LOCAL |
+| 49 | **Prior-art scan / "no equivalent found"** (`MAP.md:19-21,34`) | Last formal scan recorded CLEAN (2026-10-17) but no fresh scan was run in this audit; README now requires a fresh scan before a new public claim. Historical record, not a fresh measurement (ShowcaseClaims/Philosophy reports; `docs/EVIDENCE.md` "Unclaimed surface and documentation drift") | T1 (docs) | PARTIAL |
+| 50 | **CROSS-REPO — stateless-seal: five correctness fixes** | Separate repository, **not a `laravel-workers` claim**. StatelessSealFix report: `npm test` → 23 test files / 113 tests pass, 0 fail; pre-existing 1.2.3 work preserved | — (external repo) | CROSS-REPO |
+| 51 | **CROSS-REPO — blade2php: compiler offsets, `?>` comment handling, BL007 error class, aliased/FQCN Blade discovery** | Separate repository, **not a `laravel-workers` claim**. Blade2PhpCoreFix report: `npm test` → 240/240 pass | — (external repo) | CROSS-REPO |
+| 52 | **CROSS-REPO — nearFind: five safe fixes** | Separate repository coursework, **not a `laravel-workers` claim**. NearFindSafeFix report: `php artisan test` → 67/67 pass; no routes, ports or cookie policy touched | — (external repo) | CROSS-REPO |
+| 53 | **Trademark notice** (`README.md:116`) | A legal notice ("Trademarks belong to their owners"), not a technical claim; not tested. `LICENSE:1-21` is MIT text with no trademark grant (ShowcaseClaims report) | — | NOT VERIFIED |
+
+Totals (53 rows): **PROVEN 18 · PARTIAL 17 · NOT VERIFIED 4 · REFUTED 2 · FIXED-LOCAL 9 · CROSS-REPO 3**. Rows 1–34 are the original audit (PROVEN 18 · PARTIAL 13 · NOT VERIFIED 3); rows 35–53 are the final integrated audit. **FIXED-LOCAL** = fixed on main after 0.5.1, not yet published; **CROSS-REPO** = separate repositories, not `laravel-workers` claims. Published `npx --yes laravel-workers@0.5.1` (npm gitHead `7c73223e…`) is authoritative for shipped behaviour. Cloudflare Workers CPU benchmarks remain excluded by user decision; `npm run bench` is a Node proxy, never workerd CPU.
 
 ## Critical findings outside the claim matrix (2026-11-16, phase B)
 
-The full shadow replay surfaced two concrete risks that are **not** regressions of P1–P4 and were not
-fixed in this pass: a raw `/` in `route()` query values (`compiler/runtime/rt-from-context.mjs:1182-1187,1197`,
-PHP keeps `%2F`) and cross-route prerender filename collisions (`tools/snapshot-paths.mjs:45-46`,
-`build.mjs:1120-1124,4055`).
-P7 is a directly observed third issue: a declared POST route was skipped
-after an LW002 refusal while the strict build still succeeded in published 0.5.1. That issue is
-**fixed on main after 0.5.1, not yet published** (`docs/EVIDENCE.md` "P7 fix on local main").
-The replay also logs three possible product divergences
-(`/misc/collection` `array_values()`, `/routing` `Route::has()`, `/tenants/acme` port error) whose
-root causes are NOT investigated here. Exact commands, outputs and scope are in `docs/EVIDENCE.md`
-sections "PHP-vs-worker shadow replay of every app GET route (2026-11-16)",
-"P7 — a declared POST route was silently dropped by the published build (2026-11-16)" and
-"Critical follow-ups found while proving 0.5.1 (2026-11-16, phase B)". `lw-showcase` has neither
-`/index` nor `/404` prerendered, so its live deploy is unaffected; [INFERENCE] other apps may be.
+The full shadow replay surfaced three concrete risks that are **not** regressions of P1–P4:
+a raw `/` in `route()` query values (P5), cross-route prerender filename collisions (P6), and
+a declared POST controller skipped after an LW002 refusal while `--strict` stayed green (P7).
+All three are **fixed on main after 0.5.1, not yet published** (rows 35, 40–44 and 48 below).
+
+The replay's three suspected product divergences are root-caused: `/misc/collection` (string-key
+`array_values()` data loss, P3) and `/routing` (`Route::has()` with `buildRt(null,{routeMap})`, P4)
+are fixed in the same unreleased runtime change; `/tenants/acme` was a shadow-harness `?N` binding
+defect, not a port bug, and the harness now binds keyed objects. The user-owned app fixture
+`lw-showcase/shadow/scenarios/lw-showcase-gaps.mjs:32` still hard-codes `has_named:false` and was
+deliberately left untouched. Exact commands, outputs and scope are in `docs/EVIDENCE.md` sections
+"PHP-vs-worker shadow replay of every app GET route (2026-11-16)",
+"P7 — a declared POST route was silently dropped by the published build (2026-11-16)",
+"Critical follow-ups found while proving 0.5.1 (2026-11-16, phase B)" and "Final integrated audit
+(2026-11-16, unreleased)". `lw-showcase` has neither `/index` nor `/404` prerendered, so its
+live deploy is unaffected by P6; [INFERENCE] other apps may be.
 
 ## What `lw-showcase` alone cannot prove
 

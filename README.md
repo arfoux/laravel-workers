@@ -21,7 +21,7 @@ That is the whole setup: nothing to install (`npm i -D laravel-workers` only if 
 
 A plan is the whole deploy on paper: the worker name, the account a real run would target, the D1 action and identity, the schema decision, the files it would touch and the cloud calls it would make — and it stops on the things a real run would stop on. Ran without `--mode 3`, `--plan` previews mode 1 (build only), which is why the line above passes it.
 
-**What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. Every compiled page is checked **byte-identical against PHP 8.3 on your machine** during the build. Anything the compiler cannot handle **fails the build** — nothing silently wrong ships.
+**What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. The 55-case Blade corpus is checked **byte-identical against PHP 8.3 on your machine**; the shadow replay records remaining divergences instead of hiding them. The build fails on unaccounted routes and refused constructs. Published 0.5.1 had one skipped-controller gap (P7); it is **fixed on main after 0.5.1, not yet published** — see [docs/EVIDENCE.md](docs/EVIDENCE.md).
 
 ```
 Laravel app (your machine)                Cloudflare Worker (request time)
@@ -42,6 +42,10 @@ docs         105/105 pages with a verdict
 ```
 <!-- readme-counts:end -->
 
+These counts are self-checks: the facade percentage compares a hand-maintained table with its
+own total (a real census runs in the CI e2e job), and the docs count checks that MAP coverage-index
+rows carry a verdict glyph. Neither is a correctness proof for the underlying claim.
+
 Needs: PHP **≥ 8.3 on the build machine only**, Node ≥ 22, a Laravel ≥ 10 app, a Cloudflare account. **Free plan first** — the toolchain is shaped for it; R2 is the only product that asks for a card, and the build never turns it on by itself.
 
 ---
@@ -50,7 +54,7 @@ Needs: PHP **≥ 8.3 on the build machine only**, Node ≥ 22, a Laravel ≥ 10 
 
 | Command | What it does |
 |---|---|
-| `deploy --plan [--mode 3] [--check]` | preview: no build, no writes, no prompts; `--mode 3` previews the deploy (plain `--plan` is mode 1 = build only); `--check` adds read-only account/D1 checks |
+| `deploy --plan [--mode 2|3] [--check]` | preview: no build, no app/config/cloud writes, no prompts; `--mode 3` previews the deploy (plain `--plan` is mode 1 = build only); `--check` requires mode ≥ 2 and adds read-only account/D1 checks using temporary scratch files that are cleaned up |
 | `build` | compile to `dist/` — no cloud, strict (an unaccounted route fails the build); `--scaffold` writes `501` stubs |
 | `deploy` | build → (D1) → deploy; `--mode 1\|2\|3`, `--d1-auto`, `--d1-id <uuid>`, `--skip-schema`, `--yes` |
 | `status` | the recorded deploy state: worker, account, URL, deployed-at, D1 name/id, schema |
@@ -70,14 +74,14 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 
 | Area | Today |
 |---|---|
-| **Blade** | layouts, sections, includes, conditionals, loops, `@switch`/`@match`, ternary/`??`, `e()`, `__()`, casts — byte-identical to the PHP 8.3 oracle |
-| **Router** | `{param}`/`{param?}`/`{param*}`, a param inside text in one segment, domains, `->where()` (Symfony's `RouteCompiler`), `fallback`, redirects, auto `OPTIONS`, 405 with the app's error view, `ValidatePathEncoding` → 400 before the router |
-| **Controllers** | `GET/POST/PUT/PATCH/DELETE`, class-method resolution, `Request`/FormRequest injection, `response()`/`json()`, `redirect()->intended()`, session rotation, class constants |
-| **Eloquent** | `find`/`where*`/`orderBy*` + `first`/`get`/`count`/`pluck`, `hasMany`/`hasOne`/`belongsTo`, `create`/`updateOrCreate`/`firstOrCreate`, `fillable` + mutators + casts (`json`, `decimal:N`, `hashed`), `refresh`/`increment`, soft deletes, route-model binding |
+| **Blade** | layouts, sections, includes, conditionals, loops, `@switch`, ternary/`??`, `e()`, `__()`, casts — the 55-case corpus is byte-identical to the PHP 8.3 oracle; data-rendering pages are not proven byte-identical |
+| **Router** | `{param}`/`{param?}`, a param inside text in one segment, domains, `->where()` (Symfony's `RouteCompiler`), `fallback`, redirects, auto `OPTIONS`, 405 with the app's error view, `ValidatePathEncoding` → 400 before the router. In Laravel 13 `{param*}` is literal text, not a catch-all |
+| **Controllers** | `GET/POST/PUT/PATCH/DELETE`, class-method resolution, simple `Request`/FormRequest injection, `response()`/`json()`, `redirect()->intended()`, session rotation, class constants; conditional FormRequest rule objects are refused (LW003) |
+| **Eloquent** | `find`/`where*`/`orderBy*` + `first`/`get`/`count`/`pluck`, `hasMany`/`belongsTo` from the compiled model dump (`hasOne` works in the kernel but is not dumped yet), `create`/`updateOrCreate`/`firstOrCreate`, `fillable` + mutators + casts (`json`, `decimal:N`, `hashed`), `refresh`/`increment`, soft deletes, route-model binding |
 | **Auth + session** | `SessionGuard` (attempt/login/logout/remember/recaller), `EloquentUserProvider`, `BcryptHasher` (`$2y$` parity), remember-me rotation, `auth`/`guest`/`auth.basic`, flash data + CSRF, `ThrottleRequests` over the D1 cache |
-| **Validation** | the full rule surface incl. `unique`/`exists` over D1, pipe-safe regex, `nullable`/`sometimes`/`bail`, wildcard display names, Laravel 13 messages |
-| **D1 + storage** | query builder (`where(fn)`, `join`/`group`/`having`/`distinct`, `whereDate`…, `sum`/`avg`/`chunk`, `upsert`, D1-safe param binding), D1 cache + KV cache-aside, `Storage::put/get/exists/delete` (default disk = D1 blob store, R2 when bound), multipart uploads + the `file` rule |
-| **Framework bits** | `Gate`/policies (compiled at build time, `before()` honoured), `Event::dispatch` (listeners compiled, synchronous), `paginate()` → byte-identical Tailwind links, `Mail::to()->send()`, the schedule dumped to `dist/cron.json` + the `scheduled` handler |
+| **Validation** | the compiled rule surface incl. `unique`/`exists` over D1 (single database only), pipe-safe regex, `nullable`/`sometimes`/`bail`, wildcard display names, Laravel 13 messages; `active_url`, `mx_record`, `encoding`, `current_password`, SVG/image allowances and custom `Validator::extend()` rules are refused |
+| **D1 + storage** | query builder (`where(fn)`, `join`/`group`/`having`/`distinct`, `whereDate`…, `sum`/`avg`/`chunk`, `upsert`, D1-safe param binding), D1-backed cache at request time (KV is build-time/simple-cache only), `Storage::put/get/exists/delete` (default disk = D1 blob store, R2 when bound), multipart uploads + the `file` rule |
+| **Framework bits** | `Gate`/policies compiled at build time, policy `before()` honoured (global `Gate::before()` is refused), `Event::dispatch` (listeners compiled, synchronous), `paginate()` → byte-identical Tailwind links, `Mail::to()->send()`, the schedule dumped to `dist/cron.json` + the `scheduled` handler |
 
 **Refused at build time** — never answered wrongly, each with an escape hatch (recipes in **[docs/PACKAGE-PORTS.md](docs/PACKAGE-PORTS.md)**): `<x-...>` components and controller code outside the transpiler subset → a `ports/*.mjs` handler · `Queue::push()` → CF Queues + a consumer you write, or a D1 table a cron reads · `Cache::tags()` · CORS config · a named non-default `Storage::disk()` → bind R2 · a `config()` group the app has not declared → declare it in `registry.json` · an `auth.guards.*` driver you registered in PHP → a guard port. `npx laravel-workers build --scaffold` writes a `501` stub for every route that needs one.
 
@@ -107,9 +111,9 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 ## Philosophy
 
 - **Laravel stays Laravel** — this is the toolchain, not a framework fork.
-- **Coverage enforced** — unhandled route = warning; `--strict` = failure. No silent gaps.
+- **Coverage enforced** — unhandled route = warning; `--strict` = failure. Published 0.5.1 violated this for one skipped controller (P7); the fix is on main after 0.5.1, not yet published.
 - **Free-plan-first** — paid is headroom, never a fallback; the build says exactly what the app needs.
-- **Honest claims** — no "approach in progress" before M1 was measured; prior-art scan clean.
+- **Honest claims** — no "approach in progress" before M1 was measured; the last recorded formal prior-art scan was clean, and a fresh scan is required before a new public claim.
 
 ## License
 

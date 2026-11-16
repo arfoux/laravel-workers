@@ -289,8 +289,10 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   message is kept (Laravel's `is_null` check). Attribute/message translations are unwired.
 - `Validator::make` + custom messages are accepted by the runtime entrypoint; the
   display-name/`attributes` path is now wired (see above).
-- `FormRequest` lifecycle (authorize, rules, messages, attributes, `prepareForValidation`,
-  `passedValidation`, `after`/`withValidator` closures) — not compiled yet; write a port.
+- ✅ FormRequest lifecycle (authorize, rules, messages, attributes, `prepareForValidation`,
+  `validationData`, `withValidator`, `after`, `passedValidation`) — **compiled**, not a port:
+  `compiler/runtime/rt-from-context.mjs:453-531` drives Laravel's order and the compiled class
+  extends `kernel/form-request.mjs` (see `COMPILED.md:127-130,826-828`).
 - ✅ Rule-string matrix (batch #12/#179-#185): the string form is split with a plain `explode('|')`
   exactly like `ValidationRuleParser::explodeExplicitRule()` (a pipe inside a regex really splits and the rule
   then fails loud as `BadMethodCallException`), an ARRAY element is kept whole, and every rule name the vendor

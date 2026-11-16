@@ -1,5 +1,103 @@
 # Changelog
 The change-by-change record of laravel-workers (M1–M70 and the A-series audit findings). Current status and construct coverage live in the [README](README.md).
+
+## Unreleased — fixes on main after 0.5.1, not yet published (2026-11-16)
+
+Everything in this section is **unreleased**. Published `npx --yes laravel-workers@0.5.1`
+(npm `gitHead 7c73223e…`) still has the old behavior; the local `v0.5.1` tag points at a
+different commit and is not valid evidence for shipped behavior.
+
+### Fail loud when the compiler skips a controller (P7)
+
+The emit loop used to `continue` on seven refusal branches without recording the route. A
+declared `POST /edge/upload` disappeared from the Worker, yet `--strict` reported a green
+build. Every skip is now recorded as `{route, verb, reason}`; `--strict` fails with a BLOCK
+finding, prints `CONTROLLER FAILED`, and `build --scaffold` writes and registers a `501`
+port stub. The decision lives in `tools/controller-coverage.mjs` so it is unit-testable.
+
+Proof on a scratch copy of the reference app: strict build → `CONTROLLER FAILED POST
+/edge/upload`, `BUILD FAILED: coverage check failed (--strict) — 1 finding(s)`, exit 1;
+after removing the scratch-only port registration, `--scaffold` → `scaffolded
+ports/edge-upload--post.mjs`, registry entry added, exit 0.
+
+### A smaller PR gate without weakening main
+
+`gate:fast` runs the suite minus the slow schedule-UTC file; PR CI uses it, while push,
+main and tag CI keep `gate:ci`. Measured on this machine: `test:fast` 2148 tests / 2094
+pass / 54 skip / 0 fail in 66.66 s wall, versus `gate:ci` 311.23 s wall.
+
+### Runtime parity for the three shadow root causes
+
+- P3: string-key writes into a `[]` no longer vanish through `array_values()`, `count()`,
+  `empty()`, `in_array()`, `json_encode()` or `collect()`; a new PHP 8.3 oracle fixture is
+  compared across emitter and runtime.
+- P4: `Route::has()` falls back to `Object.keys(opts.routeMap)` for controllers built with
+  `buildRt(null, {routeMap})`, while keeping the no-source warning.
+- P5: query parameters use RFC 3986 (`%2F`), while wildcard path segments keep Symfony's
+  `/a/b` restoration.
+- P6: snapshot output-file collisions are detected before the first page write, naming
+  both claimants; 10/10 focused tests pass.
+- Shadow harness: `?N` SQL binds keyed objects like `_fake-d1.mjs`, and `/tenants/acme`
+
+The skip finding now uses the canonical `BLOCK` severity from `tools/readiness.mjs`
+instead of a hard-coded string, and extra-verb skips are deduplicated before the
+coverage decision. Focused `node --test tools/tests/controller-coverage.test.mjs`
+passes 8/8; the scratch `--strict` build still exits 1 with the same real finding.
+
+Focused verification: 17/17 rt-url + array tests, 21/21 runtime-semantics tests, 55/55
+corpus, `check:docs` 105/105.
+
+### Null coalescing over offsets
+
+`$value['key'] ?? $fallback` now emits optional chaining on the left-hand offset chain,
+so a null or undefined base returns the fallback like PHP instead of throwing a
+`TypeError`. Plain offset reads outside `??` stay strict. The focused test
+`compiler/tests/null-coalesce-offset.test.mjs` passes 7/7, including short-circuit and
+nested-offset cases; the full suite passes 2253 tests with 0 failures.
+
+### Deploy, verify, doctor and CLI
+
+- `deploy --plan --check` now requires mode ≥ 2 and exits 2 instead of silently doing
+  nothing; DEPLOY docs and two broken relative links fixed.
+- `doctor --strict` upgrades prerequisite WARNs to FAILs; shadow/doctor help lists the real
+  flags and the step-coverage floor.
+- `verify` resolves PHP from the app's composer requirement, forwards flags, fails on a
+  missing sha registry unless narrowly opted in with `--pin-sha`/`LW_VERIFY_PIN_SHA=1`,
+  and enforces the same gate in `--json` mode with stdout kept to one JSON value.
+
+Verification: 48/48 deploy/doctor/help tests; 10/10 verify tests.
+
+### CI, release and artifact integrity
+
+- `verdict@v1` replaced with `verdict@v0.5.1` in docs/CI and both app workflows; the
+  published v0.5.1 tag still contains the stale ref, so consumers need a new release.
+- `publish-gpr` now checks tag versus package version; `release` requires both publish
+  jobs; a real tarball gate packs, installs into a fresh Laravel app, strict-builds and
+  smoke-tests the Worker; release installs use `npm ci` and npm is pinned to 12.2.2.
+- `registry.example.json` ships; `tools/audit/`, dev oracles and named dev scripts are
+  excluded; local links in shipped Markdown are checked. Tarball 232 → 213 files;
+  `node tools/pack-gate.mjs` PASS.
+
+### Security hardening
+
+Fixed prototype pollution in wrangler-crons and order-json, secret leakage through
+`childEnv`, credential-like config-key embedding, raw log disclosure in the verdict
+action, and secret-bearing error text in build/deploy paths. Focused tests: 96 pass,
+0 fail, 3 skip. A canary build with cloud tokens in the parent environment produced
+0 canary matches in the build log or anywhere in `dist/`.
+
+### Tests and documentation quality
+
+Replaced source-text/t autological/vacuous assertions with behavioral tests in streaming,
+budget, Xendit, classes, worker-entry, DB, rt-str and Redis suites. Added direct tests for
+hmac, own-key, redirect-route, multipart, php-bag and view-name (33/33 pass). Corrected
+FormRequest, Log, timezone, corpus/handler counts, retired `ship`, CACHE_STORE and link
+drift. README now qualifies the byte-identical, facade-count, docs-count, CPU, FormRequest,
+`{param*}`, `hasOne`, validation, cache and philosophy claims.
+
+Separate-repo findings (stateless-seal, blade2php, nearFind) are recorded in
+`docs/CLAIM-COVERAGE.md`; they are not claims of this package.
+
 ## v0.5.1 — endpoints stop trusting the request body, the route requirements reach the Worker, the deploy knows its commit and binds the database the config names, and the README becomes an entrance (2026-11-14)
 
 ### `deploy` binds the `database_id` the config already names
@@ -886,7 +984,9 @@ stream through the Workers response instead of buffering it, so a streaming
 response no longer falls through to the kernel's "unsupported body" path.
 
 The full 125-package verdict matrix — what is ported, what the framework already
-covers, and what stays out of scope — is in `docs/archive/PACKAGES-RESEARCH.md`.
+covers, and what stays out of scope — is in `docs/archive/PACKAGES-RESEARCH.md`
+**in the git checkout**: `docs/.npmignore` excludes `archive/` from the npm tarball,
+so npm readers should follow the shipped [`docs/PACKAGE-PORTS.md`](docs/PACKAGE-PORTS.md).
 
 ## v0.5.0 — the package-port fleet, a package-aware compiler, route() parity fixes, and the mail/build foundations (2026-11-10)
 

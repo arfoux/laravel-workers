@@ -735,8 +735,8 @@ because the stub is now a registered port — expected: stubs are blocked until 
 
 ## Re-running this
 
-The two scripts this audit used ship in `tools/audit/` so the numbers can be reproduced without
-rebuilding them:
+The two scripts this audit used live in `tools/audit/` in a git checkout (they are excluded from
+the npm tarball), so the numbers can be reproduced from source without rebuilding them:
 
 ```bash
 # the app's own route list, then both sides
@@ -753,3 +753,213 @@ node tools/audit/compare.mjs --live .audit/live --php .audit/oracle \
 Two cautions for the next run: a GET sweep **writes** on this app (`/data/writes` inserts a
 row), so either exclude it from the routes file or expect the `posts` count to move; and the
 local PHP server needs `APP_DEBUG=false` if error pages are to be compared.
+
+## Final integrated audit (2026-11-16, unreleased)
+
+Published `npx --yes laravel-workers@0.5.1` (npm gitHead `7c73223e…`) is authoritative for shipped
+behaviour. Every fix labelled **fixed on main after 0.5.1, not yet published** below is local
+working-tree state on `main` (HEAD `daef205`), absent from the published `0.5.1` artifact
+(verified by PublishedVsMain against npm gitHead `7c73223e…`); the local Git tag `v0.5.1` points
+at a different commit and is not used as evidence. Cloudflare Workers CPU benchmarks remain
+**excluded by user decision**; `npm run bench` is a Node proxy and is never workerd CPU evidence.
+
+### Commands run in this pass (AuditDocsRows)
+
+```text
+$ cd C:/Users/HP/Documents/vscode/laravel-workers && npm run check:docs
+> laravel-workers@0.5.1 check:docs
+> node tools/gate.mjs
+
+docs-check PASS: 105/105 rows, format valid, 48 modules, 6 fail-loud codes
+docs-check PASS: integrations: 8/8 pages carry a verdict + a port
+coverage: 105/105
+construct-audit PASS: 118 constructs (54 compile, 57 fail loud, 7 documented at the build level), the COMPILED.md table matches the code
+docs-counts PASS: README counts match the code (118 constructs, 47/47 facades, corpus 55, 105 docs)
+validation-messages: SKIP - the module was NOT audited (set LW_APP_ROOT to a Laravel app); pass --require to make this fatal
+ascii-map: SKIP - the module was NOT audited (set LW_APP_ROOT to a Laravel app); pass --require to make this fatal
+port-catalog PASS: 48 D1 tables (55 statements, 6 indexes) and 112 env names - both documents match the code
+gate PASS: the docs and the construct audit match the code
+```
+
+Stale-phrase grep (compound command; exact subcommands and observed output):
+
+```text
+$ grep -c 'verdict@v1' docs/CI.md .github/workflows/app-check.yml .github/workflows/app-deploy.yml
+docs/CI.md:0
+.github/workflows/app-check.yml:0
+.github/workflows/app-deploy.yml:0
+
+$ grep -n 'two scripts this audit used' docs/EVIDENCE.md
+738:The two scripts this audit used live in `tools/audit/` in a git checkout (they are excluded from
+
+$ grep -n 'not compiled yet; write a port' COMPILED.md MAP.md
+(no matches)
+```
+
+`docs/EVIDENCE.md:738-739` was already correct — tools/audit lives in a git checkout and is
+excluded from the npm tarball — so **no edit was made** to that sentence. Historical `51/51`
+mentions remain only in this file's drift record (`:670`) and the dated M1 note (`MAP.md:316`).
+
+Local-fix spot checks in this pass (source reads/greps, not executions):
+
+```text
+$ git status --short && git branch --show-current && git log -1 --oneline
+→ 44 unstaged, 15 untracked, 0 staged; branch main; HEAD daef205 fix(build): fail strict and scaffold skipped controllers (P7)
+
+$ grep -n -E 'recordControllerSkip|hasBlockingControllerSkips|CONTROLLER FAILED' build.mjs tools/controller-coverage.mjs | head -20
+→ build.mjs:44 (import), :1207 (definition), :3191/:3198/:3244/:3307/:3329/:3369/:3379/:3506 (call sites),
+  :4188 blocked includes hasBlockingControllerSkips(failedControllers), :4196 CONTROLLER FAILED log,
+  tools/controller-coverage.mjs:11 hasBlockingControllerSkips
+
+$ grep -n -E 'phpEncode|queryFrom|routeMap|phpKeys' compiler/runtime/rt-from-context.mjs | head -20
+→ :112-120 routeMap fallback for Route::has(), :1194-1208 phpEncode/queryFrom split, :1303-1417 phpKeys reads
+
+$ grep -n 'findSnapshotCollisions\|assertNoSnapshotCollisions' tools/snapshot-paths.mjs build.mjs
+→ tools/snapshot-paths.mjs:69,103; build.mjs:46,1288 (guard called before first write)
+
+$ read shadow/scenarios/lw-showcase.mjs:60-105
+→ /misc/collection (line 68) and /routing (line 87) divergence annotations removed;
+  /tenants/acme (line 103) reason now PHP 200 vs worker 404 "tenant not found"
+```
+
+### Evidence attributed to named agent reports (not re-run in this pass)
+
+- **P7** scratch build and scaffold (`docs/EVIDENCE.md` "P7 fix on local main"): `CONTROLLER FAILED POST /edge/upload`, `BUILD FAILED: coverage check failed (--strict) — 1 finding(s)`, `BUILD_EXIT=1`; scaffold wrote `ports/edge-upload--post.mjs` plus the registry entry, `BUILD_EXIT=0`. [Report: P7BranchReview — static source review; that agent explicitly did not execute tests.]
+- **Shadow `?N` binding**: focused replay `NODE_NO_WARNINGS=1 LW_SHADOW_MIN_COVERAGE=0 node shadow/run.mjs --app "../lw-showcase" --scenarios "shadow/scenarios/tenant-probe.mjs"` → `0/1 byte-identical, ... 1 documented divergence(s), 0 unexplained`, PHP 200 vs worker 404 `tenant not found`. [Report: ShadowHarnessFix]
+- **Verify**: `php -l tools/verify-s0.php` → `No syntax errors detected`; `node --test tools/tests/verify-fix.test.mjs` → `# tests 10 / # pass 10 / # fail 0`. [Report: VerifyFix]
+- **CLI/deploy**: `node --test tools/tests/deploy-integration.test.mjs tools/tests/doctor-strict.test.mjs tools/tests/cli-help.test.mjs` → `# pass 48`, `# fail 0`. [Report: DeployCliFix]
+- **CI/release**: Python YAML parse OK for `publish.yml`, `ci.yml`, `app-check.yml`, `app-deploy.yml`; local grep `verdict@v1` → 0; the **published `v0.5.1` tag still contains stale `@v1`** (verified live raw GitHub). [Report: CiReleaseFix; provenance cross-check: PublishedVsMain]
+- **Security**: `node --test` focused suite → `# tests 99 / # pass 96 / # fail 0 / # skipped 3`; canary build → 0 canary matches in the build log and 0 in `dist/`. [Report: SecurityFix]
+- **Artifacts**: `node tools/pack-gate.mjs` → `pack-gate OK: 118 runtime files ... (213 files in the tarball; local links checked in 17 Markdown files)`; `node --test tools/tests/pack-gate.test.mjs` → 4/4. [Report: ArtifactFix]
+- **Docs drift**: `npm run check:docs` → the same PASS output re-run above. [Report: DocsDriftFix]
+- **P6**: `node --test tools/tests/snapshot-paths.test.mjs` → `# tests 10 / # pass 10 / # fail 0`. [Report: SnapshotCollisionFix]
+- **P3/P4/P5**: `node --test compiler/tests/rt-url.test.mjs compiler/tests/rt-array-string-keys.test.mjs` → 17/17; semantics suites 21/21; `node compiler/tests/run-corpus.mjs` → 55/55. [Report: RuntimeParityFix] The stale app fixture `lw-showcase-gaps.mjs:32` was not edited (user-owned app repo).
+- **Cross-repo, not `laravel-workers` claims**: stateless-seal `npm test` → 23 files / 113 tests pass [StatelessSealFix]; blade2php `npm test` → 240/240 [Blade2PhpCoreFix]; nearFind `php artisan test` → 67/67 [NearFindSafeFix].
+- **Prior art / legal**: last formal scan recorded CLEAN (2026-10-17); no fresh scan was run in this audit [ShowcaseClaims / Philosophy]. The trademark sentence is a legal notice, not a testable technical claim.
+
+## Latest integrated verification (2026-11-17, unreleased)
+
+All results below are **fixed on main after 0.5.1, not yet published**. The published npm artifact
+`npx --yes laravel-workers@0.5.1` (`gitHead 7c73223e…`) remains authoritative for shipped behaviour.
+
+### Strict and scaffold P7 proof
+
+```text
+$ cd C:/Users/HP/AppData/Local/Temp/lw-p7-scratch
+$ LW_ALLOW_SECRET_CONFIG_KEYS=mail.mailers.smtp.password node C:/Users/HP/Documents/vscode/laravel-workers/build.mjs --strict --no-cache
+CONTROLLER FAILED POST /edge/upload: LW002 $request->files is not compiled ...
+BUILD FAILED: coverage check failed (--strict) — 1 finding(s)
+
+$ LW_ALLOW_SECRET_CONFIG_KEYS=mail.mailers.smtp.password node .../build.mjs --scaffold --no-cache
+BUILD_EXIT=0
+scaffolded ports\edge-upload--post.mjs
+registry: "/edge/upload": "edge-upload--post"
+controllers transpiled: 85/86
+```
+
+The scaffold stub answers 501 with `{ error: 'not implemented', route: '/edge/upload' }`; it is a
+visible placeholder, not a compiled `files` implementation. No scratch-only port registration
+existed before the scaffold run.
+
+### Full shadow replay
+
+```text
+$ LW_SHADOW_MIN_COVERAGE=0 node shadow/run.mjs --app "C:/Users/HP/Documents/vscode/lw-showcase" --scenarios shadow/scenarios/lw-showcase.mjs
++ 200/200 GET /misc/collection — match
++ 200/200 GET /routing — match
+73/100 byte-identical, 0 shape-verified, 0 json-equivalent, 27 documented divergence(s), 0 unexplained
+exit 0
+```
+
+These two matched routes were the concrete root causes recorded earlier for `/misc/collection`
+(string-key array writes) and `/routing` (`Route::has()` with `buildRt(null, {routeMap})`). This
+replay is stronger than the older 71/100, 29-divergence measurement in the same fixture.
+
+### Null-coalescing parity
+
+Found during nearFind edge verification: PHP `$category['label'] ?? ''` returns `''` for a null
+base, while the old emitted JS `v_category["label"] ?? ""` threw
+`TypeError: Cannot read properties of null (reading 'label')`. `compiler/src/transpiler.mjs` now
+emits optional chaining only for the left-hand side of `??`; plain reads remain strict.
+
+```text
+$ node --test compiler/tests/null-coalesce-offset.test.mjs
+# tests 7 / # pass 7 / # fail 0
+
+$ npm test
+1..2253 / # tests 2253 / # pass 2199 / # fail 0 / # skipped 54
+
+$ npm run check:docs
+docs-check PASS: 105/105 rows ... gate PASS
+
+$ npm run test:corpus
+=== CORPUS: 55/55 pass, 0 fail ===
+```
+
+### Integrated gate before this documentation edit
+
+```text
+$ npm run gate:ci
+PASS, 121.36 s, 2246 tests / 2192 pass / 0 fail / 54 skipped
+corpus 55/55, docs 105/105, pack-gate 214 files
+
+$ npm run check:docs && node tools/pack-gate.mjs && git diff --check
+docs-check PASS 105/105, construct-audit PASS 118, docs-counts PASS,
+port-catalog PASS, pack-gate OK 214 files
+```
+
+The remaining CRLF-to-LF warning for `kernel/scheduler.mjs` is a Git normalization notice, not a
+test failure. Published `0.5.1` still contains older `verdict@v1` wording; that drift is not
+silently backported to the published artifact.
+
+### `lw-showcase` full toolchain sweep (2026-11-17)
+
+The app fixture now resolves the sibling local tool checkout through `scripts/local-tool.mjs`
+instead of its stale `0.4.9` tarball. Every command below was re-run from the app root after the
+sweep agent finished. These are local-tool results, **not** published `0.5.1` behaviour.
+
+```text
+$ npm run build:edge
+READINESS: RUNS ON THE EDGE
+  every route is served by a compiled handler, a snapshot or a port;
+  no route is ignored, and no binding is missing.
+
+$ npm run shadow
+shadow: 96/96 byte-identical, 0 shape-verified, 0 json-equivalent,
+        0 documented divergence(s), 0 unexplained — byte-identical step coverage 100%
+
+$ npm run shadow:gaps
+shadow: 0/10 byte-identical, 10 documented divergence(s), 0 unexplained — accounted 100%
+
+$ npm run shadow:full
+shadow: 104/119 byte-identical, 15 documented divergence(s), 0 unexplained — accounted 100%
+
+$ npm run smoke
+208 asserted ok, 0 failed, 0 without an expectation
+
+$ npm run sweep
+sweep coverage (declared routes/methods)
+  total 230 / byte-step 5 / divergence 8 / excluded 123 / gate-or-gaps 94
+  stepped 107/230 (46.5%)
+deploy surface
+  main=./dist/src/worker.mjs  d1=lw-showcase-db  crons=*/5 * * * *
+  controllers=128 file(s) for 86 controller route(s); ports=56
+  build-info toolVersion=0.5.1  _routes.json include=99 exclude=1
+sweep coverage OK — every route/method is stepped or explicitly excluded; deploy artifacts agree.
+
+$ npm run cpu -- --iters 5
+worst route: GET /auth/hash 1109.00 ms cpu
+p95 route:   GET /middleware/guest 16.00 ms cpu
+routes registering at all (>= the 1 ms timer): 32/137
+```
+
+`shadow:gaps` and `shadow:full` intentionally contain documented divergences, hence the 0% and
+87% byte-identical floors; any *unexplained* mismatch would still exit non-zero. The regular
+`shadow` gate remains at 100%. The CPU numbers are `process.cpuUsage()` coarse timers in Node,
+never workerd CPU; Cloudflare CPU benchmarks remain excluded by user decision.
+
+Explicit exclusions in the 230-route inventory are reasoned, not hidden: P6 snapshot collision
+cannot occur because this app declares no snapshots and no `/index` or `/404` prerender route;
+P5 `%2F` query encoding has no app call site; the app declares no schedule; 123 route/method
+entries are status/body-mismatched port seams with concrete recorded reasons. The P7 route now
+uses `count($request->allFiles())` and takes part in the 100% byte-identical gate.
