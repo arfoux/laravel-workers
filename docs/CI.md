@@ -50,7 +50,7 @@ jobs:
           npx laravel-workers build --no-cache 2>&1 | tee edge-build.log
       - name: Verdict
         if: always()
-        uses: arfoux/laravel-workers/action/verdict@v1
+        uses: arfoux/laravel-workers/action/verdict@v0.5.1
 ```
 
 `deploy.yml` on `main` runs `npx laravel-workers deploy --mode 3 --yes` with
@@ -74,12 +74,12 @@ They are trigger-agnostic — call them from `pull_request`, `push` to `main`, o
 ```yaml
 jobs:
   check:
-    uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v1
+    uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v0.5.1
     permissions: { contents: read, pull-requests: write, issues: write }
 
   ship:
     if: github.ref == 'refs/heads/main'
-    uses: arfoux/laravel-workers/.github/workflows/app-deploy.yml@v1
+    uses: arfoux/laravel-workers/.github/workflows/app-deploy.yml@v0.5.1
     secrets: inherit
     with:
       app-url: https://my-app.example.workers.dev
@@ -107,9 +107,11 @@ Naming rules, so the repo stays legible:
 - `doctor` stays what it is — local preflight checks (PHP, vendor, wrangler,
   deploy state). **Verdict** is the reporter, not a checker.
 
-Versioning: pin `@v1` (a moving major tag updated on release). The workflows and
-the action are published together with the npm package, so `@v1` always matches
-a released `laravel-workers`.
+Versioning: published refs are exact tags (v0.3.1 … v0.5.1), not a moving major
+tag or branch — a `v1` ref does not resolve and must never be used. Pin `@v0.5.1`
+(the tag that shipped the npm package, the action and the workflows together)
+and upgrade by editing every `@v0.5.1` ref in the caller to the new release tag,
+e.g. `@v0.6.0`, in one commit after reading that release's notes.
 
 ## Verdict — the reporter
 
@@ -166,7 +168,7 @@ avatar — register a GitHub App and hand Verdict an installation token:
    ```yaml
    jobs:
      check:
-       uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v1
+       uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v0.5.1
        secrets: inherit              # LW_APP_PRIVATE_KEY
        with:
          app-id: ${{ vars.LW_APP_ID }}   # or a literal id
@@ -193,7 +195,7 @@ still carries the laravel-workers mark, it is just posted by `github-actions[bot
 | Key | Value | If wrong |
 |---|---|---|
 | `APP_URL` | `https://<worker>.workers.dev` | baked into the artifact: `url()`, redirects, signed URLs point to localhost |
-| `CACHE_STORE` | `database` | `file` = no cache, and the login throttle goes **fail-open** without an error |
+| `CACHE_STORE` | `database` | a non-`database` store (e.g. `file`) leaves the compiled throttle without a cache: `kernel/http.mjs` throws `HttpError` 500 on a throttled request (fail loud), and the build declares it |
 | `LOG_LEVEL` | `warning` | debug logs per request |
 | `APP_KEY` | one stable `base64:` string | a new key per deploy reads every old cookie/session as garbage |
 
@@ -245,7 +247,7 @@ Data comes after schema, as **data-only** SQL (no DDL), verified with
 | no `READINESS` in CI | cache hit; add `--no-cache` |
 | `worth knowing (n): N migration(s) mutate an EXISTING table` | `dist/schema.sql` is CREATE-only, so a `Schema::table` migration cannot reach a D1 that already has the table — nothing to do for a fresh D1, apply the `ALTER` by hand for a populated one |
 | `GET /up` 404 on the edge | health route registered in `bootstrap/app.php`, not a route file — declare it |
-| login works, no rate-limit | `CACHE_STORE=file` at build; the throttle port fails open |
+| a throttled route answers 500 with `cache store` | `CACHE_STORE=file` at build; `kernel/http.mjs` throws `HttpError` 500 rather than silently skipping the throttle — the test calls it "fail loud: throttle middleware without a cache store" (`kernel/tests/http.test.mjs:982`) |
 | an unknown path answers `404` with 0 B | the app's `wrangler.jsonc` has no `"not_found_handling": "404-page"` inside its `assets` block, so the ASSETS layer answers with Cloudflare's null-body 404 instead of `dist/public/404.html` — the build writes the file either way and names the line in a DECLARED finding |
 
 ## Badge

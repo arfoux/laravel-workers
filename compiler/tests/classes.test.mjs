@@ -866,9 +866,12 @@ class OrderMail
 
 test('classes: every class-path refusal carries a code', () => {
   // The invariant: every fail-loud carries a code (the controller path always
-  // did; the class path must agree).
+  // did; the class path must agree). Each case pins its EXACT code and a
+  // message that names the class or the missing service, so a generic reason
+  // or a silently compiled class fails this test.
   const cases = [
     {
+      name: 'queued listener',
       file: classFile('Queued', `<?php
 namespace App\\Listeners;
 use App\\Events\\PostPublished;
@@ -881,16 +884,44 @@ class Queued implements \\Illuminate\\Contracts\\Queue\\ShouldQueue
 `),
       listener: 'App\\Listeners\\Queued',
       queued: true,
+      code: 'LW002',
+      message: /the listener App\\Listeners\\Queued is queued \(ShouldQueue\)/,
     },
     {
+      name: 'missing service',
       file: classFile('Broken', `<?php
 namespace App\\Listeners;
+use App\\Events\\PostPublished;
+use App\\Services\\MissingService;
 class Broken
+{
+    public function __construct(private MissingService $svc)
+    {
+    }
+    public function handle(PostPublished $event): void
+    {
+        $this->svc->send($event);
+    }
+}
+`),
+      listener: 'App\\Listeners\\Broken',
+      code: 'LW002',
+      message: /the constructor of App\\Listeners\\Broken asks for App\\Services\\MissingService/,
+    },
+    {
+      // A syntax error has no missing service to name, but the refusal still
+      // points at the class whose file failed to parse.
+      name: 'parse error',
+      file: classFile('Unparsable', `<?php
+namespace App\\Listeners;
+class Unparsable
 {
     public function handle(
 }
 `),
-      listener: 'App\\Listeners\\Broken',
+      listener: 'App\\Listeners\\Unparsable',
+      code: 'LW004',
+      message: /^parse error: .*syntax error/,
     },
   ];
   for (const c of cases) {
@@ -907,10 +938,11 @@ class Broken
       },
       OPTIONS
     );
-    assert.ok(res.errors.length >= 1, 'the construct must fail loud');
-    for (const e of res.errors) {
-      assert.ok(e.code, 'every class-path refusal carries a code: ' + JSON.stringify(e));
-    }
+    assert.equal(res.errors.length, 1, c.name + ': the construct must fail loud: ' + JSON.stringify(res.errors));
+    const [error] = res.errors;
+    assert.equal(error.code, c.code, c.name + ': exact refusal code: ' + JSON.stringify(error));
+    assert.match(error.message, c.message, c.name + ': message names the reason: ' + JSON.stringify(error));
+    assert.equal(error.class, c.listener, c.name + ': refusal names the class: ' + JSON.stringify(error));
   }
 });
 

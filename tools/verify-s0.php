@@ -4,8 +4,11 @@
 // (HTTP kernel + Request::create('/', 'GET') + handle/terminate) and recomputes
 // every enriched + legacy context field from scratch. Does NOT import compile-view.php.
 //
-// Usage: php edge/tools/verify-s0.php [--json]
+// Usage: php edge/tools/verify-s0.php [--json] [--pin-sha]
 // Exit: 0 iff all checks pass (and compiled-field sha256 matches the registry).
+// --pin-sha (or LW_VERIFY_PIN_SHA=1) is the ONLY branch that writes to the app:
+// it pins the current compiled hash as a baseline, so use it only after
+// checking that the S0 dump is good. A missing registry is otherwise a FAIL.
 
 require_once __DIR__ . '/_root.php';
 $root = lw_app_root();
@@ -143,73 +146,93 @@ $recomputed['urls'] = $urls === [] ? new stdClass() : $urls;
 $recomputed['app_version'] = $app->version();
 $recomputed['vfs'] = $files;
 
-// --- json mode --------------------------------------------------------------
-if (in_array('--json', $argv, true)) {
-    echo json_encode($recomputed, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
-    exit(0);
-}
+// --- output channels --------------------------------------------------------
+// --json keeps stdout to exactly one JSON value; verdict lines move to stderr,
+// but the registry gate below still runs before either is emitted.
+$jsonMode = in_array('--json', $argv, true);
+$say = $jsonMode
+    ? static function (string $msg): void { fwrite(STDERR, $msg . "\n"); }
+    : static function (string $msg): void { echo $msg . "\n"; };
 
 // --- compare ----------------------------------------------------------------
-$checks = [];
-$add = function (string $key, $exp, $got) use (&$checks) {
-    $checks[] = ['key' => $key, 'ok' => ($exp === $got), 'expected' => $exp, 'got' => $got];
-};
-
-$add('app.version', $ctx['app']['version'] ?? null, $recomputed['app']['version']);
-$add('app.locale', $ctx['app']['locale'] ?? null, $recomputed['app']['locale']);
-$add('config.app.name', $ctx['config']['app.name'] ?? null, $recomputed['config']['app.name']);
-$add('config.app.locale', $ctx['config']['app.locale'] ?? null, $recomputed['config']['app.locale']);
-$add('vite.fonts', $ctx['vite']['fonts'] ?? null, $recomputed['vite']['fonts']);
-$add('vite.invoke', $ctx['vite']['invoke'] ?? null, $recomputed['vite']['invoke']);
-$add('files.build/manifest.json', $ctx['files']['build/manifest.json'] ?? null, $recomputed['files']['build/manifest.json']);
-$add('files.build/fonts-manifest.json', $ctx['files']['build/fonts-manifest.json'] ?? null, $recomputed['files']['build/fonts-manifest.json']);
-$add('files.hot', $ctx['files']['hot'] ?? null, $recomputed['files']['hot']);
-$add('auth.check', $ctx['auth']['check'] ?? null, $recomputed['auth']['check']);
-$add('route_names', $ctx['route_names'] ?? null, $recomputed['route_names']);
-$add('urls', $ctx['urls'] ?? null, $recomputed['urls']);
-$add('app_version (legacy)', $ctx['app_version'] ?? null, $recomputed['app_version']);
-$add('vfs (legacy)', $ctx['vfs'] ?? null, $recomputed['vfs']);
-
-// routes array deep compare
-$routesOk = ($ctx['routes'] ?? null) === $recomputed['routes'];
-$checks[] = ['key' => 'routes[]', 'ok' => $routesOk, 'expected' => count($ctx['routes'] ?? []), 'got' => count($recomputed['routes'])];
-
 $pass = 0; $fail = 0;
-foreach ($checks as $c) {
-    $exp = is_string($c['expected']) ? (strlen($c['expected']) > 80 ? substr($c['expected'], 0, 80) . '…(' . strlen($c['expected']) . 'B, sha' . substr(sha1($c['expected']), 0, 12) . ')' : $c['expected']) : json_encode($c['expected']);
-    $got = is_string($c['got']) ? (strlen($c['got']) > 80 ? substr($c['got'], 0, 80) . '…(' . strlen($c['got']) . 'B, sha' . substr(sha1($c['got']), 0, 12) . ')' : $c['got']) : json_encode($c['got']);
-    printf("%s  %-28s  expected=%s  got=%s\n", $c['ok'] ? 'OK  ' : 'FAIL', $c['key'], $exp, $got);
-    $c['ok'] ? $pass++ : $fail++;
+if (!$jsonMode) {
+    $checks = [];
+    $add = function (string $key, $exp, $got) use (&$checks) {
+        $checks[] = ['key' => $key, 'ok' => ($exp === $got), 'expected' => $exp, 'got' => $got];
+    };
+
+    $add('app.version', $ctx['app']['version'] ?? null, $recomputed['app']['version']);
+    $add('app.locale', $ctx['app']['locale'] ?? null, $recomputed['app']['locale']);
+    $add('config.app.name', $ctx['config']['app.name'] ?? null, $recomputed['config']['app.name']);
+    $add('config.app.locale', $ctx['config']['app.locale'] ?? null, $recomputed['config']['app.locale']);
+    $add('vite.fonts', $ctx['vite']['fonts'] ?? null, $recomputed['vite']['fonts']);
+    $add('vite.invoke', $ctx['vite']['invoke'] ?? null, $recomputed['vite']['invoke']);
+    $add('files.build/manifest.json', $ctx['files']['build/manifest.json'] ?? null, $recomputed['files']['build/manifest.json']);
+    $add('files.build/fonts-manifest.json', $ctx['files']['build/fonts-manifest.json'] ?? null, $recomputed['files']['build/fonts-manifest.json']);
+    $add('files.hot', $ctx['files']['hot'] ?? null, $recomputed['files']['hot']);
+    $add('auth.check', $ctx['auth']['check'] ?? null, $recomputed['auth']['check']);
+    $add('route_names', $ctx['route_names'] ?? null, $recomputed['route_names']);
+    $add('urls', $ctx['urls'] ?? null, $recomputed['urls']);
+    $add('app_version (legacy)', $ctx['app_version'] ?? null, $recomputed['app_version']);
+    $add('vfs (legacy)', $ctx['vfs'] ?? null, $recomputed['vfs']);
+
+    // routes array deep compare
+    $routesOk = ($ctx['routes'] ?? null) === $recomputed['routes'];
+    $checks[] = ['key' => 'routes[]', 'ok' => $routesOk, 'expected' => count($ctx['routes'] ?? []), 'got' => count($recomputed['routes'])];
+
+    foreach ($checks as $c) {
+        $exp = is_string($c['expected']) ? (strlen($c['expected']) > 80 ? substr($c['expected'], 0, 80) . '…(' . strlen($c['expected']) . 'B, sha' . substr(sha1($c['expected']), 0, 12) . ')' : $c['expected']) : json_encode($c['expected']);
+        $got = is_string($c['got']) ? (strlen($c['got']) > 80 ? substr($c['got'], 0, 80) . '…(' . strlen($c['got']) . 'B, sha' . substr(sha1($c['got']), 0, 12) . ')' : $c['got']) : json_encode($c['got']);
+        $say(sprintf("%s  %-28s  expected=%s  got=%s", $c['ok'] ? 'OK  ' : 'FAIL', $c['key'], $exp, $got));
+        $c['ok'] ? $pass++ : $fail++;
+    }
 }
-printf("\nVERIFY-S0: %s (%d/%d checks)\n", $fail === 0 ? 'PASS' : 'FAIL', $pass, count($checks));
 
 // compiled-field sha256 registry (host Laravel app edge/ — not this package)
+// Absent registry = no trusted baseline = FAIL. Writing the current hash here
+// and then comparing against it made the first run of a WRONG dump look good.
 $shaFile = $root . '/edge/notes/welcome.compiled.sha256.txt';
 $sha = hash('sha256', $compiled);
 $line = $sha . '  ' . strlen($compiled) . " bytes\n";
-if (!file_exists($shaFile)) {
-    @mkdir(dirname($shaFile), 0777, true);
-    file_put_contents($shaFile, $line);
-    echo "created sha registry: " . trim($line) . "\n";
+$pinBaseline = in_array('--pin-sha', $argv, true) || getenv('LW_VERIFY_PIN_SHA') === '1';
+if (!is_file($shaFile)) {
+    if ($pinBaseline) {
+        @mkdir(dirname($shaFile), 0777, true);
+        if (file_put_contents($shaFile, $line) === false) {
+            $say("FAIL  could not write sha registry: {$shaFile}");
+            $fail++;
+        } else {
+            $say("PINNED sha registry (explicit opt-in): " . trim($line));
+            $pass++;
+        }
+    } else {
+        $say("FAIL  compiled sha256 registry missing: {$shaFile}");
+        $say("      a wrong S0 dump cannot be detected without a trusted baseline;");
+        $say("      pin one ONLY after checking the dump: --pin-sha (or LW_VERIFY_PIN_SHA=1)");
+        $fail++;
+    }
 } else {
     $stored = trim(file_get_contents($shaFile));
     $parts = preg_split('/\\s+/', $stored);
     $storedSha = $parts[0] ?? '';
     $storedBytes = isset($parts[1]) ? (int)$parts[1] : -1;
     if ($storedSha !== $sha || $storedBytes !== strlen($compiled)) {
-        echo "FAIL  compiled sha256 mismatch: stored='" . $stored . "' current='" . trim($line) . "'\n";
+        $say("FAIL  compiled sha256 mismatch: stored='" . $stored . "' current='" . trim($line) . "'");
         $fail++;
     } else {
-        echo "OK    compiled sha256 matches registry\n";
+        $say("OK    compiled sha256 matches registry");
+        $pass++;
     }
 }
 
-if ($fail === 0) {
-    @mkdir($root . '/edge/notes', 0777, true);
-    $table = '';
-    foreach ($checks as $c) $table .= sprintf("%s  %s\n", $c['ok'] ? 'OK  ' : 'FAIL', $c['key']);
-    file_put_contents($root . '/edge/notes/s0-verify.txt',
-        "PASS " . $pass . "/" . count($checks) . " keys — " . date('c') . "\n" . $table);
-}
+// A verify run is read-only on the app: no report file here, and no registry
+// write except the explicit --pin-sha baseline above.
 
+// The registry gate is check +1: never print PASS before it has run.
+if (!$jsonMode) {
+    $say(sprintf("\nVERIFY-S0: %s (%d/%d checks)", $fail === 0 ? 'PASS' : 'FAIL', $pass, count($checks) + 1));
+} else {
+    echo json_encode($recomputed, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
+}
 exit($fail === 0 ? 0 : 1);

@@ -3,7 +3,6 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { toNativePath } from '../tools/native-path.mjs';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const appDir = process.cwd();
@@ -94,8 +93,20 @@ Commands:
   init                        scaffold registry.json + wrangler.jsonc (idempotent)
   status                     show the recorded deploy state (lw-state.json)
   doctor [--cloud] [--strict]  preflight checks (PHP, vendor, wrangler, deploy state)
-  shadow [--app <root>]      proof harness: real PHP app vs the compiled worker
+      --cloud               also verify wrangler login and the recorded account
+      --strict              missing app root/PHP/vendor/wrangler becomes FAIL (2);
+                            plain doctor reports them as WARNs and exits 0
+  shadow [--app <root>] [--scenarios <file>] [--build] [--json]
+                             proof harness: real PHP app vs the compiled worker
+      --app <root>           Laravel app root (or LW_SHADOW_APP)
+      --scenarios <file>     scenario file (default shadow/scenarios/<app>.mjs)
+      --build                run build.mjs --strict in the app first
+      --json                 machine-readable report on stderr
+      coverage               byte-identical STEP coverage floor: 100% by default
+                             (LW_SHADOW_MIN_COVERAGE=0..1 overrides; steps, not code lines)
   verify                     VERIFY-S0 — does this app boot under the build?
+      --pin-sha              pin the current compiled hash as the sha baseline
+                             (only for a known-good S0 dump; writes one file)
   vendor:ensure              provision a composer-free vendor tree (CI prewarm)
   php:ensure                 resolve or provision the PHP interpreter (CI prewarm)
 
@@ -192,7 +203,6 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
     }
   }
 } else if (cmd === 'verify') {
-  const php = toNativePath(process.env.PHP_BIN) || 'php';
   const verifyPath = join(pkgDir, 'tools', 'verify-s0.php');
   if (!existsSync(verifyPath)) {
     console.error('laravel-workers verify: tools/verify-s0.php not found in package.');
@@ -204,7 +214,23 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
     console.log('VERIFY-S0: SKIP (no Laravel vendor/ found — run from your Laravel app root via npx laravel-workers verify).');
     process.exit(0);
   }
-  run(php, [verifyPath], { cwd: appRoot, env: { ...process.env, LW_APP_ROOT: appRoot } });
+  // Boot with the same resolver build and doctor use: `php` alone misses machines
+  // whose only interpreter is `php8.3` (Laragon/Herd/Homebrew/asdf/...).
+  let phpRequirement = null;
+  try {
+    phpRequirement = JSON.parse(readFileSync(join(appRoot, 'composer.json'), 'utf8')).require?.php || null;
+  } catch {
+    phpRequirement = null; // no/unreadable composer.json: no constraint to enforce
+  }
+  const { resolvePhp } = await import(pathToFileURL(join(pkgDir, 'tools', 'php-runtime.mjs')).href);
+  let phpBin;
+  try {
+    phpBin = resolvePhp({ requirement: phpRequirement }).bin;
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+  run(phpBin, [verifyPath, ...process.argv.slice(3)], { cwd: appRoot, env: { ...process.env, LW_APP_ROOT: appRoot } });
 } else if (cmd === 'deploy') {
   runTool('tools/deploy.mjs', process.argv.slice(3));
 } else if (cmd === 'status') {
