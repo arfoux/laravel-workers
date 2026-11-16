@@ -172,6 +172,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # The oracle test imports kernel/hash.mjs -> bcryptjs from the workspace,
+      # not from the app's tarball install. Without this the e2e job's Worker
+      # entry guard fails with ERR_MODULE_NOT_FOUND on a fresh checkout.
+      - run: npm install
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
