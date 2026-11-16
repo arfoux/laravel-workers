@@ -24,8 +24,10 @@
 // test files: the ones that need no built fixture or oracle) + `test:corpus` +
 // this gate (`--strict`) + `tools/bench.mjs` + `tools/check-syntax.mjs` +
 // `tools/pack-gate.mjs`. `npm run gate:fast` runs the same six checks with
-// `test:fast`, skipping only the measured-slow `schedule-utc.test.mjs`; PR CI
-// takes that path, push/main and the release take the full one. The dev-only
+// `test:fast`, skipping only the measured-slow `schedule-utc.test.mjs`; it is a
+// local option, not CI: PR and push both run `gate:affected` (coverage:
+// `gate:affected:coverage`), while only scheduled/manual runs take `gate:ci`.
+// The dev-only
 // scripts (`test:shadow`, `test:pack`) are not part of it: they need a prepared
 // Laravel app. `tools/cpu-gate.mjs` (`npm run gate:cpu`) is deliberately outside
 // too - it deploys a probe worker and reads `cpuTime`/`outcome` back through

@@ -66,7 +66,7 @@ This guide maps every Laravel 13.x documentation page to a clear verdict:
 | installation | RUNS ON THE EDGE | toolchain (§7) |
 | license | NOT APPLICABLE AT EDGE | meta |
 | lifecycle | RUNS ON THE EDGE | §3 execution model |
-| localization | RUNS WITH DECLARED GAPS | frozen JSON; pluralization subset; **the compiled rung answers the dates in UTC** (the Workers' timezone) while Laravel uses `config('app.timezone')` — an app with a non-UTC timezone gets different dates at the edge (a documented divergence; the plan: M57) |
+| localization | RUNS WITH DECLARED GAPS | frozen JSON; pluralization subset; **the compiled rung renders dates in `config('app.timezone')`**, not UTC (M70: `Intl`-based wall clock in `compiler/runtime/rt-from-context.mjs:2500-2608` and `kernel/model.mjs`); the old UTC divergence and the "plan: M57" qualification are retired (source of truth: `MAP.md:512`, `CHANGELOG.md` "Tests and documentation quality") |
 | logging | RUNS WITH DECLARED GAPS | the `Log::` facade compiles (M33) → the platform log (the Workers console); no Log module (a local file sink) |
 | mail | RUNS WITH DECLARED GAPS | **wired** (M28): the worker builds the mailer from the app config (`mail.default` -> log/noop/resend) and hands it to the handler; the fluent `Mail::to()->send()` **compiles** (M57: the mailable is a class, the build compiles it and the kernel's `Mailable` base carries Laravel's fluent surface) → port; padanan = HTTP provider (SMTP impossible, hard) |
 | mcp | RUNS WITH DECLARED GAPS | HTTP/SSE servers compile; stdio (N/A at edge) (padanan) |

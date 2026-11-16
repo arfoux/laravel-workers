@@ -22,6 +22,9 @@ import { GENERATED_BANNER, COMPILED_BANNER } from './tools/generated.mjs';
 import { mergePorts, serializeRegistry } from './tools/registry-json.mjs';
 import {
   STUB_MARKER,
+  assertSafePortSlug,
+  portImportSpecifier,
+  assertContainedPortPath,
   buildStubSource,
   findStubPorts,
   guardPortEntries,
@@ -43,7 +46,7 @@ import { slugifyRoute } from './tools/route-slug.mjs';
 import { buildRouteMap } from './tools/route-map.mjs';
 import { hasBlockingControllerSkips, controllerSkipFinding, controllerStubEntries, dedupeControllerSkips } from './tools/controller-coverage.mjs';
 import { jsoncValue, stripTomlComments, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
-import { snapshotFiles, assertNoSnapshotCollisions } from './tools/snapshot-paths.mjs';
+import { snapshotFiles, assertNoSnapshotCollisions, assertSafeStaticName, assertContainedSnapshotPath } from './tools/snapshot-paths.mjs';
 import { sourceIdentity } from './tools/git-sha.mjs';
 import { notTriggerableFindings, shiftedTriggerFindings } from './tools/schedule-gaps.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
@@ -362,7 +365,28 @@ if (lwPortsDir && !existsSync(lwPortsDir))
   fail(`LW_PORTS_DIR is set to "${process.env.LW_PORTS_DIR}" but that directory was not found (resolved: ${lwPortsDir})`);
 const autoSnapshot = registry.autoSnapshot !== false;
 const staticMap = Object.entries(registry.static || {});
+// S146h: a `static` value is an output file name under dist/public. Refuse a
+// traversal before any prerender or write happens, through the build's normal
+// failure path (the writer below repeats the check as a backstop).
+for (const [route, file] of staticMap) {
+  try {
+    assertSafeStaticName(file);
+  } catch (e) {
+    fail(`registry static route ${JSON.stringify(route)}: ${e.message}`);
+  }
+}
 const portEntries = Object.entries(registry.ports || {});
+
+// S146i: a `ports` value is an output file name, not a path. Refuse traversal
+// before the early controller write below, through the build's normal failure
+// path; the writers repeat the check as a backstop.
+for (const [route, name] of portEntries) {
+  try {
+    assertSafePortSlug(name);
+  } catch (e) {
+    fail(`registry port route ${JSON.stringify(route)}: ${e.message}`);
+  }
+}
 // registry.json → "middlewarePorts": { "<route>": ["<slug>", ...] }. A middleware
 // port answers from BOTH sides of the route — it runs before the route's own
 // handler and continues on `null` (a response short-circuits). That is how a
@@ -1171,9 +1195,10 @@ if (undeletable.length > 0) {
 mkdirSync(join(dist, 'public'), { recursive: true });
 mkdirSync(join(dist, 'src'), { recursive: true });
 
+const publicRoot = resolve(dist, 'public');
 const writePage = (file, html) => {
+  const outPath = assertContainedSnapshotPath(publicRoot, file);
   const { html: rel, fixed } = relativizeSnapshotUrls(html, appUrlOrigin);
-  const outPath = join(dist, 'public', file);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, rel);
   // The size on disk, not the string length: the log says "bytes" and the pages
@@ -2254,11 +2279,11 @@ console.log(`  -> dist/src/error-renderer.mjs (${errorViewCases.length} view(s))
 
 for (const [route, name] of portEntries) {
   const slug = String(name);
-  const controllerPath = join(dist, 'src', 'controllers', slug + '.mjs');
+  const controllerPath = assertContainedPortPath(join(dist, 'src', 'controllers'), slug);
   writeFileSync(
     controllerPath,
     [
-      "export { default } from '../ports/" + name + ".mjs';",
+      `export { default } from ${portImportSpecifier('../ports/', slug)};`,
       '',
         ].join('\n')
   );
@@ -3540,8 +3565,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         if (!controllerRoutes.has(route)) continue;
         snapshots.splice(snapshots.indexOf(route), 1);
         for (const file of snapshotFiles(route)) {
+          const outPath = assertContainedSnapshotPath(publicRoot, file);
           try {
-            rmSync(join(dist, 'public', file), { force: true });
+            rmSync(outPath, { force: true });
           } catch {
             /* the page was never written */
           }
@@ -3751,14 +3777,14 @@ if (portsSrc === lwPortsDir) console.log(`• ports: LW_PORTS_DIR -> ${portsSrc}
 const missingPortFiles = [
   ...portEntries.map(([route, name]) => [route, String(name)]),
   ...[...middlewarePortsMap.entries()].flatMap(([route, slugs]) => slugs.map((s) => [route, s])),
-].filter(([, slug]) => !existsSync(join(portsSrc, slug + '.mjs')));
+].filter(([, slug]) => !existsSync(assertContainedPortPath(portsSrc, slug)));
 if (missingPortFiles.length)
   fail(
     'port file(s) missing in ' + portsSrc + ': ' +
       missingPortFiles.map(([route, slug]) => `${route} -> ${slug}.mjs`).join(', ') +
       ' — create them, fix the "ports"/"middlewarePorts" mapping in registry.json, or point LW_PORTS_DIR at the right directory'
   );
-const missingGuardPorts = guardEntries.filter(([, slug]) => !existsSync(join(portsSrc, slug + '.mjs')));
+const missingGuardPorts = guardEntries.filter(([, slug]) => !existsSync(assertContainedPortPath(portsSrc, slug)));
 if (missingGuardPorts.length)
   fail(
     'guard port file(s) missing in ' + portsSrc + ': ' +
@@ -4024,8 +4050,9 @@ const controllerMap = [];
 let controllerIndex = 0;
 for (const entry of routeTable) {
   if (entry.kind === 'view' || entry.kind === 'port' || entry.kind === 'controller') {
+    assertSafePortSlug(entry.controller);
     const idx = controllerIndex++;
-    controllerImports.push(`import handler${idx} from './controllers/${entry.controller}.mjs';`);
+    controllerImports.push(`import handler${idx} from ${portImportSpecifier('./controllers/', entry.controller)};`);
     controllerMap.push({ uri: entry.uri, methods: entry.methods, idx });
   }
 }
@@ -4042,8 +4069,9 @@ for (const [key, meta] of metaFor) {
 const middlewarePortImports = [];
 const middlewarePortHandlers = [];
 for (const slug of [...new Set([...middlewarePortsMap.values()].flat())]) {
+  assertSafePortSlug(slug);
   const idx = middlewarePortHandlers.length;
-  middlewarePortImports.push(`import mw${idx} from './ports/${slug}.mjs';`);
+  middlewarePortImports.push(`import mw${idx} from ${portImportSpecifier('./ports/', slug)};`);
   middlewarePortHandlers.push(`  ${JSON.stringify('MW ' + slug)}: mw${idx},`);
 }
 
@@ -4292,7 +4320,7 @@ if (scaffold && (needsPort.length || failedControllers.length)) {
   for (const { route, verb, slug } of entries) {
     const stubDir = isNpmMode ? (portsSrc !== join(pkgDir, 'src/ports') ? portsSrc : join(appDir, 'src/ports')) : join(pkgDir, 'src/ports');
     mkdirSync(stubDir, { recursive: true });
-    const stub = join(stubDir, `${slug}.mjs`);
+    const stub = assertContainedPortPath(stubDir, slug);
     if (existsSync(stub)) {
       console.log(`  scaffold: ${relative(appDir, stub)} already exists`);
     } else {

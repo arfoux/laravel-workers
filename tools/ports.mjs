@@ -8,11 +8,69 @@
 //   export default async function handle(ctx, env) { ... }
 //   return { status: 200, headers: {...}, body: 'string' }
 
+import { unsafeNameReason, assertNoSymlinkComponents } from './path-safety.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { GENERATED_BANNER } from './generated.mjs';
 
 export const STUB_MARKER = 'laravel-workers:stub';
+
+// A registry `ports` value is an OUTPUT FILE NAME (dist/src/controllers/<slug>.mjs
+// and an import of dist/src/ports/<slug>.mjs), not a filesystem path. Apply the
+// same blunt rules as the `static` name guard in tools/snapshot-paths.mjs:
+// backslashes, drive/UNC/absolute paths, parent segments, Windows-only names
+// (trailing dot/space, ADS, device names) and percent-encoded traversal all
+// refuse. `edge-upload--post` and other bare slugs are unaffected.
+const unsafePortSlug = (reason, value) =>
+  new Error(
+    `unsafe port slug ${JSON.stringify(value)}: ${reason} - use a relative name such as "edge-upload--post"`
+  );
+
+/** Validate a registry port slug before it reaches any join()/resolve() sink. */
+export function assertSafePortSlug(slug) {
+  const value = String(slug ?? '');
+  if (value === '') throw unsafePortSlug('an empty slug is not allowed', value);
+  if (value.startsWith('/')) throw unsafePortSlug('absolute paths are not allowed', value);
+  const reason = unsafeNameReason(value);
+  if (reason) throw unsafePortSlug(reason, value);
+  return value;
+}
+
+// Slugs interpolated into generated JS are additionally held to a strict
+// module-name grammar. JSON.stringify quotes the specifier; the grammar keeps
+// even a future emitter that drops the quoting from being able to inject code.
+const PORT_MODULE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
+
+/** Validate `slug` and return a JSON-quoted module specifier for generated JS. */
+export function portImportSpecifier(base, slug) {
+  const value = assertSafePortSlug(slug);
+  if (!PORT_MODULE_RE.test(value)) {
+    throw unsafePortSlug(
+      'only letters, digits, dot, dash, underscore and "/" between segments are allowed in generated imports',
+      value
+    );
+  }
+  return JSON.stringify(base + value + '.mjs');
+}
+
+/**
+ * Resolve a registry port slug to a file under `root`. Every write and
+ * existence check goes through here: validation, containment and a symlink/
+ * junction walk under the root mean a bypass of the ingestion check still
+ * cannot touch a file outside `root`. Returns the absolute output path.
+ */
+export function assertContainedPortPath(root, slug) {
+  const value = assertSafePortSlug(slug);
+  const base = resolve(root);
+  const out = resolve(base, value + '.mjs');
+  const rel = relative(base, out);
+  if (rel === '' || rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+    throw new Error(
+      `refusing port output path ${JSON.stringify(slug)}: it resolves outside ${base} (${out})`
+    );
+  }
+  return assertNoSymlinkComponents(base, out);
+}
 
 export function buildStubSource(route, verb = 'GET') {
   const lines = [
@@ -204,7 +262,7 @@ export function guardPortsModuleSource(entries) {
     '// registry.json → "guards": app-supplied guard drivers (Auth::extend parity).',
     '',
   ];
-  list.forEach(([, slug], i) => lines.push(`import guardPort${i} from './ports/${slug}.mjs';`));
+  list.forEach(([, slug], i) => lines.push(`import guardPort${i} from ${portImportSpecifier('./ports/', slug)};`));
   if (list.length) lines.push('');
   lines.push('export const guardPorts = {');
   list.forEach(([driver], i) => lines.push(`  ${JSON.stringify(driver)}: guardPort${i},`));
