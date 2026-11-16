@@ -58,16 +58,33 @@ test('xendit: valid token is accepted (200), stored, and ACKed', async () => {
 });
 
 test('xendit: stored row carries (id, external_id, status, created_at)', async () => {
+  // Freeze the clock so the handler's `new Date().toISOString()` has one exact
+  // answer; `doesNotThrow(new Date(...).toISOString())` only proved Date works.
+  const FIXED_ISO = '2026-11-16T12:34:56.789Z';
+  const RealDate = globalThis.Date;
+  class FrozenDate extends RealDate {
+    constructor(...args) {
+      if (args.length === 0) super(FIXED_ISO);
+      else super(...args);
+    }
+    static now() { return RealDate.parse(FIXED_ISO); }
+  }
   const db = new FakeD1();
-  await handle(makeCtx(TOKEN, PAYLOAD), { XENDIT_CALLBACK_TOKEN: TOKEN, DB: db });
+  globalThis.Date = FrozenDate;
+  try {
+    await handle(makeCtx(TOKEN, PAYLOAD), { XENDIT_CALLBACK_TOKEN: TOKEN, DB: db });
+  } finally {
+    globalThis.Date = RealDate;
+  }
 
   const stored = storedRows(db);
   assert.equal(stored.length, 1);
   // exactly the four declared columns were stored
   assert.deepEqual(Object.keys(stored[0]).sort(), ['created_at', 'external_id', 'id', 'status']);
   assert.deepEqual([stored[0].id, stored[0].external_id, stored[0].status], ['inv_abc', 'order-42', 'PAID']);
-  // created_at is an ISO timestamp
-  assert.doesNotThrow(() => new Date(stored[0].created_at).toISOString());
+  // created_at is the exact ISO instant the handler wrote, in ISO-8601 UTC form.
+  assert.equal(stored[0].created_at, FIXED_ISO, 'created_at is the handler\'s exact ISO timestamp');
+  assert.match(stored[0].created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, 'ISO-8601 UTC with milliseconds');
 });
 
 test('xendit: status is stored verbatim (any invoice state, not just PAID)', async () => {

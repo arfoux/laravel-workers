@@ -68,7 +68,7 @@ const runDump = (appDir, env) =>
     execFileSync(process.execPath, [dumpMjs, appDir], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LW_APP_ROOT: appDir, LW_VENDOR_DIR: '', ...env },
+      env: { ...process.env, LW_APP_ROOT: appDir, LW_VENDOR_DIR: '', LW_ALLOW_SECRET_CONFIG_KEYS: 'app.key,auth.hash_key', ...env },
     })
   );
 

@@ -20,7 +20,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { jsoncValue, stripTomlComments, wranglerCronTriggers } from '../../tools/wrangler-crons.mjs';
+import { jsoncValue, maskTomlStrings, stripTomlComments, wranglerCronTriggers } from '../../tools/wrangler-crons.mjs';
 import { parseJsonc } from '../../tools/jsonc.mjs';
 
 /** Run `wranglerCronTriggers` over a temp app dir holding the given files. */
@@ -131,5 +131,45 @@ test('stripTomlComments blanks comments but keeps quotes intact', () => {
 test('jsoncValue turns the jsonc AST back into plain data', () => {
   // Shared with build.mjs's binding check (d1_databases/r2_buckets/queues), so
   // the AST-to-data step is pinned here rather than in the build.
-  assert.deepEqual(jsoncValue(parseJsonc('{ "a": [1, { "b": "c" }], "d": true }')), { a: [1, { b: 'c' }], d: true });
+  const value = jsoncValue(parseJsonc('{ "a": [1, { "b": "c" }], "d": true }'));
+  assert.equal(Object.getPrototypeOf(value), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(value)), { a: [1, { b: 'c' }], d: true });
+});
+
+test('a `__proto__` key in wrangler.jsonc is data, not a fake cron trigger', () => {
+  // An app PR can put this in wrangler.jsonc. On a normal object the assignment
+  // sets the prototype, so `cfg.triggers.crons` would appear out of nowhere and
+  // the build would skip the queue BLOCK for a job nothing drains.
+  const poisoned = '{"__proto__": {"triggers": {"crons": ["*/5 * * * *"]}}, "name": "x"}';
+  const cfg = jsoncValue(parseJsonc(poisoned));
+  assert.equal(Object.getPrototypeOf(cfg), null);
+  assert.ok(Object.prototype.hasOwnProperty.call(cfg, '__proto__'));
+  assert.equal(Object.getPrototypeOf({}), Object.prototype); // no global pollution
+
+  const r = read({ 'wrangler.jsonc': poisoned });
+  assert.deepEqual(r.crons, []);
+  assert.deepEqual(r.warnings, []);
+});
+
+test('a backslash-escaped quote does not end a TOML string', () => {
+  // Without escape tracking, the `"` after `\"` closed the string and the
+  // following `#` was treated as a comment, truncating the cron expression.
+  const line = 'crons = ["a\\"#b"] # a real comment';
+  assert.equal(stripTomlComments(line), 'crons = ["a\\"#b"] ');
+});
+
+test('a `[triggers]` table or `crons` array written inside a string is not a declaration', () => {
+  assert.equal(maskTomlStrings('x = "[triggers]" # tail'), 'x = "          " # tail');
+  assert.equal(maskTomlStrings("x = 'a[b]c'"), "x = '     '");
+
+  const fake = read({
+    'wrangler.toml': `name = "note: [triggers] crons = ['bogus']"\n`,
+  });
+  assert.deepEqual(fake.crons, []);
+  assert.deepEqual(fake.warnings, []);
+
+  const real = read({
+    'wrangler.toml': `name = "note: [triggers] crons = ['bogus']"\n[triggers]\ncrons = ["*/5 * * * *", "0 0 * * *"]\n`,
+  });
+  assert.deepEqual(real.crons, ['*/5 * * * *', '0 0 * * *']);
 });
