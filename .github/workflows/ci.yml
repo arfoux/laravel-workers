@@ -33,18 +33,32 @@ jobs:
       - run: npm --prefix compiler install
       # One definition of "verified" (package.json → tools/check-syntax.mjs):
       # the suite, the corpus, the docs gate, the benchmarks, the shipped
-      # sources parsing, and the tarball gate. The release workflow runs the
-      # same script, so CI and a release can no longer drift apart.
-      - name: Verify (npm run gate:ci)
-        run: npm run gate:ci
+      # sources parsing, and the tarball gate. PRs take the fast path: the one
+      # measured-slow file (`schedule-utc.test.mjs`, ~168 s of ~245 s) is left
+      # to the push/main run, which executes the identical full script the
+      # release workflow uses. Same checks, different timing — no gate is
+      # removed, only deferred to the branch that must be fully green.
+      - name: Verify (fast on PR, full on push)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npm run gate:fast
+          else
+            npm run gate:ci
+          fi
       # The CODE-coverage instrument (S12): Node's own, no dependency. The
       # shadow harness's `coverage` counts scenario STEPS, not lines — this is
       # the number that shows the kernel lines no test ever executes (measured
       # 2026-11-02: ~83% line coverage over `kernel/tests`). `budget.test.mjs`
       # is excluded from this run: it asserts wall-clock p95 budgets and the
       # instrument would slow the kernel down enough to measure the instrument.
-      - name: Code coverage (the lines no test executes)
-        run: npm run test:coverage
+      # The same slow file is deferred on PRs; main keeps the full report.
+      - name: Code coverage (fast on PR, full on push)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npm run test:coverage:fast
+          else
+            npm run test:coverage
+          fi
 
   # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
   # Laravel app — the `test` job has none, so those tests skip there. This job

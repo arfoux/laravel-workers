@@ -57,6 +57,7 @@
   "scripts": {
     "setup": "npm install && npm --prefix compiler install",
     "test":"node tools/run-tests.mjs","test:fast":"node tools/run-tests.mjs --fast","test:coverage":"node tools/run-tests.mjs --coverage",
+    "test:coverage:fast":"node tools/run-tests.mjs --coverage --fast",
     "test:db": "node --test kernel/tests/db.test.mjs",
     "test:sqlite": "node --test kernel/tests/sqlite-integration.test.mjs",
     "test:hash": "node --test kernel/tests/hash.test.mjs kernel/tests/encrypter.test.mjs",
@@ -68,6 +69,7 @@
     "test:budget": "node --test kernel/tests/budget.test.mjs",
     "check:docs": "node tools/gate.mjs",
     "gate:ci": "npm test && npm run test:corpus && node tools/gate.mjs --strict && node tools/bench.mjs && node tools/check-syntax.mjs && node tools/pack-gate.mjs",
+    "gate:fast": "npm run test:fast && npm run test:corpus && node tools/gate.mjs --strict && node tools/bench.mjs && node tools/check-syntax.mjs && node tools/pack-gate.mjs",
     "gate:cpu": "node tools/cpu-gate.mjs",
     "bench": "node tools/bench.mjs",
     "test:shadow": "node shadow/run.mjs",
