@@ -283,7 +283,7 @@ jobs:
           # worker: `not_found_handling: "404-page"` is what gives that answer the app's
           # own 404 body instead of the platform's null-body 404 (measured on a live app
           # before the knob: 404, 0 B — docs/EVIDENCE.md finding 2).
-          nf=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/nonexistent-route-for-404)
+          nf=$(curl -s -o /tmp/nf.html -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/nonexistent-route-for-404)
           echo "unknown-path=$nf bytes=$(wc -c < /tmp/nf.html)"
           if [ "$nf" != "404" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
           # this step already cd'd into the app: the path is relative to it
