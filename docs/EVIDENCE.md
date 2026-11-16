@@ -686,6 +686,42 @@ source-text regex assertions (`tools/tests/packages-streaming-runtime.test.mjs:1
 (`tools/tests/snapshot-paths.test.mjs:38-44`). These weaken the T2 evidence tier; they do not
 invalidate the T1/T3/T4 evidence for P1–P4.
 
+## P7 fix on local main (2026-11-16, unreleased)
+
+Published 0.5.1 still has the P7 defect. The fix below exists only on local `main` after 0.5.1;
+no tarball or deploy was produced from it.
+
+Code: `build.mjs` now calls `recordControllerSkip(route, verb, reason)` on all seven emit-loop
+`continue` branches and on the emit-failure `catch`; `failedControllers` feeds `blocked`, a BLOCK
+finding (`controllerSkipFinding`), the `CONTROLLER FAILED` log and `--scaffold` stub selection.
+`tools/controller-coverage.mjs` holds the decision, pinned by `tools/tests/controller-coverage.test.mjs`
+(10/10) and `kernel/tests/ports.test.mjs` (6/6), including the verb in the generated stub comment.
+
+Commands and observed output in a scratch copy of `lw-showcase`
+(`C:/Users/HP/AppData/Local/Temp/lw-p7-scratch`, `--no-cache`):
+
+```text
+$ node C:/Users/HP/Documents/vscode/laravel-workers/build.mjs --strict --no-cache
+CONTROLLER FAILED POST /edge/upload: LW002 $request->files is not compiled ...
+BUILD FAILED: coverage check failed (--strict) — 1 finding(s)
+READINESS: DOES NOT RUN
+BUILD_EXIT=1
+
+$ node C:/Users/HP/Documents/vscode/laravel-workers/build.mjs --scaffold --no-cache
+CONTROLLER FAILED POST /edge/upload: LW002 $request->files is not compiled ...
+scaffolded ports\edge-upload--post.mjs (laravel-workers:stub — build --strict fails until implemented)
+registry.json: "ports" += "/edge/upload": "edge-upload--post"
+READINESS: RUNS ON THE EDGE
+BUILD_EXIT=0
+
+$ read ports/edge-upload--post.mjs:1
+// Port for POST /edge/upload — laravel-workers:stub
+```
+
+The scaffold run was repeated after removing the scratch port registration; exit 0 and the
+`POST` stub comment were reproduced. A subsequent `--scaffold` run on the same scratch app exits 1
+because the stub is now a registered port — expected: stubs are blocked until implemented.
+
 ## NOT VERIFIED (stated, not implied)
 
 - ~~`deploy --mode 3` end-to-end on this machine~~ — **verified 2026-11-14**, see

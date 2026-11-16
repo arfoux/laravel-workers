@@ -11,6 +11,10 @@ test('buildStubSource emits a default-export handler (controller re-export contr
   assert.ok(src.includes(STUB_MARKER));
   assert.equal(src.includes('export async function handle'), false, 'must not use a named export');
 });
+test('buildStubSource names the refused verb, not a hard-coded GET', () => {
+  assert.ok(buildStubSource('/edge/upload', 'POST').includes('// Port for POST /edge/upload'));
+  assert.ok(buildStubSource('/dbcheck').includes('// Port for GET /dbcheck'));
+});
 
 test('the generated stub runs and returns the { status, headers, body } contract', async () => {
   const src = buildStubSource('/posts/{post}');

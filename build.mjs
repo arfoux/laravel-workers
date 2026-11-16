@@ -41,6 +41,7 @@ import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mj
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { slugifyRoute } from './tools/route-slug.mjs';
 import { buildRouteMap } from './tools/route-map.mjs';
+import { hasBlockingControllerSkips, controllerSkipFinding, controllerStubEntries } from './tools/controller-coverage.mjs';
 import { jsoncValue, stripTomlComments, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
 import { snapshotFiles } from './tools/snapshot-paths.mjs';
 import { sourceIdentity } from './tools/git-sha.mjs';
@@ -1144,6 +1145,15 @@ const snapshots = [];
 const partials = [];
 const needsPort = [];
 const uncompiledExtraNonPost = [];
+// Every controller the transpiler REFUSED to emit. A `continue` in the emit
+// loop used to drop the route from the coverage verdict: the build said
+// "all routes handled" while the Worker had no handler (P7). Each skip is
+// recorded here so --strict fails, the finding names the route, and
+// --scaffold can write the 501 port stub the claim promises.
+const failedControllers = [];
+const recordControllerSkip = (p, reason) => {
+  failedControllers.push({ route: p.route, verb: String(p.verb || 'GET').toUpperCase(), reason });
+};
 
 // Track E (prerender-batch): the render set is decided BEFORE the boot —
 // every filter below only reads build state, then one batch covers the
@@ -3095,16 +3105,18 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           (c) => classErrors.has(c.fqcn) || classErrors.has(c.alias)
         );
         if (brokenClass) {
-          console.log(
-            `  controller ${p.route}: skipped — the class ${brokenClass.fqcn} did not compile: ${
-              classErrors.get(brokenClass.fqcn) || classErrors.get(brokenClass.alias)
-            }`
-          );
+          const reason = `the class ${brokenClass.fqcn} did not compile: ${
+            classErrors.get(brokenClass.fqcn) || classErrors.get(brokenClass.alias)
+          }`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         const ambiguous = (p.meta.classes || []).find((c) => (aliasToFqcns.get(c.alias) || new Set()).size > 1);
         if (ambiguous) {
-          console.log(`  controller ${p.route}: skipped — model alias "${ambiguous.alias}" is ambiguous between namespaces`);
+          const reason = `model alias "${ambiguous.alias}" is ambiguous between namespaces`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         // A JOB class is not a model: `Job::dispatch()` is a queue push the
@@ -3146,11 +3158,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           // class that cannot be autoloaded). "is not a usable Eloquent model"
           // alone reads as "make it a model and it compiles", which is wrong
           // for a service/facade — the route needs a port either way.
-          console.log(
-            `  controller ${p.route}: skipped — ${badModel.fqcn} could not be compiled (${
-              d && d.error ? d.error : 'the model dump rejected it'
-            }); write a port for this route`
-          );
+          const reason = `${badModel.fqcn} could not be compiled (${
+            d && d.error ? d.error : 'the model dump rejected it'
+          }); write a port for this route`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         // FormRequest rules for this route (by FQCN). A class-typed parameter
@@ -3213,6 +3225,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         }
         if (formRequestError) {
           console.log(`  controller ${p.route}: skipped — ${formRequestError}`);
+          recordControllerSkip(p, formRequestError);
           continue;
         }
         // Class constants for this route (by alias — the transpiler resolves the
@@ -3232,7 +3245,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           constants[c.alias] = dumped.constants || {};
         }
         if (constantError) {
-          console.log(`  controller ${p.route}: skipped — class constant ${constantError}`);
+          const reason = `class constant ${constantError}`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         // The views the route renders + the ones they depend on (the layout).
@@ -3268,11 +3283,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           );
           const reason = viewSkipReason.get(missingView);
           const why = reason ? ' — ' + reason : '';
-          console.log(
-            mailableOf
-              ? `  controller ${p.route}: skipped — the view "${missingView}" of the mailable ${mailableOf} did not compile${why}`
-              : `  controller ${p.route}: skipped — view "${missingView}" did not compile${why}`
-          );
+          const skipReason = mailableOf
+            ? `the view "${missingView}" of the mailable ${mailableOf} did not compile${why}`
+            : `view "${missingView}" did not compile${why}`;
+          console.log(`  controller ${p.route}: skipped — ${skipReason}`);
+          recordControllerSkip(p, skipReason);
           continue;
         }
         // The CORS paths (HandleCors): the compiled worker does not add the CORS
@@ -3280,11 +3295,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         // without the headers would break the browser's CORS).
         const corsPath = corsPathFor(p.route);
         if (corsPath) {
-          console.log(
-            `  controller ${p.route}: skipped — the app configures CORS for "${corsPath}" and the ` +
-              'compiled worker does not add the CORS headers — remove the CORS config (config/cors.php) ' +
-              'or answer the preflight on the platform'
-          );
+          const skipReason = `the app configures CORS for "${corsPath}" and the compiled worker does not add the CORS headers — remove the CORS config (config/cors.php) or answer the preflight on the platform`;
+          console.log(`  controller ${p.route}: skipped — ${skipReason}`);
+          recordControllerSkip(p, skipReason);
           continue;
         }
         const isExtraVerb = extraVerbsFor(p.route).includes(p.verb);
@@ -3411,6 +3424,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         } catch (e) {
           const detail = formatControllerError(e);
           console.log(`  controller ${p.route}: skipped — ${detail}`);
+          recordControllerSkip(p, detail);
           // The upload: the operator needs to know that the edge has no
           // multipart parser and what to do about it (an object store — R2
           // asks for a credit card; the free path is the D1 blob store — or
@@ -4092,7 +4106,7 @@ for (let i = needsPort.length - 1; i >= 0; i--) {
   if (redirectMap.has(needsPort[i].route)) needsPort.splice(i, 1);
 }
 const runtimeBinding = needsPort.filter((n) => isRuntimeBindingError(n.reason));
-const blocked = (needsPort.length - runtimeBinding.length) > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0 || uncompiledExtraNonPost.length > 0;
+const blocked = (needsPort.length - runtimeBinding.length) > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0 || uncompiledExtraNonPost.length > 0 || hasBlockingControllerSkips(failedControllers);
 
 if (snapshots.length) console.log(`• auto-snapshots (${snapshots.length}): ${snapshots.join(', ')}`);
 for (const p of partials)
@@ -4100,6 +4114,7 @@ for (const p of partials)
 for (const x of uncompiledExtraNonPost)
   console.log(`  WARN ${x.route}: ${x.verb} needs a port (only GET/POST handlers are compiled)`);
 for (const n of needsPort) console.log(`  UNHANDLED ${n.route}: ${n.reason}`);
+for (const f of failedControllers) console.log(`  CONTROLLER FAILED ${f.verb} ${f.route}: ${f.reason}`);
 if (needsPort.length)
   console.log('  -> add a port, a "static" entry, or "ignore" (with a reason) in registry.json');
 if (unknown.length) console.log(`  registry entries not found in route:list: ${unknown.join(', ')}`);
@@ -4134,6 +4149,7 @@ for (const p of partials) note({ route: p.route, area: 'route', severity: BLOCK,
 for (const x of uncompiledExtraNonPost) note({ route: x.route, area: 'route', severity: BLOCK, cause: `${x.verb} has no handler (only GET/POST/PUT/PATCH/DELETE compile)`, fix: `write a port for ${x.verb} ${x.route}, or ignore the route with a reason` });
 for (const u of unknown) note({ route: u, area: 'registry', severity: BLOCK, cause: 'registry.json names this route, but `artisan route:list` has no such route', fix: 'fix the path in registry.json (it must match route:list exactly), or delete the entry' });
 for (const ss of stubPorts) note({ route: null, area: 'route', severity: BLOCK, cause: `the port ${relPath(join(portsSrc, ss))} is still the scaffold stub (it answers 501)`, fix: 'implement the handler against env.DB (or another binding), then re-run the build' });
+for (const f of failedControllers) note(controllerSkipFinding(f));
 // An `ignore` is a decision, not a failure: it ships, so it is reported as a
 // declared gap and never changes a green build into a red one.
 for (const [route, reason] of ignoreMap) note({ route, area: 'route', severity: DECLARED, cause: `ignored -- ${reason || 'no reason given'}`, fix: reason ? null : 'registry.json: give the "ignore" entry a reason (the next reader needs it)' });
@@ -4172,16 +4188,19 @@ for (const [route, reason] of ignoreMap) note({ route, area: 'route', severity: 
 
 // ---------- 7. scaffold stubs for routes that need a port ----------
 
-if (scaffold && needsPort.length) {
-  const entries = needsPort.map(({ route }) => ({ route, slug: slugifyRoute(route) }));
-  for (const { route, slug } of entries) {
+if (scaffold && (needsPort.length || failedControllers.length)) {
+  const entries = controllerStubEntries(needsPort, failedControllers, {
+    slugifyRoute,
+    extraVerbsFor: (route) => extraVerbsFor(route).map((v) => String(v).toUpperCase()),
+  });
+  for (const { route, verb, slug } of entries) {
     const stubDir = isNpmMode ? (portsSrc !== join(pkgDir, 'src/ports') ? portsSrc : join(appDir, 'src/ports')) : join(pkgDir, 'src/ports');
     mkdirSync(stubDir, { recursive: true });
     const stub = join(stubDir, `${slug}.mjs`);
     if (existsSync(stub)) {
       console.log(`  scaffold: ${relative(appDir, stub)} already exists`);
     } else {
-      writeFileSync(stub, buildStubSource(route));
+      writeFileSync(stub, buildStubSource(route, verb));
       console.log(`  scaffolded ${relative(appDir, stub)} (${STUB_MARKER} — build --strict fails until implemented)`);
     }
   }
@@ -4196,7 +4215,7 @@ if (scaffold && needsPort.length) {
   }
 }
 if (blocked && !scaffold) {
-  if (needsPort.length) console.log('  (tip: re-run with --scaffold to generate + register port stubs)');
+  if (needsPort.length || failedControllers.length) console.log('  (tip: re-run with --scaffold to generate + register port stubs)');
   else if (stubPorts.length) console.log('  (tip: implement the stub port(s), then re-run)');
 }
 if (strict && blocked) {
