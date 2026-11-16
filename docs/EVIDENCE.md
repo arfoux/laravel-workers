@@ -963,3 +963,31 @@ cannot occur because this app declares no snapshots and no `/index` or `/404` pr
 P5 `%2F` query encoding has no app call site; the app declares no schedule; 123 route/method
 entries are status/body-mismatched port seams with concrete recorded reasons. The P7 route now
 uses `count($request->allFiles())` and takes part in the 100% byte-identical gate.
+
+## Post-0.5.1 documentation drift sweep (2026-11-17, unreleased)
+
+Four confirmed documentation drifts were corrected by targeted edits; no behaviour, version,
+generated README counts or published artifact was changed. Exact corrected lines and the
+source of truth for each:
+
+| Corrected file / lines (pre-edit -> post-edit) | Source of truth | Correction |
+|---|---|---|
+| `CHANGELOG.md:25-27` -> `:25-29`; `docs/DEVELOPING.md:16-18` -> `:16-19`; `tools/gate.mjs:26-28` -> `:26-30` (comment only) | `.github/workflows/ci.yml:52-58` (test job) and `:84-90` (coverage job) | PR and push both run `gate:affected`; the coverage job runs `gate:affected:coverage`; only scheduled/manual runs run `gate:ci`. `gate:fast` remains a local option and is no longer claimed as the PR CI gate. |
+| `docs/READINESS.md:69` | `MAP.md:512`, `CHANGELOG.md:94` ("Tests and documentation quality"), `compiler/runtime/rt-from-context.mjs:2500-2608` | Localization row now says the compiled rung renders dates in `config('app.timezone')` (M70); the UTC divergence and "plan: M57" wording are retired. |
+| `docs/CLAIM-COVERAGE.md:3` | S146k(1) finding; `docs/CLAIM-COVERAGE.md:56` (row 36), `README.md:107-112` | Scope now includes the Philosophy claim family flagged as unscoped; row 36 is untouched and still marks "No silent gaps" REFUTED for published 0.5.1. |
+| `docs/EVIDENCE.md` (this note, appended) | this drift sweep | Records the corrected files/lines for the unreleased doc-fix set. |
+
+These are **post-0.5.1 unreleased documentation fixes** on main; published `0.5.1` is unchanged.
+Intentionally left alone: the generated README counts block (enforced by
+`tools/docs-counts.mjs --check`), the version, `notes/PLAYBOOK.local.md`, row 36's REFUTED
+verdict, and all wording outside the four listed drifts.
+
+Verification of this documentation-only set (2026-11-17, both exit 0):
+
+```text
+$ node tools/docs-counts.mjs --check
+docs-counts PASS: README counts match the code (118 constructs, 47/47 facades, corpus 55, 105 docs)
+
+$ node tools/pack-gate.mjs
+pack-gate OK: 118 runtime files reached from build.mjs + bin/laravel-workers.mjs (+7 explicit) + 17 README-linked docs shipped (214 files in the tarball; local links checked in 17 Markdown files)
+```

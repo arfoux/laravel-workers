@@ -22,9 +22,11 @@ ports/edge-upload--post.mjs`, registry entry added, exit 0.
 
 ### A smaller PR gate without weakening main
 
-`gate:fast` runs the suite minus the slow schedule-UTC file; PR CI uses it, while push,
-main and tag CI keep `gate:ci`. Measured on this machine: `test:fast` 2148 tests / 2094
-pass / 54 skip / 0 fail in 66.66 s wall, versus `gate:ci` 311.23 s wall.
+`gate:fast` runs the suite minus the slow schedule-UTC file; it is a local option, not what
+CI uses. PR and push CI both run `gate:affected` (the coverage job runs
+`gate:affected:coverage`); only scheduled and manual runs keep `gate:ci`. Measured on this
+machine: `test:fast` 2148 tests / 2094 pass / 54 skip / 0 fail in 66.66 s wall, versus
+`gate:ci` 311.23 s wall.
 
 ### Runtime parity for the three shadow root causes
 
