@@ -14,9 +14,9 @@ import { GENERATED_BANNER } from './generated.mjs';
 
 export const STUB_MARKER = 'laravel-workers:stub';
 
-export function buildStubSource(route) {
+export function buildStubSource(route, verb = 'GET') {
   const lines = [
-    `// Port for GET ${route} — ${STUB_MARKER}`,
+    `// Port for ${String(verb).toUpperCase()} ${route} — ${STUB_MARKER}`,
     '// TODO: implement against env.DB (or another binding) and return { status, headers, body }.',
   ];
   if (route.includes('{')) {

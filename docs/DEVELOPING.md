@@ -12,7 +12,10 @@ npm run setup        # root + compiler deps
 npm test             # kernel + compiler + parity harnesses
 npm run test:corpus  # the M1 transpiler corpus (byte-identical expectations)
 npm run test:sqlite  # real in-memory SQLite integration
-npm run gate:ci      # the CI mirror: suite + corpus + docs gate + bench + syntax + pack-gate
+npm run gate:ci      # full CI mirror: suite + corpus + docs gate + bench + syntax + pack-gate
+npm run gate:fast    # the same checks, minus the one measured-slow test file
+                     # (`schedule-utc.test.mjs`); PR CI uses this, push/main uses gate:ci
+                     # and the full coverage report — no gate is removed, only deferred
 ```
 
 A checkout is not an app: `npx laravel-workers verify` runs the container checks and reports
@@ -25,7 +28,7 @@ A checkout is not an app: `npx laravel-workers verify` runs the container checks
 - `npm run gate:cpu` — the platform's own numbers: deploys a probe worker running the real kernel hot paths, reads `cpuTime`/`outcome` back through `wrangler tail`, asserts a page-like load fits the Free budget **and** that a burn is caught, then deletes the worker. Outside `gate:ci` (it needs a logged-in wrangler).
 - `kernel/tests/budget.test.mjs` — wall-clock p95 ≤ 5 ms per hot operation, ≤ 30 ms for the encrypter (no D1/KV in the loop).
 - `tools/constructs.json` — every `Illuminate\Support\Facades\*` (Laravel 13) with a verdict.
-- `tools/pack-gate.mjs` — what the published tarball actually carries, and that no file the README links is missing from it.
+- `tools/pack-gate.mjs` — what the published tarball actually carries: every runtime and CLI entry it needs, plus a check that no local link in any shipped Markdown file points at a file the tarball omits.
 
 ## Where the truth lives
 

@@ -280,9 +280,9 @@ for every route that needs a port.
 The package ships **reference ports** for the popular packages under
 `ports/packages/*.mjs`. Copy the ones you need into your app's ports dir and map
 their routes; each DB-backed port exports `ensureSchema` so `dist/schema.sql` can
-create its D1 tables. [`registry.example.json`](registry.example.json) maps the
-whole fleet — **47 route-port slugs → 81 route paths** — and
-[`docs/PACKAGE-PORTS.md`](docs/PACKAGE-PORTS.md) lists the secrets each handler
+create its D1 tables. [`registry.example.json`](../registry.example.json) maps the
+whole fleet — **47 route-port slugs → 80 registry paths** — and
+[`docs/PACKAGE-PORTS.md`](PACKAGE-PORTS.md) lists the secrets each handler
 reads and the route collisions (`/broadcasting/auth`, answered by both `pusher`
 and `reverb`). `tools/tests/packages-wiring.test.mjs` builds a real app with a
 subset wired and drives those routes on the router's own `ctx` — the guard against

@@ -23,11 +23,13 @@
 // `npm run gate:ci` is the outer layer - `npm test` (an explicit subset of the
 // test files: the ones that need no built fixture or oracle) + `test:corpus` +
 // this gate (`--strict`) + `tools/bench.mjs` + `tools/check-syntax.mjs` +
-// `tools/pack-gate.mjs`. The dev-only scripts (`test:shadow`, `test:pack`) are
-// not part of it: they need a prepared Laravel app. `tools/cpu-gate.mjs`
-// (`npm run gate:cpu`) is deliberately outside too - it deploys a probe worker
-// and reads `cpuTime`/`outcome` back through `wrangler tail`, so it needs a
-// logged-in Cloudflare account (CI has none).
+// `tools/pack-gate.mjs`. `npm run gate:fast` runs the same six checks with
+// `test:fast`, skipping only the measured-slow `schedule-utc.test.mjs`; PR CI
+// takes that path, push/main and the release take the full one. The dev-only
+// scripts (`test:shadow`, `test:pack`) are not part of it: they need a prepared
+// Laravel app. `tools/cpu-gate.mjs` (`npm run gate:cpu`) is deliberately outside
+// too - it deploys a probe worker and reads `cpuTime`/`outcome` back through
+// `wrangler tail`, so it needs a logged-in Cloudflare account (CI has none).
 //
 // The flags are forwarded to every check (e.g. `--strict` turns the warnings
 // into failures); `--require` is forwarded only to the two oracle checks, whose

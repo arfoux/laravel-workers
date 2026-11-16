@@ -7,7 +7,7 @@ branding:
 
 inputs:
   log:
-    description: Path to the log of `npx laravel-workers build --no-cache`.
+    description: Must be "edge-build.log" in the workspace (the default); other paths are ignored.
     required: false
     default: edge-build.log
   comment:

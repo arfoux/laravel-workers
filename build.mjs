@@ -41,8 +41,9 @@ import { reachableClasses, reachedMailables } from './compiler/src/mail-reach.mj
 import { viewFileName } from './compiler/src/view-name.mjs';
 import { slugifyRoute } from './tools/route-slug.mjs';
 import { buildRouteMap } from './tools/route-map.mjs';
+import { hasBlockingControllerSkips, controllerSkipFinding, controllerStubEntries, dedupeControllerSkips } from './tools/controller-coverage.mjs';
 import { jsoncValue, stripTomlComments, wranglerCronTriggers } from './tools/wrangler-crons.mjs';
-import { snapshotFiles } from './tools/snapshot-paths.mjs';
+import { snapshotFiles, assertNoSnapshotCollisions } from './tools/snapshot-paths.mjs';
 import { sourceIdentity } from './tools/git-sha.mjs';
 import { notTriggerableFindings, shiftedTriggerFindings } from './tools/schedule-gaps.mjs';
 import { ensureVendorLite } from './tools/vendor-lite.mjs';
@@ -135,6 +136,29 @@ let dbSandboxPath = null;
 // production render. A real environment variable always wins over .env in
 // Laravel, so these two override the app's .env; an operator who exported
 // APP_ENV/APP_DEBUG explicitly keeps their value.
+// Only these variables reach a child that BOOTS PR app code (artisan, the
+// config fold, prerender, the dumps). Spreading process.env handed that code
+// CLOUDFLARE_API_TOKEN / GH_TOKEN / GITHUB_TOKEN and every other CI secret.
+// The app-config names mirror tools/build-cache.mjs ENV_KEYS (the inputs that
+// already change the artifact) plus what PHP/Node need to start; DB_PASSWORD
+// and cloud tokens are deliberately absent. APP_KEY is the sole secret-shaped
+// exception: tools/_root.php checks getenv('APP_KEY') before Laravel loads .env
+// and otherwise mints a new key PER CHILD, so config dump and prerender would
+// sign with different keys. The app can already read it from .env on disk.
+const CHILD_ENV_KEYS = [
+  // OS/runtime essentials — without these a child cannot spawn on Windows/CI.
+  'PATH', 'Path', 'SystemRoot', 'windir', 'TEMP', 'TMP', 'TMPDIR', 'RUNNER_TEMP',
+  'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'APPDATA',
+  'ComSpec', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS',
+  // Node / non-secret CI markers an app config may branch on.
+  'NODE_ENV', 'CI', 'GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'RUNNER_OS',
+  // App settings that are build inputs (build-cache.mjs ENV_KEYS).
+  'APP_ENV', 'APP_URL', 'APP_DEBUG', 'APP_KEY',
+  'DB_CONNECTION', 'DB_DATABASE', 'DB_HOST', 'DB_PORT', 'DB_USERNAME',
+  'CACHE_STORE', 'CACHE_DRIVER', 'SESSION_DRIVER', 'QUEUE_CONNECTION',
+  'FILESYSTEM_DISK', 'MAIL_MAILER', 'LOG_CHANNEL',
+  'LW_APP_ROOT', 'LW_VENDOR_DIR', 'LW_CONFIG', 'LW_PORTS_DIR',
+];
 let scratchPhpCacheChecked = false;
 const childEnv = () => {
   // A `bootstrap/cache/packages.php` built against ANOTHER vendor tree (a
@@ -164,8 +188,23 @@ const childEnv = () => {
   // Relative, because Laravel's normalizeCachePath() only treats '/' and '\' as
   // absolute prefixes: a Windows "C:\..." value would be joined onto basePath.
   const phpCacheRel = relPath(phpCacheDir) + '/';
+  const env = Object.create(null);
+  for (const key of CHILD_ENV_KEYS) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
   return {
-    ...process.env,
+    // config-dump hard-fails on credential-like keys; the two below are the
+    // ones the compiled rung structurally reads. Operators may append exact
+    // keys through the same flag (see tools/config-dump.mjs).
+    LW_ALLOW_SECRET_CONFIG_KEYS: [
+      'app.key',
+      'auth.hash_key',
+      ...String(process.env.LW_ALLOW_SECRET_CONFIG_KEYS || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ].join(','),
+    ...env,
     APP_ENV: process.env.APP_ENV || 'production',
     APP_DEBUG: process.env.APP_DEBUG || 'false',
     APP_PACKAGES_CACHE: process.env.APP_PACKAGES_CACHE || phpCacheRel + 'packages.php',
@@ -203,6 +242,21 @@ function ensureWranglerConfig() {
   console.log(`  -> wrangler.jsonc: written (worker name "${slug}") — run \`npx laravel-workers deploy\` (guided) or \`npx wrangler d1 create ${dbSlug}\` (manual)`);
 }
 
+// PHP/Node child output is third-party text: it can echo APP_KEY, DB_PASSWORD
+// or a cloud token into the verdict and the CI log. Redact exact values from
+// the environment and secret-shaped assignments before any of it is printed.
+const SECRET_ENV_KEY = /TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL/i;
+const SECRET_ASSIGN = /(["']?[\w.-]*(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|credentials?)[\w.-]*["']?\s*[:=]\s*)(["']?)([^\s"',;}\]]{1,200})\2/gi;
+const redactSecrets = (text) => {
+  let out = String(text ?? '');
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!SECRET_ENV_KEY.test(key) || typeof value !== 'string' || value.length < 4) continue;
+    out = out.split(value).join('[REDACTED]');
+  }
+  return out
+    .replace(SECRET_ASSIGN, '$1$2[REDACTED]$2')
+    .replace(/\bBearer\s+[\w.-]{8,}/gi, 'Bearer [REDACTED]');
+};
 const fail = (msg) => {
   console.error('BUILD FAILED: ' + msg);
   // The staging directory is thrown away: `dist/` keeps the last build that
@@ -727,7 +781,7 @@ try {
     maxBuffer: 1 << 28,
   });
   scannerStderr = String(dumpProc.stderr || '').trim();
-  if (scannerStderr) process.stderr.write(scannerStderr + '\n');
+  if (scannerStderr) process.stderr.write(redactSecrets(scannerStderr) + '\n');
   const rawRoutes = String(dumpProc.stdout || '');
   // spawnSync reports a failure instead of throwing the way execFileSync did,
   // so re-raise it in the same shape the handler below expects (stderr/stdout
@@ -745,7 +799,7 @@ try {
     // A dump failure (a broken config/env file, a syntax error in a route or
     // config PHP source) is printed to STDOUT while the process still exits 0
     // — the real cause is in that text, not on stderr.
-    const tail = rawRoutes.trim() ? rawRoutes.trim().split('\n').slice(-15).map((l) => '    ' + l).join('\n') : '    (empty)';
+    const tail = redactSecrets(rawRoutes.trim() ? rawRoutes.trim().split('\n').slice(-15).map((l) => '    ' + l).join('\n') : '    (empty)');
     fail(
       'route export failed — the route dump did not return the JSON route table\n' +
       '  dump output:\n' + tail +
@@ -759,7 +813,7 @@ try {
   const stdout = e.stdout ? e.stdout.toString().trim() : '';
   const outTail = stdout ? stdout.split('\n').slice(-15).join('\n') : '';
   const errTail = stderr ? stderr.split('\n').slice(-15).join('\n') : '';
-  const combined = [errTail, outTail].filter(Boolean).join('\n');
+  const combined = redactSecrets([errTail, outTail].filter(Boolean).join('\n'));
   const errDetail = combined ? '\n  scanner output:\n    ' + combined.replace(/\n/g, '\n    ') : '';
   note({
     severity: BLOCK,
@@ -1004,7 +1058,7 @@ const runPrerender = (args, label) => {
   } catch (e) {
     const stderr = String(e.stderr || '').trim();
     const stdout = String(e.stdout || '').trim();
-    const detail = (stderr || stdout || String(e.message || '')).slice(-2000);
+    const detail = redactSecrets((stderr || stdout || String(e.message || '')).slice(-2000));
     fail(`prerender crashed (${label})${detail ? `:\n${detail}` : ''}`);
   }
   const idx = out.lastIndexOf(PRERENDER_MARKER);
@@ -1144,6 +1198,15 @@ const snapshots = [];
 const partials = [];
 const needsPort = [];
 const uncompiledExtraNonPost = [];
+// Every controller the transpiler REFUSED to emit. A `continue` in the emit
+// loop used to drop the route from the coverage verdict: the build said
+// "all routes handled" while the Worker had no handler (P7). Each skip is
+// recorded here so --strict fails, the finding names the route, and
+// --scaffold can write the 501 port stub the claim promises.
+const failedControllers = [];
+const recordControllerSkip = (p, reason) => {
+  failedControllers.push({ route: p.route, verb: String(p.verb || 'GET').toUpperCase(), reason });
+};
 
 // Track E (prerender-batch): the render set is decided BEFORE the boot —
 // every filter below only reads build state, then one batch covers the
@@ -1200,12 +1263,39 @@ const prerender = (route) => {
   return res;
 };
 
+// P6: before the first write, register every page the two loops below will
+// produce with its output files. Two distinct claimants for one file would
+// silently overwrite each other - notably a route named `/index` (index.html,
+// the root page) or `/404` (404.html, the edge error page). snapshot-paths.mjs
+// knows those reserved names and refuses the collision; the predicates here
+// are the ones the write loops use, so a skipped render claims nothing.
+const willWriteStatic = (res) => res.status >= 200 && res.status < 300;
+const willWriteSnapshot = (res) =>
+  res.status >= 200 && res.status < 300 && String(res.content_type || '').includes('text/html');
+const pageClaims = [];
+for (const [route, file] of staticMap) {
+  if (willWriteStatic(prerender(route))) {
+    pageClaims.push({ route, files: snapshotFiles(route, file), label: `static route ${route}` });
+  }
+}
+for (const route of routes) {
+  if (handled.has(route) || snapshotSkip(route)) continue;
+  if (willWriteSnapshot(prerender(route))) {
+    pageClaims.push({ route, files: snapshotFiles(route), label: `snapshot ${route}` });
+  }
+}
+try {
+  assertNoSnapshotCollisions(pageClaims);
+} catch (e) {
+  fail(e.message);
+}
+
 // 3a. manual static pages (registry.json → "static")
 for (const [route, file] of staticMap) {
   const res = prerender(route);
-  if (res.status < 200 || res.status >= 300) {
+  if (!willWriteStatic(res)) {
     const rawDetail = res.error ? String(res.error) : (res.body ? String(res.body) : '');
-    const detail = res.error ? `: ${res.error}` : (res.body ? `: ${String(res.body).slice(0, 150).replace(/\n/g, ' ')}` : '');
+    const detail = redactSecrets(res.error ? `: ${res.error}` : (res.body ? `: ${String(res.body).slice(0, 150).replace(/\n/g, ' ')}` : ''));
     note({ route, area: 'route', severity: BLOCK, cause: `static entry "${route}" returned HTTP ${res.status}${detail}`, fix: rawDetail.includes('key:generate') ? 'run `npx laravel-workers init` to write .env + APP_KEY' : isRuntimeBindingError(rawDetail) ? 'this static entry reads a D1 binding, or a database, that the build cannot reach -- a static entry must prerender clean, so give the app a local sqlite fallback for the build (config/database.php) or make the route dynamic' : rawDetail.includes('database') ? 'prerender renders this route for real, so it needs live data: prepare a local DB with data (touch database/database.sqlite && php artisan migrate --seed). Note: the D1 schema itself does NOT need this — schema-compile derives it from migrations in memory' : 'a deployed build will prerender this route too -- fix the exception the app throws for bare GET `/` first' });
     fail(`static route ${route} returned HTTP ${res.status}${detail}`);
   }
@@ -1231,8 +1321,7 @@ for (const route of routes) {
   }
   const others = otherMethods(route);
   const res = prerender(route);
-  const isHtml = String(res.content_type || '').includes('text/html');
-  if (res.status >= 200 && res.status < 300 && isHtml) {
+  if (willWriteSnapshot(res)) {
     const files = snapshotFiles(route);
     const written = files.map((f) => writePage(f, res.body));
     snapshots.push(route);
@@ -1276,7 +1365,7 @@ try {
     );
   }
 } catch (e) {
-  const msg = String(e.stderr || e.message || '').trim().slice(0, 800);
+  const msg = redactSecrets(String(e.stderr || e.message || '').trim().slice(0, 800));
   note({
     severity: BLOCK,
     area: 'config',
@@ -1419,7 +1508,7 @@ let cronTriggers = [];
     if (warn) console.log(warn.split('\n').map((l) => '  ' + l).join('\n'));
     schedule = JSON.parse(String(r.stdout || '').toString('utf8'));
   } catch (e) {
-    const detail = String(e.stderr || e.message || '').trim().slice(0, 300);
+    const detail = redactSecrets(String(e.stderr || e.message || '').trim().slice(0, 300));
     console.log(`  schedule dump failed — the artifact ships an empty schedule: ${detail.slice(0, 200)}`);
     // A schedule that failed to compile is a missing cron trigger: the build
     // must say so in the verdict, not only in scrollback.
@@ -1932,7 +2021,7 @@ for (const [route, view] of viewMap) {
   if (!existsSync(dumpPath)) {
     // A view that fails to compile must land in the verdict, not only in
     // scrollback: the route would otherwise ship with no handler at all.
-    const detail = viewJobError(viewStderr, view);
+    const detail = redactSecrets(viewJobError(viewStderr, view));
     console.log(`  view ${view}: compile FAILED — ${detail.slice(0, 300)}`);
     needsPort.push({ route, reason: `the view for ${route} did not compile (${view}): ${detail.slice(0, 200)}` });
     continue;
@@ -2023,7 +2112,7 @@ if (errorViewCodes.length) {
     const dumpPath = join(cacheDir, 'errors.' + code + '.compiled.json');
     console.log(`  compiling error view ${viewName}`);
     if (!existsSync(dumpPath)) {
-      const detail = viewJobError(viewStderr, viewName);
+      const detail = redactSecrets(viewJobError(viewStderr, viewName));
       note({
         severity: BLOCK,
         area: 'view',
@@ -2266,11 +2355,18 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
       const mwList = (meta && meta.middleware) || [];
       const blocking = mwList.filter((m) => !isHonouredMiddleware(m));
       if (blocking.length) {
-        console.log(`  skip ${verb} ${route}: middleware [${blocking.join(', ')}] not transpiled — write a port`);
+        const reason = `middleware [${blocking.join(', ')}] not transpiled`;
+        console.log(`  skip ${verb} ${route}: ${reason} — write a port`);
+        recordControllerSkip({ route, verb, meta }, reason);
         continue;
       }
       const parsed = parseActionTarget(action);
-      if (!parsed) continue;
+      if (!parsed) {
+        const reason = `unparseable controller action ${JSON.stringify(action)}`;
+        console.log(`  skip ${verb} ${route}: ${reason} — write a port`);
+        recordControllerSkip({ route, verb, meta }, reason);
+        continue;
+      }
       extraTargets.push({ route, verb, fqcn: parsed.fqcn, method: parsed.method });
     }
   }
@@ -3095,16 +3191,18 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           (c) => classErrors.has(c.fqcn) || classErrors.has(c.alias)
         );
         if (brokenClass) {
-          console.log(
-            `  controller ${p.route}: skipped — the class ${brokenClass.fqcn} did not compile: ${
-              classErrors.get(brokenClass.fqcn) || classErrors.get(brokenClass.alias)
-            }`
-          );
+          const reason = `the class ${brokenClass.fqcn} did not compile: ${
+            classErrors.get(brokenClass.fqcn) || classErrors.get(brokenClass.alias)
+          }`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         const ambiguous = (p.meta.classes || []).find((c) => (aliasToFqcns.get(c.alias) || new Set()).size > 1);
         if (ambiguous) {
-          console.log(`  controller ${p.route}: skipped — model alias "${ambiguous.alias}" is ambiguous between namespaces`);
+          const reason = `model alias "${ambiguous.alias}" is ambiguous between namespaces`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         // A JOB class is not a model: `Job::dispatch()` is a queue push the
@@ -3146,11 +3244,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           // class that cannot be autoloaded). "is not a usable Eloquent model"
           // alone reads as "make it a model and it compiles", which is wrong
           // for a service/facade — the route needs a port either way.
-          console.log(
-            `  controller ${p.route}: skipped — ${badModel.fqcn} could not be compiled (${
-              d && d.error ? d.error : 'the model dump rejected it'
-            }); write a port for this route`
-          );
+          const reason = `${badModel.fqcn} could not be compiled (${
+            d && d.error ? d.error : 'the model dump rejected it'
+          }); write a port for this route`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         // FormRequest rules for this route (by FQCN). A class-typed parameter
@@ -3213,6 +3311,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         }
         if (formRequestError) {
           console.log(`  controller ${p.route}: skipped — ${formRequestError}`);
+          recordControllerSkip(p, formRequestError);
           continue;
         }
         // Class constants for this route (by alias — the transpiler resolves the
@@ -3232,7 +3331,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           constants[c.alias] = dumped.constants || {};
         }
         if (constantError) {
-          console.log(`  controller ${p.route}: skipped — class constant ${constantError}`);
+          const reason = `class constant ${constantError}`;
+          console.log(`  controller ${p.route}: skipped — ${reason}`);
+          recordControllerSkip(p, reason);
           continue;
         }
         // The views the route renders + the ones they depend on (the layout).
@@ -3268,11 +3369,11 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           );
           const reason = viewSkipReason.get(missingView);
           const why = reason ? ' — ' + reason : '';
-          console.log(
-            mailableOf
-              ? `  controller ${p.route}: skipped — the view "${missingView}" of the mailable ${mailableOf} did not compile${why}`
-              : `  controller ${p.route}: skipped — view "${missingView}" did not compile${why}`
-          );
+          const skipReason = mailableOf
+            ? `the view "${missingView}" of the mailable ${mailableOf} did not compile${why}`
+            : `view "${missingView}" did not compile${why}`;
+          console.log(`  controller ${p.route}: skipped — ${skipReason}`);
+          recordControllerSkip(p, skipReason);
           continue;
         }
         // The CORS paths (HandleCors): the compiled worker does not add the CORS
@@ -3280,11 +3381,9 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         // without the headers would break the browser's CORS).
         const corsPath = corsPathFor(p.route);
         if (corsPath) {
-          console.log(
-            `  controller ${p.route}: skipped — the app configures CORS for "${corsPath}" and the ` +
-              'compiled worker does not add the CORS headers — remove the CORS config (config/cors.php) ' +
-              'or answer the preflight on the platform'
-          );
+          const skipReason = `the app configures CORS for "${corsPath}" and the compiled worker does not add the CORS headers — remove the CORS config (config/cors.php) or answer the preflight on the platform`;
+          console.log(`  controller ${p.route}: skipped — ${skipReason}`);
+          recordControllerSkip(p, skipReason);
           continue;
         }
         const isExtraVerb = extraVerbsFor(p.route).includes(p.verb);
@@ -3411,6 +3510,7 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
         } catch (e) {
           const detail = formatControllerError(e);
           console.log(`  controller ${p.route}: skipped — ${detail}`);
+          recordControllerSkip(p, detail);
           // The upload: the operator needs to know that the edge has no
           // multipart parser and what to do about it (an object store — R2
           // asks for a credit card; the free path is the D1 blob store — or
@@ -4092,7 +4192,17 @@ for (let i = needsPort.length - 1; i >= 0; i--) {
   if (redirectMap.has(needsPort[i].route)) needsPort.splice(i, 1);
 }
 const runtimeBinding = needsPort.filter((n) => isRuntimeBindingError(n.reason));
-const blocked = (needsPort.length - runtimeBinding.length) > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0 || uncompiledExtraNonPost.length > 0;
+const blocked = (needsPort.length - runtimeBinding.length) > 0 || partials.length > 0 || unknown.length > 0 || stubPorts.length > 0 || uncompiledExtraNonPost.length > 0 || hasBlockingControllerSkips(failedControllers);
+// `needsPort` and `partials` already report a route+verb as a BLOCK finding;
+// `CONTROLLER FAILED` must not print (or turn into a finding) a second row for
+// the same route+verb. Merging duplicate controller skips also keeps the
+// reason list complete without repeating rows. The original array still drives
+// the verdict and --scaffold, so a real skip can never be lost from those.
+const reportedFailedControllers = dedupeControllerSkips(failedControllers, {
+  needsPort,
+  partials,
+  mainVerbFor,
+});
 
 if (snapshots.length) console.log(`• auto-snapshots (${snapshots.length}): ${snapshots.join(', ')}`);
 for (const p of partials)
@@ -4100,6 +4210,7 @@ for (const p of partials)
 for (const x of uncompiledExtraNonPost)
   console.log(`  WARN ${x.route}: ${x.verb} needs a port (only GET/POST handlers are compiled)`);
 for (const n of needsPort) console.log(`  UNHANDLED ${n.route}: ${n.reason}`);
+for (const f of reportedFailedControllers) console.log(`  CONTROLLER FAILED ${f.verb} ${f.route}: ${f.reason}`);
 if (needsPort.length)
   console.log('  -> add a port, a "static" entry, or "ignore" (with a reason) in registry.json');
 if (unknown.length) console.log(`  registry entries not found in route:list: ${unknown.join(', ')}`);
@@ -4134,6 +4245,7 @@ for (const p of partials) note({ route: p.route, area: 'route', severity: BLOCK,
 for (const x of uncompiledExtraNonPost) note({ route: x.route, area: 'route', severity: BLOCK, cause: `${x.verb} has no handler (only GET/POST/PUT/PATCH/DELETE compile)`, fix: `write a port for ${x.verb} ${x.route}, or ignore the route with a reason` });
 for (const u of unknown) note({ route: u, area: 'registry', severity: BLOCK, cause: 'registry.json names this route, but `artisan route:list` has no such route', fix: 'fix the path in registry.json (it must match route:list exactly), or delete the entry' });
 for (const ss of stubPorts) note({ route: null, area: 'route', severity: BLOCK, cause: `the port ${relPath(join(portsSrc, ss))} is still the scaffold stub (it answers 501)`, fix: 'implement the handler against env.DB (or another binding), then re-run the build' });
+for (const f of reportedFailedControllers) note(controllerSkipFinding(f));
 // An `ignore` is a decision, not a failure: it ships, so it is reported as a
 // declared gap and never changes a green build into a red one.
 for (const [route, reason] of ignoreMap) note({ route, area: 'route', severity: DECLARED, cause: `ignored -- ${reason || 'no reason given'}`, fix: reason ? null : 'registry.json: give the "ignore" entry a reason (the next reader needs it)' });
@@ -4172,16 +4284,19 @@ for (const [route, reason] of ignoreMap) note({ route, area: 'route', severity: 
 
 // ---------- 7. scaffold stubs for routes that need a port ----------
 
-if (scaffold && needsPort.length) {
-  const entries = needsPort.map(({ route }) => ({ route, slug: slugifyRoute(route) }));
-  for (const { route, slug } of entries) {
+if (scaffold && (needsPort.length || failedControllers.length)) {
+  const entries = controllerStubEntries(needsPort, failedControllers, {
+    slugifyRoute,
+    extraVerbsFor: (route) => extraVerbsFor(route).map((v) => String(v).toUpperCase()),
+  });
+  for (const { route, verb, slug } of entries) {
     const stubDir = isNpmMode ? (portsSrc !== join(pkgDir, 'src/ports') ? portsSrc : join(appDir, 'src/ports')) : join(pkgDir, 'src/ports');
     mkdirSync(stubDir, { recursive: true });
     const stub = join(stubDir, `${slug}.mjs`);
     if (existsSync(stub)) {
       console.log(`  scaffold: ${relative(appDir, stub)} already exists`);
     } else {
-      writeFileSync(stub, buildStubSource(route));
+      writeFileSync(stub, buildStubSource(route, verb));
       console.log(`  scaffolded ${relative(appDir, stub)} (${STUB_MARKER} — build --strict fails until implemented)`);
     }
   }
@@ -4196,7 +4311,7 @@ if (scaffold && needsPort.length) {
   }
 }
 if (blocked && !scaffold) {
-  if (needsPort.length) console.log('  (tip: re-run with --scaffold to generate + register port stubs)');
+  if (needsPort.length || failedControllers.length) console.log('  (tip: re-run with --scaffold to generate + register port stubs)');
   else if (stubPorts.length) console.log('  (tip: implement the stub port(s), then re-run)');
 }
 if (strict && blocked) {

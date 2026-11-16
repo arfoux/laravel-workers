@@ -16,22 +16,32 @@
 // Usage: node tools/pack-gate.mjs [--app <dir>]
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve, relative, sep } from 'node:path';
+import { dirname, join, resolve, relative, sep, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The two files the installed package RUNS: the build, and the guided CLI. Every
-// module they load is discovered by walking the import graph from here, so
-// adding an import to `build.mjs` moves it into the gate automatically — a
-// hand-written list can only ever check what someone remembered to list, and
-// this gate exists to catch the module somebody FORGOT (audit #804: the old
-// 23-entry list was not closed under the graph — 38 of the 61 modules the build
-// reaches were unlisted).
+// The files the installed package RUNS: the build, and the guided CLI. Relative
+// imports, literal `join(pkgDir, ...)` calls and PHP `__DIR__` requires are
+// followed automatically, so adding an import to `build.mjs` moves it into the
+// gate — the lists below exist for the edges the walker cannot see (audit #804:
+// the old 23-entry list was not closed under the graph — 38 of the 61 modules
+// the build reaches were unlisted).
 export const ENTRY = ['build.mjs', 'bin/laravel-workers.mjs'];
 
-// Shipped although no import or literal path in ENTRY reaches them: the release
-// workflow runs this one against a freshly generated app. Spelled out rather
-// than derived, because "reachable from build.mjs" is exactly what cannot see it.
-export const UNREACHABLE = ['shadow/fixture-app.mjs'];
+// Shipped although the import-graph walk cannot see them: `bin/laravel-workers.mjs`
+// dispatches the CLI tools with `runTool('tools/deploy.mjs', ...)` (and friends),
+// `tools/cloud-account.mjs` is imported only from those CLI tools, and `shadow/run.mjs`
+// is launched as a child process. `shadow/fixture-app.mjs` is the release workflow's
+// freshly generated app. Spelled out rather than derived, because "reachable from
+// build.mjs" is exactly what cannot see them.
+export const UNREACHABLE = [
+  'shadow/fixture-app.mjs',
+  'shadow/run.mjs',
+  'tools/cloud-account.mjs',
+  'tools/deploy.mjs',
+  'tools/doctor.mjs',
+  'tools/init.mjs',
+  'tools/status.mjs',
+];
 
 // Files the published README links to. A dead link in the npm page is a
 // documentation bug the same way a missing module is a build bug.
@@ -42,7 +52,8 @@ export const UNREACHABLE = ['shadow/fixture-app.mjs'];
 // never linked them, so requiring them here demanded a file no reader could
 // reach, and `docs/.npmignore` (`archive/`) narrows the `docs` entry in
 // package.json `files` (`npm pack --dry-run` lists zero `docs/archive` paths).
-// This list is about links that must not rot.
+// This list is the floor; brokenDocLinks() below checks every local link in
+// every shipped Markdown file, not just the ones remembered here.
 export const REQUIRED_DOCS = [
   'README.md',
   'CHANGELOG.md',
@@ -66,6 +77,9 @@ export const REQUIRED_DOCS = [
   'docs/INTERNALS.md',
   'docs/DEVELOPING.md',
   'docs/EVIDENCE.md',
+  // Copy source for a real app's registry.json: docs/PACKAGE-PORTS.md and
+  // docs/ENV-SECRETS.md both tell installed users to copy it, so it must ship.
+  'registry.example.json',
 ];
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -94,6 +108,11 @@ const PROBE_GUARD = /(?:existsSync|statSync|lstatSync)\(\s*$/;
 // way — a `files` entry that dropped one of them breaks the build the same as a
 // missing module does.
 const PHP_REQUIRE = /(?:require|include)(?:_once)?\s*\(?\s*__DIR__\s*\.\s*['"]([^'"]+)['"]/g;
+// Local Markdown links, images included. npm renders links in a tarball's
+// Markdown against the package root; GitHub renders them against the linking
+// file's directory. This repo's docs use both spellings, so both are accepted.
+const MD_LINK = /!?\[[^\]]*\]\(([^)]+)\)/g;
+const EXTERNAL_LINK = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i;
 
 const toPosix = (p) => p.split(sep).join('/');
 
@@ -167,6 +186,50 @@ export function runtimeFiles(root, entries = ENTRY) {
   return [...new Set([...modules, ...assets])].sort();
 }
 
+/** Local link targets in a Markdown source: no fragments, queries or externals. */
+export function markdownLinks(source) {
+  const targets = [];
+  for (const match of source.matchAll(MD_LINK)) {
+    let target = match[1].trim().replace(/^<|>$/g, '').split(/\s+["']/)[0].trim();
+    if (EXTERNAL_LINK.test(target)) continue;
+    target = target.split('#')[0].split('?')[0];
+    if (!target) continue;
+    try {
+      target = decodeURIComponent(target);
+    } catch {
+      // A literal `%` that is not an escape stays literal.
+    }
+    targets.push(target);
+  }
+  return targets;
+}
+
+/**
+ * Links in shipped Markdown whose target the packed file set does not carry.
+ * A target resolves when it exists relative to the linking file (GitHub) OR
+ * relative to the package root (npm's rendering of a tarball's Markdown).
+ */
+export function brokenDocLinks(root, mdFiles, shipped) {
+  const broken = [];
+  for (const file of mdFiles) {
+    let source;
+    try {
+      source = readFileSync(join(root, file), 'utf8');
+    } catch {
+      continue; // an absent doc is REQUIRED_DOCS' job, not this check's
+    }
+    for (const target of markdownLinks(source)) {
+      const candidates = [
+        posix.normalize(posix.join(posix.dirname(file), target)),
+        posix.normalize(posix.join('.', target)),
+      ];
+      if (candidates.some((c) => !c.startsWith('..') && shipped.has(c))) continue;
+      broken.push(`${file} -> ${target}`);
+    }
+  }
+  return broken.sort();
+}
+
 function packFiles(cwd) {
   const bin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   // `shell: true` on Windows: npm is a .cmd shim and Node refuses to spawn it
@@ -215,10 +278,13 @@ if (isMain) {
   const required = [...modules, ...UNREACHABLE].sort();
   const missing = required.filter((f) => !shipped.has(f));
   const missingDocs = REQUIRED_DOCS.filter((f) => !shipped.has(f));
-  if (missing.length || missingDocs.length) {
+  const mdFiles = [...shipped].filter((f) => f.toLowerCase().endsWith('.md'));
+  const brokenLinks = brokenDocLinks(repoRoot, mdFiles, shipped);
+  if (missing.length || missingDocs.length || brokenLinks.length) {
     console.error('pack-gate FAILED: the tarball does not ship:');
     for (const f of missing) console.error(`  - ${f} (loaded at runtime)`);
     for (const f of missingDocs) console.error(`  - ${f} (linked from README)`);
+    for (const link of brokenLinks) console.error(`  - ${link} (local Markdown link, target not shipped)`);
     console.error('Add them to package.json "files" (or drop the require / the link).');
     process.exit(1);
   }
@@ -226,6 +292,6 @@ if (isMain) {
   console.log(
     `pack-gate OK: ${modules.length} runtime files reached from ${ENTRY.join(' + ')} ` +
       `(+${UNREACHABLE.length} explicit) + ${REQUIRED_DOCS.length} README-linked docs shipped ` +
-      `(${shipped.size} files in the tarball)`,
+      `(${shipped.size} files in the tarball; local links checked in ${mdFiles.length} Markdown files)`,
   );
 }

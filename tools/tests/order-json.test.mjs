@@ -66,6 +66,23 @@ test('configModuleSource re-attaches the marker when the module loads', async ()
 test('a config value that legitimately contains the transport key survives', () => {
   const dump = { evil: { '__lw$o': 'not-a-wrapper', v: 1 }, ok: 2 };
   const back = deserializeOrdered(serializeOrdered(dump));
-  assert.deepEqual(back.evil, { '__lw$o': 'not-a-wrapper', v: 1 });
+  assert.equal(Object.getPrototypeOf(back.evil), null); // decoded objects cannot be polluted
+  assert.deepEqual(JSON.parse(JSON.stringify(back.evil)), { '__lw$o': 'not-a-wrapper', v: 1 });
   assert.equal(back.ok, 2);
+});
+
+test('prototype-named config keys are rejected before they reach config.generated.mjs', () => {
+  // JSON.parse creates a real own `__proto__` property; assigning it to a
+  // normal `{}` (or emitting it in an object literal) would change the
+  // prototype of the generated config instead of storing data.
+  const poisoned = JSON.parse('{"__proto__": {"polluted": true}, "ok": 1}');
+  assert.throws(() => serializeOrdered(poisoned), /reserved key "__proto__"/);
+  assert.throws(() => configModuleSource(poisoned), /reserved key "__proto__"/);
+  assert.throws(() => deserializeOrdered('{"__proto__":{"polluted":true}}'), /reserved key "__proto__"/);
+  assert.equal({}.polluted, undefined);
+
+  const nested = JSON.parse('{"groups":{"users":{"constructor":"x"}}}');
+  assert.throws(() => configModuleSource(nested), /reserved key "constructor"/);
+  const arr = JSON.parse('{"list":[{"prototype":1}]}');
+  assert.throws(() => serializeOrdered(arr), /reserved key "prototype"/);
 });

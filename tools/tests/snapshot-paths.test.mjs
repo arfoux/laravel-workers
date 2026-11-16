@@ -6,7 +6,7 @@
 // `/feed/` spelling of an XML feed).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { snapshotFiles } from '../snapshot-paths.mjs';
+import { snapshotFiles, findSnapshotCollisions, assertNoSnapshotCollisions } from '../snapshot-paths.mjs';
 
 test('snapshot-paths: the root is one file', () => {
   assert.deepEqual(snapshotFiles('/'), ['index.html']);
@@ -42,4 +42,69 @@ test('snapshot-paths: every name is relative, unique and non-empty', () => {
       assert.ok(file.length > 0 && !file.startsWith('/') && !file.includes('//'), `bad name ${file}`);
     }
   }
+});
+
+test('snapshot-paths: two distinct routes claiming one output file are reported with both claimants', () => {
+  const claims = [
+    { route: '/a', files: snapshotFiles('/a', 'shared.html'), label: 'static route /a' },
+    { route: '/b', files: snapshotFiles('/b', 'shared.html'), label: 'static route /b' },
+  ];
+  const collisions = findSnapshotCollisions(claims);
+  assert.deepEqual(collisions.map((c) => c.file).sort(), ['shared.html', 'shared/index.html']);
+  for (const collision of collisions) {
+    assert.deepEqual(collision.claimants, ['static route /a', 'static route /b']);
+  }
+});
+
+test('snapshot-paths: /index and /404 collide with the reserved root and edge 404 writers', () => {
+  const collisions = findSnapshotCollisions([
+    { route: '/', files: snapshotFiles('/'), label: 'snapshot /' },
+    { route: '/index', files: snapshotFiles('/index'), label: 'snapshot /index' },
+    { route: '/404', files: snapshotFiles('/404'), label: 'snapshot /404' },
+  ]);
+  assert.deepEqual(collisions.map((c) => c.file), ['index.html', '404.html']);
+  const root = collisions.find((c) => c.file === 'index.html');
+  assert.ok(root.claimants.includes('snapshot /index'));
+  assert.ok(root.claimants.some((c) => /root route/.test(c)));
+  const notFound = collisions.find((c) => c.file === '404.html');
+  assert.deepEqual(notFound.claimants, ['snapshot /404', 'the edge 404 page writer']);
+});
+
+test('snapshot-paths: an operator-named 404.html is refused too', () => {
+  const collisions = findSnapshotCollisions([
+    { route: '/oops', files: snapshotFiles('/oops', '404.html'), label: 'static route /oops' },
+  ]);
+  assert.equal(collisions.length, 1);
+  assert.equal(collisions[0].file, '404.html');
+  assert.deepEqual(collisions[0].claimants, ['static route /oops', 'the edge 404 page writer']);
+});
+
+test('snapshot-paths: the guard throws a message naming both claimants and the file', () => {
+  const claims = [
+    { route: '/', files: snapshotFiles('/'), label: 'static route /' },
+    { route: '/index', files: snapshotFiles('/index'), label: 'static route /index' },
+  ];
+  assert.throws(
+    () => assertNoSnapshotCollisions(claims),
+    (err) => {
+      assert.match(err.message, /prerender output-file collision/);
+      assert.match(err.message, /public\/index\.html/);
+      assert.match(err.message, /static route \/index/);
+      assert.match(err.message, /root route \(\/\)/);
+      return true;
+    }
+  );
+});
+
+test('snapshot-paths: the guard leaves one writer per file alone', () => {
+  const claims = [
+    { route: '/', files: snapshotFiles('/') },
+    { route: '/', files: snapshotFiles('/', 'index.html') },
+    { route: '/about', files: snapshotFiles('/about') },
+    { route: '/about/', files: snapshotFiles('/about/'), label: 'snapshot /about/' },
+    { route: '/docs/guide', files: snapshotFiles('/docs/guide', 'docs/guide/index.html') },
+    { route: '/feed', files: snapshotFiles('/feed', 'feed.xml') },
+  ];
+  assert.deepEqual(findSnapshotCollisions(claims), []);
+  assert.doesNotThrow(() => assertNoSnapshotCollisions(claims));
 });

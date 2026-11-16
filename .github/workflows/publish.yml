@@ -22,6 +22,11 @@ concurrency:
 # version, so the two never disagree.
 env:
   LARAVEL_SKELETON: laravel/laravel:13.11.0
+  # `npm@latest` changed the publisher between releases; v0.5.1 was published
+  # with npm 12.2.2. Pin that exact version so registry auth/provenance and the
+  # bytes in the tarball stay reproducible. Bump deliberately when the next
+  # release is published with a different npm version.
+  PUBLISH_NPM_VERSION: 12.2.2
 
 # Release = a tag, not a version edit: `npm version patch` (omit
 # --no-git-tag-version) writes package.json, commits and creates the `v*` tag in
@@ -63,7 +68,7 @@ jobs:
           cp .env.example .env
           php artisan key:generate
           php artisan migrate --force
-      - run: npm install
+      - run: npm ci
       - name: Shadow — real PHP app vs the compiled worker (byte-wise diff)
         run: node shadow/run.mjs --app shadow-app --scenarios shadow/scenarios/fresh-app.mjs --build
 
@@ -80,8 +85,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install
-      - run: npm --prefix compiler install
+      - run: npm ci
+      - run: npm --prefix compiler ci
       # The same script CI runs on every push (package.json → `gate:ci`): the
       # suite, the corpus, the docs gate, the benchmarks, the shipped sources
       # parsing, and the tarball gate. Writing the steps out again per publish
@@ -89,8 +94,114 @@ jobs:
       - name: Verify (npm run gate:ci)
         run: npm run gate:ci
 
+  # `gate:ci` checks the import graph, not the artifact a user installs. This
+  # job walks the consumer path: pack the repo, install the tarball in a real
+  # Laravel app, strict-build it, then run the pack-smoke and runtime smoke
+  # checks ci.yml's e2e job owns. Publishing depends on it, so a tarball that
+  # cannot build cannot ship even if the unit gates pass.
+  tarball:
+    name: real tarball install + strict build + runtime smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, sqlite3
+      - name: Create a fresh Laravel app (the consumer)
+        run: composer create-project "$LARAVEL_SKELETON" tarball-app --no-interaction --prefer-dist
+      - name: Prepare the app
+        run: |
+          cd tarball-app
+          touch database/database.sqlite
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force
+      - name: Build the app's assets (the build reads the Vite manifest)
+        run: |
+          cd tarball-app
+          # A fresh Laravel skeleton ships no package-lock.json, so npm ci
+          # cannot be used for the APP's own dependencies here.
+          npm install
+          npm run build
+      - run: npm ci
+      - name: Pack the published artifact
+        run: npm pack --pack-destination "$GITHUB_WORKSPACE"
+      - name: Gate — the tarball ships every file the build needs
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          for f in \
+            compiler/blade.mjs \
+            build.mjs \
+            tools/routes-dump.mjs tools/config-dump.mjs tools/schedule-dump.mjs \
+            tools/event-dump.mjs tools/class-dump.mjs tools/constants-dump.mjs \
+            tools/model-dump.mjs tools/policy-dump.mjs \
+            tools/static.mjs tools/php-runtime.mjs; do
+            tar tzf laravel-workers-*.tgz | grep -qx "package/$f" || {
+              echo "tarball gate FAILED: $f is missing from the packed artifact"; exit 1; }
+          done
+          echo "tarball gate OK: all build-time modules are shipped"
+      - name: Zero-config strict build with laravel-workers (from the tarball)
+        run: |
+          cd tarball-app
+          # The *tarball*, not the workspace: this is the artifact a user installs.
+          npm i --no-save --no-package-lock "$GITHUB_WORKSPACE"/laravel-workers-*.tgz
+          npx laravel-workers build
+      - name: The packaging gate (the installed tarball builds the app)
+        run: node tools/pack-smoke.mjs --app tarball-app
+      - name: Assert the dist artifact
+        run: |
+          test -f tarball-app/dist/src/worker.mjs
+          test -f tarball-app/dist/src/routes.generated.mjs
+          test -f tarball-app/dist/public/index.html
+          test -f tarball-app/dist/public/404.html
+          test -f tarball-app/dist/schema.json
+          test -f tarball-app/dist/schema.sql
+          grep -q '"not_found_handling": "404-page"' tarball-app/wrangler.jsonc
+      - name: The Worker entry obeys the runtime's handler contract
+        env:
+          LW_LARAVEL_APP: ${{ github.workspace }}/tarball-app
+        run: |
+          test -f tarball-app/dist/kernel/http.mjs
+          node tools/oracle-ran.mjs kernel/tests/worker-entry.test.mjs
+      - name: Runtime smoke (worker boots; / and /health answer 200)
+        run: |
+          cd tarball-app
+          cat > wrangler.jsonc <<'JSONC'
+          { "name": "tarball-app", "main": "./dist/src/worker.mjs", "compatibility_date": "2026-10-01",
+            "assets": { "directory": "./dist/public", "binding": "ASSETS", "not_found_handling": "404-page" },
+            "d1_databases": [ { "binding": "DB", "database_name": "tarball-app", "database_id": "placeholder" } ] }
+          JSONC
+          npx --yes wrangler@4.151.1 dev --port 8792 --ip 127.0.0.1 > dev.log 2>&1 &
+          code=000
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8792/health || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          echo "health=$code"
+          if [ "$code" != "200" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
+          root=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8792/)
+          echo "root=$root"
+          if [ "$root" != "200" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
+          nf=$(curl -s -o /tmp/nf.html -w '%{http_code}' --max-time 10 http://127.0.0.1:8792/nonexistent-route-for-404)
+          echo "unknown-path=$nf bytes=$(wc -c < /tmp/nf.html)"
+          if [ "$nf" != "404" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
+          if ! cmp -s /tmp/nf.html dist/public/404.html; then
+            echo "the unknown-path 404 body is not the app's 404 page:"
+            wc -c /tmp/nf.html dist/public/404.html
+            exit 1
+          fi
+          kill %1 2>/dev/null || true
+          pkill -f workerd 2>/dev/null || true
+
   publish:
-    needs: [shadow, verify]
+    needs: [shadow, verify, tarball]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -111,10 +222,10 @@ jobs:
           cache: npm
       - run: npm config delete '//registry.npmjs.org/:_authToken'
         continue-on-error: true
-      - run: npm install -g npm@latest
+      - run: npm install -g "npm@${PUBLISH_NPM_VERSION}"
       - run: npm publish --provenance --access public
   publish-gpr:
-    needs: [shadow, verify]
+    needs: [shadow, verify, tarball]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -123,13 +234,20 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+      - name: The tag must name the version package.json carries
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json ($want) — retag the release commit" >&2
+            exit 1
+          fi
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
           registry-url: https://npm.pkg.github.com
           scope: '@arfoux'
-      - run: npm install -g npm@latest
+      - run: npm install -g "npm@${PUBLISH_NPM_VERSION}"
       - name: Publish to GitHub Packages as scoped package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,9 +261,9 @@ jobs:
           npm pkg set name=@arfoux/laravel-workers
           npm publish --registry=https://npm.pkg.github.com --access public
   release:
-    # A GitHub release must not appear unless npm actually published the tag —
-    # without this the Release could go green while `npm publish` failed.
-    needs: publish
+    # A GitHub release must not appear unless BOTH registries published the tag —
+    # without both `needs` the Release could go green while npm or GPR failed.
+    needs: [publish, publish-gpr]
     runs-on: ubuntu-latest
     permissions:
       contents: write

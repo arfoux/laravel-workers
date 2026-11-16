@@ -163,12 +163,24 @@ test('the server-only commands are refused loudly', () => {
   // A D1 row is not a Redis server: pub/sub, the streams, Lua and the
   // pipelines/transactions cannot be reproduced, so they throw with a reason
   // instead of returning a plausible empty answer.
-  for (const command of ['publish', 'subscribe', 'xadd', 'eval', 'pipeline']) {
+  // The exact command name and reason are the contract: a generic "unsupported"
+  // answer would hide WHICH server feature is missing and what to use instead.
+  const reasons = {
+    publish: ['PUBLISH', 'D1 has no pub/sub channels; use Cloudflare Queues or Durable Objects to fan out.'],
+    subscribe: ['SUBSCRIBE', 'D1 cannot hold a long-lived subscription socket; use Cloudflare Queues or Durable Objects.'],
+    xadd: ['XADD', 'D1 has no stream type; use a table with an autoincrement column or Cloudflare Queues.'],
+    eval: ['EVAL', 'there is no Lua runtime on the edge for this store; express the operation as SQL.'],
+    pipeline: ['PIPELINE', 'D1 has no MULTI/pipeline; batch the statements explicitly with db.batch().'],
+  };
+  for (const [command, [name, reason]] of Object.entries(reasons)) {
     assert.throws(
       () => store[command]('a'),
       (err) => {
         assert.ok(err instanceof RedisUnsupportedError, command + ' must throw RedisUnsupportedError');
-        assert.ok(err.message.length > 20, command + ' must carry a reason');
+        assert.equal(err.name, 'RedisUnsupportedError');
+        assert.equal(err.code, 'LW_REDIS_UNSUPPORTED');
+        assert.equal(err.command, name);
+        assert.equal(err.message, `Redis ${name} is not supported by the lw_redis edge store: ${reason}`);
         return true;
       },
       command

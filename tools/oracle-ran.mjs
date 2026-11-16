@@ -98,9 +98,10 @@ if (run.status !== 0 && problems.length === 0) {
   problems.push(`node --test exited ${run.status === null ? 'on a signal' : run.status}`);
 }
 
-const tail = out.split('\n').slice(-25).join('\n');
+const outputLines = out.split('\n');
+const tail = outputLines.slice(-25).join('\n');
 if (problems.length) {
-  process.stdout.write(`${tail}\n`);
+  process.stdout.write(`${out}\n`);
   process.stderr.write(`oracle-ran FAILED: ${problems.join('; ')}\n`);
   process.exit(1);
 }

@@ -125,7 +125,7 @@ jobs:
       # Same verdict in the job summary; no PR comment on a merge.
       - name: Verdict (summary)
         if: always()
-        uses: arfoux/laravel-workers/action/verdict@v1
+        uses: arfoux/laravel-workers/action/verdict@v0.5.1
         with:
           log: ${{ inputs.working-directory }}/deploy.log
           comment: 'false'

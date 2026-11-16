@@ -99,10 +99,7 @@ const DIVERGENCES = {
     expectStatus: 200,
     why: 'PHP custom middleware emits only custom_middleware; the compiled middleware port adds method/note fields and CORS + x-showcase-middleware response headers',
   },
-  '/misc/collection': {
-    expectStatus: 200,
-    why: "the compiled controller stores PHP string keys ('k3','k1','k2') as properties on a JS array; array_values() drops them and returns [] where PHP returns [3,1,2]",
-  },
+
   '/misc/http': {
     why: "PHP's outbound HTTP call fails in the CLI oracle and Laravel renders a 500 page; the compiled HTTP port answers 200 JSON 'unconfigured' because no HTTP_UPSTREAM/allowlist is bound",
   },
@@ -151,15 +148,12 @@ const DIVERGENCES = {
     expectStatus: 200,
     why: 'prerendered static page carries relative internal URLs (href="/") where PHP renders absolute http://localhost URLs; build-time URL rewriting, not app output',
   },
-  '/routing': {
-    expectStatus: 200,
-    why: "compiled Route::has('routing.named') returns false although route('routing.named') resolves; PHP reports has_named true",
-  },
+
   '/site-search': {
     why: 'PHP route is an empty closure (200, empty body); the compiled search port requires the q query parameter and answers 422 when it is absent',
   },
   '/tenants/acme': {
-    why: 'PHP route is an empty closure (200, empty body); the compiled tenants port throws and answers 500 "column index out of range" for this lookup',
+    why: 'PHP route is an empty closure (200, empty body); the compiled tenants port looks the tenant up in D1 and answers 404 "tenant not found" when it is absent',
   },
 };
 

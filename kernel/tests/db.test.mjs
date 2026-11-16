@@ -256,9 +256,26 @@ test('Model save() on a new model inserts both timestamps and returns true', asy
   assert.equal(user.get('id'), 7);
 });
 
-test('DB.table alias works', () => {
-  assert.equal(typeof DB.table, 'function');
-  assert.ok(new QueryBuilder(mockDb(), 'x') instanceof QueryBuilder);
+test('DB.table alias emits the canonical builder SQL and params', () => {
+  const db = mockDb();
+  const build = (factory) =>
+    factory(db, 'users')
+      .select('id', 'name')
+      .where('active', true)
+      .whereIn('id', [3, 4])
+      .orderBy('id', 'desc')
+      .limit(2)
+      .toSql();
+  const canonical = build(table);
+  const alias = DB.table(db, 'users');
+  assert.ok(alias instanceof QueryBuilder, 'DB.table must return a real QueryBuilder');
+  const viaAlias = build(DB.table);
+  assert.deepEqual(viaAlias, canonical, 'DB.table must be the same factory as table()');
+  assert.equal(
+    viaAlias.sql,
+    'SELECT "id", "name" FROM "users" WHERE "active" = ? AND "id" IN (?, ?) ORDER BY "id" DESC LIMIT ?'
+  );
+  assert.deepEqual(viaAlias.params, [true, 3, 4, 2]);
 });
 
 test('orWhere / orWhereIn / orWhereNull render flat OR', () => {

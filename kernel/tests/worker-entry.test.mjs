@@ -56,12 +56,10 @@ test(
     );
 
     // An instrumented environment: every property the handler reads is recorded,
-    // and a D1 stub counts the statements it is asked to run.
+    // and a D1 stub answers every statement it is asked to run.
     const reads = [];
-    let prepared = 0;
     const d1 = {
       prepare() {
-        prepared += 1;
         const done = { all: async () => ({ results: [] }), run: async () => ({}), first: async () => null };
         // The kernel reaches `db.prepare(sql).run()` without binding first
         // (`ensureQueueTable`), so the statement itself has to answer: the
@@ -104,19 +102,74 @@ test(
         );
       }
     }
-
-    // When the app declares job classes, the drain reaches D1. With none it is a
-    // no-op, but the binding was still consulted (asserted above).
-    const classesPath = path.join(appRoot, 'dist', 'src', 'classes.generated.mjs');
-    if (existsSync(classesPath)) {
-      const { classes } = await import(pathToFileURL(classesPath).href);
-      const hasJobs = Object.values(classes || {}).some((c) => c && c.methods && typeof c.methods.handle === 'function');
-      if (hasJobs) {
-        assert.ok(prepared > 0, 'a drain with job classes must query D1 (the `lw_jobs` table)');
-      }
-    }
   }
 );
+
+// The Cron Trigger's drain is `src/worker.mjs drainQueue() -> rt.queueDrain()`.
+// The entry test above used to assert `prepared > 0` only INSIDE an
+// `if (hasJobs)` over the built fixture's classes, so an app without a
+// compiled job made the claim vacuous. Drive that consumer directly with an
+// unconditional compiled-job fixture instead: the SELECT, the handle() call
+// and the DELETE are all asserted without depending on the built app.
+test('queue drain: selects due lw_jobs, runs the job and deletes the row', async () => {
+  const { buildRt } = await import(
+    pathToFileURL(path.join(repoRoot, 'compiler', 'runtime', 'rt-from-context.mjs')).href
+  );
+  const statements = [];
+  const row = { id: 41, job: 'App\\Jobs\\ProbeJob', payload: '["probe"]', attempts: 0 };
+  const d1 = {
+    prepare(sql) {
+      const stmt = {
+        params: [],
+        bind(...params) {
+          this.params = params;
+          return this;
+        },
+        async all() {
+          statements.push({ sql, params: this.params });
+          return /^SELECT "id", "job", "payload", "attempts" FROM "lw_jobs"/.test(sql)
+            ? { results: [row] }
+            : { results: [] };
+        },
+        async run() {
+          statements.push({ sql, params: this.params });
+          return {};
+        },
+        async first() {
+          statements.push({ sql, params: this.params });
+          return null; // lw_jobs already exists — no CREATE TABLE expected
+        },
+      };
+      return stmt;
+    },
+  };
+  const handled = [];
+  const handlers = {
+    [row.job]: {
+      build: async (rt, args) => {
+        handled.push(args);
+        return {
+          handle: async (runtime) => {
+            assert.equal(runtime, rt, 'the compiled handle() must receive the runtime');
+          },
+        };
+      },
+    },
+  };
+  const rt = buildRt(null, { runtime: true, db: d1 });
+  const out = await rt.queueDrain(d1, handlers, 3);
+
+  assert.deepEqual(out, { ran: 1, failed: 0 }, 'a due row with a handler must run exactly once');
+  assert.deepEqual(handled, [['probe']], 'the PHP payload must reach the compiled job as its arguments');
+  const select = statements.find(
+    (s) => s.sql === 'SELECT "id", "job", "payload", "attempts" FROM "lw_jobs" WHERE "available_at" <= ? ORDER BY "id" LIMIT ?'
+  );
+  assert.ok(select, 'the drain must SELECT due jobs from lw_jobs; statements: ' + JSON.stringify(statements));
+  assert.equal(Number.isInteger(select.params[0]), true, 'the due-time bind must be whole seconds');
+  assert.deepEqual(select.params.slice(1), [3], 'the limit bind must be the drain limit');
+  const deletes = statements.filter((s) => s.sql === 'DELETE FROM "lw_jobs" WHERE "id" = ?');
+  assert.deepEqual(deletes.map((s) => s.params), [[row.id]], 'a ran row must be DELETEd from lw_jobs by id');
+});
 
 test(
   'worker entry: `POST /__lw/cron` is the trigger\'s equal — it drains the queue',

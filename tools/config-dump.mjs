@@ -328,6 +328,41 @@ for (const group of process.argv.slice(2).map((g) => g.trim()).filter(Boolean)) 
   if (!Object.prototype.hasOwnProperty.call(dump, group)) putTree(group, tree);
 }
 
+// ---------- credential keys are never published silently --------------------
+// Every key below lands in dist/src/config.generated.mjs, i.e. in the Worker
+// bundle. "Only public data belongs there" used to be an advisory comment;
+// a credential that slipped in (a declared config group carrying
+// mail.password or seal.keys) shipped with only a warning nobody had to act
+// on. Refuse by default. The operator must name an EXACT dotted key in
+// LW_ALLOW_SECRET_CONFIG_KEYS to override — no wildcards, no group names —
+// when the compiled rung genuinely reads it (build.mjs passes the two keys it
+// structurally needs: app.key and auth.hash_key).
+const DENIED_SECRET_KEYS = new Set([
+  'app.key',
+  'auth.hash_key',
+  'mail.password',
+  'seal.keys',
+]);
+const SECRET_KEY_PART = /(?:^|\.)(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|hash[_-]?key|keys?|credentials?)(?:\.|$)/i;
+const isSecretKey = (key) =>
+  DENIED_SECRET_KEYS.has(key) || (key.startsWith('translations.') ? false : SECRET_KEY_PART.test(key));
+const allowedSecrets = new Set(
+  String(process.env.LW_ALLOW_SECRET_CONFIG_KEYS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+const shippedSecrets = Object.keys(dump).filter((k) => isSecretKey(k) && !allowedSecrets.has(k));
+if (shippedSecrets.length) {
+  process.stderr.write(
+    'config-dump: refusing to embed credential-like config key(s): ' + shippedSecrets.join(', ') + '\n' +
+      '  these values would ship in dist/src/config.generated.mjs and be readable in the deployed Worker.\n' +
+      '  Keep the value in a Worker secret instead; if the compiled rung truly needs it, name the exact\n' +
+      '  key(s) in LW_ALLOW_SECRET_CONFIG_KEYS (comma-separated, no wildcards).\n'
+  );
+  process.exit(1);
+}
+
 reportDrops();
 
 // `serializeOrdered` carries each value's PHP key order (`__lwOrder`, #416);

@@ -14,8 +14,9 @@
 //
 // --plan is a read-only preview: no build, no wrangler.jsonc/state writes, no
 // D1 create/apply, no deploy. --check adds read-only Cloudflare list/count
-// calls. When stdin is a TTY the missing choices are prompted; with flags they
-// are taken verbatim (CI-safe). `--yes` skips every prompt and accepts defaults.
+// calls and is refused in mode 1 (build-only has no cloud checks). When stdin
+// is a TTY the missing choices are prompted; with flags they are taken verbatim
+// (CI-safe). `--yes` skips every prompt and accepts defaults.
 // Explicit --d1-id/--d1-auto always win over the recorded state.
 //
 // Exit codes: 2 = usage/config/state refusal; 1 = build/Cloudflare failure;
@@ -74,6 +75,23 @@ const testWrangler = testHooks ? (process.env.LW_WRANGLER_BIN || null) : null;
 function fail(msg, code = 2) {
   console.error('deploy: ' + msg);
   process.exit(code);
+}
+
+// Wrangler/PHP error text is third-party output: it can echo the very tokens
+// this CLI supplied (API tokens, DB passwords, cron secrets) into a terminal,
+// a CI log or a captured report. Redact both exact secret values present in
+// the environment and secret-shaped `key=value` / `key: value` assignments.
+const SECRET_ENV_KEY = /TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL/i;
+const SECRET_ASSIGN = /(["']?[\w.-]*(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|credentials?)[\w.-]*["']?\s*[:=]\s*)(["']?)([^\s"',;}\]]{1,200})\2/gi;
+export function redactSecrets(text) {
+  let out = String(text ?? '');
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!SECRET_ENV_KEY.test(key) || typeof value !== 'string' || value.length < 4) continue;
+    out = out.split(value).join('[REDACTED]');
+  }
+  return out
+    .replace(SECRET_ASSIGN, '$1$2[REDACTED]$2')
+    .replace(/\bBearer\s+[\w.-]{8,}/gi, 'Bearer [REDACTED]');
 }
 
 function wranglerCapture(args, opts = {}) {
@@ -178,14 +196,15 @@ const USAGE = `Usage: npx laravel-workers deploy [flags]
   --schema=apply      apply dist/schema.sql even when the D1 has tables
   --plan              show what would happen; changes nothing
                       (no build, no state/config/cloud writes; no prompts)
-  --check             with --plan: read-only account/D1 list/count verification
+  --check             with --plan in mode 2/3: read-only account/D1 list/count
+                      verification (rejected in mode 1 — no cloud checks)
   --allow-account-change
                       continue when wrangler is on a different Cloudflare account
                       than lw-state.json (clears the old URL/deploy time; D1 must
                       resolve in the new account)
-  --yes, -y           accept defaults, never prompt (schema drift and an
-                      unconfirmed account change still stop; a D1 that already
-                      has tables is skipped — pass --schema=apply to force)
+  --yes, -y           accept defaults, never prompt (schema drift, an unconfirmed
+                      account change, or a populated D1 with no recorded hash
+                      still stop; pass --skip-schema or --schema=apply)
   --help, -h          show this help
   any other --flag    forwarded to build (value included)
 
@@ -606,9 +625,9 @@ async function planAccount(state) {
 
 function listD1() {
   const res = wranglerCapture(['d1', 'list', '--json'], { cwd: appDir });
-  if (res.error) fail(`wrangler d1 list: ${res.error.message}`, 1);
+  if (res.error) fail(redactSecrets(`wrangler d1 list: ${res.error.message}`), 1);
   if (res.status !== 0) {
-    fail('wrangler d1 list failed:\n' + (res.stderr || res.stdout).slice(0, 500), 1);
+    fail(redactSecrets('wrangler d1 list failed:\n' + (res.stderr || res.stdout).slice(0, 500)), 1);
   }
   const list = parseD1ListOutput(res.stdout) ?? parseD1ListOutput(res.stderr);
   if (!list) {
@@ -636,9 +655,9 @@ async function d1Resolve(dbName, { allowCreate = true, quiet = false } = {}) {
   if (!allowCreate) return { id: null, name: dbName, action: 'create' };
 
   const created = wranglerCapture(['d1', 'create', dbName], { cwd: appDir });
-  if (created.error) fail(`wrangler d1 create: ${created.error.message}`, 1);
+  if (created.error) fail(redactSecrets(`wrangler d1 create: ${created.error.message}`), 1);
   if (created.status !== 0) {
-    fail('wrangler d1 create failed:\n' + (created.stderr || created.stdout).slice(0, 500), 1);
+    fail(redactSecrets('wrangler d1 create failed:\n' + (created.stderr || created.stdout).slice(0, 500)), 1);
   }
   let id = parseD1Id(created.stdout + '\n' + created.stderr);
   if (!id) {
@@ -718,23 +737,23 @@ function tableCountQuery(dbName, d1Id, { scratch = false } = {}) {
     }
   } catch (e) {
     if (dir) rmSync(dir, { recursive: true, force: true });
-    return { error: `could not write the D1 table-count query: ${e.message}` };
+    return { error: redactSecrets(`could not write the D1 table-count query: ${e.message}`) };
   }
 
   try {
     const res = runD1File(dbName, d1Id, sqlPath, ['--json']);
-    if (res.error) return { error: `wrangler d1 execute: ${res.error.message}` };
+    if (res.error) return { error: redactSecrets(`wrangler d1 execute: ${res.error.message}`) };
     if (res.status !== 0) {
       return {
-        error: 'could not count D1 tables; refusing to apply the schema:\n'
-          + (res.stderr || res.stdout).slice(0, 600),
+        error: redactSecrets('could not count D1 tables; refusing to apply the schema:\n'
+          + (res.stderr || res.stdout).slice(0, 600)),
       };
     }
     const count = parseTableCountOutput(res.stdout) ?? parseTableCountOutput(res.stderr);
     if (count === null) {
       return {
-        error: 'could not read the D1 table count; refusing to apply the schema:\n'
-          + (res.stderr || res.stdout).slice(0, 600),
+        error: redactSecrets('could not read the D1 table count; refusing to apply the schema:\n'
+          + (res.stderr || res.stdout).slice(0, 600)),
       };
     }
     return { count };
@@ -764,9 +783,9 @@ function d1TableCount(dbName, d1Id) {
 async function d1ApplySchema(dbName, d1Id) {
   const schemaRel = 'dist/schema.sql';
   const res = runD1File(dbName, d1Id, schemaRel);
-  if (res.error) fail(`wrangler d1 execute: ${res.error.message}`, 1);
+  if (res.error) fail(redactSecrets(`wrangler d1 execute: ${res.error.message}`), 1);
   if (res.status !== 0) {
-    fail('schema apply failed:\n' + (res.stderr || res.stdout).slice(0, 600), 1);
+    fail(redactSecrets('schema apply failed:\n' + (res.stderr || res.stdout).slice(0, 600)), 1);
   }
   console.log(`→ schema ${schemaRel} applied to "${dbName}"`);
 }
@@ -798,9 +817,9 @@ async function doDeploy() {
     args.push('--tag', tag, '--message', `${sourceLabel(source)} · laravel-workers ${toolVersion || '?'}`);
   }
   const res = wranglerCapture(args, { cwd: appDir });
-  if (res.error) fail(`wrangler deploy: ${res.error.message}`, 1);
+  if (res.error) fail(redactSecrets(`wrangler deploy: ${res.error.message}`), 1);
   if (res.status !== 0) {
-    fail('wrangler deploy failed:\n' + (res.stderr || res.stdout).slice(0, 800), 1);
+    fail(redactSecrets('wrangler deploy failed:\n' + (res.stderr || res.stdout).slice(0, 800)), 1);
   }
   const out = res.stdout + res.stderr;
   const url = out.match(/https:\/\/[a-z0-9][a-z0-9.-]*\.workers\.dev/i);
@@ -1289,6 +1308,10 @@ async function main() {
   }
   if (mode === 1 && allowAccountChange) {
     fail('--allow-account-change requires --mode 2 or 3', 2);
+  }
+
+  if (check && mode < 2) {
+    fail('--check requires --mode 2 or 3 (or a D1 flag implying mode 2); mode 1 is build-only and has no cloud checks', 2);
   }
 
   // --- 2. worker name (mode 2/3) ------------------------------------------

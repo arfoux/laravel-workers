@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const { runtimeFiles } = await import('../pack-gate.mjs');
+const { runtimeFiles, markdownLinks, brokenDocLinks } = await import('../pack-gate.mjs');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -126,4 +126,37 @@ test('the walk over this repo reaches the build\'s deep dependencies', () => {
   // The walk reports paths, not guesses: everything it names exists in the repo.
   const invented = [...files].filter((f) => !existsSync(join(repoRoot, f)));
   assert.deepEqual(invented, [], 'the walk must not invent paths that are not there');
+});
+
+test('shipped Markdown local links resolve against the packed file set', () => {
+  const { root, outside } = fixture();
+  try {
+    assert.deepEqual(
+      markdownLinks('[a](./x.md) [b](https://e/x) [c](#top) ![i](p.png) [d](y.md "title")'),
+      ['./x.md', 'p.png', 'y.md'],
+    );
+    write(root, 'docs/other.md', 'other\n');
+    write(root, 'docs/img.png', '');
+    write(root, 'docs/good.md', [
+      '[file-relative](other.md)',
+      '[npm-root](docs/other.md)',
+      '[image](../docs/img.png)',
+      '[anchor](#section)',
+      '[external](https://example.com/x.md)',
+      '[title](other.md "a title")',
+    ].join(' '));
+    const shipped = new Set(['docs/good.md', 'docs/other.md', 'docs/img.png']);
+    assert.deepEqual(brokenDocLinks(root, ['docs/good.md'], shipped), []);
+
+    // A target the tarball does not carry is named with its linking file.
+    write(root, 'docs/good.md', 'see [broken](missing.md) and [good](other.md)');
+    assert.deepEqual(brokenDocLinks(root, ['docs/good.md'], shipped), [
+      'docs/good.md -> missing.md',
+    ]);
+    // Fragments and queries are not part of the filename to ship.
+    write(root, 'docs/good.md', '[ok](other.md#section?x=1)');
+    assert.deepEqual(brokenDocLinks(root, ['docs/good.md'], shipped), []);
+  } finally {
+    clean(root, outside);
+  }
 });

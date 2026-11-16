@@ -14,15 +14,35 @@
 import { GENERATED_BANNER } from './generated.mjs';
 
 const RESERVED = '__lw$o';
+// A config key named `__proto__` is not data in a JS object literal or in an
+// assignment to `{}`: it changes the prototype. Reject the three prototype
+// names at every boundary so neither the JSON transport nor the generated
+// module can carry one into the worker's config.
+const PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function assertSafeKeys(value, path = 'config') {
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertSafeKeys(v, `${path}[${i}]`));
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  for (const key of Object.keys(value)) {
+    if (PROTOTYPE_KEYS.has(key)) {
+      throw new Error(`order-json: reserved key "${key}" at ${path}.${key} cannot be emitted to config.generated.mjs`);
+    }
+    assertSafeKeys(value[key], `${path}.${key}`);
+  }
+}
 
 /** JSON text of `value` with every `__lwOrder` marker carried explicitly. */
 export function serializeOrdered(value) {
+  assertSafeKeys(value);
   const enc = (v) => {
     if (Array.isArray(v)) return '[' + v.map(enc).join(',') + ']';
     if (v !== null && typeof v === 'object') {
       const keys = Object.keys(v);
       const body = keys.map((k) => JSON.stringify(k) + ':' + enc(v[k])).join(',');
-      const hasMarker = Array.isArray(v.__lwOrder);
+      const hasMarker = Array.isArray(v.__lwOrder) && Object.prototype.hasOwnProperty.call(v, '__lwOrder');
       const hasReserved = Object.prototype.hasOwnProperty.call(v, RESERVED);
       if (hasMarker || hasReserved) {
         const order = (hasMarker ? v.__lwOrder.map(String) : keys.map(String)).filter((k) =>
@@ -40,12 +60,16 @@ export function serializeOrdered(value) {
 /** Inverse of `serializeOrdered`: rebuilds the objects and re-attaches the
  *  non-enumerable `__lwOrder` marker so the kernel reads PHP's order again. */
 export function deserializeOrdered(text) {
+  const parsed = JSON.parse(text);
+  assertSafeKeys(parsed);
   const dec = (v) => {
     if (Array.isArray(v)) return v.map(dec);
     if (v !== null && typeof v === 'object') {
       if (Array.isArray(v[RESERVED]) && v.v !== null && typeof v.v === 'object') {
         const inner = dec(v.v);
-        const obj = {};
+        // Null prototype: even if a reserved key slips through a future
+        // transport, assigning it is data and cannot change the prototype.
+        const obj = Object.create(null);
         for (const k of Object.keys(inner)) obj[k] = inner[k];
         Object.defineProperty(obj, '__lwOrder', {
           value: v[RESERVED].map(String),
@@ -53,13 +77,13 @@ export function deserializeOrdered(text) {
         });
         return obj;
       }
-      const o = {};
+      const o = Object.create(null);
       for (const k of Object.keys(v)) o[k] = dec(v[k]);
       return o;
     }
     return v;
   };
-  return dec(JSON.parse(text));
+  return dec(parsed);
 }
 
 /** The source of `dist/src/config.generated.mjs`: a JS module whose default
@@ -67,12 +91,13 @@ export function deserializeOrdered(text) {
  *  object literal cannot carry a non-enumerable property, so the marker is
  *  re-applied through a tiny `__ow()` helper). */
 export function configModuleSource(value) {
+  assertSafeKeys(value);
   const emit = (v) => {
     if (Array.isArray(v)) return '[' + v.map(emit).join(',') + ']';
     if (v !== null && typeof v === 'object') {
       const keys = Object.keys(v);
       const lit = '{' + keys.map((k) => JSON.stringify(k) + ':' + emit(v[k])).join(',') + '}';
-      const order = v.__lwOrder;
+      const order = Object.prototype.hasOwnProperty.call(v, '__lwOrder') ? v.__lwOrder : null;
       return Array.isArray(order) ? '__ow(' + lit + ', ' + JSON.stringify(order.map(String)) + ')' : lit;
     }
     return JSON.stringify(v) === undefined ? 'null' : JSON.stringify(v);

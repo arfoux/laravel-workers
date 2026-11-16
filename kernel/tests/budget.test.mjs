@@ -9,6 +9,10 @@ function stats(samples) {
   return { avg, p95 };
 }
 
+// These numbers are Node.js wall-clock timings on the CI host against in-memory
+// / fake-D1 doubles. They are a REGRESSION PROXY only: they are NOT workerd
+// `cpuTime`, and must NEVER be cited as evidence for the README's workerd CPU
+// figures (5 ms p50 / 41 ms p95 - those come from COMPILED.md benchmarks).
 // The measurements live in a function so the test below can confirm a failure
 // with ONE re-measurement: a wall-clock budget is host-sensitive (`node --test`
 // runs this file in parallel with the rest of the suite, so a bcrypt- or
@@ -531,7 +535,9 @@ async function measureBudgets() {
     assert.ok(p95 <= 5, `storage d1 blob store p95 ${p95}`);
   }
 }
-test('budget: router/db/validator/scheduler/cache/storage within 5ms p95', async () => {
+// Node host wall-clock regression proxy (see the header): NOT a workerd CPU
+// measurement and NOT evidence for the README's workerd CPU numbers.
+test('budget (Node wall-clock proxy): router/db/validator/scheduler/cache/storage within 5ms p95', async () => {
   let first = null;
   try {
     await measureBudgets();

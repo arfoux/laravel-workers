@@ -17,6 +17,7 @@
 //
 // Two modes on top of the default suite (the flags at the bottom):
 //   --coverage  Node's built-in instrument; `npm run test:coverage`, CI runs it
+//   --coverage --fast  the PR coverage report: same instrument, slow file deferred
 //   --fast      skip the measured-slow files; `npm run test:fast`
 
 import { readdirSync } from 'node:fs';

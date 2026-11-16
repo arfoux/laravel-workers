@@ -25,7 +25,12 @@ import { parseJsonc } from './jsonc.mjs';
 export function jsoncValue(node) {
   if (!node || typeof node !== 'object') return null;
   if (node.type === 'object') {
-    const out = {};
+    // A key spelled `__proto__` is DATA, not an instruction: assigning it on a
+    // normal `{}` changes that object's prototype, so a wrangler.jsonc entry
+    // `{"__proto__": {"triggers": {"crons": ["* * * * *"]}}}` would fabricate
+    // `cfg.triggers.crons` and suppress the build's queue BLOCK. A null
+    // prototype makes every key an ordinary own property.
+    const out = Object.create(null);
     for (const entry of node.entries || []) out[entry.key] = jsoncValue(entry.value);
     return out;
   }
@@ -35,17 +40,25 @@ export function jsoncValue(node) {
 
 // Blank out `#` comments so the table/array regexes below cannot read a
 // commented-out line as a declaration. Quotes are tracked so a `#` INSIDE a
-// string stays part of the value (`crons = ["# not a comment"]`).
+// string stays part of the value (`crons = ["# not a comment"]`), and a
+// backslash-escaped quote does not end the string (`"a\"#b"`).
 export function stripTomlComments(text) {
   return String(text)
     .split('\n')
     .map((line) => {
       let out = '';
       let quote = null;
+      let escaped = false;
       for (let i = 0; i < line.length; i += 1) {
         const ch = line[i];
         if (quote) {
-          if (ch === quote) quote = null;
+          if (quote === '"' && escaped) {
+            out += ch;
+            escaped = false; // the escaped character is data, not a delimiter
+            continue;
+          }
+          if (ch === '\\' && quote === '"') escaped = true;
+          else if (ch === quote) quote = null;
           out += ch;
           continue;
         }
@@ -60,6 +73,36 @@ export function stripTomlComments(text) {
       return out;
     })
     .join('\n');
+}
+
+// Same length as the input, but every character INSIDE a quoted string is a
+// space (the quotes themselves stay). Structural regexes run on this masked
+// text so a `[triggers]` table name or `crons = [...]` written inside a string
+// cannot be mistaken for a declaration; the offsets still index the original.
+export function maskTomlStrings(text) {
+  let out = '';
+  let quote = null;
+  let escaped = false;
+  for (const ch of String(text)) {
+    if (quote) {
+      if (quote === '"' && escaped) {
+        out += ' ';
+        escaped = false;
+      } else if (ch === '\\' && quote === '"') {
+        out += ' ';
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+        out += ch;
+      } else {
+        out += ch === '\n' ? '\n' : ' ';
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    out += ch;
+  }
+  return out;
 }
 
 /**
@@ -83,9 +126,13 @@ export function wranglerCronTriggers(appRoot, warn = () => {}) {
     if (text != null) {
       try {
         const cfg = jsoncValue(parseJsonc(text));
-        const crons = cfg && cfg.triggers && cfg.triggers.crons;
+        // Own properties only: even a null-prototype object can be shadowed by
+        // an inherited key if a caller ever passes a plain object here.
+        const hasOwn = (o, k) => o !== null && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);
+        const triggers = hasOwn(cfg, 'triggers') ? cfg.triggers : null;
+        const crons = hasOwn(triggers, 'crons') ? triggers.crons : undefined;
         if (Array.isArray(crons)) return crons.filter(Boolean).map(String);
-        if (cfg && cfg.triggers && cfg.triggers.crons !== undefined) {
+        if (crons !== undefined) {
           warn('wrangler.jsonc declares `triggers.crons` but it is not an array — the cron triggers are NOT counted');
         }
       } catch (err) {
@@ -107,19 +154,37 @@ export function wranglerCronTriggers(appRoot, warn = () => {}) {
     return [];
   }
   const clean = stripTomlComments(text);
+  const structural = maskTomlStrings(clean);
   // `[triggers]` table -> the `crons = [ ... ]` array inside it (the array may
-  // span lines; TOML has no trailing-comma rule to worry about here).
-  const table = /\[triggers\]([\s\S]*?)(?:\n\s*\[|$)/.exec(clean);
+  // span lines; TOML has no trailing-comma rule to worry about here). Both
+  // regexes read the MASKED text, so a table/array spelled inside a string is
+  // not mistaken for a declaration; offsets still slice the original values.
+  const table = /\[triggers\]([\s\S]*?)(?:\n\s*\[|$)/.exec(structural);
   if (!table) return [];
-  const crons = /(?:^|\n)\s*crons\s*=\s*\[([^\]]*)\]/.exec(table[1]);
+  const bodyStart = table.index + '[triggers]'.length;
+  const tableBody = clean.slice(bodyStart, bodyStart + table[1].length);
+  const tableMask = structural.slice(bodyStart, bodyStart + table[1].length);
+  const crons = /(?:^|\n)\s*crons\s*=\s*\[([^\]]*)\]/.exec(tableMask);
   if (!crons) {
-    if (/(?:^|\n)\s*crons\s*=/.test(table[1])) {
+    if (/(?:^|\n)\s*crons\s*=/.test(tableMask)) {
       warn('wrangler.toml has a `[triggers]` table whose `crons` is not an array literal — the cron triggers are NOT counted');
     }
     return [];
   }
-  return crons[1]
-    .split(',')
+  const arrStart = crons.index + crons[0].indexOf('[') + 1;
+  const arrBody = tableBody.slice(arrStart, arrStart + crons[1].length);
+  const arrMask = tableMask.slice(arrStart, arrStart + crons[1].length);
+  // Split on masked commas so a comma INSIDE a quoted expression stays in it.
+  const parts = [];
+  let from = 0;
+  for (let i = 0; i < arrMask.length; i += 1) {
+    if (arrMask[i] === ',') {
+      parts.push(arrBody.slice(from, i));
+      from = i + 1;
+    }
+  }
+  parts.push(arrBody.slice(from));
+  return parts
     .map((s) => s.trim().replace(/^['"]|['"]$/g, '').trim())
     .filter(Boolean);
 }

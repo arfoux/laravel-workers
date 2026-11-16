@@ -12,10 +12,13 @@
 //   • existing deploy state   (lw-state.json)
 //
 // Exit code: 0 when nothing FAILs, 2 when something FAILs (1 is reserved for
-// crash/usage). `--cloud` adds the authenticated wrangler checks. `--strict`
-// upgrades the missing-app-root WARN to a FAIL, so CI can run `doctor --strict`
-// from the app root and treat "not a Laravel app" as a hard error instead of a
-// silent pass.
+// crash/usage). WARNs are advisory by default: missing PHP, vendor/, wrangler
+// or APP_KEY do not fail plain `doctor`. `--cloud` adds the authenticated
+// wrangler checks. `--strict` upgrades the missing-app-root WARN and the
+// prerequisite WARNs (PHP, vendor, wrangler) to FAILs, so CI can run
+// `doctor --strict` and treat an unready machine as a hard error. APP_KEY and
+// "no deploy recorded yet" stay advisory — the build generates the key and a
+// deploy is not required to compile.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -65,6 +68,10 @@ const ok = (name, detail) => checks.push({ name, level: 'ok', detail: detail || 
 const warn = (name, detail) => checks.push({ name, level: 'warn', detail: detail || '' });
 const fail = (name, detail) => { checks.push({ name, level: 'fail', detail: detail || '' }); fails++; };
 
+// Only prerequisites are upgraded: a machine without PHP, vendor/ or wrangler
+// cannot back a cloud run. APP_KEY and "no deploy recorded yet" stay WARNs.
+const prereq = (name, detail) => (strict ? fail(name, `${detail} (--strict)`) : warn(name, detail));
+
 // 1. node
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 if (nodeMajor >= 22) ok('node', `v${process.versions.node}`);
@@ -82,7 +89,7 @@ try {
   const r = resolvePhp({}); // no app requirement probe; build resolves with composer
   ok('php', `PHP ${r.version || '?'} (${r.bin})`);
 } catch (e) {
-  warn('php', 'no PHP found on PATH or via PHP_BIN (' + String(e.message || e).slice(0, 80) + ')');
+  prereq('php', 'no PHP found on PATH or via PHP_BIN (' + String(e.message || e).slice(0, 80) + ')');
 }
 
 // 4. vendor
@@ -90,7 +97,7 @@ const vendorDir = process.env.LW_VENDOR_DIR
   ? join(process.env.LW_VENDOR_DIR, 'autoload.php')
   : join(appDir, 'vendor', 'autoload.php');
 if (existsSync(vendorDir)) ok('vendor', vendorDir);
-else warn('vendor', 'vendor/autoload.php not found — build provisions it via vendor-lite');
+else prereq('vendor', 'vendor/autoload.php not found — build provisions it via vendor-lite');
 
 // 5. APP_KEY — only a real assignment, not a commented line or empty value
 try {
@@ -110,7 +117,7 @@ if (!wrangler.error && wrangler.status === 0) {
   const version = (wrangler.stdout || wrangler.stderr || '').trim();
   const major = Number((version.match(/(\d+)\./) || [])[1]);
   if (Number.isFinite(major) && major < 4) {
-    warn('wrangler', `${version || 'old version'} — v4+ expected; upgrade before a live deploy`);
+    prereq('wrangler', `${version || 'old version'} — v4+ expected; upgrade before a live deploy`);
   } else {
     ok('wrangler', version || 'reachable via npx');
   }
@@ -118,7 +125,7 @@ if (!wrangler.error && wrangler.status === 0) {
   const detail = wrangler.error
     ? wrangler.error.message
     : 'not found — needed for deploy/D1 modes (npm i -g wrangler or npx)';
-  warn('wrangler', detail);
+  prereq('wrangler', detail);
 }
 
 // 7. state — read before the cloud check so the recorded account can be

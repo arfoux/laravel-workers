@@ -52,7 +52,7 @@ assert.equal(rt.str_is('FOO/*', 'foo/bar'), false);
 assert.equal(rt.str_is('FOO/*', 'foo/bar', true), true);
 assert.equal(rt.str_is(['a*', 'b*'], 'bar'), true);
 // Str::finish / Str::start — oracle: illuminate/support Str.php:496, :1511
-import { is as strIs, finish, start, random, STR_METHODS } from '../../kernel/str.mjs';
+import { is as strIs, finish, start, random } from '../../kernel/str.mjs';
 assert.equal(strIs('foo/*', 'foo/bar'), true);
 assert.equal(finish('abbc', 'c'), 'abbc');
 assert.equal(finish('ab', 'bc'), 'abbc');
@@ -63,9 +63,23 @@ assert.equal(start('abbc', 'a'), 'abbc');
 assert.equal(start('bc', 'ab'), 'abbc');
 assert.equal(start('aabbc', 'a'), 'abbc');
 assert.equal(start('abc', ''), 'abc');
-for (const m of ['is', 'finish', 'start', 'random', 'isUrl', 'isUuid']) {
-  assert.ok(STR_METHODS.has(m), `STR_METHODS is missing ${m}`);
+// A compiled `Str::x()` is emitted as `rt.Str.x()` (compiler/src/transpiler.mjs):
+// probe the DISPATCH and the answer, not the allowlist's membership in itself.
+const strDispatch = [
+  ['is', ['foo/*', 'foo/bar'], true],
+  ['finish', ['ab', 'bc'], 'abbc'],
+  ['start', ['bc', 'ab'], 'abbc'],
+  ['isUrl', ['https://example.com'], true],
+  ['isUuid', ['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 4], true],
+];
+for (const [name, args, expected] of strDispatch) {
+  assert.equal(typeof rt.Str[name], 'function', `rt.Str.${name} must be callable (Str::${name} dispatch)`);
+  assert.equal(rt.Str[name](...args), expected, `rt.Str.${name}() must answer the Laravel value`);
 }
+assert.equal(typeof rt.Str.random, 'function', 'rt.Str.random must be callable (Str::random dispatch)');
+const dispatchedRandom = rt.Str.random(24);
+assert.equal(dispatchedRandom.length, 24);
+assert.match(dispatchedRandom, /^[A-Za-z0-9]{24}$/);
 assert.equal(random(40).length, 40);
 assert.match(random(40), /^[A-Za-z0-9]{40}$/);
 assert.equal(random(0), '');
@@ -104,7 +118,7 @@ assert.equal(rt.Str.isUuid('00000000-0000-0000-0000-000000000000', 0), true);
 assert.equal(rt.Str.isUuid('ffffffff-ffff-ffff-ffff-ffffffffffff', 'max'), true);
 assert.equal(rt.Str.isUuid(v4u, 15), false);
 // Arr — the surface the sample apps call (oracle: Arr::* on Laravel 13.37)
-import { arr as arrHelpers, ARR_METHODS } from '../../kernel/arr.mjs';
+import { arr as arrHelpers } from '../../kernel/arr.mjs';
 assert.equal(rt.Arr, arrHelpers);
 const ad = { user: { name: 'Ada', roles: ['admin', 'dev'] }, id: 7 };
 assert.equal(rt.Arr.get(ad, 'user.name'), 'Ada');
@@ -117,8 +131,20 @@ assert.equal(rt.Arr.last([10, 20, 30], (v) => v < 25), 20);
 assert.deepEqual(rt.Arr.wrap('x'), ['x']);
 assert.deepEqual(rt.Arr.wrap(null), []);
 assert.deepEqual({ ...rt.Arr.dot({ a: { b: 1, c: { d: 2 } }, e: 3 }) }, { 'a.b': 1, 'a.c.d': 2, e: 3 });
-for (const m of ['dot', 'wrap', 'first', 'last', 'get', 'only', 'has']) {
-  assert.ok(ARR_METHODS.has(m), `ARR_METHODS is missing ${m}`);
+// A compiled `Arr::x()` is emitted as `rt.Arr.x()`: call each named method
+// through the runtime facade with a known input and check the value returned.
+const arrDispatch = [
+  ['dot', [{ a: { b: 1 } }], { 'a.b': 1 }],
+  ['wrap', ['x'], ['x']],
+  ['first', [[10, 20, 30]], 10],
+  ['last', [[10, 20, 30]], 30],
+  ['get', [ad, 'id'], 7],
+  ['only', [{ id: 1, name: 2 }, ['id']], { id: 1 }],
+  ['has', [ad, 'user.name'], true],
+];
+for (const [name, args, expected] of arrDispatch) {
+  assert.equal(typeof rt.Arr[name], 'function', `rt.Arr.${name} must be callable (Arr::${name} dispatch)`);
+  assert.deepEqual(rt.Arr[name](...args), expected, `rt.Arr.${name}() must answer the Laravel value`);
 }
 
 // strtolower/strtoupper/mb_strtolower/mb_strtoupper cast with PHP's (string)
@@ -140,4 +166,4 @@ assert.equal(rt.mb_strtolower(true), '1');
 assert.equal(rt.mb_strtoupper(null), '');
 assert.equal(rt.mb_strtoupper(true), '1');
 
-console.log('rt-str: PASS (' + 58 + ' assertions)');
+console.log('rt-str: PASS');

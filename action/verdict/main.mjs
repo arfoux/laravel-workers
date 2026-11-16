@@ -3,14 +3,14 @@
 //
 // Reads the log of `npx laravel-workers build --no-cache` and publishes ONE
 // sticky pull-request comment plus the job summary. The comment opens with the
-// READINESS verdict — never a bare "success" — then the parsed facts, then the
-// full report folded away.
+// READINESS verdict — never a bare "success" — then the parsed facts only.
+// Raw build-log text (attacker-controlled) is never published.
 //
 // Configuration is environment-only, so this single file works both as a
 // composite action (action/verdict/action.yml) and as a plain
 // `node .github/scripts/verdict.mjs` inside an app repo:
 //
-//   INPUT_LOG       build log path                    (default edge-build.log)
+//   INPUT_LOG       must be "edge-build.log" in the workspace (default)
 //   INPUT_COMMENT   "false" disables the PR comment   (default on)
 //   GH_TOKEN        token used for the comment        (github.token)
 //   PR_NUMBER       pull request number               (empty on push)
@@ -19,27 +19,55 @@
 //
 // Exit code is always 0: this reports the build, it never replaces its verdict.
 
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, lstatSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 const MARKER = '<!-- verdict -->';
 
 // The reporter carries the project's own mark, so a build comment in an APP
 // repository is recognisably laravel-workers rather than an anonymous green
-// check. The PNG is the rgba mark from this repo's `main`: comments render
-// markdown images from any host, and the mark has no background rect, so it
-// reads on the light and the dark comment theme alike. The marker must stay the
-// first line — the sticky lookup matches `body.startsWith(MARKER)`.
+// check. The marker must stay the first line: the sticky lookup matches
+// `body.startsWith(MARKER)`.
 const MARK = 'https://github.com/arfoux/laravel-workers/raw/main/docs/logo.png?raw=1';
 const BRAND = `<img src="${MARK}" width="20" height="20" alt="laravel-workers" align="top"> **laravel-workers**`;
 
-const logPath = process.env.INPUT_LOG || process.argv[2] || 'edge-build.log';
-const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
+const LOG_NAME = 'edge-build.log';
+
+// INPUT_LOG/argv used to be an arbitrary path: a workflow (or a crafted PR
+// workflow file) could point it at any file the runner could read and have the
+// contents posted into the PR. Only the conventional log basename INSIDE the
+// workspace is accepted; the requested value is never used as a path.
+const requested = String(process.env.INPUT_LOG || process.argv[2] || LOG_NAME).trim();
+if (requested !== LOG_NAME && requested !== './' + LOG_NAME) {
+  process.stderr.write(
+    `verdict: INPUT_LOG must be "${LOG_NAME}" in the workspace; ignoring the supplied path\n`
+  );
+}
+const workspace = resolve(process.env.GITHUB_WORKSPACE || process.cwd());
+const logPath = join(workspace, LOG_NAME);
+let log = '';
+try {
+  const st = lstatSync(logPath);
+  // A checked-in symlink must not turn the allow-listed name into a read of
+  // an arbitrary file, and an unbounded log must not exhaust the runner.
+  if (st.isSymbolicLink() || !st.isFile()) throw new Error('not a regular file');
+  if (st.size > 1024 * 1024) throw new Error('log exceeds 1 MiB');
+  log = readFileSync(logPath, 'utf8');
+} catch (err) {
+  process.stderr.write(
+    `verdict: cannot read ${LOG_NAME} (${err && err.message ? err.message : err}); reporting no READINESS block\n`
+  );
+}
 
 // The build prints READINESS as its last block; everything after it (schema
 // guidance, route notes) belongs to the verdict, so no end marker is needed.
 const at = log.search(/^READINESS:/m);
 const block = at >= 0 ? log.slice(at).trimEnd() : '';
-const verdict = block ? (block.match(/^READINESS: (.+)$/m) || [, 'UNKNOWN'])[1] : 'BUILD FAILED';
+const VALID_VERDICTS = new Set(['RUNS ON THE EDGE', 'RUNS WITH DECLARED GAPS', 'DOES NOT RUN']);
+const parsedVerdict = block ? (block.match(/^READINESS: (.+)$/m) || [, 'UNKNOWN'])[1] : 'BUILD FAILED';
+// The verdict text itself is log data: only the three contract values are
+// publishable, never an attacker-chosen markdown payload.
+const verdict = VALID_VERDICTS.has(parsedVerdict) ? parsedVerdict : (block ? 'UNKNOWN' : 'BUILD FAILED');
 
 const first = (re, s) => {
   const m = re.exec(s || '');
@@ -49,10 +77,14 @@ const first = (re, s) => {
 const gapsRaw = first(/declared gaps[^\n]*\((\d+)\)/i, block);
 const gaps = gapsRaw === null ? null : Number(gapsRaw);
 // Route coverage is printed before the READINESS block, so it comes from the
-// whole log, not the verdict slice.
+// whole log, not the verdict slice. Every published value below is a parsed
+// number or one of the whitelisted verdict strings — raw log text is NEVER
+// copied into a comment or a job summary (it is attacker-controlled build
+// output and can contain markdown, links, or leaked secrets).
 const routes = first(/coverage: all (\d+) route\(s\) handled/, log);
 const tables = first(/schema: \S+ \((\d+) table\(s\)\)/, block);
-const commit = (process.env.GITHUB_SHA || '').slice(0, 7);
+const sha = process.env.GITHUB_SHA || '';
+const commit = /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 7) : null;
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -64,29 +96,20 @@ if (commit) facts.push(`commit \`${commit}\``);
 const lines = [MARKER, BRAND + ' · edge gate', '', `### Verdict: ${verdict}`, ''];
 
 if (!block) {
-  lines.push(
-    'The edge build produced no READINESS block, so nothing was verified.',
-    '',
-    '<details><summary>Last lines of the build log</summary>',
-    '',
-    '```text',
-    log.trimEnd().split('\n').slice(-40).join('\n') || '(empty log)',
-    '```',
-    '</details>'
-  );
+  lines.push('The edge build produced no READINESS block, so nothing was verified.');
 } else {
   if (gaps !== null && gaps > 0) {
     lines.push(`**${plural(gaps, 'declared gap', 'declared gaps')}** — the app answers it; it ships as-is.`);
   } else if (/^RUNS/.test(verdict)) {
     lines.push('No declared gaps: every route is compiled, snapshotted or ported.');
   } else {
-    lines.push('Verdict printed without a gap summary — read the report below.');
+    lines.push('Verdict printed without a gap summary. See the build log in the CI run.');
   }
-  if (facts.length) lines.push('', facts.join(' · '));
-  lines.push('', '<details><summary>Readiness report</summary>', '', '```text', block, '```', '</details>');
 }
-
-lines.push('', `<sub>Verdict · edge gate for \`${process.env.GITHUB_REPOSITORY || 'this repo'}\`</sub>`);
+if (facts.length) lines.push('', facts.join(' · '));
+const repoEnv = process.env.GITHUB_REPOSITORY || '';
+const repoLabel = /^[\w.-]+\/[\w.-]+$/.test(repoEnv) ? repoEnv : 'this repo';
+lines.push('', `<sub>Verdict · edge gate for \`${repoLabel}\`</sub>`);
 
 const body = lines.join('\n') + '\n';
 process.stdout.write(body);
@@ -98,8 +121,10 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 
 // ---- the sticky comment ----------------------------------------------------
 const wantComment = (process.env.INPUT_COMMENT ?? 'true') !== 'false';
-const pr = (process.env.PR_NUMBER || '').trim();
-const repo = process.env.GITHUB_REPOSITORY || '';
+const prRaw = (process.env.PR_NUMBER || '').trim();
+const pr = /^\d+$/.test(prRaw) ? prRaw : '';
+const repoRaw = process.env.GITHUB_REPOSITORY || '';
+const repo = /^[\w.-]+\/[\w.-]+$/.test(repoRaw) ? repoRaw : '';
 const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
 const fork = (process.env.IS_FORK || '') === 'true';
 

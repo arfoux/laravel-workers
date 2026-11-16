@@ -10,20 +10,45 @@
 //
 // These tests exercise the two rungs the stream crosses:
 //   1. `dispatch` accepts a handler that returns a ReadableStream body.
-//   2. The worker's body contract `new Response(body, {status, headers})`
-//      (what `toResponse` builds) yields a live Response whose body is that
-//      same stream, readable end to end.
-// `src/worker.mjs` itself is NOT importable in this test tree (it pulls the
-// build-time `src/*.generated.mjs` modules, which exist only after
-// `node build.mjs`), so the `toResponse` body contract is replicated here
-// verbatim - the function is a 3-line adapter over `new Response` with no
-// branching on the body type. The named export `toResponse` is asserted to
-// exist from the source text, so a future refactor that drops or renames it
-// fails loudly.
+//   2. The worker's REAL `toResponse` adapter turns that body into a live
+//      Response: GET streams the bytes, HEAD sends headers only.
+// `src/worker.mjs` also imports build-time modules that exist only after
+// `node build.mjs`, so a small in-memory ESM loader answers just those
+// specifiers with empty stubs. `toResponse` itself is imported from the real
+// source file - no source-text pinning or re-implementation here.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import { register } from 'node:module';
 import { dispatch, routeKey } from '../../kernel/router.mjs';
+
+// The build-time modules worker.mjs imports are irrelevant to toResponse;
+// answer them with one inert stub so the REAL worker module can be imported
+// without running a build (and without editing source owned by another agent).
+const stubSource = [
+  'export const routeTable = [];',
+  'export const handlers = {};',
+  'export const builtAt = null;',
+  'export function guardPorts() { return null; }',
+  'export const events = [];',
+  'export const models = {};',
+  'export const classes = {};',
+  "export function renderErrorView() { return ''; }",
+  'export function buildRt() { return {}; }',
+  'export default {};',
+].join('\n');
+const stubUrl = 'data:text/javascript,' + encodeURIComponent(stubSource);
+const loaderUrl = 'data:text/javascript,' + encodeURIComponent(`
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier.endsWith('.generated.mjs') ||
+      specifier.endsWith('/error-renderer.mjs') ||
+      specifier.endsWith('/rt-from-context.mjs')) {
+    return { url: ${JSON.stringify(stubUrl)}, shortCircuit: true };
+  }
+  return nextResolve(specifier, context);
+}
+`);
+register(loaderUrl);
+const { toResponse } = await import('../../src/worker.mjs');
 
 // Build a handler that returns a streaming text/event-stream body and, as it
 // emits each chunk, records what it wrote (so the test can assert the stream
@@ -82,29 +107,34 @@ test('dispatch accepts a ReadableStream body (previously: invalid response shape
   assert.equal(new TextDecoder().decode(bytes), 'data: hello\n\ndata: world\n\n');
 });
 
-test('dispatch → toResponse body contract yields a readable Response stream', async () => {
-  const handler = sseHandler(['data: hi\n\n']);
+test('toResponse (the real worker adapter): GET streams the body with status and headers', async () => {
+  const handler = sseHandler(['data: hi\n\n', 'data: bye\n\n']);
   const { table, handlers } = wire('GET', '/events', handler);
-
   const dispatched = await dispatch({ method: 'GET', path: '/events', headers: {} }, table, handlers, {});
-  // `toResponse` is: `new Response(res.body, { status, headers })` (a GET
-  // request keeps the body; only HEAD nulls it). Build the same thing.
-  const response = new Response(dispatched.body, { status: dispatched.status, headers: dispatched.headers });
 
+  const response = toResponse(dispatched, 'GET');
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('content-type'), 'text/event-stream; charset=UTF-8');
-  assert.ok(response.body instanceof ReadableStream, 'Response.body is a ReadableStream');
-  const text = new TextDecoder().decode(await readAll(response.body));
-  assert.equal(text, 'data: hi\n\n');
+  assert.equal(response.headers.get('cache-control'), 'no-cache');
+  assert.ok(response.body instanceof ReadableStream, 'Response.body is the live stream');
+  assert.equal(new TextDecoder().decode(await readAll(response.body)), 'data: hi\n\ndata: bye\n\n');
 });
 
-test('HEAD request still nulls a streaming body (headers-only response)', async () => {
-  const handler = sseHandler(['data: ignored\n\n']);
+test('toResponse (the real worker adapter): HEAD sends headers only and leaves the stream intact', async () => {
+  const handler = sseHandler(['data: only-on-get\n\n']);
   const { table, handlers } = wire('HEAD', '/events', handler);
   const dispatched = await dispatch({ method: 'HEAD', path: '/events', headers: {} }, table, handlers, {});
-  // toResponse's HEAD branch.
-  const response = new Response(dispatched.body ? null : dispatched.body, { status: dispatched.status, headers: dispatched.headers });
-  assert.equal(response.body, null);
+
+  const head = toResponse(dispatched, 'HEAD');
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('content-type'), 'text/event-stream; charset=UTF-8');
+  assert.equal(head.headers.get('cache-control'), 'no-cache');
+  assert.equal(head.body, null, 'HEAD has no body, stream or not');
+
+  // HEAD must not consume or close the underlying stream: a GET over the same
+  // dispatched result still carries the bytes.
+  const get = toResponse(dispatched, 'GET');
+  assert.equal(new TextDecoder().decode(await readAll(get.body)), 'data: only-on-get\n\n');
 });
 
 test('a port handler still streams when it reads ctx.method / ctx.params', async () => {
@@ -141,10 +171,4 @@ test('non-stream bodies keep the old contract (string / Uint8Array / null pass, 
     },
     /handler returned invalid response shape/
   );
-});
-
-test('src/worker.mjs still exports toResponse (the stream adapter)', () => {
-  const src = fs.readFileSync(new URL('../../src/worker.mjs', import.meta.url), 'utf8');
-  assert.match(src, /export \{ toResponse \}/, 'toResponse must stay exported for the stream path');
-  assert.match(src, /new Response\(method === 'HEAD' \? null : res\.body/);
 });

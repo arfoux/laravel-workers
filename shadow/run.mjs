@@ -104,6 +104,13 @@ function parseArgs(argv) {
 // ---------------------------------------------------------------------------
 
 function d1(sqlite) {
+  // node:sqlite accepts `?N` numbered placeholders only through a keyed object
+  // (`{1: v}`), while raw D1 binds them positionally (`params[N-1]`). Mirror the
+  // D1 shim so numbered SQL binds by key instead of throwing "column index out
+  // of range".
+  const bindArgs = (text, p) => (/\?\d/.test(text)
+    ? [Object.fromEntries(p.map((v, i) => [String(i + 1), v]))]
+    : p);
   return {
     prepare(sql) {
       let params = [];
@@ -114,17 +121,20 @@ function d1(sqlite) {
         },
         async all() {
           const st = sqlite.prepare(sql);
-          const rows = params.length ? st.all(...params) : st.all();
+          const bound = bindArgs(sql, params);
+          const rows = params.length ? st.all(...bound) : st.all();
           return { results: rows.map((r) => ({ ...r })) };
         },
         async first() {
           const st = sqlite.prepare(sql);
-          const row = params.length ? st.get(...params) : st.get();
+          const bound = bindArgs(sql, params);
+          const row = params.length ? st.get(...bound) : st.get();
           return row ? { ...row } : null;
         },
         async run() {
           const st = sqlite.prepare(sql);
-          const info = params.length ? st.run(...params) : st.run();
+          const bound = bindArgs(sql, params);
+          const info = params.length ? st.run(...bound) : st.run();
           return {
             success: true,
             meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid ?? 0) },

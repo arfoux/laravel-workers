@@ -109,9 +109,19 @@ export function buildRt(context, opts = {}) {
     routeNames = ctx.routes.map((r) => r && r.name).filter((n) => n != null);
     warnings.push('route_names: derived from routes (legacy shape)');
   }
-  if (!Array.isArray(routeNames)) {
-    routeNames = [];
-    warnings.push('route_names: missing, using empty');
+  // A compiled controller calls buildRt(null, { routeMap }), so there is no
+  // route_names in its context even though the map names every route. Fall
+  // back to those keys before the empty guard; keep the warning when NEITHER
+  // source exists (strict mode must not invent a route list).
+  if (!Array.isArray(routeNames) || routeNames.length === 0) {
+    const map = opts && opts.routeMap && typeof opts.routeMap === 'object' ? opts.routeMap : null;
+    if (map && Object.keys(map).length) {
+      routeNames = Object.keys(map);
+      warnings.push('route_names: derived from routeMap');
+    } else if (!Array.isArray(routeNames)) {
+      routeNames = [];
+      warnings.push('route_names: missing, using empty');
+    }
   }
 
   // config
@@ -1179,12 +1189,13 @@ export function buildRt(context, opts = {}) {
   // The compiler never emits it — PHP's own signature takes one array — and the
   // mechanism behind "?2" (not "1=2") was not pinned down, so it stays a
   // documented gap rather than a guess.
-  const rawUrlEncode = (v) => encodeURIComponent(String(v))
-    // rawurlencode() leaves A-Za-z0-9-_.~ alone; encodeURIComponent() also
-    // leaves !'()* , which PHP would have encoded.
-    .replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
-    // Symfony restores %2F so a wildcard parameter can carry a path.
-    .replace(/%2F/gi, '/');
+  // PHP's rawurlencode() (RFC 3986). encodeURIComponent() also leaves !'()*,
+  // which PHP encodes, so fix those up once at the shared base.
+  const phpEncode = (v) => encodeURIComponent(String(v))
+    .replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  // Symfony restores %2F so a wildcard parameter can carry a path. Query
+  // values must NOT go through this: http_build_query() keeps %2F encoded.
+  const rawUrlEncode = (v) => phpEncode(v).replace(/%2F/gi, '/');
   const queryValue = (v) => (v === true ? '1' : v === false ? '0' : String(v));
   const queryFrom = (map, keys) => {
     const parts = [];
@@ -1194,7 +1205,7 @@ export function buildRt(context, opts = {}) {
         return;
       }
       if (value === null || value === undefined) return; // http_build_query() drops null
-      parts.push(rawUrlEncode(key) + '=' + rawUrlEncode(queryValue(value)));
+      parts.push(phpEncode(key) + '=' + phpEncode(queryValue(value)));
     };
     for (const k of keys) walk(k, map[k]);
     return parts.join('&');
@@ -1289,21 +1300,19 @@ export function buildRt(context, opts = {}) {
     if (typeof v === 'boolean') return v === false;
     if (typeof v === 'number') return v === 0;
     if (typeof v === 'string') return v === '' || v === '0';
-    if (Array.isArray(v)) return v.length === 0;
+    if (Array.isArray(v)) return v.length === 0 && rt.phpKeys(v).length === 0;
     return false;
   };
   rt.count = (v) => {
     requireArrayArg('count', 1, 'value', 'Countable|array', v);
-    return Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 0);
+    return Array.isArray(v) ? Math.max(v.length, rt.phpKeys(v).length) : (v && typeof v === 'object' ? rt.phpKeys(v).length : 0);
   };
   rt.in_array = (needle, haystack, strict) => {
     // A PHP array is a list OR an assoc array (a plain object on the compiled
     // side) - in_array walks the VALUES of both.
-    const arr = Array.isArray(haystack)
-      ? haystack
-      : haystack !== null && typeof haystack === 'object'
-        ? Object.values(haystack)
-        : [];
+    // A string-key write into `[]` leaves a JS Array whose indices are empty:
+    // walk rt.phpKeys() so in_array() sees those values like PHP does.
+    const arr = haystack !== null && typeof haystack === 'object' ? arrValues(haystack) : [];
     if (strict) return arr.some((x) => phpIdentical(x, needle));
     return arr.some((x) => rt.looseEq(x, needle));
   };
@@ -1319,7 +1328,17 @@ export function buildRt(context, opts = {}) {
       );
     }
   };
-  const arrValues = (v) => (Array.isArray(v) ? v.slice() : (isObj(v) ? rt.phpKeys(v).map((k) => v[k]) : []));
+  const arrValues = (v) => {
+    if (!isObj(v)) return [];
+    const keys = rt.phpKeys(v);
+    // A PHP array written with string keys into `[]` is a JS Array with those
+    // keys as own properties and length 0 (transpiler.mjs txAssignStatement).
+    // slice() would drop them; read the real PHP keys in their PHP order.
+    if (Array.isArray(v) && keys.length === v.length && keys.every((k, i) => String(k) === String(i))) {
+      return v.slice();
+    }
+    return keys.map((k) => v[k]);
+  };
   rt.implode = (glue, arr) => {
     requireArrayArg('implode', 2, 'array', '?array', arr);
     // Each value goes through PHP's string cast: null -> '', true -> '1', a
@@ -1373,6 +1392,45 @@ export function buildRt(context, opts = {}) {
     Object.defineProperty(out, '__lwOrder', { value: order, enumerable: false });
     return out;
   };
+  // The remaining index-only readers are the kernel's json encoder and the
+  // Collection constructor. Both already understand an ordered plain object
+  // (the __lwOrder marker rt.assoc writes), so convert only when the value
+  // actually contains a JS Array with non-index own keys. The first pass is
+  // allocation-free and keeps ordinary json_encode()/collect() untouched.
+  const hasStringKeyedArray = (v, seen) => {
+    if (v === null || typeof v !== 'object' || seen.has(v)) return false;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      const keys = rt.phpKeys(v);
+      if (keys.length !== v.length || keys.some((k, i) => String(k) !== String(i))) return true;
+      for (const x of v) if (hasStringKeyedArray(x, seen)) return true;
+      return false;
+    }
+    if (Object.getPrototypeOf(v) !== Object.prototype) return false;
+    for (const k of Object.keys(v)) if (hasStringKeyedArray(v[k], seen)) return true;
+    return false;
+  };
+  const normalizePhpArrays = (v, seen) => {
+    if (v === null || typeof v !== 'object' || seen.has(v)) return v;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      const keys = rt.phpKeys(v);
+      if (keys.length !== v.length || keys.some((k, i) => String(k) !== String(i))) {
+        return rt.assoc(keys.map((k) => [k, normalizePhpArrays(v[k], seen)]));
+      }
+      return v.map((x) => normalizePhpArrays(x, seen));
+    }
+    if (Object.getPrototypeOf(v) !== Object.prototype) return v;
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = normalizePhpArrays(v[k], seen);
+    const order = rt.phpKeys(v);
+    if (order.length !== Object.keys(v).length || order.some((k, i) => k !== Object.keys(v)[i])) {
+      Object.defineProperty(out, '__lwOrder', { value: order.slice(), enumerable: false });
+    }
+    return out;
+  };
+  const normalizeStringKeyedArrays = (v) =>
+    hasStringKeyedArray(v, new WeakSet()) ? normalizePhpArrays(v, new WeakSet()) : v;
   rt.array_keys = (arr) => {
     requireArrayArg('array_keys', 1, 'array', 'array', arr);
     return isObj(arr) ? rt.phpKeys(arr).map((k) => (/^\d+$/.test(k) ? Number(k) : k)) : [];
@@ -1382,14 +1440,32 @@ export function buildRt(context, opts = {}) {
     return arrValues(arr);
   };
   rt.array_merge = (...arrs) => {
-    if (arrs.every((a) => Array.isArray(a))) {
-      const out = [];
-      for (const a of arrs) for (const v of a) out.push(v);
-      return out;
+    // PHP renumbers integer keys and keeps (overwriting) string keys in the
+    // position of their first occurrence. Build an ordered pair list: rt.assoc
+    // carries that order in __lwOrder when the result is not a plain list,
+    // so a string-key write into `[]` is neither dropped nor reordered.
+    const pairs = [];
+    const positions = new Map();
+    let next = 0;
+    for (const a of arrs) {
+      if (!isObj(a)) continue;
+      for (const k of rt.phpKeys(a)) {
+        if (/^(?:0|[1-9]\d*)$/.test(String(k))) {
+          pairs.push([next++, a[k]]);
+        } else {
+          const key = String(k);
+          const at = positions.get(key);
+          if (at === undefined) {
+            positions.set(key, pairs.length);
+            pairs.push([key, a[k]]);
+          } else {
+            pairs[at][1] = a[k];
+          }
+        }
+      }
     }
-    const out = {};
-    for (const a of arrs) if (isObj(a)) for (const k of Object.keys(a)) out[k] = a[k];
-    return out;
+    if (pairs.every(([k], i) => String(k) === String(i))) return pairs.map(([, v]) => v);
+    return rt.assoc(pairs);
   };
   // `$arr[] = $x` — the PHP append (the next free integer key). It used to
   // compile to `$arr[null] = $x` — a *silent* wrong answer.
@@ -1813,7 +1889,7 @@ export function buildRt(context, opts = {}) {
     // array with an object as equal, and `===` on two objects is IDENTITY.
     return v.__lwObject === true ? 'obj' : 'arr';
   };
-  const arrEmpty = (v) => (Array.isArray(v) ? v.length === 0 : (v && typeof v === 'object' ? Object.keys(v).length === 0 : true));
+  const arrEmpty = (v) => (Array.isArray(v) ? v.length === 0 && rt.phpKeys(v).length === 0 : (v && typeof v === 'object' ? rt.phpKeys(v).length === 0 : true));
 
   // PHP's array keys: a canonical decimal integer string IS the int key
   // ('0' and 0 are one key; '01' and '+1' stay strings).
@@ -1824,8 +1900,8 @@ export function buildRt(context, opts = {}) {
   /** A PHP array's `[key, value]` pairs, in PHP order (a list is one too). */
   const arrayEntries = (v) => {
     const out = [];
-    if (Array.isArray(v)) v.forEach((x, i) => out.push([i, x]));
-    else for (const k of rt.phpKeys(v)) out.push([phpArrayKey(k), v[k]]);
+    if (!isObj(v)) return out;
+    for (const k of rt.phpKeys(v)) out.push([phpArrayKey(k), v[k]]);
     return out;
   };
   /**
@@ -2277,7 +2353,7 @@ export function buildRt(context, opts = {}) {
   // JsonResource::toJson($options) and the plain json_encode() are all
   // `json_encode($v, $options)` - ONE implementation writes those bytes.
   // rt.json_encode() delegates; the depth/flag semantics live there.
-  rt.json_encode = (v, flags, depth) => phpJsonEncodeWithFlags(v, flags, depth);
+  rt.json_encode = (v, flags, depth) => phpJsonEncodeWithFlags(normalizeStringKeyedArrays(v), flags, depth);
   // PHP's json_decode(): invalid JSON answers NULL (only a warning) unless
   // JSON_THROW_ON_ERROR is passed, which raises JsonException("Syntax error")
   // (ext/json/parser). `JSON.parse` throws on every invalid input, so the old
@@ -2483,7 +2559,7 @@ export function buildRt(context, opts = {}) {
   // so `collect()` inside a compiled route and inside a view were two
   // different classes with two different answers (the inline one had no
   // groupBy/keyBy/where, and its implode()/chunk() disagreed with Laravel).
-  rt.collect = (arr) => new Collection(arr == null ? [] : arr);
+  rt.collect = (arr) => new Collection(arr == null ? [] : normalizeStringKeyedArrays(arr));
   // `Collection::wrap($value)` is NOT `collect($value)`: wrap() applies
   // Arr::wrap (a non-array becomes ONE item), while collect() runs
   // getArrayableItems() (an Arrayable becomes its attributes).

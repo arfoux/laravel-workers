@@ -923,6 +923,33 @@ test('flag conflicts and misuse exit 2 before any work', (t) => {
   assert.deepEqual(app.buildCalls(), []);
   assert.deepEqual(app.calls(), []);
 });
+
+test('--plan --check in the default mode 1 is rejected, not silently ignored', (t) => {
+  const app = makeApp(t);
+  const beforeConfig = app.readConfig();
+
+  // No --mode: --plan never prompts, so the non-interactive default is mode 1.
+  // Before the fix --check was accepted, then every check call was gated on
+  // mode >= 2, so the plan looked "OK" without verifying anything.
+  const result = app.run(['--plan', '--check']);
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /--check requires --mode 2 or 3/);
+  assert.doesNotMatch(result.stdout, /Plan — nothing will be written/);
+  assert.deepEqual(app.calls(), []);
+  assert.deepEqual(app.buildCalls(), []);
+  assert.equal(app.readConfig(), beforeConfig);
+  assert.equal(existsSync(app.statePath), false);
+});
+
+test('--plan --check with an explicit mode 1 is rejected too', (t) => {
+  const app = makeApp(t);
+  const result = app.run(['--plan', '--mode', '1', '--check']);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /--check requires --mode 2 or 3/);
+  assert.deepEqual(app.calls(), []);
+  assert.deepEqual(app.buildCalls(), []);
+});
 test('a Wrangler older than v4 stops a real run before any Wrangler mutation', (t) => {
   const app = makeApp(t, {
     state: stateFor({ schemaHash: sha256(SCHEMA) }),

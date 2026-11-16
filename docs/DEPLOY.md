@@ -59,6 +59,11 @@ npx laravel-workers deploy --plan --mode 3 --d1-auto --check   # + read-only acc
 
 `--check` adds only read-only Cloudflare calls (`d1 list` and a temporary table-count query that is cleaned up) so it can confirm reuse, a missing UUID, or a schema-hash match/drift. It never creates a database or applies SQL.
 
+`--check` requires a cloud mode: pass `--mode 2|3`, or a D1 flag that implies
+mode 2. Because `--plan` never prompts, a bare `deploy --plan --check` defaults
+to mode 1 and is now **rejected with exit 2** (with an explicit message) instead
+of silently ignoring `--check`.
+
 - Exit `0` — the plan is actionable.
 - Exit `2` — a real run would stop (bad flags/config/state, missing D1 id, schema drift under `--yes`, …).
 - Exit `1` — `--check` could not complete its read-only lookup.
@@ -172,7 +177,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 | `--skip-schema` | never apply `dist/schema.sql`; conflicts with `--schema=apply` |
 | `--schema=apply` | force-apply `dist/schema.sql`, even when the D1 has tables |
 | `--plan` | preview only: no build/writes/cloud mutation; exit 0 if actionable, 2 if a real run would stop |
-| `--check` | with `--plan`: add read-only account verification and `d1 list` / table-count calls |
+| `--check` | with `--plan` in mode 2/3: add read-only account verification and `d1 list` / table-count calls; rejected in mode 1 |
 | `--allow-account-change` | allow continuing on a different Cloudflare account than `lw-state.json` records (clears the stale URL/deploy time; D1 must resolve in the new account) |
 | `--yes` / `-y` | accept all defaults, never prompt (CI); schema drift and an unconfirmed account change still stop |
 | any other `--flag` | forwarded to `build` (e.g. `--no-cache`) |
@@ -200,6 +205,7 @@ Re-run with --allow-account-change to switch, or remove lw-state.json to start f
 - `--skip-schema` together with `--schema=apply` → `use either --skip-schema or --schema=apply, not both`.
 - `--schema` other than `apply` → `only "apply" is supported`.
 - `--check` without `--plan` → `--check is only valid with --plan`.
+- `--check` with `--plan` in mode 1 → rejected with exit 2 (`--check requires --mode 2 or 3 ...`); mode 1 is build-only and has no cloud checks to verify.
 - `--dry-run` → rejected with a `--plan` hint.
 - `--d1-id` that is not a UUID → `invalid D1 database_id ... (expected a UUID)`; a UUID that is not on the account → `D1 database_id "..." was not found on this account`.
 - Mode 2/3 with a `wrangler.jsonc` that has no bindable D1 entry (no `d1_databases` array, a placeholder without a `database_name`, or no entry for the resolved name) → fails before creating a database.
@@ -263,14 +269,14 @@ If the app lives on GitHub, `build --strict` alone answers "did it compile"; it 
 not tell a reviewer **which routes are actually served and which gaps ship**. The
 official CI surface closes that:
 
-- **[docs/CI.md](docs/CI.md)** — the contract: three layers (tool decides, reporter
+- **[docs/CI.md](CI.md)** — the contract: three layers (tool decides, reporter
   posts, pipeline schedules), the copy-paste `ci.yml`/`deploy.yml`, token scopes,
   and the traps that break a deploy silently (`--no-cache`, a valid random `APP_KEY`,
   `APP_URL` baked at build, `CACHE_STORE=file` disabling the login throttle).
 - **`action/verdict`** — reads the build log, posts one sticky PR comment
   (`### Verdict: RUNS WITH DECLARED GAPS`) plus the job summary. Fork-safe, always
   exit 0, never hides a gap. The mark, palette and voice it carries are defined
-  once in **[docs/BRAND.md](docs/BRAND.md)**, together with how to pin the action
+  once in **[docs/BRAND.md](BRAND.md)**, together with how to pin the action
   in your own repo instead of copying the script.
 - **`app-check.yml` / `app-deploy.yml`** — optional reusable workflows for apps that
   match the defaults. The documented pattern is the contract; these are convenience.
@@ -341,11 +347,12 @@ version, CLI flags and the curated `LW_*` env keys.
 ```bash
 npx laravel-workers deploy
 #   mode 2:  creates or reuses <worker>-db and applies dist/schema.sql
-#            when the D1 is empty; populated D1s are skipped, prompted, or refused on drift
+#            when the D1 is empty; a populated D1 is prompted, refused on drift,
+#            and refused under --yes when no schema hash was recorded
 #   mode 3:  + runs `wrangler deploy` and records the URL in lw-state.json
 ```
 
-Use `deploy --plan --mode 3 --d1-auto` to see what the resolver can determine (worker/name, D1 action/identity), the schema decision, and the files a real run would touch before any of that happens. Add `--check` for read-only D1 verification.
+Use `deploy --plan --mode 3 --d1-auto` to see what the resolver can determine (worker/name, D1 action/identity), the schema decision, and the files a real run would touch before any of that happens. Add `--check` for read-only D1 verification (mode 2/3 only; `--check` in mode 1 is rejected).
 
 The old three-command dance is still there, decomposed — `build` for compiling, the flags for CI (`--mode 3 --d1-auto --name x`), and `doctor --cloud` for the auth preflight (a separate command; `deploy` does not call it).
 
