@@ -45,3 +45,72 @@ export function snapshotFiles(uri, name) {
   if (route === '') return ['index.html'];
   return [`${route}.html`, `${route}/index.html`];
 }
+
+// Two page names are claimed outside the route table: `index.html` is the root
+// page, and `404.html` is written after the snapshots as the edge error page
+// (or shipped by the app itself). A route that produces either name silently
+// overwrites - or is overwritten by - that writer. The root route is the
+// legitimate owner of `index.html`; no route owns `404.html`.
+const RESERVED_PAGE_FILES = new Map([
+  ['index.html', { ownerRoute: '', claimant: 'the root route (/)' }],
+  ['404.html', { ownerRoute: null, claimant: 'the edge 404 page writer' }],
+]);
+
+const normalizeRoute = (route) => trimSlashes(route ?? '');
+
+/**
+ * The output files claimed by more than one distinct writer.
+ *
+ * Each claim is `{ route, files, label? }`: `route` is the URI a page is
+ * rendered for, `files` is what snapshotFiles() returns for it, and `label`
+ * is the human name used in the failure message (defaults to the route).
+ * Returns `{ file, claimants: string[] }[]`, empty when every file has one owner.
+ */
+export function findSnapshotCollisions(claims) {
+  const byFile = new Map();
+  const seenRoutes = new Set();
+  for (const claim of claims) {
+    const route = normalizeRoute(claim.route);
+    // `/about` and `/about/` are one route to Laravel (and to snapshotFiles),
+    // not two claimants for the same file.
+    if (seenRoutes.has(route)) continue;
+    seenRoutes.add(route);
+    const label = claim.label || (route === '' ? 'the root route (/)' : `route /${route}`);
+    for (const file of claim.files || []) {
+      if (!byFile.has(file)) byFile.set(file, new Set());
+      const reserved = RESERVED_PAGE_FILES.get(file);
+      // The root route writing its own index.html is the reserved owner, not
+      // a second claimant. Every other writer of a reserved name is.
+      if (!(reserved && reserved.ownerRoute !== null && reserved.ownerRoute === route)) {
+        byFile.get(file).add(label);
+      }
+    }
+  }
+
+  const collisions = [];
+  for (const [file, writers] of byFile) {
+    const reserved = RESERVED_PAGE_FILES.get(file);
+    const claimants = [...writers];
+    if (reserved && claimants.length && !claimants.includes(reserved.claimant)) {
+      claimants.push(reserved.claimant);
+    }
+    if (claimants.length > 1) collisions.push({ file, claimants });
+  }
+  return collisions;
+}
+
+/** Fail before any page is written when two writers claim the same output file. */
+export function assertNoSnapshotCollisions(claims) {
+  const collisions = findSnapshotCollisions(claims);
+  if (!collisions.length) return;
+  const lines = collisions.map(({ file, claimants }) => {
+    const names = claimants.length === 2 ? claimants.join(' and ') : claimants.join(', ');
+    return `  public/${file} <- ${names}`;
+  });
+  throw new Error(
+    'prerender output-file collision: more than one writer claims the same page file:\n' +
+      lines.join('\n') +
+      '\n  -> give each route a distinct `static` name in registry.json, or remove one of the\n' +
+      '     colliding routes; the build refuses to let one page silently overwrite another'
+  );
+}

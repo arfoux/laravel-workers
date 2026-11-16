@@ -128,3 +128,27 @@ test('rt-url: a list with more values than the route has parameters drops the ex
   assert.equal(rt.route('crud.show', [1, 2]), 'http://localhost/crud/1');
 });
 
+
+// Symfony restores %2F on a WILDCARD SEGMENT so it can carry a path, but a
+// query value goes through http_build_query()/rawurlencode() and keeps %2F
+// (PHP 8.3 probe). The two encoders must not be shared.
+test('rt-url: a query value keeps %2F while a wildcard segment still keeps /', () => {
+  const rt = makeRt();
+  assert.equal(rt.route('crud.show', { post: 1, q: 'a/b' }), 'http://localhost/crud/1?q=a%2Fb');
+  assert.equal(rt.route('routing.wild', { path: 'a/b' }), 'http://localhost/routing/wild/a/b');
+  assert.equal(rt.route('crud.show', { post: 1, q: 'a b/c' }), 'http://localhost/crud/1?q=a%20b%2Fc');
+});
+
+// A compiled controller builds its runtime as buildRt(null, { routeMap }):
+// there is no route_names in the context, yet Route::has() must still answer
+// true for any name the map can resolve. The no-source guard stays in place.
+test('rt-url: Route::has() sees the names in opts.routeMap (compiled-controller shape)', () => {
+  const rt = buildRt(null, { strict: true, runtime: true, origin: ORIGIN, routeMap: ROUTE_MAP });
+  assert.equal(rt.Route.has('crud.show'), true);
+  assert.equal(rt.Route.has('missing'), false);
+  assert.equal(rt.route('crud.show', { post: 3 }), 'http://localhost/crud/3');
+
+  const bare = buildRt(null, { strict: true });
+  assert.equal(bare.Route.has('crud.show'), false);
+  assert.ok(bare.__warnings.some((w) => w.indexOf('route_names') !== -1));
+});
