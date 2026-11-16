@@ -3,6 +3,11 @@ name: ci
 on:
   push:
   pull_request:
+  # Affected-only selection keeps PR/push fast; a recurring FULL pass catches
+  # anything a narrowed selection could miss (new import styles, generated files).
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 
 # One run per ref: without this, a second push to a branch leaves the first
 # run burning four runners (and a Laravel `create-project` in each e2e job) on a
@@ -24,7 +29,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # gate-affected.mjs diffs against origin/$GITHUB_BASE_REF on PRs. The
+      # default depth-1 checkout does not fetch that ref, which would force the
+      # full fallback on every PR; fetch the history so selection can work.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -33,36 +43,58 @@ jobs:
       - run: npm --prefix compiler install
       # One definition of "verified" (package.json → tools/check-syntax.mjs):
       # the suite, the corpus, the docs gate, the benchmarks, the shipped
-      # sources parsing, and the tarball gate. PRs take the fast path: the one
-      # measured-slow file (`schedule-utc.test.mjs`, ~168 s of ~245 s) is left
-      # to the push/main run, which executes the identical full script the
-      # release workflow uses. Same checks, different timing — no gate is
-      # removed, only deferred to the branch that must be fully green.
-      - name: Verify (fast on PR, full on push)
+      # sources parsing, and the tarball gate. PRs AND pushes take the affected
+      # path: tools/gate-affected.mjs selects only tests whose transitive import
+      # closure (or basename stem) covers a changed file, then runs the SAME five
+      # invariant gates gate:fast runs. An untested source file, an empty diff or
+      # a git failure forces the full gate:ci instead — narrowing can never
+      # silently skip verification. Scheduled/manual runs always use gate:ci.
+      - name: Verify (affected on PR/push, full on schedule)
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            npm run gate:fast
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "push" ]; then
+            npm run gate:affected
           else
             npm run gate:ci
           fi
-      # The CODE-coverage instrument (S12): Node's own, no dependency. The
-      # shadow harness's `coverage` counts scenario STEPS, not lines — this is
-      # the number that shows the kernel lines no test ever executes (measured
-      # 2026-11-02: ~83% line coverage over `kernel/tests`). `budget.test.mjs`
-      # is excluded from this run: it asserts wall-clock p95 budgets and the
-      # instrument would slow the kernel down enough to measure the instrument.
-      # The same slow file is deferred on PRs; main keeps the full report.
-      - name: Code coverage (fast on PR, full on push)
+
+  # The CODE-coverage instrument (S12): Node's own, no dependency. The
+  # shadow harness's `coverage` counts scenario STEPS, not lines — this is
+  # the number that shows the kernel lines no test ever executes (measured
+  # 2026-11-02: ~83% line coverage over `kernel/tests`). `budget.test.mjs`
+  # is excluded from this run: it asserts wall-clock p95 budgets and the
+  # instrument would slow the kernel down enough to measure the instrument.
+  # It still runs in the plain suite. This is its own job so the report no
+  # longer adds a second serial suite to the `test` job's critical path; it
+  # starts alongside `test` instead. PR/push use affected selection under the
+  # instrument, scheduled/manual take the full report.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      # Same full history as `test`: the coverage job runs the same affected
+      # selection, so it needs origin/$GITHUB_BASE_REF too.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm --prefix compiler install
+      - name: Code coverage (affected on PR/push, full on schedule)
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            npm run test:coverage:fast
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "push" ]; then
+            npm run gate:affected:coverage
           else
             npm run test:coverage
           fi
 
   # The PHP oracle parity (the real Laravel app vs the compiled rung) needs a
   # Laravel app — the `test` job has none, so those tests skip there. This job
-  # creates one and runs them for real.
+  # creates one and runs them for real. The route-scan oracle used to share this
+  # job; it now owns `route-oracle` so the two `create-project` calls run in
+  # parallel instead of serially. Nothing is removed — each app and each check
+  # still runs exactly as before.
   parity-oracle:
     name: parity (PHP 8.3 oracle vs the compiled rung)
     runs-on: ubuntu-latest
@@ -87,19 +119,6 @@ jobs:
           php artisan key:generate
           php artisan migrate --force
       - run: npm install
-      # The scanner is TOTAL, not sampled: the per-helper tests (27 cases) never
-      # compared the whole route set with `route:list --json`, which is how
-      # `health: "/up"` (framework-registered, not a route file) shipped a 404 on
-      # the edge where PHP answers 200. This runs the scan AND the real oracle on
-      # a fresh app and asserts the sets are equal, minus the two framework-only
-      # routes named in the test. A fresh app is the point: the scan is
-      # app-agnostic, so nothing app-specific is needed.
-      - name: Create a fresh Laravel app (the route-scan oracle)
-        run: composer create-project "$LARAVEL_SKELETON" scan-app --no-interaction --prefer-dist
-      - name: The route scan is total — its set equals route:list
-        env:
-          LW_LARAVEL_APP: ${{ github.workspace }}/scan-app
-        run: node --test tools/tests/routes-oracle-parity.test.mjs
       - name: PHP oracle parity (auth, cache, csrf, session, rate limiter)
         # tools/oracle-ran.mjs runs the set itself and asserts the summary: exit
         # 0, at least one test, and 0 failed/skipped/cancelled/todo. A plain
@@ -110,6 +129,38 @@ jobs:
         env:
           LW_LARAVEL_APP: ${{ github.workspace }}/parity-app
         run: node tools/oracle-ran.mjs
+
+  # The route-scan half of the old combined parity job. It creates its own
+  # route-scan app and runs the total-set test against it, in parallel with the
+  # PHP oracle above. Still a fresh app, still the full scan, still fatal.
+  route-oracle:
+    name: parity (route scan is total)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, sqlite3
+      - name: Create a fresh Laravel app (the route-scan oracle)
+        run: composer create-project "$LARAVEL_SKELETON" scan-app --no-interaction --prefer-dist
+      - run: npm install
+      # The scanner is TOTAL, not sampled: the per-helper tests (27 cases) never
+      # compared the whole route set with `route:list --json`, which is how
+      # `health: "/up"` (framework-registered, not a route file) shipped a 404 on
+      # the edge where PHP answers 200. This runs the scan AND the real oracle on
+      # a fresh app and asserts the sets are equal, minus the two framework-only
+      # routes named in the test. A fresh app is the point: the scan is
+      # app-agnostic, so nothing app-specific is needed.
+      - name: The route scan is total — its set equals route:list
+        env:
+          LW_LARAVEL_APP: ${{ github.workspace }}/scan-app
+        run: node --test tools/tests/routes-oracle-parity.test.mjs
 
   e2e-fresh-laravel:
     name: e2e (fresh Laravel, zero config)
@@ -228,7 +279,7 @@ jobs:
           # worker: `not_found_handling: "404-page"` is what gives that answer the app's
           # own 404 body instead of the platform's null-body 404 (measured on a live app
           # before the knob: 404, 0 B — docs/EVIDENCE.md finding 2).
-          nf=$(curl -s -o /tmp/nf.html -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/nonexistent-route-for-404)
+          nf=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8791/nonexistent-route-for-404)
           echo "unknown-path=$nf bytes=$(wc -c < /tmp/nf.html)"
           if [ "$nf" != "404" ]; then echo "--- dev.log ---"; tail -n 60 dev.log; exit 1; fi
           # this step already cd'd into the app: the path is relative to it

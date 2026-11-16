@@ -36,6 +36,26 @@ function mapToken(tok, min, max, aliases) {
   throw new Error('invalid CRON field value ' + tok);
 }
 
+// The edge calls cronMatches for every dumped event on every trigger. Without
+// these caches it rebuilds the same Intl.DateTimeFormat and re-parses the same
+// expression on each call — measured 118 s for the 400k-instant UTC parity
+// sweep in kernel/tests/schedule-utc.test.mjs. Both caches are bounded: the
+// worker is long-lived, so an attacker-controlled expression must not be able
+// to grow them without limit.
+const FORMATTER_CACHE_MAX = 64;
+const EXPRESSION_CACHE_MAX = 256;
+const formatterCache = new Map();
+const expressionCache = new Map();
+
+function cached(map, key, make, max) {
+  const hit = map.get(key);
+  if (hit !== undefined) return hit;
+  const value = make();
+  map.set(key, value);
+  if (map.size > max) map.delete(map.keys().next().value);
+  return value;
+}
+
 // The day-of-month part: the set plus the 'L' form (the last day of the
 // month) - the cron library's DayOfMonthField.
 function parseDayOfMonth(part) {
@@ -101,12 +121,13 @@ function wallParts(date, timeZone) {
   if (!timeZone) {
     return { minute: date.getUTCMinutes(), hour: date.getUTCHours(), day: date.getUTCDate(), month: date.getUTCMonth() + 1, year: date.getUTCFullYear(), weekday: date.getUTCDay() };
   }
-  let fmt;
-  try {
-    fmt = new Intl.DateTimeFormat('en-US', { timeZone, hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
-  } catch (e) {
-    throw new Error('Invalid timezone: ' + timeZone);
-  }
+  const fmt = cached(formatterCache, timeZone, () => {
+    try {
+      return new Intl.DateTimeFormat('en-US', { timeZone, hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+    } catch (e) {
+      throw new Error('Invalid timezone: ' + timeZone);
+    }
+  }, FORMATTER_CACHE_MAX);
   const parts = fmt.formatToParts(date);
   const get = (type) => parts.find(p => p.type === type)?.value;
   const weekday = WD[get('weekday')];
@@ -121,18 +142,24 @@ function wallParts(date, timeZone) {
 }
 
 function match(date, expr, timeZone) {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return false;
-  const [mS, hS, domS, monS, dowS] = parts;
-  const sets = [
-    parsePart(mS, 0, 59, null),
-    parsePart(hS, 0, 23, null),
-    null,
-    parsePart(monS, 1, 12, MONTHS),
-    null,
-  ];
-  const dom = parseDayOfMonth(domS);
-  const dow = parseDayOfWeek(dowS);
+  const parsed = cached(expressionCache, expr, () => {
+    const parts = expr.trim().split(/\s+/);
+    if (parts.length !== 5) return null;
+    const [mS, hS, domS, monS, dowS] = parts;
+    return {
+      sets: [
+        parsePart(mS, 0, 59, null),
+        parsePart(hS, 0, 23, null),
+        null,
+        parsePart(monS, 1, 12, MONTHS),
+        null,
+      ],
+      dom: parseDayOfMonth(domS),
+      dow: parseDayOfWeek(dowS),
+    };
+  }, EXPRESSION_CACHE_MAX);
+  if (parsed === null) return false;
+  const { sets, dom, dow } = parsed;
   const wp = wallParts(date, timeZone);
   const vals = [wp.minute, wp.hour, wp.day, wp.month, wp.weekday];
   for (let i = 0; i < 2; i++) {
