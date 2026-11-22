@@ -1,6 +1,6 @@
 # Claim coverage — `laravel-workers` 0.5.1
 
-Scope: every published claim in `README.md` lines 24–90 (What this is, counts, commands, What runs today, refused constructs, Honest limits) plus `package.json` scripts. The only claim family deliberately excluded is the Cloudflare Workers CPU benchmark (user decision; see "Out of scope"). No numbers are estimated here: every figure below comes from an observed command result or a named file/evidence section.
+Scope: every published claim in `README.md` lines 24–90 (What this is, counts, commands, What runs today, refused constructs, Honest limits), the Philosophy section (`README.md:107-112`, especially "No silent gaps"), plus `package.json` scripts. S146k(1) flagged Philosophy as an unscoped claim family that collided with P7; it is now in scope and row 36 records the "No silent gaps" claim as REFUTED for published 0.5.1 (the local fix is unreleased). The only claim family deliberately excluded is the Cloudflare Workers CPU benchmark (user decision; see "Out of scope"). No numbers are estimated here: every figure below comes from an observed command result or a named file/evidence section.
 
 ## What "proven" means — four evidence tiers
 

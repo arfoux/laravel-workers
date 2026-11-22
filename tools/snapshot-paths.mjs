@@ -20,6 +20,57 @@
 // controller replaces a snapshot) and the route table all ask this function, so
 // a change cannot leave one of them pointing at a file that no longer exists.
 
+// S146h: a registry `static` value is an OUTPUT FILE NAME under dist/public,
+// not a URL and not a filesystem path. Refuse everything that could make
+// join()/resolve() climb out of that directory, including Windows-only names
+// (trailing dot/space, ADS, device names). The checks are deliberately blunt;
+// legitimate nested names such as "vendor/foo/x.js" are unaffected.
+import { unsafeNameReason, assertNoSymlinkComponents } from './path-safety.mjs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+
+const unsafeName = (reason, value) =>
+  new Error(
+    `unsafe snapshot output name ${JSON.stringify(value)}: ${reason} - use a relative name such as "docs/guide/index.html"`
+  );
+
+function checkName(value, { absolute }) {
+  if (absolute && value.startsWith('/')) throw unsafeName('absolute paths are not allowed', value);
+  const reason = unsafeNameReason(value);
+  if (reason) throw unsafeName(reason, value);
+}
+
+/** Fail on a `registry.json` -> `static` name that could escape dist/public. */
+export function assertSafeStaticName(name) {
+  const value = String(name ?? '');
+  if (value === '') return; // empty means "derive the name from the route"
+  checkName(value, { absolute: true });
+}
+
+// Routes are written as `/about` by Laravel, so their leading slash is normal;
+// it is trimmed before this runs. Everything else is still checked.
+function assertSafeDerivedName(name) {
+  checkName(String(name), { absolute: false });
+}
+
+/**
+ * Fail if `file` would resolve outside `publicRoot`. This is the backstop: even
+ * if a future caller bypasses assertSafeStaticName() (or a name reaches the
+ * writer from a new source), no byte can be written outside dist/public.
+ * It also refuses symlinked/junctioned components under the root, which a
+ * purely lexical check cannot see. Returns the resolved absolute output path.
+ */
+export function assertContainedSnapshotPath(publicRoot, file) {
+  const root = resolve(publicRoot);
+  const out = resolve(root, String(file));
+  const rel = relative(root, out);
+  if (rel === '' || rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+    throw new Error(
+      `refusing snapshot output path ${JSON.stringify(file)}: it resolves outside dist/public (${out})`
+    );
+  }
+  return assertNoSymlinkComponents(root, out);
+}
+
 const trimSlashes = (s) => String(s).replace(/^\/+|\/+$/g, '');
 
 /**
@@ -31,6 +82,7 @@ const trimSlashes = (s) => String(s).replace(/^\/+|\/+$/g, '');
  */
 export function snapshotFiles(uri, name) {
   if (name !== undefined && name !== null && String(name) !== '') {
+    assertSafeStaticName(name);
     const file = trimSlashes(name);
     if (file === 'index.html') return ['index.html'];
     if (!file.endsWith('.html')) return [file];
@@ -43,6 +95,7 @@ export function snapshotFiles(uri, name) {
 
   const route = trimSlashes(uri ?? '');
   if (route === '') return ['index.html'];
+  assertSafeDerivedName(route);
   return [`${route}.html`, `${route}/index.html`];
 }
 
