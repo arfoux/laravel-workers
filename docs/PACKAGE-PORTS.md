@@ -9,6 +9,28 @@ your app's ports dir (`LW_PORTS_DIR`, default `ports/`) — the build copies the
 one port controller per path). A `{param}` key is the Laravel route pattern; a `:param` form is
 NOT matched and fails the build.
 
+## The seven named packages — one verdict each
+
+The table below is the branding claim: it says what a port actually answers, and what is
+deliberately **not** claimed. Every verdict is quoted from the generated research archive
+`docs/archive/PACKAGES-RESEARCH.md` (line reference in the last column); no capability is
+invented here. "Full port" means a shipped `ports/packages/<slug>.mjs` handler on a route in
+`registry.json`; "half port" means only the HTTP seam is covered; "compile-only" means the
+package ships no runtime — its scaffolding is ordinary compiled app code.
+
+| Package (research version) | Verdict | What the edge really answers | What it does **not** answer | Source |
+|---|---|---|---|---|
+| `laravel/socialite` (v5.31.0) | full port | authorize redirect + callback, `state` in the compiled session, code→token exchange, guard login | the vendor provider classes / `Socialite::` facade (LW002) | `PACKAGES-RESEARCH.md:86-91` |
+| `laravel/reverb` (v1.12.0) | auth-half port only | `POST /broadcasting/auth` signed by WebCrypto with the app secret; guarded channels take identity from the session guard, never from `channel_data` | the long-running WebSocket daemon (`reverb:start`, ReactPHP socket) and broadcast listeners (LW002) | `PACKAGES-RESEARCH.md:165-169` |
+| `spatie/laravel-permission` (v8.5.0) | guarded D1 port | `hasRole` / `hasPermissionTo` / `hasAnyRole` + guarded writes over `roles` / `permissions` / `model_has_*`, with guard identity required before any write | the vendor provider, `HasRoles` trait, Blade directive and per-user cache; anonymous writes | `PACKAGES-RESEARCH.md:111-119` |
+| `maatwebsite/excel` (v4.0.6) | CSV-only port | CSV writer over D1 rows | XLSX (needs PHP `zip`/`xml`/`gd2` + PhpSpreadsheet), queued exports, styles/formulas/charts; XLSX answers an explicit 406, never a fake file | `PACKAGES-RESEARCH.md:281-286` |
+| `filament/filament` (v5.11.2) | refuse | nothing from the vendor runtime; an app can still read/write D1 behind its own compiled Blade routes | panel resources, tables, forms, modals, Livewire/Alpine interaction (LW002/LW004) | `PACKAGES-RESEARCH.md:371-374` |
+| `laravel/breeze` (v2.4.2) | compile / install-only | the Blade scaffold it installs — routes, controllers, views and auth flow — compiles like any app code | the installer itself (dev-only) and Inertia/Vue/React SPA presets; Inertia JSON is a phase-3 port, not a claim here | `PACKAGES-RESEARCH.md:105-110` |
+| `barryvdh/laravel-debugbar` (v4.4.5) | refuse (dev-only) | nothing from the vendor collectors | query/log/request collectors bound through a provider + middleware; the documented substitution is D1 metrics plus `wrangler tail` | `PACKAGES-RESEARCH.md:390` |
+
+The showcase app wires the four real seams and exercises them end to end; its `README.md` and
+`docs/PORT-TESTING.md` carry the app-side route matrix. This file only owns the fleet contract.
+
 ## Secrets the handlers read (set them as Worker secrets, never in the registry)
 
 | Slug(s) | Secret / binding |
