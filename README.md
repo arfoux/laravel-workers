@@ -93,6 +93,47 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 - **Livewire is out of v1** — `MAP.md` calls it hard and Inertia a feasible phase-3 JSON port. What compiles is the Blade/PHP subset the corpus and the oracle cover; the rest is a port you write.
 - **Ports have recorded runtime gaps:** the AI SDK's SSE stream, MCP over STDIO/SSE — [docs/PACKAGE-PORTS.md](docs/PACKAGE-PORTS.md) names each one.
 
+## Local git safety hooks
+
+Two hooks guard this repo against the two git mistakes that happened here before: a bulk
+`git add -A` sweeping another session's work into a commit, and an unapproved history
+rewrite. They live in `.git/hooks/` — local to each clone, deliberately **not** committed —
+so every agent sees them regardless of branch.
+
+| Hook | What it blocks | Decision variable (set by the user, never by the agent) |
+|---|---|---|
+| `.git/hooks/pre-commit` | any commit with more than `LW_STAGED_LIMIT` staged files (default `25`) | `LW_BIG_COMMIT_OK=1 git commit ...` |
+| `.git/hooks/pre-push` | a non-fast-forward push (`--force` / `--force-with-lease`) or a remote branch deletion | `LW_ALLOW_FORCE=1 git push --force-with-lease ...`, `LW_ALLOW_DELETE=1 git push origin --delete <branch>` |
+
+The enforcing lines are these:
+
+```sh
+# .git/hooks/pre-commit
+STAGED_LIMIT="${LW_STAGED_LIMIT:-25}"
+count=$(git diff --cached --name-only | wc -l | tr -d ' ')
+if [ "$count" -gt "$STAGED_LIMIT" ] && [ "${LW_BIG_COMMIT_OK:-}" != "1" ]; then
+  echo "pre-commit: $count files staged (limit $STAGED_LIMIT)." >&2
+  exit 1
+fi
+```
+
+```sh
+# .git/hooks/pre-push — one line from the ref list on stdin
+case "$local_sha" in
+  0000000000000000000000000000000000000000)  # deleting a remote ref
+    [ "${LW_ALLOW_DELETE:-}" = "1" ] || exit 1 ;;
+esac
+if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null \
+   && [ "${LW_ALLOW_FORCE:-}" != "1" ]; then
+  echo "pre-push: $remote_ref is NOT a fast-forward." >&2
+  exit 1
+fi
+```
+
+Normal flow stays selective commit-by-path (`git add <named-file>`), never `git add -A` or
+`git add .`. The full scripts, including their incident rationale, are in
+`.git/hooks/pre-commit` and `.git/hooks/pre-push`.
+
 ---
 
 ## Where to read next
