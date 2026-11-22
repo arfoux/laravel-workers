@@ -95,7 +95,15 @@ function parse(ctx) {
         ? {}
         : (() => {
             const j = call('json');
-            return j === undefined || j === null ? {} : j;
+            if (j !== undefined && j !== null) return j;
+            // A form-urlencoded POST has no `json()` body; the kernel Request
+            // parses it into the `post` bag (Request::post()). Ports such as
+            // Reverb's /broadcasting/auth read socket_id/channel_name from
+            // ctx.body, so an empty object here turned every signed request
+            // into a 422 on the compiled rung while the unit tests (which pass
+            // URLSearchParams directly) stayed green.
+            const p = call('post');
+            return p === undefined || p === null ? {} : p;
           })();
 
   const rawText = async () => {
@@ -165,8 +173,14 @@ export async function guardUserId(ctx = {}) {
   }
   try {
     const u = typeof ctx.user === 'function' ? await ctx.user() : ctx.user;
-    if (u && u.id != null) {
-      const id = Number(u.id);
+    // The kernel's guard returns a compiled Eloquent model: its id lives behind
+    // getAuthIdentifier(), not a plain `.id` property (see kernel/auth.mjs and
+    // `rt.auth().id()`). Reading only `.id` made EVERY guarded route port answer
+    // 401 on the real Worker while unit tests that pass `{id: 7}` stayed green.
+    const rawId =
+      u && typeof u.getAuthIdentifier === 'function' ? u.getAuthIdentifier() : u && u.id;
+    if (rawId != null) {
+      const id = Number(rawId);
       if (Number.isFinite(id)) return id;
     }
   } catch {

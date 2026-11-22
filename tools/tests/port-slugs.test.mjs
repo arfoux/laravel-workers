@@ -144,6 +144,12 @@ test('port-slugs: generated imports are quoted and allowlisted', () => {
     portImportSpecifier('./ports/', 'vendor/foo/port'),
     JSON.stringify('./ports/vendor/foo/port.mjs')
   );
+  // ROOT_SLUG is emitted by tools/route-slug.mjs for the `/` controller; the
+  // writer has always produced _root.mjs, so the import guard must accept it.
+  assert.equal(
+    portImportSpecifier('./controllers/', '_root'),
+    JSON.stringify('./controllers/_root.mjs')
+  );
   // Quotes/semicolons/newlines cannot reach generated JS: the strict module
   // grammar refuses them even though the plain name guard allows them.
   const injection = 'evil";throw new Error("pwned");var x=1';

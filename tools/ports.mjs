@@ -39,7 +39,10 @@ export function assertSafePortSlug(slug) {
 // Slugs interpolated into generated JS are additionally held to a strict
 // module-name grammar. JSON.stringify quotes the specifier; the grammar keeps
 // even a future emitter that drops the quoting from being able to inject code.
-const PORT_MODULE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
+// The one leading underscore is ROOT_SLUG (`tools/route-slug.mjs`) — the empty
+// URI's controller module — which this grammar previously rejected while its
+// writer happily emitted it.
+const PORT_MODULE_RE = /^_?[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 
 /** Validate `slug` and return a JSON-quoted module specifier for generated JS. */
 export function portImportSpecifier(base, slug) {
