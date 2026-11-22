@@ -97,15 +97,15 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 
 Two hooks guard this repo against the two git mistakes that happened here before: a bulk
 `git add -A` sweeping another session's work into a commit, and an unapproved history
-rewrite. They live in `.git/hooks/` — local to each clone, deliberately **not** committed —
-so every agent sees them regardless of branch.
+rewrite. They live in `.git/hooks/` — local to this clone and deliberately **not** committed;
+a fresh clone has none. Copy the two scripts below into `.git/hooks/` to install the same guards.
 
 | Hook | What it blocks | Decision variable (set by the user, never by the agent) |
 |---|---|---|
 | `.git/hooks/pre-commit` | any commit with more than `LW_STAGED_LIMIT` staged files (default `25`) | `LW_BIG_COMMIT_OK=1 git commit ...` |
 | `.git/hooks/pre-push` | a non-fast-forward push (`--force` / `--force-with-lease`) or a remote branch deletion | `LW_ALLOW_FORCE=1 git push --force-with-lease ...`, `LW_ALLOW_DELETE=1 git push origin --delete <branch>` |
 
-The enforcing lines are these:
+Condensed enforcing logic (the hook files carry the full scripts and their incident rationale):
 
 ```sh
 # .git/hooks/pre-commit
