@@ -97,8 +97,10 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 
 Two hooks guard this repo against the two git mistakes that happened here before: a bulk
 `git add -A` sweeping another session's work into a commit, and an unapproved history
-rewrite. They live in `.git/hooks/` — local to this clone and deliberately **not** committed;
-a fresh clone has none. Copy the two scripts below into `.git/hooks/` to install the same guards.
+rewrite. They live in `.git/hooks/` — local to this clone, deliberately **not** committed,
+not shipped in the tarball, and absent from a fresh clone. The blocks below are condensed
+renditions of what each guard enforces; the runnable scripts exist only in this clone's
+`.git/hooks/`, together with their incident rationale.
 
 | Hook | What it blocks | Decision variable (set by the user, never by the agent) |
 |---|---|---|
