@@ -256,3 +256,38 @@ function lw_oracle_freeze(array $input): void
         \Carbon\Carbon::setTestNow(\Carbon\Carbon::createFromTimestamp(((int) $input['freeze_ms']) / 1000));
     }
 }
+
+/**
+ * The Laravel boot, clock freeze and dedicated sqlite connection shared by the
+ * HTTP parity oracles. Keeping the order of the config sets here means one
+ * oracle cannot silently boot a differently configured app than the other.
+ *
+ * @return array{0: mixed, 1: mixed, 2: mixed, 3: string} [$app, $config, $kernel, $dbPath]
+ */
+function lw_oracle_boot(string $tool, array $input, string $appRoot): array
+{
+    $app = require $appRoot . '/bootstrap/app.php';
+
+    lw_oracle_freeze($input);
+
+    $kernel = $app->make(\Illuminate\Contracts\Http\Kernel::class);
+    $kernel->bootstrap();
+
+    $config = $app['config'];
+
+    $dbPath = $input['db_path'] ?? ($appRoot . '/' . $tool . '.sqlite');
+    if (file_exists($dbPath)) @unlink($dbPath);
+    @mkdir(dirname($dbPath), 0777, true);
+    touch($dbPath);
+
+    $config->set('database.default', 'lw_http');
+    $config->set('database.connections.lw_http', [
+        'driver' => 'sqlite',
+        'database' => $dbPath,
+        'prefix' => '',
+        'foreign_key_constraints' => true,
+    ]);
+    \Illuminate\Support\Facades\DB::purge('lw_http');
+
+    return [$app, $config, $kernel, $dbPath];
+}

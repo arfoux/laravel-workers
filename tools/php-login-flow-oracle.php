@@ -38,31 +38,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-$app = require $appRoot . '/bootstrap/app.php';
-
-lw_oracle_freeze($input);
-
-$kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-$kernel->bootstrap();
-
-$config = $app['config'];
-
-// ---------------------------------------------------------------------------
-// Dedicated sqlite database (sessions + oracle user + cache for the throttle).
-// ---------------------------------------------------------------------------
-$dbPath = $input['db_path'] ?? ($appRoot . '/php-login-flow-oracle.sqlite');
-if (file_exists($dbPath)) @unlink($dbPath);
-@mkdir(dirname($dbPath), 0777, true);
-touch($dbPath);
-
-$config->set('database.default', 'lw_http');
-$config->set('database.connections.lw_http', [
-    'driver' => 'sqlite',
-    'database' => $dbPath,
-    'prefix' => '',
-    'foreign_key_constraints' => true,
-]);
-DB::purge('lw_http');
+// Boot, clock freeze and the dedicated sqlite connection are one shared rule
+// (tools/_root.php), so neither HTTP oracle can drift on config order or the
+// default database path.
+[$app, $config, $kernel, $dbPath] = lw_oracle_boot('php-login-flow-oracle', $input, $appRoot);
 
 Schema::connection('lw_http')->create('sessions', function ($table) {
     $table->string('id')->primary();
