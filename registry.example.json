@@ -81,6 +81,17 @@
     "/auth/jwt/user": "jwt-auth",
     "/auth/firebase/verify": "firebase-php-jwt",
     "/auth/auth0/callback": "auth0",
-    "/img/{path}": "glide"
+    "/img/{path}": "glide",
+    "/analytics": "analytics",
+    "/auth/apple/callback": "apple-signin",
+    "/pdf/generate": "dompdf",
+    "/flare/report": "flare",
+    "/horizon/metrics": "horizon-metrics",
+    "/horizon/record": "horizon-metrics",
+    "/midtrans/webhook": "midtrans-webhook",
+    "/tenants": "multitenancy",
+    "/tenants/{tenantKey}": "multitenancy",
+    "/welcome-notify": "welcome-notification",
+    "/xendit/webhook": "xendit-webhook"
   }
 }

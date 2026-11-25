@@ -1,9 +1,12 @@
 # The package-port fleet — routes, secrets, collisions
 
-`registry.example.json` maps every route the fleet's `ports/packages/*.mjs` handlers answer.
+`registry.example.json` maps every route port whose path the fleet itself declares.
 Copy the entries you use into your app's `registry.json` and copy those `<slug>.mjs` files into
 your app's ports dir (`LW_PORTS_DIR`, default `ports/`) — the build copies them into
 `dist/src/ports/` and refuses (`--strict`) a key that is not in `route:list` or a slug with no file.
+Ports with no canonical path (helpers, middleware ports, path-supplied templates and an alternate
+handler for a colliding path) are classified in *Fleet classification* below instead of being
+given a made-up registry key.
 
 **Keys are route paths, not verb+path**: one entry covers every verb on that path (the build emits
 one port controller per path). A `{param}` key is the Laravel route pattern; a `:param` form is
@@ -67,6 +70,21 @@ The showcase app wires the four real seams and exercises them end to end; its `R
 | `auth0` | `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_REDIRECT_URI` (optional `AUTH0_AUDIENCE`) |
 | `glide` | `CF_IMAGE_RESIZING_ZONE`, optional `GLIDE_ORIGIN` |
 | `localization` (middleware) | no secret — plain Wrangler vars `LOCALES`, `DEFAULT_LOCALE`, `HIDE_DEFAULT_LOCALE_IN_URL` |
+| `analytics` | `GA4_PROPERTY_ID`, `GA4_SERVICE_ACCOUNT_JSON` (JWT minted from the service account) |
+| `apple-signin` | `APPLE_TEAM_ID`, `APPLE_CLIENT_ID`, `APPLE_P8_PRIVATE_KEY`; optional `APPLE_KEY_ID`, `APPLE_REDIRECT_URI` |
+| `dompdf` | `PDF_API_KEY`; optional `PDF_PROVIDER` (`docraptor` or `cf-browser-rendering`), `CF_ACCOUNT_ID` (required for `cf-browser-rendering`) |
+| `echo` | `BROADCAST_KEY`/`BROADCAST_SECRET`, or provider keys `REVERB_KEY`/`REVERB_SECRET`, `PUSHER_KEY`/`PUSHER_SECRET`; D1 `channel_memberships`, `personal_access_tokens` |
+| `flare` | `FLARE_KEY`, `FLARE_PROJECT_KEY` |
+| `horizon-metrics` | no secret — D1 `job_metrics` (via `ensureSchema`) |
+| `midtrans-webhook` | `MIDTRANS_SERVER_KEY`; D1 `transactions` (via `ensureSchema`) |
+| `mollie-webhook` | `MOLLIE_API_KEY` (required); optional `MOLLIE_WEBHOOK_SECRET` — a legacy unsigned webhook is still accepted; D1 `mollie_payments` (via `ensureSchema`) |
+| `multitenancy` | no secret — D1 `tenants` (via `ensureSchema`) |
+| `welcome-notification` | `MAILGUN_DOMAIN` + `MAILGUN_SECRET`, or `POSTMARK_TOKEN`; optional `MAIL_PROVIDER` |
+| `xendit-webhook` | `XENDIT_CALLBACK_TOKEN`; D1 `invoices` (via `ensureSchema`) |
+| `csp-middleware` (helper) | no secret — Wrangler var `CSP_POLICY` or `ctx.body.policy` |
+| `honeypot-middleware` (helper) | no secret — optional Wrangler var `HONEYPOT_MIN_DELTA_MS` |
+| `response-cache` (middleware) | no secret — uses the request's `ctx.db` (D1) |
+| `inertia` (page handler) | no secret — optional Wrangler vars `APP_VERSION` / `INERTIA_VERSION` |
 
 DB-backed ports create their tables through their exported `ensureSchema`, which `dist/schema.sql`
 folds in — apply the schema (`npx laravel-workers deploy` mode 2) before serving them.
@@ -74,7 +92,8 @@ folds in — apply the schema (`npx laravel-workers deploy` mode 2) before servi
 ## Route seams — the paths the newer ports answer
 
 Each new port is one registry slug (one file); a slug may answer several paths when it dispatches
-on the resolved verb + path. All of these are already in `registry.example.json`.
+on the resolved verb + path. Every row below except `localization` (a middleware port) is in
+`registry.example.json`; the path-less helpers/templates are covered in *Fleet classification*.
 
 | Slug | Route(s) | Notes / substitution |
 |---|---|---|
@@ -95,6 +114,15 @@ on the resolved verb + path. All of these are already in `registry.example.json`
 | `firebase-php-jwt` | `POST /auth/firebase/verify` | Verifies a Firebase ID token against Google's JWKS (RS256), `kid`-matched. |
 | `auth0` | `POST /auth/auth0/callback` | Stops at the `authorization_code` token exchange; compose with `firebase-php-jwt` for offline `id_token` verify. |
 | `glide` | `GET /img/{path}` | Transform delegated to Cloudflare Image Resizing (`/cdn-cgi/image`) — no GD/Imagick. `w` is required (422 without it). |
+| `analytics` | `GET /analytics` | spatie/laravel-analytics run-report over the GA4 Data API; a Google service account mints the Bearer token. Query-driven (`metrics`, `dimensions`, `dateRange`), not the Laravel dashboard UI. |
+| `apple-signin` | `POST /auth/apple/callback` | Socialite Apple `form_post` callback: the one-time `code` is exchanged at Apple's token endpoint; the identity comes from that exchange. |
+| `dompdf` | `POST /pdf/generate` | Substitution, not 1:1 — an external renderer returns the PDF bytes base64; there is no PHP Dompdf engine at the edge. |
+| `flare` | `POST /flare/report` | Flare report transport; a caller-supplied `stacktrace` replaces PHP's local capture. |
+| `horizon-metrics` | `GET /horizon/metrics`, `POST /horizon/record` | D1 `job_metrics` per-queue aggregation and a JSON dashboard in place of Horizon's Redis UI. |
+| `midtrans-webhook` | `POST /midtrans/webhook` | Provider-called: the `signature_key` body field is checked against `MIDTRANS_SERVER_KEY`; D1 `transactions` is keyed by `order_id` so a provider retry is idempotent. |
+| `multitenancy` | `POST /tenants`, `GET|POST /tenants/{tenantKey}` | D1 `tenants` create/resolve. A **seam route** — the caller must be authenticated (`guardUserId`); tenant↔user membership stays app-side. |
+| `welcome-notification` | `POST /welcome-notify` | Thin router over `mailgun-mail` / `postmark-mail`; no SMTP at the edge. |
+| `xendit-webhook` | `POST /xendit/webhook` | Provider-called: `x-callback-token` is verified in constant time before the D1 `invoices` write. |
 | `localization` | `GET /localization` | **Middleware port**, not a route port: declare it under `middlewarePorts`. Returns `null` (continues to the route handler) for a prefixed or unprefixed path, setting `ctx.locale` on the way; the only response it produces is the `HIDE_DEFAULT_LOCALE_IN_URL` 302. |
 
 ## Seam routes — a route whose Laravel counterpart is app-side code
@@ -157,9 +185,62 @@ fact, not a route conflict.
 | Path | Ports that answer it | Note |
 |---|---|---|
 | `/broadcasting/auth` | `pusher`, `reverb`, `echo` | Only one broadcast backend is installed in a real app. The example maps it to `reverb` and `/broadcast` to `pusher`; a Pusher-only app should move `/broadcasting/auth` to `pusher`. All three sign a `private-`/`presence-` channel only for a request that carries an identity (`ctx.user()` / a `middlewarePorts`-written `ctx.user_id` for pusher+reverb, a Sanctum token for `echo`) and answer `401` otherwise — Laravel requires a user for a guarded channel; the presence `user_id` comes from that identity, never from `channel_data`. The **bodies are shared** (`kernel/packages/broadcast.mjs`): `401`/`403` use Laravel's error key `{"message": …}` (Laravel renders `AccessDeniedHttpException` — and its `AuthorizationException` — that way, with an empty text the ports replace by a helpful one), while the `422` for a missing `socket_id`/`channel_name` is the ports' own guard: Laravel has no such case, an empty `channel_name` takes the `403` path too. |
+The example keeps `/broadcasting/auth` on `reverb`; `echo` is the **alternative** handler for that
+same path, not a second registry key (JSON would silently keep the last duplicate).
 
 Route-key uniqueness is enforced by JSON: a duplicate key silently keeps the last one, so a bad
 registry fails at request time, not build time — keep the pairs in this table apart.
+
+## Fleet classification — the 16 slugs missing from the original example
+
+The inventory that found 63 `ports/packages/*.mjs` files against 47 registry slugs turned up 16
+unregistered slugs. They are not one homogeneous set: nine own a fixed path and are now
+registered; seven are documented here instead of being given a path the source never declares.
+
+### Route ports now in the example registry (9 slugs, 11 paths)
+
+`analytics` (`GET /analytics`) · `apple-signin` (`POST /auth/apple/callback`) · `dompdf`
+(`POST /pdf/generate`) · `flare` (`POST /flare/report`) · `horizon-metrics` (`GET /horizon/metrics`,
+`POST /horizon/record`) · `midtrans-webhook` (`POST /midtrans/webhook`) · `multitenancy`
+(`POST /tenants`, `GET|POST /tenants/{tenantKey}`) · `welcome-notification` (`POST /welcome-notify`) ·
+`xendit-webhook` (`POST /xendit/webhook`).
+
+Every path above is the one written in the port's own header/tests; each slug also has a row in
+*Route seams* and in `tools/port-manifest.mjs`. `multitenancy` is additionally a seam route and
+keeps the `guardUserId` requirement documented there.
+
+### Route ports with no canonical path (3 slugs)
+
+- `echo` answers `POST /broadcasting/auth`, the path the example assigns to `reverb`. JSON cannot
+  carry two keys for one path, so it is the **alternative** handler in *Collisions*, not a second
+  registry entry.
+- `mollie-webhook` is a provider-called webhook receiver: the port, its tests and the docs never
+  declare a path. The app picks the path when it maps the slug; `/mollie/webhook` here would be a
+  guess, so none is written.
+- `inertia` maps as `{ "<path>": "inertia" }` — the page path is the app's route, not a fleet
+  constant. Its named `redirect()` export serves controller ports that need a 303.
+
+### Middleware ports (2 slugs)
+
+- `localization` — URL-locale resolver under `middlewarePorts`; sets `ctx.locale` and normally
+  returns `null` (see *Middleware ports*).
+- `response-cache` — GET hit / mutating-request purge under `middlewarePorts`; a hit short-circuits,
+  a miss or non-GET returns `null`.
+
+Neither owns a route: both require a request-time handler of their own.
+
+### Helper ports, not routes and not `middlewarePorts` (2 slugs)
+
+- `csp-middleware` — returns the CSP header value and per-request nonce for a compiled view
+  handler to stamp; it does not render HTML.
+- `honeypot-middleware` — validates a POST form body and returns a JSON verdict (`200 {ok:true}`
+  on pass, `403` on failure). It is **not** a `middlewarePorts` drop-in: that response would
+  short-circuit the route instead of continuing to its handler. The build-wired equivalent is the
+  separate `kernel/packages/honeypot.mjs` primitive.
+
+Both are listed as non-route entries in `tools/port-manifest.mjs`; `inertia` and the two middleware
+ports are there too. The kernel's `csp`/`honeypot`/`response-cache` primitives are distinct files
+from these port slugs.
 
 ## Middleware ports — the run-around seam
 
@@ -302,8 +383,8 @@ for every route that needs a port.
 The package ships **reference ports** for the popular packages under
 `ports/packages/*.mjs`. Copy the ones you need into your app's ports dir and map
 their routes; each DB-backed port exports `ensureSchema` so `dist/schema.sql` can
-create its D1 tables. [`registry.example.json`](../registry.example.json) maps the
-whole fleet — **47 route-port slugs → 80 registry paths** — and
+create its D1 tables. [`registry.example.json`](../registry.example.json) maps
+every fixed-path route port — **56 route-port slugs → 91 registry paths** — and
 [`docs/PACKAGE-PORTS.md`](PACKAGE-PORTS.md) lists the secrets each handler
 reads and the route collisions (`/broadcasting/auth`, answered by both `pusher`
 and `reverb`). `tools/tests/packages-wiring.test.mjs` builds a real app with a
