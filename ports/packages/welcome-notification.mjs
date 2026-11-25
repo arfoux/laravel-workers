@@ -17,9 +17,9 @@
 // POSTMARK_FROM in env (the delegated handler enforces it). The provider's HTTP
 // response is mapped 1:1 to {status, headers, body}; a thrown fetch becomes 502.
 import { jsonPort } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
-import mailgun from './mailgun-mail.mjs';
-import postmark from './postmark-mail.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
+import { send as sendMailgun } from './mailgun-mail.mjs';
+import { send as sendPostmark } from './postmark-mail.mjs';
 
 // Compose the standard notification payload for a welcome mail.
 function welcomePayload(email, name) {
@@ -30,6 +30,7 @@ function welcomePayload(email, name) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const req = (ctx && ctx.body) || {};
   const email = typeof req.email === 'string' ? req.email.trim() : '';
   if (!email) {
@@ -38,10 +39,10 @@ export default async function handle(ctx, env) {
 
   const name = typeof req.name === 'string' ? req.name.trim() : '';
   const provider = String(req.mailProvider || (env && env.MAIL_PROVIDER) || '').toLowerCase();
-  const inner = { body: welcomePayload(email, name), query: {}, params: {} };
+  const payload = welcomePayload(email, name);
 
   if (provider === 'mailgun') {
-    return mailgun(inner, {
+    return sendMailgun(payload, {
       ...env,
       MAILGUN_DOMAIN: req.mailgunDomain || (env && env.MAILGUN_DOMAIN),
       MAILGUN_SECRET: req.mailgunKey || (env && env.MAILGUN_SECRET),
@@ -49,7 +50,7 @@ export default async function handle(ctx, env) {
   }
 
   if (provider === 'postmark') {
-    return postmark(inner, {
+    return sendPostmark(payload, {
       ...env,
       POSTMARK_TOKEN: req.postmarkToken || (env && env.POSTMARK_TOKEN),
     });

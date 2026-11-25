@@ -29,11 +29,12 @@ function makeImageFetch(status, bytes, { contentType = 'image/jpeg', headers } =
 }
 
 // A plain-ctx helper matching the port-ctx shape for a GET with query + params.
-const imgCtx = (query, params) => ({
+const imgCtx = (query, params, user_id = 1) => ({
   method: 'GET',
   query,
   params: params || { path: 'x.jpg' },
   host: 'example.com',
+  user_id,
 });
 
 // ---- Build the CF Image Resizing URL ---------------------------------------
@@ -138,6 +139,19 @@ test('glide: empty path capture is a 422 before fetch', async () => {
   const fetchImpl = makeImageFetch(200, new ArrayBuffer(4));
   const res = await glide(imgCtx({ w: '200' }, { path: '' }), { fetchImpl, CF_IMAGE_RESIZING_ZONE: 'img.example.com' });
   assert.equal(res.status, 422);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+// ---- identity floor --------------------------------------------------------
+
+test('glide: an unauthenticated GET is a 401 and never fetches', async () => {
+  const fetchImpl = makeImageFetch(200, new ArrayBuffer(4));
+  const res = await glide(
+    imgCtx({ w: '200' }, undefined, null),
+    { fetchImpl, CF_IMAGE_RESIZING_ZONE: 'img.example.com' }
+  );
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
   assert.equal(fetchImpl.calls.length, 0);
 });
 

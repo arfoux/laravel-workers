@@ -8,7 +8,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pulse, { summarize, ensureSchema } from '../../ports/packages/pulse.mjs';
 import { FakeD1 } from './_fake-d1.mjs';
-import { makeCtx } from './_helpers.mjs';
+import { makeCtx as baseCtx } from './_helpers.mjs';
+
+// The shared makeCtx carries no identity; every pulse route requires one.
+const makeCtx = (opts) => ({ ...baseCtx(opts), user_id: 1 });
 
 function makeEnv() {
   return { DB: new FakeD1() };
@@ -139,6 +142,23 @@ test('dashboard: range filter narrows to recent entries only', async () => {
   const { summary } = parse(res);
   assert.equal(summary.requests_count, 1);
   assert.equal(summary.top_routes[0].path, '/new');
+});
+
+// ---- identity floor --------------------------------------------------------
+
+test('anonymous: both pulse routes are 401 and write/read nothing', async () => {
+  const env = makeEnv();
+  const record = await pulse(
+    { ...baseCtx({ method: 'POST', body: { type: 'request', path: '/x' } }), user_id: null },
+    env
+  );
+  assert.equal(record.status, 401);
+  assert.equal(JSON.parse(record.body).message, 'Unauthenticated.');
+
+  const dashboard = await pulse({ ...baseCtx({ method: 'GET' }), user_id: null }, env);
+  assert.equal(dashboard.status, 401);
+  assert.equal(JSON.parse(dashboard.body).message, 'Unauthenticated.');
+  assert.equal((env.DB.tables?.get('pulse_entries') || []).length, 0);
 });
 
 // ---- summarize() unit ------------------------------------------------------

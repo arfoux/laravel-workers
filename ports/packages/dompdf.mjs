@@ -34,7 +34,7 @@
 // 'cf-browser-rendering'), CF_ACCOUNT_ID? (required for cf-browser-rendering).
 // Returns { status, headers, body } — 200 + application/pdf (base64) on success,
 // 422 without `html`, 500 without credentials, 502 on upstream failure.
-import { normalizePortCtx, jsonError } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonError, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, basicAuthHeader } from '../../kernel/packages/notify-http.mjs';
 
 const DOCRAPTOR_URL = 'https://docraptor.com/docs';
@@ -81,6 +81,7 @@ export function buildPdfRequest({ provider, html, options, apiKey, accountId }) 
 
 export default async function handle(ctx, env = {}) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
 
   const payload = (ctx && ctx.body) || {};
   const html = typeof payload.html === 'string' ? payload.html.trim() : '';

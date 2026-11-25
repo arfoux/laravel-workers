@@ -32,7 +32,7 @@
 // / MCP_SERVER_VERSION / MCP_PROTOCOL_VERSION for the initialize response.
 // No D1 is required.
 
-import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 const JSONRPC_VERSION = '2.0';
 
@@ -197,6 +197,7 @@ async function dispatch(ctx, env, message) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
 
   // The MCP web server is a POST route. Anything else is not the JSON-RPC
   // transport this port serves — refuse loud (this is where a stdio/SSE client

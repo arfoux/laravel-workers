@@ -13,6 +13,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import welcome from '../../ports/packages/welcome-notification.mjs';
 import { okCtx } from './_helpers.mjs';
+// The shared okCtx has no platform identity; this port guards on ctx.user_id.
+const authCtx = (body) => ({ ...okCtx(body), user_id: 1 });
 
 // Build a fake fetch that records the call and replies with a canned response.
 function makeFetch(status, jsonBody, { headers } = {}) {
@@ -38,7 +40,7 @@ test('welcome/mailgun: posts welcome multipart message to /v3/{domain}/messages'
     mailgunDomain: 'mg.example.com',
     mailgunKey: 'key-1',
   };
-  const ctx = okCtx({ email: 'new@user.com', name: 'Ana', mailProvider: 'mailgun', mailgunDomain: 'mg.example.com', mailgunKey: 'key-1' });
+  const ctx = authCtx({ email: 'new@user.com', name: 'Ana', mailProvider: 'mailgun', mailgunDomain: 'mg.example.com', mailgunKey: 'key-1' });
 
   const res = await welcome(ctx, env);
 
@@ -62,7 +64,7 @@ test('welcome/mailgun: posts welcome multipart message to /v3/{domain}/messages'
 
 test('welcome/mailgun: name omitted falls back to a generic welcome', async () => {
   const fetchImpl = makeFetch(200, {});
-  const ctx = okCtx({ email: 'new@user.com', mailProvider: 'mailgun' });
+  const ctx = authCtx({ email: 'new@user.com', mailProvider: 'mailgun' });
   const env = {
     fetchImpl,
     mailProvider: 'mailgun',
@@ -80,7 +82,7 @@ test('welcome/mailgun: name omitted falls back to a generic welcome', async () =
 
 test('welcome/mailgun: missing domain or key is 500 before fetch', async () => {
   const fetchImpl = makeFetch(200, {});
-  const ctx = okCtx({ email: 'new@user.com', mailProvider: 'mailgun' });
+  const ctx = authCtx({ email: 'new@user.com', mailProvider: 'mailgun' });
   const res = await welcome(ctx, { fetchImpl, mailProvider: 'mailgun' });
   assert.equal(res.status, 500);
   assert.equal(fetchImpl.calls.length, 0);
@@ -90,7 +92,7 @@ test('welcome/mailgun: missing domain or key is 500 before fetch', async () => {
 
 test('welcome/postmark: posts JSON welcome to /email with server token header', async () => {
   const fetchImpl = makeFetch(200, { MessageID: 'abc', ErrorCode: 0, Message: 'OK' });
-  const ctx = okCtx({
+  const ctx = authCtx({
     email: 'new@user.com',
     name: 'Ana',
     mailProvider: 'postmark',
@@ -118,7 +120,7 @@ test('welcome/postmark: posts JSON welcome to /email with server token header', 
 
 test('welcome/postmark: missing token is 500 before fetch', async () => {
   const fetchImpl = makeFetch(200, {});
-  const ctx = okCtx({ email: 'new@user.com', mailProvider: 'postmark' });
+  const ctx = authCtx({ email: 'new@user.com', mailProvider: 'postmark' });
   const res = await welcome(ctx, { fetchImpl, mailProvider: 'postmark', POSTMARK_FROM: 's@x.com' });
   assert.equal(res.status, 500);
   assert.equal(fetchImpl.calls.length, 0);
@@ -128,7 +130,7 @@ test('welcome/postmark: missing token is 500 before fetch', async () => {
 
 test('welcome: missing email is 422 before fetch', async () => {
   const fetchImpl = makeFetch(200, {});
-  const res = await welcome(okCtx({ name: 'Ana', mailProvider: 'mailgun' }), {
+  const res = await welcome(authCtx({ name: 'Ana', mailProvider: 'mailgun' }), {
     fetchImpl,
     mailProvider: 'mailgun',
     mailgunDomain: 'mg',
@@ -140,7 +142,7 @@ test('welcome: missing email is 422 before fetch', async () => {
 
 test('welcome: unknown mailProvider is 422 before fetch', async () => {
   const fetchImpl = makeFetch(200, {});
-  const res = await welcome(okCtx({ email: 'new@user.com', mailProvider: 'ses' }), { fetchImpl });
+  const res = await welcome(authCtx({ email: 'new@user.com', mailProvider: 'ses' }), { fetchImpl });
   assert.equal(res.status, 422);
   assert.equal(fetchImpl.calls.length, 0);
 });
@@ -150,7 +152,7 @@ test('welcome: unknown mailProvider is 422 before fetch', async () => {
 test('welcome: non-2xx provider status is surfaced verbatim', async () => {
   for (const provider of ['mailgun', 'postmark']) {
     const fetchImpl = makeFetch(401, { error: 'nope' });
-    const ctx = okCtx({
+    const ctx = authCtx({
       email: 'new@user.com',
       name: 'Ana',
       mailProvider: provider,
@@ -167,7 +169,7 @@ test('welcome: non-2xx provider status is surfaced verbatim', async () => {
 test('welcome: a thrown fetch becomes a 502, never an unhandled reject', async () => {
   const boom = async () => { throw new Error('dns fail'); };
   for (const provider of ['mailgun', 'postmark']) {
-    const ctx = okCtx({
+    const ctx = authCtx({
       email: 'new@user.com',
       name: 'Ana',
       mailProvider: provider,
@@ -179,4 +181,18 @@ test('welcome: a thrown fetch becomes a 502, never an unhandled reject', async (
     assert.equal(res.status, 502, `${provider} fetch throw should be 502`);
     assert.match(res.body, /dns fail/);
   }
+});
+
+test('welcome: missing identity is a 401 before validation or any fetch', async () => {
+  const fetchImpl = makeFetch(200, {});
+  const ctx = okCtx({ email: 'new@user.com', mailProvider: 'mailgun' }); // no user_id — unauthenticated
+  const res = await welcome(ctx, {
+    fetchImpl,
+    mailProvider: 'mailgun',
+    mailgunDomain: 'mg',
+    mailgunKey: 'k',
+  });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal(fetchImpl.calls.length, 0);
 });

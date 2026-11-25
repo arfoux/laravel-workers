@@ -11,9 +11,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import bugsnag from '../../ports/packages/bugsnag.mjs';
-import { makeFetch, okCtx } from './_helpers.mjs';
+import { makeFetch, okCtx as baseCtx } from './_helpers.mjs';
 
 const okEnv = (fetchImpl) => ({ fetchImpl, BUGSNAG_API_KEY: 'test-api-key' });
+
+// The shared okCtx carries no identity; every guarded route requires one.
+const okCtx = (body) => ({ ...baseCtx(body), user_id: 1 });
 
 // ---- Happy path ------------------------------------------------------------
 
@@ -129,6 +132,19 @@ test('bugsnag: missing message is 422 and never fetches', async () => {
 
   assert.equal(res.status, 422);
   assert.deepEqual(JSON.parse(res.body).error, 'missing `message`');
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+// ---- identity floor --------------------------------------------------------
+
+test('bugsnag: an unauthenticated caller is a 401 and never fetches', async () => {
+  const fetchImpl = makeFetch(202, { ok: true });
+  const res = await bugsnag(
+    { ...baseCtx({ errorClass: 'Error', message: 'x' }), user_id: null },
+    okEnv(fetchImpl)
+  );
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
   assert.equal(fetchImpl.calls.length, 0);
 });
 

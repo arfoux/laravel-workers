@@ -27,7 +27,7 @@
 //   - The CF response is binary — the port returns `{status, headers, body}` with
 //     `body` the bytes as base64 and `content-transfer-encoding: base64` set so
 //     the caller knows to decode before streaming.
-import { normalizePortCtx, jsonError } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonError, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch } from '../../kernel/packages/notify-http.mjs';
 
 const ALLOWED = new Set(['w', 'h', 'fit', 'q', 'dpr']);
@@ -47,6 +47,7 @@ export function buildResizingUrl({ zone, origin, path, params }) {
 
 export default async function handle(ctx, env = {}) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
 
   const zone = env.CF_IMAGE_RESIZING_ZONE;
   if (!zone) {

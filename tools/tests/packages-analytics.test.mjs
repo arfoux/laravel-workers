@@ -65,8 +65,9 @@ function makeFetch(responses) {
   return fetchImpl;
 }
 
-// A GET /analytics ctx: params live on the query string.
-const okCtx = (query = {}) => ({ body: {}, query, params: {} });
+// A GET /analytics ctx: params live on the query string. The handler guards on
+// platform identity, so every case below is an authenticated request.
+const okCtx = (query = {}) => ({ body: {}, query, params: {}, user_id: 1 });
 
 // Generate a fresh RSA keypair (PKCS8 PEM private) for the service account.
 async function makeServiceAccount() {
@@ -233,5 +234,22 @@ test('analytics: missing GA4_SERVICE_ACCOUNT_JSON is a 500 and never fetches', a
   const res = await analyticsPort(okCtx({ metrics: 'activeUsers' }), env);
 
   assert.equal(res.status, 500);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('analytics: missing identity is a 401 before env checks or any fetch', async () => {
+  const sa = await makeServiceAccount();
+  const fetchImpl = makeFetch({ status: 200, body: JSON.stringify({ access_token: 't' }) });
+  const env = {
+    fetchImpl,
+    GA4_PROPERTY_ID: '769381901615',
+    GA4_SERVICE_ACCOUNT_JSON: JSON.stringify(sa),
+  };
+  const ctx = { ...okCtx({ metrics: 'activeUsers' }), user_id: null };
+
+  const res = await analyticsPort(ctx, env);
+
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
   assert.equal(fetchImpl.calls.length, 0);
 });

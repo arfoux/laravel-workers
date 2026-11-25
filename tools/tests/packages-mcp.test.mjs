@@ -24,7 +24,7 @@ const rpc = (method, params, id = 1) => ({
   method,
   ...(params !== undefined ? { params } : {}),
 });
-const ctxFor = (body, method = 'POST') => ({ body, method, query: {}, params: {} });
+const ctxFor = (body, method = 'POST', user_id = 1) => ({ body, method, query: {}, params: {}, user_id });
 
 // A small tool registry: one tool that records its arguments, one that throws.
 function makeEnv(overrides = {}) {
@@ -238,6 +238,19 @@ test('mcp: a thrown internal error becomes -32603, never an unhandled reject', a
   assert.equal(body.id, 9);
   assert.equal(body.error.code, -32603);
   assert.match(body.error.message, /registry exploded/);
+});
+
+// ---- identity floor --------------------------------------------------------
+
+test('mcp: an unauthenticated caller is a 401 before any dispatch', async () => {
+  const { env, calls } = makeEnv();
+  const res = await mcp(
+    ctxFor(rpc('tools/call', { name: 'echo', arguments: {} }), 'POST', null),
+    env
+  );
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.deepEqual(calls, []);
 });
 
 // ---- transport refusal -----------------------------------------------------

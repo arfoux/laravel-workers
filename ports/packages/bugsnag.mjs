@@ -25,7 +25,7 @@ import {
   deliverVia,
   normaliseErrorReport,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 const BUGSNAG_URL = 'https://notify.bugsnag.com/events';
 
@@ -37,6 +37,7 @@ const NOTIFIER = {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const body = (ctx && ctx.body) || {};
 
   // `errorClass` (or Laravel's `error_class`) plus the coerced stack — a real

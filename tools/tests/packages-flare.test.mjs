@@ -11,10 +11,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import flare from '../../ports/packages/flare.mjs';
 import { makeFetch, okCtx } from './_helpers.mjs';
+// The shared okCtx has no platform identity; this port guards on ctx.user_id.
+const authCtx = (body) => ({ ...okCtx(body), user_id: 1 });
 
 test('flare: posts report JSON to Flare with X-Flare-Key auth', async () => {
   const fetchImpl = makeFetch(200, { message: 'Reported successfully' });
-  const ctx = okCtx({
+  const ctx = authCtx({
     errorClass: 'RuntimeException',
     message: 'Something exploded',
     stacktrace: [{ file: '/app/Http/Controllers/Foo.php', lineNumber: 42, method: 'bar' }],
@@ -42,7 +44,7 @@ test('flare: posts report JSON to Flare with X-Flare-Key auth', async () => {
 
 test('flare: string stack frames are coerced and metadata passthrough preserved', async () => {
   const fetchImpl = makeFetch(200, { ok: true });
-  const ctx = okCtx({
+  const ctx = authCtx({
     errorClass: 'Error',
     stacktrace: ['/app/bootstrap/app.php'],
     metadata: { context: 'deploy' },
@@ -61,7 +63,7 @@ test('flare: string stack frames are coerced and metadata passthrough preserved'
 
 test('flare: missing FLARE_KEY is a 500 and never fetches', async () => {
   const fetchImpl = makeFetch(200, { ok: true });
-  const ctx = okCtx({ errorClass: 'Error' });
+  const ctx = authCtx({ errorClass: 'Error' });
   const env = { fetchImpl, FLARE_PROJECT_KEY: 'p' };
 
   const res = await flare(ctx, env);
@@ -73,7 +75,7 @@ test('flare: missing FLARE_KEY is a 500 and never fetches', async () => {
 
 test('flare: missing FLARE_PROJECT_KEY is a 500 and never fetches', async () => {
   const fetchImpl = makeFetch(200, { ok: true });
-  const ctx = okCtx({ errorClass: 'Error' });
+  const ctx = authCtx({ errorClass: 'Error' });
   const env = { fetchImpl, FLARE_KEY: 'k' };
 
   const res = await flare(ctx, env);
@@ -85,7 +87,7 @@ test('flare: missing FLARE_PROJECT_KEY is a 500 and never fetches', async () => 
 
 test('flare: missing errorClass is a 422 and never fetches', async () => {
   const fetchImpl = makeFetch(200, { ok: true });
-  const ctx = okCtx({ message: 'no class here' });
+  const ctx = authCtx({ message: 'no class here' });
   const env = { fetchImpl, FLARE_KEY: 'k', FLARE_PROJECT_KEY: 'p' };
 
   const res = await flare(ctx, env);
@@ -97,7 +99,7 @@ test('flare: missing errorClass is a 422 and never fetches', async () => {
 
 test('flare: without a stack a minimal (edge) frame is sent', async () => {
   const fetchImpl = makeFetch(201, { ok: true });
-  const ctx = okCtx({ errorClass: 'TypeError' });
+  const ctx = authCtx({ errorClass: 'TypeError' });
   const env = { fetchImpl, FLARE_KEY: 'k', FLARE_PROJECT_KEY: 'p' };
 
   const res = await flare(ctx, env);
@@ -112,7 +114,7 @@ test('flare: without a stack a minimal (edge) frame is sent', async () => {
 
 test('flare: non-2xx provider status is surfaced verbatim', async () => {
   const fetchImpl = makeFetch(400, { error: 'bad payload' });
-  const ctx = okCtx({ errorClass: 'Error' });
+  const ctx = authCtx({ errorClass: 'Error' });
   const env = { fetchImpl, FLARE_KEY: 'k', FLARE_PROJECT_KEY: 'p' };
 
   const res = await flare(ctx, env);
@@ -125,11 +127,23 @@ test('flare: a thrown fetch becomes a 502, never an unhandled reject', async () 
   const fetchImpl = async () => {
     throw new Error('network down');
   };
-  const ctx = okCtx({ errorClass: 'Error' });
+  const ctx = authCtx({ errorClass: 'Error' });
   const env = { fetchImpl, FLARE_KEY: 'k', FLARE_PROJECT_KEY: 'p' };
 
   const res = await flare(ctx, env);
 
   assert.equal(res.status, 502);
   assert.match(res.body, /network down/);
+});
+
+test('flare: missing identity is a 401 before validation or any fetch', async () => {
+  const fetchImpl = makeFetch(200, { ok: true });
+  const ctx = okCtx({ errorClass: 'Error' }); // no user_id — unauthenticated
+  const env = { fetchImpl, FLARE_KEY: 'k', FLARE_PROJECT_KEY: 'p' };
+
+  const res = await flare(ctx, env);
+
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal(fetchImpl.calls.length, 0);
 });

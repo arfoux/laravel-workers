@@ -31,7 +31,7 @@ function makePdfFetch(status, bytes, { contentType = 'application/pdf', headers 
 // Fake one-page PDF bytes (%PDF- magic + a byte, for base64 round-trip checks).
 const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x00, 0x01]).buffer;
 
-const pdfCtx = (body) => ({ method: 'POST', body, query: {}, params: {} });
+const pdfCtx = (body) => ({ method: 'POST', body, query: {}, params: {}, user_id: 1 });
 
 // ---- Request builders ------------------------------------------------------
 
@@ -164,4 +164,12 @@ test('dompdf: a thrown fetch becomes a 502, never an unhandled reject', async ()
   const res = await dompdf(pdfCtx({ html: '<p>x</p>' }), { fetchImpl, PDF_API_KEY: 'k' });
   assert.equal(res.status, 502);
   assert.match(res.body, /dns fail/);
+});
+
+test('dompdf: missing identity is a 401 before any validation or fetch', async () => {
+  const fetchImpl = makePdfFetch(200, PDF_BYTES);
+  const res = await dompdf({ ...pdfCtx({ html: '<p>x</p>' }), user_id: null }, { fetchImpl, PDF_API_KEY: 'k' });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal(fetchImpl.calls.length, 0);
 });

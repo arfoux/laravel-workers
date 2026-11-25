@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import handle from '../../ports/packages/ai-sdk.mjs';
 import { FakeD1 } from './_fake-d1.mjs';
 
-const ctx = (body, db) => ({ body, query: {}, params: {}, ...(db ? { db } : {}) });
+const ctx = (body, db, user_id = 1) => ({ body, query: {}, params: {}, user_id, ...(db ? { db } : {}) });
 
 // A fake fetch that records calls and replies from the LAST recorded request,
 // or a fixed reply. `replies` may be an array (consumed per call) to script a
@@ -177,6 +177,19 @@ test('tool loop: an unbound tool degrades to an error result the model sees', as
   assert.equal(res.status, 200);
   const toolMsg = fetchImpl.calls[1].body.messages.find((m) => m.role === 'tool');
   assert.match(toolMsg.content, /not available|no executor/);
+});
+
+// ---- identity floor --------------------------------------------------------
+
+test('anonymous: POST /ai/chat is a 401 and never fetches', async () => {
+  const fetchImpl = makeFetch(openaiCompletion('x'));
+  const res = await handle(
+    ctx({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] }, undefined, null),
+    { OPENAI_API_KEY: 'sk-test', fetchImpl }
+  );
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal(fetchImpl.calls.length, 0);
 });
 
 // ---- guardrails ------------------------------------------------------------

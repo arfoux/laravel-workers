@@ -1,4 +1,4 @@
-import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/horizon-metrics.mjs — port of the laravel/horizon job-metrics
 // seam.
@@ -99,6 +99,7 @@ export function aggregateByQueue(rows, { queue } = {}) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   try {
     await ensureSchema(env);
     const method = ctx.request ? ctx.request.method : 'GET';
