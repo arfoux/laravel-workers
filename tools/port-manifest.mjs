@@ -39,6 +39,9 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Ports that answer NO fixed path — the registry maps them to a slug with no
 // route key (middleware/header helpers, the Inertia page renderer). Kept here
 // so the manifest is the complete port inventory, but they carry no route.
+// `echo` (an alternate handler for a colliding path) and `mollie-webhook` (the
+// app supplies the webhook path) also have no canonical path; they are
+// classified in docs/PACKAGE-PORTS.md instead of keyed here.
 const NON_ROUTE_PORTS = {
   'csp-middleware': { slug: 'csp-middleware', methods: [], file: 'ports/packages/csp-middleware.mjs' },
   'honeypot-middleware': { slug: 'honeypot-middleware', methods: [], file: 'ports/packages/honeypot-middleware.mjs' },
@@ -146,6 +149,18 @@ export const PORT_MANIFEST = {
   '/auth/firebase/verify': { slug: 'firebase-php-jwt', methods: ['POST'], file: 'ports/packages/firebase-php-jwt.mjs' },
   '/auth/auth0/callback': { slug: 'auth0', methods: ['POST'], file: 'ports/packages/auth0.mjs' },
   '/img/{path}': { slug: 'glide', methods: ['GET'], file: 'ports/packages/glide.mjs' },
+  // -- additional route ports (paths declared in the port headers) ---------
+  '/analytics': { slug: 'analytics', methods: ['GET'], file: 'ports/packages/analytics.mjs' },
+  '/auth/apple/callback': { slug: 'apple-signin', methods: ['POST'], file: 'ports/packages/apple-signin.mjs' },
+  '/pdf/generate': { slug: 'dompdf', methods: ['POST'], file: 'ports/packages/dompdf.mjs' },
+  '/flare/report': { slug: 'flare', methods: ['POST'], file: 'ports/packages/flare.mjs' },
+  '/horizon/metrics': { slug: 'horizon-metrics', methods: ['GET'], file: 'ports/packages/horizon-metrics.mjs' },
+  '/horizon/record': { slug: 'horizon-metrics', methods: ['POST'], file: 'ports/packages/horizon-metrics.mjs' },
+  '/midtrans/webhook': { slug: 'midtrans-webhook', methods: ['POST'], file: 'ports/packages/midtrans-webhook.mjs' },
+  '/tenants': { slug: 'multitenancy', methods: ['POST'], file: 'ports/packages/multitenancy.mjs' },
+  '/tenants/{tenantKey}': { slug: 'multitenancy', methods: ['GET', 'POST'], file: 'ports/packages/multitenancy.mjs' },
+  '/welcome-notify': { slug: 'welcome-notification', methods: ['POST'], file: 'ports/packages/welcome-notification.mjs' },
+  '/xendit/webhook': { slug: 'xendit-webhook', methods: ['POST'], file: 'ports/packages/xendit-webhook.mjs' },
 
   // -- non-route ports (helpers / page renderer), keyed by slug ------------
   ...NON_ROUTE_PORTS,

@@ -39,7 +39,7 @@ A checkout is not an app: `npx laravel-workers verify` runs the container checks
 | the app → edge map, D1 limits, the to-verify list | [MAP.md](../MAP.md) |
 | every CLI flag, the guided deploy, the tiers, exit codes, the build pipeline | [DEPLOY.md](DEPLOY.md) |
 | the file map + the 30-second architecture | [INTERNALS.md](INTERNALS.md) |
-| guard / route / middleware ports, the 47-slug package fleet | [PACKAGE-PORTS.md](PACKAGE-PORTS.md) |
+| guard / route / middleware ports, the 56 route-port slugs in the example registry | [PACKAGE-PORTS.md](PACKAGE-PORTS.md) |
 | vendor-lite provisioning and the measured boot costs | [PLAN-VENDOR.md](PLAN-VENDOR.md) |
 | what the verdict badge means (the app-facing CI contract) | [CI.md](CI.md) |
 | how this repo works: branch → PR → green → tag, and the parity rules | [PROCESS.md](PROCESS.md) |

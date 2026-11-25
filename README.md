@@ -145,7 +145,7 @@ Normal flow stays selective commit-by-path (`git add <named-file>`), never `git 
 | every CLI flag, the guided deploy, the tiers, exit codes, refusals | [docs/DEPLOY.md](docs/DEPLOY.md) |
 | what compiles, what refuses, per construct | [COMPILED.md](COMPILED.md) |
 | the app → edge map, D1 limits, the to-verify list | [MAP.md](MAP.md) |
-| guard / route / middleware ports, the 47-slug package fleet | [docs/PACKAGE-PORTS.md](docs/PACKAGE-PORTS.md) |
+| guard / route / middleware ports, the 56 route-port slugs in the example registry | [docs/PACKAGE-PORTS.md](docs/PACKAGE-PORTS.md) |
 | what the verdict badge means (the app-facing CI contract) | [docs/CI.md](docs/CI.md) |
 | what changed, when | [CHANGELOG.md](CHANGELOG.md) |
 | what was actually run against a real app — and what was not, with the commands and their output | [docs/EVIDENCE.md](docs/EVIDENCE.md) |
