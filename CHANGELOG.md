@@ -7,6 +7,37 @@ Everything in this section is **unreleased**. Published `npx --yes laravel-worke
 (npm `gitHead 7c73223e…`) still has the old behavior; the local `v0.5.1` tag points at a
 different commit and is not valid evidence for shipped behavior.
 
+### Close the three residual port findings (2026-11-25, still 0.5.1)
+
+- **OAuth `state` is cookie-only.** `kernel/packages/socialite.mjs` no longer creates,
+  prunes or consumes `lw_oauth_state`; the redirect writes only the HttpOnly
+  `oauth_state` cookie and the callback verifies `state` against that cookie before any
+  provider fetch. `ports/packages/auth0.mjs` now verifies a caller-supplied `state`
+  against the same cookie before the token exchange; with no `state` it stays a pure
+  exchange and CSRF validation belongs to the caller. Tradeoff: a callback that lost the
+  app-domain cookie is a `401` — a D1 row alone never proved which browser initiated
+  the flow. `docs/D1-SCHEMA.md` lost the dead table.
+- **Seam gating is uniform.** Every HTTP route of the 20 ports that spend provider
+  credentials or write app state now calls `guardUserId()` → `unauthorized()` before
+  touching the body, D1, a signature or the network: all ten `/notify/*` mail/push
+  transports, `ai-sdk`, `mcp`, `pulse` (both routes), `bugsnag`, `glide`, `analytics`,
+  `dompdf`, `flare`, `horizon-metrics` (both routes) and `welcome-notification`.
+  Provider-called webhooks keep signature verification as their authentication;
+  exported in-process helpers stay ungated — `mailgun-mail` and `postmark-mail` export
+  `send(body, env)` so `welcome-notification` delegates without a second HTTP guard.
+- **S10 oracle bootstrap deduped.** The identical Laravel boot, clock freeze and
+  dedicated-sqlite configuration in both PHP oracles now live in one
+  `lw_oracle_boot()` helper in `tools/_root.php`; config order and emitted JSON are
+  unchanged.
+
+Proof: the 22 affected suites pass after fixing two stale `Unauthorized.` expectations
+to the shared `Unauthenticated.` body; `LW_LARAVEL_APP=<minimal Laravel app> node --test
+kernel/tests/http.test.mjs` passes 40/40 including the live PHP-oracle parity step;
+both PHP oracles emit their JSON shape when driven directly. Full `npm run gate:ci`:
+2350 tests / 2296 pass / 0 fail / 54 skipped (app-dependent oracles absent), corpus
+55/55, docs 105/105, `gate --strict`, bench, syntax and pack gate all pass. Version
+stays `0.5.1`.
+
 ### Build-time response precompute for two hot routes (2026-11-25, still 0.5.1)
 
 `@lw-precompute <app-relative fixture>` on a zero-argument controller method makes the build boot the real Laravel controller through `tools/controller-oracle.php`, compare the fresh answer with the checked-in fixture, and emit a literal `{status, headers, body}` handler — no bcrypt, no hash facade in the worker. A stale fixture or a changed controller fails the build instead of baking a lie. `lw-showcase` marks `DashboardController@hash`; `DataController@index` now does one `Post::all()` and the rest as in-memory Collection work.

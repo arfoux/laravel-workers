@@ -1,4 +1,4 @@
-import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, jsonResponse, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 // ports/packages/pulse.mjs — port of laravel/pulse observability seam.
 //
@@ -121,6 +121,7 @@ export function summarize(rows, { rangeMinutes } = {}) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   try {
     await ensureSchema(env);
     const method = ctx.request ? ctx.request.method : 'GET';

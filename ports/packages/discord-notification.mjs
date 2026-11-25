@@ -29,7 +29,7 @@ import {
   jsonPort,
   deliverVia,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 // Discord Bot API `create message` endpoint. The webhook URL is used verbatim
 // (it is tenant-specific), so it is not joined onto this base.
@@ -37,6 +37,7 @@ const DISCORD_CHANNEL_MESSAGES = 'https://discord.com/api/channels';
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const raw = (ctx && ctx.body) || {};
   const str = (v) => (typeof v === 'string' ? v : '');
 

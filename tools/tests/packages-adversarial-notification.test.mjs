@@ -37,6 +37,8 @@ import expo from '../../ports/packages/expo-notification.mjs';
 import fcm from '../../ports/packages/fcm-notification.mjs';
 import webpush from '../../ports/packages/webpush-notification.mjs';
 import onesignal from '../../ports/packages/onesignal-notification.mjs';
+import slack from '../../ports/packages/slack-notification.mjs';
+import twilio from '../../ports/packages/twilio-sms.mjs';
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 if (!globalThis.btoa) globalThis.btoa = (s) => Buffer.from(s, 'binary').toString('base64');
@@ -64,7 +66,8 @@ function makeFetch(spec) {
   return fetchImpl;
 }
 
-const okCtx = (body, params = {}) => ({ body, query: {}, params });
+const okCtx = (body, params = {}) => ({ body, query: {}, params, user_id: 1 });
+const anonCtx = (body, params = {}) => ({ body, query: {}, params });
 
 // ---------------------------------------------------------------------------
 // Key material
@@ -223,6 +226,14 @@ test('telegram ADV: idempotent re-send is two independent subrequests (stateless
   await telegram(okCtx(payload), env);
   await telegram(okCtx(payload), env);
   assert.equal(fetchImpl.calls.length, 2); // no server-side dedup key
+});
+
+test('telegram ADV: missing caller identity is a 401 before any credential check or fetch', async () => {
+  const fetchImpl = makeFetch({ status: 200, jsonBody: { ok: true } });
+  const res = await telegram(anonCtx({ to: '123', body: 'hi' }), { fetchImpl });
+  assert.equal(res.status, 401);
+  assert.deepEqual(JSON.parse(res.body), { message: 'Unauthenticated.' });
+  assert.equal(fetchImpl.calls.length, 0);
 });
 
 // ===========================================================================
@@ -450,6 +461,14 @@ test('fcm ADV: a NON-JSON body (string) has no target → clean 422, no token mi
   assert.equal(fetchImpl.calls.length, 0);
 });
 
+test('fcm ADV: missing caller identity is a 401 before any token mint or fetch', async () => {
+  const fetchImpl = makeFetch({ status: 200, jsonBody: {} });
+  const res = await fcm(anonCtx({ token: 'devtok' }), { fetchImpl });
+  assert.equal(res.status, 401);
+  assert.deepEqual(JSON.parse(res.body), { message: 'Unauthenticated.' });
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
 // ===========================================================================
 // WEBPUSH (POST /notify/webpush) — VAPID JWT signature (the one REAL signature)
 // ===========================================================================
@@ -543,6 +562,14 @@ test('webpush ADV: a D1 lookup with NO DB binding is a 404 (surfaced error), not
   const fetchImpl = makeFetch({ status: 201, rawBody: '' });
   const res = await webpush(okCtx({ payload: 'x' }, { id: '1' }), { fetchImpl, WEBPUSH_VAPID_PRIVATE_KEY: priv, WEBPUSH_VAPID_SUBJECT: 'mailto:a@b.c' });
   assert.equal(res.status, 404);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('webpush ADV: missing caller identity is a 401 before any key check or fetch', async () => {
+  const fetchImpl = makeFetch({ status: 201, rawBody: '' });
+  const res = await webpush(anonCtx({ endpoint: 'https://push.example.com/send/1', payload: 'x' }), { fetchImpl });
+  assert.equal(res.status, 401);
+  assert.deepEqual(JSON.parse(res.body), { message: 'Unauthenticated.' });
   assert.equal(fetchImpl.calls.length, 0);
 });
 
@@ -647,6 +674,24 @@ test('all ADV: a THROWN fetch becomes a 502 on every port, never an unhandled re
   const sub = await makeClientSubscription();
   const wpFetch = async () => { throw new Error('connection reset'); };
   assert.equal((await webpush(okCtx({ endpoint: 'https://push.example.com/send/1', keys: { p256dh: sub.p256dh, auth: sub.auth } }), { fetchImpl: wpFetch, WEBPUSH_VAPID_PRIVATE_KEY: priv, WEBPUSH_VAPID_SUBJECT: 'mailto:a@b.c' })).status, 502);
+});
+
+// ---- Identity floor: the remaining two guarded notification seams -----------
+
+test('slack ADV: missing caller identity is a 401 before any credential check or fetch', async () => {
+  const fetchImpl = makeFetch({ status: 200, jsonBody: { ok: true } });
+  const res = await slack(anonCtx({ body: 'hi' }), { fetchImpl });
+  assert.equal(res.status, 401);
+  assert.deepEqual(JSON.parse(res.body), { message: 'Unauthenticated.' });
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('twilio ADV: missing caller identity is a 401 before any credential check or fetch', async () => {
+  const fetchImpl = makeFetch({ status: 200, jsonBody: {} });
+  const res = await twilio(anonCtx({ to: '+15551234', body: 'hi' }), { fetchImpl });
+  assert.equal(res.status, 401);
+  assert.deepEqual(JSON.parse(res.body), { message: 'Unauthenticated.' });
+  assert.equal(fetchImpl.calls.length, 0);
 });
 
 /* ---------------------------------------------------------------------------

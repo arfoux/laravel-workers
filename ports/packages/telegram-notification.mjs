@@ -34,7 +34,7 @@ import {
   jsonPort,
   deliverVia,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 // Normalise the payload. `chat_id` is required (Telegram rejects a sendMessage
 // without a target), so we fail with a 422 before spending a subrequest.
@@ -84,6 +84,7 @@ export function telegramSendUrl(token) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const payload = readTelegramPayload(ctx);
   if (!payload.ok) {
     return jsonPort({ error: payload.reason }, 422);

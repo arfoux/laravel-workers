@@ -33,7 +33,7 @@
 //   can resume a thread. Persistence is best-effort: a D1 failure never fails
 //   the chat response.
 import { resolveFetch, jsonPort, mapProviderResponse, resolveProvider, adapterFor, dispatchToolCalls } from '../../kernel/packages/ai.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 // ---- D1 persistence (best-effort) -----------------------------------------
 
@@ -144,6 +144,7 @@ async function runTool(toolMap, name, args) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const { model, messages, tools, provider, options } = readBody(ctx);
 
   if (!Array.isArray(messages)) {

@@ -1,5 +1,5 @@
 // Port of laravel/socialite v5.31.0 — the REDIRECT half: build the provider
-// authorize URL, remember the `state`, and 302 the browser there.
+// authorize URL, plant the `state` cookie, and 302 the browser there.
 //
 // GET /auth/{provider}/redirect
 // In Laravel: `return Socialite::driver('github')->redirect();`. Here we:
@@ -7,7 +7,7 @@
 //      github/google/facebook shapes, socialite-providers.mjs for the extra
 //      azure/keycloak/cognito/okta shapes),
 //   2. mint a state nonce,
-//   3. store it (cookie + D1 row) so the callback can verify,
+//   3. plant it in an HttpOnly cookie (the only store) for the callback,
 //   4. return a 302 to `authorizeUrl(provider, state)` (oauth.mjs).
 // fetchImpl is injectable only for the callback (this step makes no HTTP calls).
 
@@ -16,7 +16,6 @@ import {
   resolveProvider,
   randomState,
   stateCookie,
-  rememberState,
 } from '../../kernel/packages/socialite.mjs';
 import { resolveProviderExtra } from '../../kernel/packages/socialite-providers.mjs';
 import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
@@ -33,7 +32,6 @@ export default async function handle(ctx, env) {
 
   try {
     const state = randomState();
-    await rememberState(env, state);
     const url = authorizeUrl(provider, state);
     return {
       status: 302,

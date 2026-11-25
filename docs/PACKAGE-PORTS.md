@@ -23,7 +23,7 @@ package ships no runtime — its scaffolding is ordinary compiled app code.
 
 | Package (research version) | Verdict | What the edge really answers | What it does **not** answer | Source |
 |---|---|---|---|---|
-| `laravel/socialite` (v5.31.0) | full port | authorize redirect + callback, `state` in the compiled session, code→token exchange, guard login | the vendor provider classes / `Socialite::` facade (LW002) | `PACKAGES-RESEARCH.md:86-91` |
+| `laravel/socialite` (v5.31.0) | full port | authorize redirect + callback, `state` in an HttpOnly cookie, code→token exchange, guard login | the vendor provider classes / `Socialite::` facade (LW002) | `PACKAGES-RESEARCH.md:86-91` |
 | `laravel/reverb` (v1.12.0) | auth-half port only | `POST /broadcasting/auth` signed by WebCrypto with the app secret; guarded channels take identity from the session guard, never from `channel_data` | the long-running WebSocket daemon (`reverb:start`, ReactPHP socket) and broadcast listeners (LW002) | `PACKAGES-RESEARCH.md:165-169` |
 | `spatie/laravel-permission` (v8.5.0) | guarded D1 port | `hasRole` / `hasPermissionTo` / `hasAnyRole` + guarded writes over `roles` / `permissions` / `model_has_*`, with guard identity required before any write | the vendor provider, `HasRoles` trait, Blade directive and per-user cache; anonymous writes | `PACKAGES-RESEARCH.md:111-119` |
 | `maatwebsite/excel` (v4.0.6) | CSV-only port | CSV writer over D1 rows | XLSX (needs PHP `zip`/`xml`/`gd2` + PhpSpreadsheet), queued exports, styles/formulas/charts; XLSX answers an explicit 406, never a fake file | `PACKAGES-RESEARCH.md:281-286` |
@@ -112,7 +112,7 @@ on the resolved verb + path. Every row below except `localization` (a middleware
 | `onesignal-notification` | `POST /notify/onesignal` | REST API key as HTTP Basic (username, no password). |
 | `jwt-auth` | `POST /auth/jwt/login`, `GET /auth/jwt/user` | HS256 (the stateless `tymon/jwt-auth` default), not Passport's RS256; bcryptjs verifies Laravel's `$2y$`. |
 | `firebase-php-jwt` | `POST /auth/firebase/verify` | Verifies a Firebase ID token against Google's JWKS (RS256), `kid`-matched. |
-| `auth0` | `POST /auth/auth0/callback` | Stops at the `authorization_code` token exchange; compose with `firebase-php-jwt` for offline `id_token` verify. |
+| `auth0` | `POST /auth/auth0/callback` | Stops at the `authorization_code` token exchange; when the caller sends `state`, it is verified against the `oauth_state` cookie before any fetch, otherwise CSRF validation belongs to the caller. Compose with `firebase-php-jwt` for offline `id_token` verify. |
 | `glide` | `GET /img/{path}` | Transform delegated to Cloudflare Image Resizing (`/cdn-cgi/image`) — no GD/Imagick. `w` is required (422 without it). |
 | `analytics` | `GET /analytics` | spatie/laravel-analytics run-report over the GA4 Data API; a Google service account mints the Bearer token. Query-driven (`metrics`, `dimensions`, `dateRange`), not the Laravel dashboard UI. |
 | `apple-signin` | `POST /auth/apple/callback` | Socialite Apple `form_post` callback: the one-time `code` is exchanged at Apple's token endpoint; the identity comes from that exchange. |
@@ -151,20 +151,23 @@ HTTP request.
 
 Currently gated this way: `permission` (all routes), `pusher` `/broadcast`, `webhook-server`
 `/webhook-server/send`, `pusher`/`reverb` on `/broadcasting/auth` (guarded channels only),
-`maatwebsite-excel` `/export`, and `multitenancy` (both routes: create + resolve). `scout-algolia`
-(`/1/indexes/{name}/query`) is a check rather than a gate: it requires the caller's
-`X-Algolia-Application-Id`/`X-Algolia-API-Key` headers to *match* `ALGOLIA_APP_ID`/`ALGOLIA_KEY`
-(constant-time) and answers `403` when either is absent — an omitted header must never proxy
-through the worker's own key.
+`maatwebsite-excel` `/export`, `multitenancy` (both routes: create + resolve), and every HTTP
+route of `discord-notification`, `expo-notification`, `fcm-notification`, `mailgun-mail`,
+`onesignal-notification`, `postmark-mail`, `slack-notification`, `telegram-notification`,
+`twilio-sms`, `webpush-notification`, `ai-sdk` (`/ai/chat`), `mcp` (`/mcp`), `pulse`
+(`/pulse` and `/pulse/record`), `bugsnag` (`/bugsnag/notify`), `glide` (`/img/{path}`),
+`analytics` (`/analytics`), `dompdf` (`/pdf/generate`), `flare` (`/flare/report`),
+`horizon-metrics` (`/horizon/metrics` and `/horizon/record`) and `welcome-notification`
+(`/welcome-notify`). `scout-algolia` (`/1/indexes/{name}/query`) is a check rather than a
+gate: it requires the caller's `X-Algolia-Application-Id`/`X-Algolia-API-Key` headers to
+*match* `ALGOLIA_APP_ID`/`ALGOLIA_KEY` (constant-time) and answers `403` when either is
+absent — an omitted header must never proxy through the worker's own key.
 
-Not yet gated, same shape, listed here so the gap is visible rather than implied: the
-notification transports (`/notify/*`), `mailgun-mail`, `postmark-mail`,
-`slack-notification`, `twilio-sms`, `ai-sdk` (`/ai/chat`), `mcp` (`/mcp`), `pulse`
-(`/pulse/record`), `bugsnag` (`/bugsnag/notify`), `glide`
-(`/img/{path}`). Each spends the app's provider credentials or writes app state on behalf of
-whoever reaches the URL, so an app that maps them must put a guard in front (a small
-`middlewarePorts` port that answers `401` when `ctx.user_id` is absent) until the port itself
-enforces it.
+Provider-called webhooks (`webhook-client`, `midtrans-webhook`, `xendit-webhook`) are the
+deliberate exception: their caller is the provider, so HMAC/signature verification is the
+authentication; an app-side user guard would reject every real delivery. A port's exported
+in-process helpers stay ungated — for example `send(body, env)` in `mailgun-mail` and
+`postmark-mail`, which `welcome-notification` calls directly.
 
 The kernel-side helpers these ports lean on (`kernel/packages/`): `ai.mjs` (provider adapters +
 tool loop), `google-oauth.mjs` (Google service-account RS256 JWT → OAuth2 access token; the

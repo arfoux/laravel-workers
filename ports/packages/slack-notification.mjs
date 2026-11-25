@@ -25,7 +25,7 @@ import {
   deliverVia,
   bearerAuthHeader,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 // Slack has NO required address: an Incoming Webhook needs no channel at all,
 // and the bot path falls back to SLACK_CHANNEL. So unlike the address-based
@@ -51,6 +51,7 @@ const SLACK_API = 'https://slack.com/api/chat.postMessage';
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const payload = readSlackPayload(ctx);
 
   const webhookUrl = env && env.SLACK_WEBHOOK_URL;

@@ -49,7 +49,8 @@ function makeFetch(responses) {
   return fetchImpl;
 }
 
-const okCtx = (body, params = {}) => ({ body, query: {}, params });
+const okCtx = (body, params = {}) => ({ body, query: {}, params, user_id: 1 });
+const anonCtx = (body, params = {}) => ({ body, query: {}, params });
 
 // ---- FCM -------------------------------------------------------------------
 
@@ -214,6 +215,16 @@ test('fcm port: no project id anywhere is a 500 and never mints/fetches', async 
   const env = { fetchImpl, FCM_SERVICE_ACCOUNT_JSON: JSON.stringify(sa) };
   const res = await fcmPort(okCtx({ token: 'x' }), env);
   assert.equal(res.status, 500);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('fcm port: missing caller identity is a 401 and never mints/fetches', async () => {
+  const sa = await makeServiceAccount();
+  const fetchImpl = makeFetch({ status: 200, body: JSON.stringify({ access_token: 't' }) });
+  const env = { fetchImpl, FCM_SERVICE_ACCOUNT_JSON: JSON.stringify(sa), FCM_PROJECT_ID: 'p' };
+  const res = await fcmPort(anonCtx({ token: 'device-token' }), env);
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
   assert.equal(fetchImpl.calls.length, 0);
 });
 
@@ -522,6 +533,16 @@ test('webpush port: no subscription (neither id nor keys) is a 422 before fetch'
   const env = { fetchImpl, WEBPUSH_VAPID_PRIVATE_KEY: priv, WEBPUSH_VAPID_SUBJECT: 'mailto:a@b.c' };
   const res = await webpushPort(okCtx({ payload: 'x' }), env);
   assert.equal(res.status, 422);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('webpush port: missing caller identity is a 401 before any fetch', async () => {
+  const { priv } = await makeVapidKey();
+  const fetchImpl = makeFetch({ status: 201, body: '' });
+  const env = { fetchImpl, WEBPUSH_VAPID_PRIVATE_KEY: priv, WEBPUSH_VAPID_SUBJECT: 'mailto:a@b.c' };
+  const res = await webpushPort(anonCtx({ endpoint: 'https://push.example.com/send/1', keys: { p256dh: 'a', auth: 'b' } }), env);
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
   assert.equal(fetchImpl.calls.length, 0);
 });
 

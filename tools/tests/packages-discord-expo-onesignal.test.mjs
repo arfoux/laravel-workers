@@ -11,7 +11,11 @@ import assert from 'node:assert/strict';
 import discord from '../../ports/packages/discord-notification.mjs';
 import expo from '../../ports/packages/expo-notification.mjs';
 import onesignal from '../../ports/packages/onesignal-notification.mjs';
-import { makeFetch, okCtx } from './_helpers.mjs';
+import { makeFetch, okCtx as bareOkCtx } from './_helpers.mjs';
+
+// Every HTTP seam requires a finite caller identity; the authenticated path is
+// the default here, with `okCtx(body, null)` used for the anonymous 401 cases.
+const okCtx = (body, user_id = 1) => ({ ...bareOkCtx(body), user_id });
 
 // ---- Discord ---------------------------------------------------------------
 
@@ -108,6 +112,16 @@ test('discord: embeds alone (no content) is allowed and sends', async () => {
   assert.deepEqual(sent.embeds, [{ title: 'only' }]);
 });
 
+test('discord: anonymous request is a 401 and never fetches', async () => {
+  const fetchImpl = makeFetch(200, { id: 'm' });
+  const res = await discord(okCtx({ content: 'x' }, null), {
+    fetchImpl, DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/1/x',
+  });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
 // ---- Expo ------------------------------------------------------------------
 
 test('expo: posts JSON push to exp.host send endpoint', async () => {
@@ -164,6 +178,14 @@ test('expo: data/sound/badge/channelId passed through when present', async () =>
   assert.equal(sent.sound, 'default');
   assert.equal(sent.badge, 3);
   assert.equal(sent.channelId, 'default');
+});
+
+test('expo: anonymous request is a 401 and never fetches', async () => {
+  const fetchImpl = makeFetch(200, { data: [] });
+  const res = await expo(okCtx({ to: 'ExponentPushToken[a]', body: 'x' }, null), { fetchImpl });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal(fetchImpl.calls.length, 0);
 });
 
 // ---- OneSignal -------------------------------------------------------------
@@ -233,6 +255,16 @@ test('onesignal: empty body is a 422 before fetch', async () => {
   const fetchImpl = makeFetch(200, { id: 'n' });
   const res = await onesignal(okCtx({ to: 'p1' }), { fetchImpl, ONESIGNAL_APP_ID: 'app', ONESIGNAL_REST_API_KEY: 'key' });
   assert.equal(res.status, 422);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('onesignal: anonymous request is a 401 and never fetches', async () => {
+  const fetchImpl = makeFetch(200, { id: 'n' });
+  const res = await onesignal(okCtx({ to: 'p1', body: 'x' }, null), {
+    fetchImpl, ONESIGNAL_APP_ID: 'app', ONESIGNAL_REST_API_KEY: 'key',
+  });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
   assert.equal(fetchImpl.calls.length, 0);
 });
 

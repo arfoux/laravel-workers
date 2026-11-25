@@ -10,6 +10,8 @@ import assert from 'node:assert/strict';
 import horizon, { aggregateByQueue, ensureSchema } from '../../ports/packages/horizon-metrics.mjs';
 import { FakeD1 } from './_fake-d1.mjs';
 import { makeCtx } from './_helpers.mjs';
+// The shared makeCtx has no platform identity; both port routes guard on ctx.user_id.
+const authedCtx = (opts) => ({ ...makeCtx(opts), user_id: 1 });
 
 function makeEnv() {
   return { DB: new FakeD1() };
@@ -22,7 +24,7 @@ const parse = (res) => JSON.parse(res.body);
 test('record: inserts a metric and returns it with an id', async () => {
   const env = makeEnv();
   const res = await horizon(
-    makeCtx({
+    authedCtx({
       method: 'POST',
       body: { type: 'Job\\ProcessPodcast', queue: 'podcasts', status: 'completed', duration_ms: 250 },
     }),
@@ -44,7 +46,7 @@ test('record: inserts a metric and returns it with an id', async () => {
 
 test('record: missing type is a 422 and writes nothing', async () => {
   const env = makeEnv();
-  const res = await horizon(makeCtx({ method: 'POST', body: { queue: 'emails', status: 'failed' } }), env);
+  const res = await horizon(authedCtx({ method: 'POST', body: { queue: 'emails', status: 'failed' } }), env);
   assert.equal(res.status, 422);
   assert.ok(parse(res).error);
   assert.equal((env.DB.tables.get('job_metrics') || []).length, 0);
@@ -52,14 +54,14 @@ test('record: missing type is a 422 and writes nothing', async () => {
 
 test('record: empty-string type is a 422', async () => {
   const env = makeEnv();
-  const res = await horizon(makeCtx({ method: 'POST', body: { type: '' } }), env);
+  const res = await horizon(authedCtx({ method: 'POST', body: { type: '' } }), env);
   assert.equal(res.status, 422);
 });
 
 test('record: queue/status optional, duration coerced, created_at honoured', async () => {
   const env = makeEnv();
   const res = await horizon(
-    makeCtx({
+    authedCtx({
       method: 'POST',
       body: { type: 'builder', duration_ms: '12.5', created_at: '2026-01-01T00:00:00.000Z' },
     }),
@@ -76,7 +78,7 @@ test('record: queue/status optional, duration coerced, created_at honoured', asy
 test('record: defaults created_at to now when absent', async () => {
   const env = makeEnv();
   const before = Date.now();
-  const res = await horizon(makeCtx({ method: 'POST', body: { type: 'seeder' } }), env);
+  const res = await horizon(authedCtx({ method: 'POST', body: { type: 'seeder' } }), env);
   assert.equal(res.status, 201);
   const t = Date.parse(parse(res).metric.created_at);
   assert.ok(t >= before - 1000 && t <= Date.now() + 1000);
@@ -85,7 +87,7 @@ test('record: defaults created_at to now when absent', async () => {
 test('record: stores a pending-status metric too', async () => {
   const env = makeEnv();
   const res = await horizon(
-    makeCtx({ method: 'POST', body: { type: 'export', queue: 'reports', status: 'pending' } }),
+    authedCtx({ method: 'POST', body: { type: 'export', queue: 'reports', status: 'pending' } }),
     env
   );
   assert.equal(res.status, 201);
@@ -96,7 +98,7 @@ test('record: stores a pending-status metric too', async () => {
 
 test('dashboard: returns 200 with the metrics shape on an empty table', async () => {
   const env = makeEnv();
-  const res = await horizon(makeCtx({ method: 'GET' }), env);
+  const res = await horizon(authedCtx({ method: 'GET' }), env);
   assert.equal(res.status, 200);
   assert.match(res.headers['content-type'], /application\/json/);
   const { metrics } = parse(res);
@@ -114,7 +116,7 @@ test('dashboard: aggregates counts and avg duration per queue', async () => {
   await ins.bind('Job\\A', 'default', 'failed', 200, '2026-01-01T00:01:00.000Z').run();
   await ins.bind('Job\\B', 'emails', 'completed', 300, '2026-01-01T00:01:00.000Z').run();
   await ins.bind('Job\\B', 'emails', 'pending', null, '2026-01-01T00:02:00.000Z').run();
-  const res = await horizon(makeCtx({ method: 'GET' }), env);
+  const res = await horizon(authedCtx({ method: 'GET' }), env);
   assert.equal(res.status, 200);
   const { metrics } = parse(res);
   assert.equal(metrics.queues.length, 2);
@@ -142,7 +144,7 @@ test('dashboard: filter by queue narrows to that queue only', async () => {
   );
   await ins.bind('Job\\A', 'default', 'completed', 100, '2026-01-01T00:00:00.000Z').run();
   await ins.bind('Job\\B', 'emails', 'failed', 50, '2026-01-01T00:00:00.000Z').run();
-  const res = await horizon(makeCtx({ method: 'GET', query: { queue: 'emails' } }), env);
+  const res = await horizon(authedCtx({ method: 'GET', query: { queue: 'emails' } }), env);
   assert.equal(res.status, 200);
   const { metrics } = parse(res);
   assert.equal(metrics.queues.length, 1);
@@ -155,14 +157,14 @@ test('dashboard: filter by queue narrows to that queue only', async () => {
 test('dashboard: records then reads round-trip through the same port', async () => {
   const env = makeEnv();
   await horizon(
-    makeCtx({ method: 'POST', body: { type: 'Job\\A', queue: 'webhooks', status: 'completed', duration_ms: 40 } }),
+    authedCtx({ method: 'POST', body: { type: 'Job\\A', queue: 'webhooks', status: 'completed', duration_ms: 40 } }),
     env
   );
   await horizon(
-    makeCtx({ method: 'POST', body: { type: 'Job\\A', queue: 'webhooks', status: 'failed', duration_ms: 160 } }),
+    authedCtx({ method: 'POST', body: { type: 'Job\\A', queue: 'webhooks', status: 'failed', duration_ms: 160 } }),
     env
   );
-  const res = await horizon(makeCtx({ method: 'GET' }), env);
+  const res = await horizon(authedCtx({ method: 'GET' }), env);
   const { metrics } = parse(res);
   assert.equal(metrics.queues.length, 1);
   assert.equal(metrics.queues[0].total, 2);
@@ -196,4 +198,27 @@ test('aggregateByQueue: rows without a duration are excluded from avg_duration',
     { queue: 'a', status: 'completed', duration_ms: 100 },
   ]);
   assert.equal(queues[0].avg_duration, 100);
+});
+
+// ---- The identity floor — both routes are 401 without a caller -------------
+
+test('anonymous: POST /horizon/record is a 401 and writes nothing', async () => {
+  const env = makeEnv();
+  const ctx = makeCtx({ method: 'POST', body: { type: 'anonymous' } }); // no user_id
+
+  const res = await horizon(ctx, env);
+
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal((env.DB.tables.get('job_metrics') || []).length, 0);
+});
+
+test('anonymous: GET /horizon/metrics is a 401', async () => {
+  const env = makeEnv();
+  const ctx = makeCtx({ method: 'GET' }); // no user_id
+
+  const res = await horizon(ctx, env);
+
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
 });

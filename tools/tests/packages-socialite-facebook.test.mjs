@@ -10,14 +10,14 @@
 //   • the Graph v18 dialog/token/me URLs the resolver supplies,
 //   • the code exchange POST body (client_id/secret/redirect_uri/code),
 //   • the Bearer user-info GET and the mapUser flattening of picture.data.url,
-//   • the end-to-end login (user upsert + minted bearer token).
+//   • the end-to-end login (user upsert + minted bearer token),
+//   • and that `state` is carried ONLY in the HttpOnly cookie — no D1 row.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeD1 } from './_fake-d1.mjs';
 
 import redirect from '../../ports/packages/laravel-socialite-redirect.mjs';
 import callback from '../../ports/packages/laravel-socialite-callback.mjs';
-import { rememberState } from '../../kernel/packages/socialite.mjs';
 
 function makeEnv(fetchImpl) {
   const DB = new FakeD1();
@@ -84,11 +84,12 @@ test('facebook redirect: 302 to the Graph v18 dialog with client_id/redirect_uri
   assert.equal(loc.searchParams.get('redirect_uri'), 'https://app.test/auth/facebook/callback');
   assert.equal(loc.searchParams.get('response_type'), 'code');
   assert.equal(loc.searchParams.get('scope'), 'email');
-  assert.ok(loc.searchParams.get('state'));
-  // the state is also planted as a cookie + a D1 row (defense in depth)
-  assert.match(res.headers['set-cookie'], /oauth_state=/);
-  const row = await env.DB.prepare('SELECT * FROM lw_oauth_state WHERE state = ?1').bind(loc.searchParams.get('state')).first();
-  assert.ok(row);
+  const state = loc.searchParams.get('state');
+  assert.ok(state);
+  // the state is planted as an HttpOnly cookie — the only store
+  assert.match(res.headers['set-cookie'], /^oauth_state=/);
+  assert.match(res.headers['set-cookie'], new RegExp(state));
+  assert.equal(env.DB.tables.has('lw_oauth_state'), false);
 });
 
 test('facebook callback: exchanges the code, fetches /me with Bearer, flattens picture.data.url', async () => {
@@ -136,13 +137,12 @@ test('facebook callback: exchanges the code, fetches /me with Bearer, flattens p
   const tok = await env.DB.prepare('SELECT * FROM personal_access_tokens WHERE tokenable_id = ?1').bind(body.user.id).first();
   assert.ok(tok);
   assert.notEqual(tok.token, body.access_token); // only the sha256 is stored
+  assert.equal(env.DB.tables.has('lw_oauth_state'), false); // no OAuth state table anywhere
 });
 
-test('facebook callback: bad/missing state is rejected before any network call', async () => {
+test('facebook callback: a forged state is rejected against the cookie before any network call', async () => {
   const fetchImpl = facebookFetch();
   const env = makeEnv(fetchImpl);
-  // the redirect leg ran first and planted the state row (production path)
-  await rememberState(env, 'st_real');
   const res = await callback(
     {
       params: { provider: 'facebook' },
@@ -158,13 +158,27 @@ test('facebook callback: bad/missing state is rejected before any network call',
   assert.equal(fetchImpl.calls.length, 0); // never talked to Facebook
 });
 
+test('facebook callback: a state without the cookie is rejected before any network call', async () => {
+  const fetchImpl = facebookFetch();
+  const env = makeEnv(fetchImpl);
+  const res = await callback(
+    {
+      params: { provider: 'facebook' },
+      query: { code: 'FB_CODE', state: 'st_123' },
+      request: new Request('https://app.test/auth/facebook/callback?code=FB_CODE&state=st_123'),
+    },
+    env
+  );
+  assert.equal(res.status, 401);
+  assert.deepEqual(JSON.parse(res.body), { error: 'invalid state' });
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
 test('facebook callback: a malformed cookie escape is a state mismatch, not a throw', async () => {
   const fetchImpl = facebookFetch();
   const env = makeEnv(fetchImpl);
-  // readStateCookie ran before the handler's try block, so `decodeURIComponent('%')`
-  // escaped the route as an uncaught URIError. A prior flow's row exists, but
-  // nothing is stored for this query's `st_123`.
-  await rememberState(env, 'st_from-a-prior-flow');
+  // readStateCookie tolerates the malformed `%` escape (parseCookieHeader keeps
+  // it literal instead of throwing URIError); the value still mismatches.
   const res = await callback(
     {
       params: { provider: 'facebook' },
@@ -187,31 +201,4 @@ test('facebook callback: unconfigured provider (no creds) is a 400', async () =>
     env
   );
   assert.equal(res.status, 400);
-});
-
-test('state rows older than the cookie TTL are pruned by the next redirect', async () => {
-  const env = makeEnv(facebookFetch());
-  await rememberState(env, 'st_fresh');
-  // a flow whose callback never came (bot, closed tab): the row is there, the
-  // 600s cookie is long gone
-  await env.DB.prepare(
-    `INSERT INTO lw_oauth_state (state, created_at) VALUES (?1, datetime('now', '-601 seconds'))`
-  ).bind('st_abandoned').run();
-  assert.ok(await env.DB.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1').bind('st_abandoned').first());
-
-  const res = await redirect(
-    { params: { provider: 'facebook' }, query: {}, request: new Request('https://app.test/auth/facebook/redirect') },
-    env
-  );
-  assert.equal(res.status, 302);
-  // the stale row is gone; the live one - and the state this redirect planted - stay
-  assert.equal(
-    await env.DB.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1').bind('st_abandoned').first(),
-    null
-  );
-  assert.ok(await env.DB.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1').bind('st_fresh').first());
-  assert.equal(
-    (await env.DB.prepare('SELECT COUNT(*) AS n FROM lw_oauth_state').first()).n,
-    2
-  );
 });

@@ -22,7 +22,7 @@
 //
 // Config (env): GA4_PROPERTY_ID (required), GA4_SERVICE_ACCOUNT_JSON (required;
 // raw or base64 service-account JSON).
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, jsonPort, deliverVia, bearerAuthHeader } from '../../kernel/packages/notify-http.mjs';
 import { mintGoogleAccessToken } from '../../kernel/packages/google-oauth.mjs';
 
@@ -69,6 +69,7 @@ function buildRunReportRequest(query) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const query = (ctx && ctx.query) || {};
 
   const propertyId = (env && env.GA4_PROPERTY_ID) ? String(env.GA4_PROPERTY_ID).trim() : '';

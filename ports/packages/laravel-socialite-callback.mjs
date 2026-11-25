@@ -21,7 +21,7 @@
 //   );
 
 import { verifyState, exchangeCode, fetchUser } from '../../kernel/packages/oauth.mjs';
-import { resolveProvider, readStateCookie, consumeState } from '../../kernel/packages/socialite.mjs';
+import { resolveProvider, readStateCookie } from '../../kernel/packages/socialite.mjs';
 import { resolveProviderExtra } from '../../kernel/packages/socialite-providers.mjs';
 import { createPersonalAccessToken, ensurePersonalAccessTokens } from '../../kernel/packages/token.mjs';
 import { normalizePortCtx, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
@@ -62,12 +62,9 @@ export default async function handle(ctx, env) {
   const code = query.code || url.searchParams.get('code') || '';
   const state = query.state || url.searchParams.get('state') || '';
 
-  // 1) verify state: match against the cookie OR a stored row (either proves
-  //    we initiated the flow). Constant-time (verifyState).
-  const cookieState = readStateCookie(ctx);
-  let stateOk = verifyState(cookieState, state);
-  if (!stateOk) stateOk = await consumeState(env, state);
-  if (!state || !stateOk) {
+  // 1) verify state: the callback's `state` must match the HttpOnly cookie
+  //    the redirect planted. Constant-time (verifyState); no D1 fallback.
+  if (!state || !verifyState(readStateCookie(ctx), state)) {
     return jsonResponse(401, { error: 'invalid state' }, { noStore: false });
   }
 

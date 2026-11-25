@@ -14,7 +14,11 @@ import slack from '../../ports/packages/slack-notification.mjs';
 import twilio from '../../ports/packages/twilio-sms.mjs';
 import mailgun from '../../ports/packages/mailgun-mail.mjs';
 import postmark from '../../ports/packages/postmark-mail.mjs';
-import { makeFetch, okCtx } from './_helpers.mjs';
+import { makeFetch, okCtx as bareOkCtx } from './_helpers.mjs';
+
+// Every HTTP seam requires a finite caller identity; the authenticated path is
+// the default here, with `okCtx(body, null)` used for the anonymous 401 cases.
+const okCtx = (body, user_id = 1) => ({ ...bareOkCtx(body), user_id });
 
 // ---- Slack -----------------------------------------------------------------
 
@@ -214,6 +218,16 @@ test('mailgun: missing `to` is 422 before fetch', async () => {
   assert.equal(fetchImpl.calls.length, 0);
 });
 
+test('mailgun: anonymous request is a 401 and never fetches', async () => {
+  const fetchImpl = makeFetch(200, {});
+  const res = await mailgun(okCtx({ to: 'a@b.com', subject: 's', body: 't' }, null), {
+    fetchImpl, MAILGUN_DOMAIN: 'mg', MAILGUN_SECRET: 'k',
+  });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
 // ---- Postmark --------------------------------------------------------------
 
 test('postmark: posts JSON to /email with server token header', async () => {
@@ -258,6 +272,16 @@ test('postmark: missing From is 422 before fetch', async () => {
     fetchImpl, POSTMARK_TOKEN: 'k',
   });
   assert.equal(res.status, 422);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('postmark: anonymous request is a 401 and never fetches', async () => {
+  const fetchImpl = makeFetch(200, {});
+  const res = await postmark(okCtx({ to: 'd@x.com', subject: 's', body: 't' }, null), {
+    fetchImpl, POSTMARK_TOKEN: 'k', POSTMARK_FROM: 's@x.com',
+  });
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).message, 'Unauthenticated.');
   assert.equal(fetchImpl.calls.length, 0);
 });
 

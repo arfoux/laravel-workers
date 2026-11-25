@@ -21,13 +21,14 @@ import {
   deliverVia,
   normalisePayload,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 const POSTMARK_URL = 'https://api.postmarkapp.com/email';
 
-export default async function handle(ctx, env) {
-  ctx = normalizePortCtx(ctx);
-  const payload = normalisePayload(ctx);
+// Unguarded provider send — welcome-notification delegates here instead of
+// going back through the HTTP seam's guard. `body` is the caller's payload.
+export async function send(body, env) {
+  const payload = normalisePayload({ body });
   if (!payload.ok) return jsonPort({ error: payload.reason }, 422);
 
   const token = env && env.POSTMARK_TOKEN;
@@ -36,7 +37,7 @@ export default async function handle(ctx, env) {
   const from = payload.from || (env && env.POSTMARK_FROM) || '';
   if (!from) return jsonPort({ error: 'missing Postmark sender: set POSTMARK_FROM or pass `from`' }, 422);
 
-  const html = (ctx && ctx.body && ctx.body.html) || '';
+  const html = (body && body.html) || '';
   const doFetch = resolveFetch(env);
   const init = {
     method: 'POST',
@@ -56,4 +57,10 @@ export default async function handle(ctx, env) {
   };
 
   return deliverVia(doFetch, POSTMARK_URL, init);
+}
+
+export default async function handle(ctx, env) {
+  ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
+  return send(ctx.body, env);
 }

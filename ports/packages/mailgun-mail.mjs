@@ -26,11 +26,12 @@ import {
   multipartForm,
   normalisePayload,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
-export default async function handle(ctx, env) {
-  ctx = normalizePortCtx(ctx);
-  const payload = normalisePayload(ctx);
+// Unguarded provider send — welcome-notification delegates here instead of
+// going back through the HTTP seam's guard. `body` is the caller's payload.
+export async function send(body, env) {
+  const payload = normalisePayload({ body });
   if (!payload.ok) return jsonPort({ error: payload.reason }, 422);
 
   const domain = env && env.MAILGUN_DOMAIN;
@@ -39,7 +40,7 @@ export default async function handle(ctx, env) {
 
   const endpoint = (env && env.MAILGUN_ENDPOINT) || 'api.mailgun.net';
   const from = payload.from || `postmaster@${domain}`;
-  const html = (ctx && ctx.body && ctx.body.html) || '';
+  const html = (body && body.html) || '';
 
   const url = `https://${endpoint}/v3/${encodeURIComponent(domain)}/messages`;
   const doFetch = resolveFetch(env);
@@ -58,4 +59,10 @@ export default async function handle(ctx, env) {
   };
 
   return deliverVia(doFetch, url, init);
+}
+
+export default async function handle(ctx, env) {
+  ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
+  return send(ctx.body, env);
 }

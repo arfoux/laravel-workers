@@ -27,7 +27,7 @@
 //   { endpoint, keys:{p256dh,auth} } -> use the subscription inline.
 //   { payload?, ttl?, urgency?, topic? } — payload is any JSON-serialisable
 //   value; when omitted we send an empty body (a "signal" push).
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, jsonPort, deliverVia } from '../../kernel/packages/notify-http.mjs';
 import { encryptAes128Gcm, buildVapidHeader } from '../../kernel/packages/webpush-crypto.mjs';
 import { b64urlToBytes as base64UrlToBytes } from '../../kernel/packages/b64url.mjs';
@@ -91,6 +91,7 @@ async function resolveSubscription(ctx, env, raw) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const raw = (ctx && ctx.body) || {};
 
   const vapidPriv = env && env.WEBPUSH_VAPID_PRIVATE_KEY;
