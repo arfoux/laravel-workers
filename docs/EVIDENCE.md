@@ -422,21 +422,21 @@ shadow: 71/100 byte-identical, 0 shape-verified, 0 json-equivalent,
         29 documented divergence(s), 0 unexplained — byte-identical step coverage 71% (accounted 100%)
 ```
 
-**Re-run 2026-11-25 (supersedes the numbers above).** Same cwd and scenario, exact command:
+**Re-run 2026-11-25, final after syncing four anonymous GET routes (supersedes the numbers above).** Same cwd and scenario, exact command:
 
 ```text
 LW_SHADOW_MIN_COVERAGE=0 node shadow/run.mjs --app "C:/Users/HP/Documents/vscode/lw-showcase" --scenarios shadow/scenarios/lw-showcase.mjs
-shadow: 73/100 byte-identical, 0 shape-verified, 0 json-equivalent,
-        27 documented divergence(s), 0 unexplained — byte-identical step coverage 73% (accounted 100%)
+shadow: 73/104 byte-identical, 0 shape-verified, 0 json-equivalent,
+        31 documented divergence(s), 0 unexplained — byte-identical step coverage 70% (accounted 100%)
 EXIT=0
 ```
 
-The 2026-11-16 block above stays as the historical measurement. The optional status-coverage
-gate was off in this run (`LW_SHADOW_MIN_COVERAGE=0`); the verdict remains PARTIAL, not a
-status-validated parity claim.
+The 2026-11-16 block and the pre-sync 73/100 / 27 measurement stay historical. The byte-identical
+floor remains 100% by default, so the unmodified command exits 1; the verdict is PARTIAL, not full
+parity. The optional status-coverage gate was checked separately in "Divergence status proof".
 
 With the default floor either run exits 1 with `below the floor 100%` — honest, because
-29 (2026-11-16) / 27 (2026-11-25) steps are not byte-identical. The initial run failed in the PHP oracle at `POST /login`:
+29 (2026-11-16) / 27 (pre-sync 2026-11-25) / 31 (final 2026-11-25) steps are not byte-identical. The initial run failed in the PHP oracle at `POST /login`:
 a jar-less GET ran before the bootstrap step, leaving a session row without `$lastToken`, so
 `@token` resolution threw. Moving the bootstrap GET to step 1 fixed the harness ordering (not
 the product). `/routing/intended` needed the bootstrapped jar and `/ports/request` needed a
@@ -882,30 +882,32 @@ existed before the scaffold run.
 $ LW_SHADOW_MIN_COVERAGE=0 node shadow/run.mjs --app "C:/Users/HP/Documents/vscode/lw-showcase" --scenarios shadow/scenarios/lw-showcase.mjs
 + 200/200 GET /misc/collection — match
 + 200/200 GET /routing — match
-73/100 byte-identical, 0 shape-verified, 0 json-equivalent, 27 documented divergence(s), 0 unexplained
+73/104 byte-identical, 0 shape-verified, 0 json-equivalent, 31 documented divergence(s), 0 unexplained
 exit 0
 ```
 
 These two matched routes were the concrete root causes recorded earlier for `/misc/collection`
 (string-key array writes) and `/routing` (`Route::has()` with `buildRt(null, {routeMap})`). This
-replay is stronger than the older 71/100, 29-divergence measurement in the same fixture.
+replay is stronger than the older 71/100 / 29 and the pre-sync 73/100 / 27 measurements in the
+same fixture.
 
 ### Divergence status proof (opt-in gate)
 
 `expectStatus` pins one status on both sides. A documented divergence where PHP answers 200 and
 the worker answers 422/401/404 needs the two-sided form `expectPhpStatus` + `expectJsStatus`;
-the nine previously bare divergences in `shadow/scenarios/lw-showcase.mjs` now carry both. The
-separate floor `LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE=1` makes that an auditable gate without
-changing the byte-identical floor.
+the previously bare divergences (nine original plus four newly synced anonymous GET routes:
+`/export` and the three `/model/1/1/has-*`) now carry both. The separate floor
+`LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE=1` makes that an auditable gate without changing the
+byte-identical floor.
 
 ```text
 $ LW_SHADOW_MIN_COVERAGE=0 LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE=1 node shadow/run.mjs --app "C:/Users/HP/Documents/vscode/lw-showcase" --scenarios shadow/scenarios/lw-showcase.mjs
-73/100 byte-identical, 0 shape-verified, 0 json-equivalent, 27 documented divergence(s), 0 unexplained — byte-identical step coverage 73% (accounted 100%) [scenario steps, not code lines]; divergence status validated 27/27
+73/104 byte-identical, 0 shape-verified, 0 json-equivalent, 31 documented divergence(s), 0 unexplained — byte-identical step coverage 70% (accounted 100%) [scenario steps, not code lines]; divergence status validated 31/31
 exit 0
 
 $ # throwaway copy with one status pair removed, same strict floor
-73/100 byte-identical, 0 shape-verified, 0 json-equivalent, 27 documented divergence(s), 0 unexplained — byte-identical step coverage 73% (accounted 100%) [scenario steps, not code lines]; divergence status validated 26/27
-shadow FAILED: divergence status coverage 26/27 (96%) is below the floor 100% (LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE) — a divergence needs expectStatus or BOTH expectPhpStatus/expectJsStatus
+73/104 byte-identical, 0 shape-verified, 0 json-equivalent, 31 documented divergence(s), 0 unexplained — byte-identical step coverage 70% (accounted 100%) [scenario steps, not code lines]; divergence status validated 30/31
+shadow FAILED: divergence status coverage 30/31 (97%) is below the floor 100% (LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE) — a divergence needs expectStatus or BOTH expectPhpStatus/expectJsStatus
 exit 1
 ```
 
