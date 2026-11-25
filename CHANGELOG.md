@@ -13,6 +13,15 @@ different commit and is not valid evidence for shipped behavior.
 
 Proof on scratch copies of the real repos: strict build 137 routes with `precomputed ... (PHP oracle verified)`; shadow 96/96 byte-identical including both target routes; sweep coverage OK; smoke 222 ok, 1 pre-existing failure (`GET /tenants/{tenantKey}` expected 500, got 404 — reproduced on the original controllers); focused precompute tests 4/4, corpus 55/55, docs 105/105, full suite 2258 pass / 0 fail / 54 skipped. Local `process.cpuUsage()` harness: `/auth/hash` 859 ms -> 0.00 ms, `/data/index` 15 ms -> 0.00 ms. Real workerd under 30-request load: optimized `/auth/hash` 200/200, CPU p50/p95/max 5/7/7 ms; optimized `/data/index` 200/200, 3/3/3 ms; baseline `/auth/hash` 0/30 200 (`exceededCpu`, 10/10/10 ms), baseline `/data/index` 4/30 200. Version stays `0.5.1`; no tag, release or publish.
 
+Closure (2026-11-25): "phase B" here is the two-controller CPU pass, not the separate
+line-by-line audit sweep in `notes/PLAYBOOK.local.md` G.6/G.49. After deploy `1eaaffee`,
+a `wrangler tail` sweep drove 89 GET routes x3 (267 requests) and captured 34 events
+across 33 routes: 0 `exceededCpu`, 0 HTTP 503. A focused 30-request tail on the next
+hottest Node-proxy routes found `/edge/cache` p50/p95/max 16/36/36 ms and
+`/data/writes` 8/17/17 ms, all `outcome=ok`, HTTP 200. Those two are stateful cache/DB
+write paths; `@lw-precompute` would change semantics, so no further route was changed.
+`npm run cpu` remains a coarse `process.cpuUsage()` proxy, not workerd CPU.
+
 ### Fail loud when the compiler skips a controller (P7)
 
 The emit loop used to `continue` on seven refusal branches without recording the route. A
