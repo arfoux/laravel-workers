@@ -156,7 +156,8 @@ $say = $jsonMode
 
 // --- compare ----------------------------------------------------------------
 $pass = 0; $fail = 0;
-if (!$jsonMode) {
+// --json changes WHERE verdicts are printed (stderr), never WHICH checks run:
+// field drift must fail the exit code in both modes.
     $checks = [];
     $add = function (string $key, $exp, $got) use (&$checks) {
         $checks[] = ['key' => $key, 'ok' => ($exp === $got), 'expected' => $exp, 'got' => $got];
@@ -187,7 +188,6 @@ if (!$jsonMode) {
         $say(sprintf("%s  %-28s  expected=%s  got=%s", $c['ok'] ? 'OK  ' : 'FAIL', $c['key'], $exp, $got));
         $c['ok'] ? $pass++ : $fail++;
     }
-}
 
 // compiled-field sha256 registry (host Laravel app edge/ — not this package)
 // Absent registry = no trusted baseline = FAIL. Writing the current hash here

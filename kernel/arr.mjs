@@ -172,7 +172,15 @@ export const arr = {
       for (const k of keysOf(data)) {
         const value = itemAt(data, k);
         const newKey = prefix + k;
-        if (value !== null && typeof value === 'object' && keyCount(value) > 0 && currentDepth < depth) {
+        // A `__lwObject`-tagged value is PHP's stdClass, not an array:
+        // `Arr::dot()` only walks arrays (see collections.mjs:902-917).
+        if (
+          value !== null &&
+          typeof value === 'object' &&
+          value.__lwObject !== true &&
+          keyCount(value) > 0 &&
+          currentDepth < depth
+        ) {
           flatten(value, newKey + '.', currentDepth + 1);
         } else {
           if (!ownHas(results, newKey)) order.push(newKey);

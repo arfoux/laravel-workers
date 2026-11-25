@@ -110,6 +110,28 @@ test('order marker is non-enumerable and carries document order', () => {
   assert.equal(Object.prototype.propertyIsEnumerable.call(v, '__lwOrder'), false);
 });
 
+test('__proto__ is an own data key, never a prototype write', () => {
+  // PHP arrays have no prototype: json_decode('{"__proto__":...}', true) keeps
+  // the key as ordinary data. An assignment in JS would call Object.prototype's
+  // setter, drop the key from Object.keys() and give the decoded bag a
+  // client-controlled prototype (kernel/own-key.mjs:3-17).
+  const v = phpJsonDecodeOrdered('{"__proto__":{"x":1},"constructor":2,"a":3}', { text: true });
+  assert.equal(Object.getPrototypeOf(v), Object.prototype);
+  assert.equal(Object.prototype.hasOwnProperty.call(v, '__proto__'), true);
+  assert.deepEqual(Object.keys(v), ['__proto__', 'constructor', 'a']);
+  assert.deepEqual(v.__lwOrder, ['__proto__', 'constructor', 'a']);
+  assert.equal(v.__proto__.x, 1);
+  assert.equal(v.constructor, 2);
+  assert.equal(({}).x, undefined, 'the global Object.prototype stays clean');
+
+  // PHP keeps the FIRST position but the LAST value for a repeated key. The
+  // hasOwnProperty check at php-json-ordered.mjs:170 only works once the first
+  // write created an own property.
+  const dup = phpJsonDecodeOrdered('{"__proto__":1,"__proto__":{"x":2},"a":3}', { text: true });
+  assert.deepEqual(dup.__lwOrder, ['__proto__', 'a']);
+  assert.equal(dup.__proto__.x, 2);
+});
+
 test('string values are latin1 byte-strings (PHP bytes, not JS code points)', () => {
   const v = phpJsonDecodeOrdered('"\\u00ff"');
   assert.equal(v.length, 2); // two UTF-8 bytes

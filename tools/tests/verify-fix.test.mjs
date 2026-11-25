@@ -237,6 +237,29 @@ test('--json still enforces the registry gate, with stdout kept to one JSON valu
   }
 });
 
+test('--json enforces the FIELD checks too, not just the sha registry', phpSkip, () => {
+  const app = makeApp();
+  try {
+    mkdirSync(join(app, 'edge', 'notes'), { recursive: true });
+    const dumpPath = join(app, 'edge', '.cache', 'welcome.compiled.json');
+    const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
+    dump.context.app.version = 'DRIFT';
+    writeFileSync(dumpPath, JSON.stringify(dump));
+    // Pin the current (drifted) compiled hash so the registry gate passes and
+    // ONLY a field mismatch can fail the run.
+    const sha = createHash('sha256').update(COMPILED).digest('hex');
+    writeFileSync(join(app, REGISTRY), `${sha}  ${Buffer.byteLength(COMPILED)} bytes\n`);
+
+    const r = runVerify(app, ['--json']);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /FAIL\s+app\.version/);
+    assert.equal(r.stdout.trim().split('\n').length, 1, 'stdout must stay one JSON value');
+    assert.equal(JSON.parse(r.stdout).app.version, '11.0.0', 'stdout still carries the recomputed truth');
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
+});
+
 test('--json --pin-sha pins a baseline and keeps the same stdout shape', phpSkip, () => {
   const app = makeApp();
   try {

@@ -158,8 +158,19 @@ $isHook = static function (ReflectionClass $rc, string $method) use ($methodBody
         // (`ignore(NULL)` then matches the row itself and rejects a valid
         // update, silently). Refuse instead — the edge cannot evaluate it.
         $rm = $rc->getMethod('rules');
+        // getStartLine()/getEndLine() belong to the method's DECLARING file.
+        // An inherited rules() lives in the parent; reading $rc's (child) file
+        // with those line numbers yields '' and silently evaluates request
+        // state with no request — the exact fail-open this check prevents.
+        $rulesFile = $rm->getFileName();
+        if (!$rulesFile || !is_readable($rulesFile)) {
+            $entry['error'] = 'LW003 cannot read rules() source — the build would evaluate it with NO request; ' .
+                'refusing rather than baking a build-time value into a rule string';
+            $out[] = $entry;
+            continue;
+        }
         $rulesSrc = implode('', array_slice(
-            file($rc->getFileName()),
+            file($rulesFile),
             $rm->getStartLine() - 1,
             $rm->getEndLine() - $rm->getStartLine() + 1
         ));
