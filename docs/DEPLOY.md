@@ -10,13 +10,13 @@ With the package installed (otherwise prefix every command with `npx `):
 laravel-workers build            # --strict (needs Laravel app root); --scaffold generates port stubs
 laravel-workers deploy           # interactive: build, then D1 (+ deploy) on request
 laravel-workers deploy --plan --mode 3 --d1-auto   # preview; changes nothing
-laravel-workers init             # scaffold registry.json + wrangler.jsonc (idempotent)
+laravel-workers init             # scaffold registry.json + wrangler.jsonc (idempotent; build scaffolds only wrangler.jsonc)
 laravel-workers status           # the recorded deploy state (lw-state.json)
 laravel-workers doctor [--cloud] # preflight: php, vendor, wrangler, deploy state
 laravel-workers shadow --app <root> # proof harness: real PHP app vs the compiled worker
-laravel-workers verify           # php tools/verify-s0.php (SKIP when no parent vendor/)
-laravel-workers vendor:ensure    # provision a composer-free vendor tree (CI prewarm)
-laravel-workers php:ensure       # resolve or provision the PHP interpreter (CI prewarm)
+laravel-workers verify           # re-check the S0 boot context; needs a prior build's welcome.compiled.json, else VERIFY-S0 SKIP
+laravel-workers vendor:ensure    # provision a composer-free vendor tree (manual/caller-CI helper; not invoked by this repo's CI)
+laravel-workers php:ensure       # resolve or provision the PHP interpreter (manual/caller-CI helper; not invoked by this repo's CI)
 
 # developer tasks run through the package.json scripts (not the CLI):
 npm test                # the suite

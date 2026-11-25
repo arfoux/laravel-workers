@@ -31,7 +31,7 @@ Laravel app (your machine)                Cloudflare Worker (request time)
        ↓ wrangler deploy
 ```
 
-For contrast: running PHP itself at the edge (Octane, WASM, a warm PHP host) boots Laravel per request at **~1000–2000 ms CPU**. This rung runs at **5 ms CPU p50 / 41 ms p95** on the reference machine (the platform's own `cpuTime` numbers, `COMPILED.md` → benchmarks). Laravel stays Laravel — this is a toolchain, not a framework fork.
+For contrast: running PHP itself at the edge (Octane, WASM, a warm PHP host) boots Laravel per request at **~1000–2000 ms CPU**. This rung's **5 ms CPU p50 / 41 ms p95** are probe-only platform `cpuTime` numbers from the `lw-cpu-probe` worker (`COMPILED.md` → benchmarks), not a measurement of your app or of `lw-showcase`; a fresh Cloudflare benchmark was excluded by this audit. Laravel stays Laravel — this is a toolchain, not a framework fork.
 
 <!-- readme-counts:start -->
 ```
@@ -59,10 +59,10 @@ Needs: PHP **≥ 8.3 on the build machine only**, Node ≥ 22, a Laravel ≥ 10 
 | `deploy` | build → (D1) → deploy; `--mode 1\|2\|3`, `--d1-auto`, `--d1-id <uuid>`, `--skip-schema`, `--yes` |
 | `status` | the recorded deploy state: worker, account, URL, deployed-at, D1 name/id, schema |
 | `doctor [--cloud]` | preflight: PHP, vendor, wrangler, deploy state |
-| `verify` | does this app boot under the build? |
+| `verify` | re-check the S0 boot context; requires a prior build's `welcome.compiled.json`, otherwise prints `VERIFY-S0 SKIP` and exits 0 |
 | `shadow --app <root>` | proof harness: the real PHP app against the compiled worker |
-| `init` | write `registry.json` + `wrangler.jsonc` up front (idempotent — a build scaffolds them when absent) |
-| `vendor:ensure` / `php:ensure` | CI prewarm: a composer-free vendor tree / the PHP interpreter |
+| `init` | write `registry.json` + `wrangler.jsonc` up front (idempotent — a build scaffolds `wrangler.jsonc` when absent; `registry.json` is init-only) |
+| `vendor:ensure` / `php:ensure` | provisioning helpers for manual or caller-CI use (this repo's CI does not invoke them) |
 
 Every flag, the tested versions and the tier order: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
@@ -156,7 +156,7 @@ Normal flow stays selective commit-by-path (`git add <named-file>`), never `git 
 - **Laravel stays Laravel** — this is the toolchain, not a framework fork.
 - **Coverage enforced** — unhandled route = warning; `--strict` = failure. Published 0.5.1 violated this for one skipped controller (P7); the fix is on main after 0.5.1, not yet published.
 - **Free-plan-first** — paid is headroom, never a fallback; the build says exactly what the app needs.
-- **Honest claims** — no "approach in progress" before M1 was measured; the last recorded formal prior-art scan was clean, and a fresh scan is required before a new public claim.
+- **Honest claims** — no "approach in progress" before M1 was measured; a fresh scoped prior-art scan ran on 2026-11-26 and found no equivalent (`docs/CLAIM-COVERAGE.md` row 49). Re-scan before any new public claim that widens the scope.
 
 ## License
 
