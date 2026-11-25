@@ -512,18 +512,18 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
     for the methods the transpiler can see it does not implement
     *(escape: set the fields the subset exposes, or port the handler)*.
 
-19. **`{param*}` (the catch-all wildcard)** — Laravel 13 has no wildcard: a route
+19. **`{param*}` is literal text, not a catch-all** — Laravel 13 has no wildcard: a route
     declared `Route::get('/files/{path*}', ...)` is *literal text* to the
     framework. Measured on the PHP 8.3 / framework 13.37 oracle:
     `Illuminate\Routing\Route::compileRoute()` on `/files/{path*}` gives
     `{^/files/\{path\*\}$}sDu` and `Matching\UriValidator::matches()` answers
-    *no* for `/files/a/b/c` — the request is a 404. The kernel keeps the
-    catch-all (it captures multiple segments, `kernel/router.mjs`, pinned by
-    `kernel/tests/router.test.mjs:105-113`) because this repository's own
-    scenarios declare such routes, so a `{param*}` route that PHP 404s is
-    *served* here. An extension, not a gap — declared so nobody re-derives it
-    from the wildcard's presence *(escape: the Laravel 13 shape is
-    `->where('path', '.*')` on an optional parameter)*.
+    *no* for `/files/a/b/c` — the request is a 404. The kernel used to answer such
+    requests as a catch-all; fix `4e95942` (2026-11-12) removed that extension, so
+    the kernel now compiles `{name*}` as literal text too (`kernel/router.mjs:266-268`),
+    pinned by `kernel/tests/router.test.mjs:105-119`: `match('/files/a/b/c.txt')`
+    → `null`, and only `/files/{path*}` matches (with no params). The Laravel shape
+    for a real catch-all is a requirement, `->where('path', '.*')` on an optional
+    parameter — what `Route::fallback()` itself uses *(escape: declare that shape)*.
 20. **A path with no route at all** — `_routes.json` decides friend-or-asset
     before the Worker runs, so a request path outside its include list (an
     unmapped path, a vendor route the app never declared) is answered by the
