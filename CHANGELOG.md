@@ -7,6 +7,12 @@ Everything in this section is **unreleased**. Published `npx --yes laravel-worke
 (npm `gitHead 7c73223e…`) still has the old behavior; the local `v0.5.1` tag points at a
 different commit and is not valid evidence for shipped behavior.
 
+### Build-time response precompute for two hot routes (2026-11-25, still 0.5.1)
+
+`@lw-precompute <app-relative fixture>` on a zero-argument controller method makes the build boot the real Laravel controller through `tools/controller-oracle.php`, compare the fresh answer with the checked-in fixture, and emit a literal `{status, headers, body}` handler — no bcrypt, no hash facade in the worker. A stale fixture or a changed controller fails the build instead of baking a lie. `lw-showcase` marks `DashboardController@hash`; `DataController@index` now does one `Post::all()` and the rest as in-memory Collection work.
+
+Proof on scratch copies of the real repos: strict build 137 routes with `precomputed ... (PHP oracle verified)`; shadow 96/96 byte-identical including both target routes; sweep coverage OK; smoke 222 ok, 1 pre-existing failure (`GET /tenants/{tenantKey}` expected 500, got 404 — reproduced on the original controllers); focused precompute tests 4/4, corpus 55/55, docs 105/105, full suite 2258 pass / 0 fail / 54 skipped. Local `process.cpuUsage()` harness: `/auth/hash` 859 ms -> 0.00 ms, `/data/index` 15 ms -> 0.00 ms. Real workerd under 30-request load: optimized `/auth/hash` 200/200, CPU p50/p95/max 5/7/7 ms; optimized `/data/index` 200/200, 3/3/3 ms; baseline `/auth/hash` 0/30 200 (`exceededCpu`, 10/10/10 ms), baseline `/data/index` 4/30 200. Version stays `0.5.1`; no tag, release or publish.
+
 ### Fail loud when the compiler skips a controller (P7)
 
 The emit loop used to `continue` on seven refusal branches without recording the route. A
