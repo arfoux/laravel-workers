@@ -175,6 +175,26 @@ const DIVERGENCES = {
     expectJsStatus: 404,
     why: 'PHP route is an empty closure (200, empty body); the compiled tenants port looks the tenant up in D1 and answers 404 "tenant not found" when it is absent',
   },
+  '/export': {
+    expectPhpStatus: 200,
+    expectJsStatus: 401,
+    why: 'PHP route is an empty closure (200); the Maatwebsite Excel port treats an export as app data and answers 401 without an identity (scripts/smoke.mjs:230)',
+  },
+  '/model/1/1/has-any': {
+    expectPhpStatus: 200,
+    expectJsStatus: 401,
+    why: 'PHP route is an empty closure (200); the Spatie permission port refuses an anonymous hasAny oracle (scripts/smoke.mjs:227)',
+  },
+  '/model/1/1/has-permission': {
+    expectPhpStatus: 200,
+    expectJsStatus: 401,
+    why: 'PHP route is an empty closure (200); the Spatie permission port refuses an anonymous hasPermissionTo oracle (scripts/smoke.mjs:226)',
+  },
+  '/model/1/1/has-role': {
+    expectPhpStatus: 200,
+    expectJsStatus: 401,
+    why: 'PHP route is an empty closure (200); the Spatie permission port refuses an anonymous hasRole oracle (scripts/smoke.mjs:225)',
+  },
 };
 
 const q = (s) => JSON.stringify(String(s));
