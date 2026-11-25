@@ -7,6 +7,14 @@ Everything in this section is **unreleased**. Published `npx --yes laravel-worke
 (npm `gitHead 7c73223e…`) still has the old behavior; the local `v0.5.1` tag points at a
 different commit and is not valid evidence for shipped behavior.
 
+### Claim-coverage refresh and row-32 scope correction (2026-11-26, still 0.5.1)
+
+- Three of row 32's four sub-items are closed at the **toolchain** level, not on a deployed app: queue producer/drain primitives (`compiler/tests/queue.test.mjs`, `kernel/tests/worker-entry.test.mjs`), configured-cron parsing/validation/emission (`tools/tests/wrangler-crons.test.mjs`, `kernel/tests/schedule-utc.test.mjs`, `build.mjs`), and the Livewire exclusion (`MAP.md:229`, `compiler/tests/livewire-markers.test.mjs`). They now have their own PROVEN rows 54–56; row 32 keeps R2 plus deployed presence/firing NOT VERIFIED.
+- `node --test tools/tests/init-idempotency.test.mjs` is new: it runs the real `init` twice in a throwaway Laravel app and asserts all four scaffolded files stay byte-identical. This closes the "no test runs init twice" caveat in row 21.
+- Stale `README.md` citations in `docs/CLAIM-COVERAGE.md`, the `verify` prerequisite, the "CI prewarm" wording and the CPU wording were corrected; row 49 now records a fresh scoped prior-art scan (2026-11-26) that found no build-time pure-JS Laravel→Cloudflare Worker compiler with D1 and fail-loud coverage. The README's 5/41 ms numbers are explicitly labelled probe-only; no new Cloudflare benchmark was run.
+
+Version stays `0.5.1`; no tag, publish, deploy, commit or PR in this change set.
+
 ### Close the three residual port findings (2026-11-25, still 0.5.1)
 
 - **OAuth `state` is cookie-only.** `kernel/packages/socialite.mjs` no longer creates,
