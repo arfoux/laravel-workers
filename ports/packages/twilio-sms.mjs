@@ -25,12 +25,13 @@ import {
   formUrlEncoded,
   normalisePayload,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 const TWILIO_BASE = 'https://api.twilio.com/2010-04-01/Accounts';
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const payload = normalisePayload(ctx);
   if (!payload.ok) return jsonPort({ error: payload.reason }, 422);
 

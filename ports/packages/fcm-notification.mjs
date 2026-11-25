@@ -19,7 +19,7 @@
 // or convenience fields we assemble into one:
 //   { token?|topic?|condition?, notification?: {title, body, ...}, data?: {} }.
 // A message with none of token/topic/condition is a 422 — FCM would reject it.
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 import { resolveFetch, jsonPort, deliverVia } from '../../kernel/packages/notify-http.mjs';
 import {
   mintFcmAccessToken,
@@ -61,6 +61,7 @@ function buildMessage(raw) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const raw = (ctx && ctx.body) || {};
   const message = buildMessage(raw);
 

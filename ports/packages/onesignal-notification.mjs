@@ -30,7 +30,7 @@ import {
   deliverVia,
   basicAuthHeader,
 } from '../../kernel/packages/notify-http.mjs';
-import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 const ONESIGNAL_URL = 'https://api.onesignal.com/notifications';
 
@@ -44,6 +44,7 @@ function asArray(value) {
 
 export default async function handle(ctx, env) {
   ctx = normalizePortCtx(ctx);
+  if ((await guardUserId(ctx)) == null) return unauthorized();
   const raw = (ctx && ctx.body) || {};
   const str = (v) => (typeof v === 'string' ? v : '');
 
