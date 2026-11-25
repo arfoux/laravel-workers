@@ -11,8 +11,8 @@ Where more than one module creates the same name with a different column set, th
 <!-- port-catalog:totals:start -->
 
 **Totals**
-- `CREATE TABLE IF NOT EXISTS` statements the code runs: **55**
-- Distinct table names: **48**
+- `CREATE TABLE IF NOT EXISTS` statements the code runs: **54**
+- Distinct table names: **47**
 - Explicit indexes (`CREATE INDEX IF NOT EXISTS`): **6**
 
 <!-- port-catalog:totals:end -->
@@ -36,45 +36,44 @@ The `Status` column this file used to carry (**NEW** = introduced by the port fl
 | 7 | `lemon_squeezy_orders` | `lemonsqueezy` | — |
 | 8 | `lemon_squeezy_subscriptions` | `lemonsqueezy` | — |
 | 9 | `lw_dtos` | `spatie-data` | — |
-| 10 | `lw_oauth_state` | kernel `socialite` | — |
-| 11 | `lw_settings` | `spatie-settings` | — |
-| 12 | `lw_webhook_events` | kernel `webhook` | — |
-| 13 | `model_has_permissions` | `permission` | — |
-| 14 | `model_has_roles` | `permission` | — |
-| 15 | `oauth_access_tokens` | `passport-oauth` | — |
-| 16 | `oauth_auth_codes` | `passport-oauth` | — |
-| 17 | `oauth_clients` | `passport-oauth` | — |
-| 18 | `oauth_refresh_tokens` | `passport-oauth` | — |
-| 19 | `permissions` | `permission` | — |
-| 20 | `personal_access_tokens` | kernel `token` | — |
-| 21 | `posts` | `spatie-query-builder` | — |
-| 22 | `pulse_aggregates` | `pulse` | — |
-| 23 | `pulse_entries` | `pulse` | `pulse_entries_recorded_at_idx` |
-| 24 | `pusher_events` | `pusher` | — |
-| 25 | `role_has_permissions` | `permission` | — |
-| 26 | `roles` | `permission` | — |
-| 27 | `sessions` | `sanctum-spa-cookie` | — |
-| 28 | `scout_search_log` | `scout-meilisearch` | — |
-| 29 | `sitemap_urls` | `spatie-sitemap` | — |
-| 30 | `slugs` | `sluggable` | — |
-| 31 | `state_models` | `spatie-model-states` | — |
-| 32 | `subscription_items` | `cashier-stripe` | — |
-| 33 | `subscriptions` | `cashier-stripe` | — |
-| 34 | `taggables` | `tags` | — |
-| 35 | `tags` | `tags` | — |
-| 36 | `translatable_posts` | `spatie-translatable` | — |
-| 37 | `users` (6 variants) | `fortify-confirmation`, `fortify-two-factor`, `jwt-auth`, `laravel-socialite-callback`, `maatwebsite-excel`, `sanctum-spa-cookie`, `sanctum` | — |
-| 38 | `webhook_calls` (2 variants) | `webhook-client`, `webhook-server` | — |
-| 39 | `webpush_subscriptions` | `webpush-notification` | `webpush_subscriptions_endpoint_idx` |
-| 40 | `paddle_customers` | `cashier-paddle` | — |
-| 41 | `paddle_subscriptions` | `cashier-paddle` | — |
-| 42 | `paddle_transactions` | `cashier-paddle` | — |
-| 43 | `channel_memberships` | `echo` | — |
-| 44 | `invoices` | `xendit-webhook` | — |
-| 45 | `job_metrics` | `horizon-metrics` | `job_metrics_queue_idx` |
-| 46 | `mollie_payments` | `mollie-webhook` | — |
-| 47 | `tenants` | `multitenancy` | — |
-| 48 | `transactions` | `midtrans-webhook` | — |
+| 10 | `lw_settings` | `spatie-settings` | — |
+| 11 | `lw_webhook_events` | kernel `webhook` | — |
+| 12 | `model_has_permissions` | `permission` | — |
+| 13 | `model_has_roles` | `permission` | — |
+| 14 | `oauth_access_tokens` | `passport-oauth` | — |
+| 15 | `oauth_auth_codes` | `passport-oauth` | — |
+| 16 | `oauth_clients` | `passport-oauth` | — |
+| 17 | `oauth_refresh_tokens` | `passport-oauth` | — |
+| 18 | `permissions` | `permission` | — |
+| 19 | `personal_access_tokens` | kernel `token` | — |
+| 20 | `posts` | `spatie-query-builder` | — |
+| 21 | `pulse_aggregates` | `pulse` | — |
+| 22 | `pulse_entries` | `pulse` | `pulse_entries_recorded_at_idx` |
+| 23 | `pusher_events` | `pusher` | — |
+| 24 | `role_has_permissions` | `permission` | — |
+| 25 | `roles` | `permission` | — |
+| 26 | `sessions` | `sanctum-spa-cookie` | — |
+| 27 | `scout_search_log` | `scout-meilisearch` | — |
+| 28 | `sitemap_urls` | `spatie-sitemap` | — |
+| 29 | `slugs` | `sluggable` | — |
+| 30 | `state_models` | `spatie-model-states` | — |
+| 31 | `subscription_items` | `cashier-stripe` | — |
+| 32 | `subscriptions` | `cashier-stripe` | — |
+| 33 | `taggables` | `tags` | — |
+| 34 | `tags` | `tags` | — |
+| 35 | `translatable_posts` | `spatie-translatable` | — |
+| 36 | `users` (6 variants) | `fortify-confirmation`, `fortify-two-factor`, `jwt-auth`, `laravel-socialite-callback`, `maatwebsite-excel`, `sanctum-spa-cookie`, `sanctum` | — |
+| 37 | `webhook_calls` (2 variants) | `webhook-client`, `webhook-server` | — |
+| 38 | `webpush_subscriptions` | `webpush-notification` | `webpush_subscriptions_endpoint_idx` |
+| 39 | `paddle_customers` | `cashier-paddle` | — |
+| 40 | `paddle_subscriptions` | `cashier-paddle` | — |
+| 41 | `paddle_transactions` | `cashier-paddle` | — |
+| 42 | `channel_memberships` | `echo` | — |
+| 43 | `invoices` | `xendit-webhook` | — |
+| 44 | `job_metrics` | `horizon-metrics` | `job_metrics_queue_idx` |
+| 45 | `mollie_payments` | `mollie-webhook` | — |
+| 46 | `tenants` | `multitenancy` | — |
+| 47 | `transactions` | `midtrans-webhook` | — |
 
 <!-- port-catalog:summary:end -->
 
@@ -238,17 +237,7 @@ CREATE TABLE IF NOT EXISTS lw_dtos (
     )
 ```
 
-### 10. `lw_oauth_state`
-Kernel: `socialite` — OAuth `state` nonces for Laravel Socialite CSRF verification. The cookie carries `Max-Age=600` and `rememberState` prunes rows older than that window on the way in, so the table holds the last ten minutes of flows rather than every flow ever started.
-
-```sql
-CREATE TABLE IF NOT EXISTS lw_oauth_state (
-      state TEXT PRIMARY KEY,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-```
-
-### 11. `lw_settings`
+### 10. `lw_settings`
 Port: `spatie-settings` — typed key/value settings store for spatie/laravel-settings.
 
 ```sql
@@ -262,7 +251,7 @@ CREATE TABLE IF NOT EXISTS lw_settings (
     )
 ```
 
-### 12. `lw_webhook_events`
+### 11. `lw_webhook_events`
 Ports: `cashier-paddle`, `cashier-stripe`, `lemonsqueezy` — shared dedupe ledger of incoming billing webhooks (guards replay/double-processing).
 
 ```sql
@@ -275,7 +264,7 @@ CREATE TABLE IF NOT EXISTS lw_webhook_events (
   )
 ```
 
-### 13. `model_has_permissions`
+### 12. `model_has_permissions`
 Port: `permission` — spatie/laravel-permission polymorphic model↔permission pivot.
 
 ```sql
@@ -287,7 +276,7 @@ CREATE TABLE IF NOT EXISTS model_has_permissions (
   )
 ```
 
-### 14. `model_has_roles`
+### 13. `model_has_roles`
 Port: `permission` — spatie/laravel-permission polymorphic model↔role pivot.
 
 ```sql
@@ -299,7 +288,7 @@ CREATE TABLE IF NOT EXISTS model_has_roles (
   )
 ```
 
-### 15. `oauth_access_tokens`
+### 14. `oauth_access_tokens`
 Port: `passport-oauth` — Passport-issued OAuth access tokens.
 
 ```sql
@@ -314,7 +303,7 @@ CREATE TABLE IF NOT EXISTS oauth_access_tokens (
     )
 ```
 
-### 16. `oauth_auth_codes`
+### 15. `oauth_auth_codes`
 Port: `passport-oauth` — Passport authorization codes (incl. PKCE).
 
 ```sql
@@ -330,7 +319,7 @@ CREATE TABLE IF NOT EXISTS oauth_auth_codes (
     )
 ```
 
-### 17. `oauth_clients`
+### 16. `oauth_clients`
 Port: `passport-oauth` — Passport OAuth client applications.
 
 ```sql
@@ -346,7 +335,7 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
     )
 ```
 
-### 18. `oauth_refresh_tokens`
+### 17. `oauth_refresh_tokens`
 Port: `passport-oauth` — Passport refresh tokens tied to an access token.
 
 ```sql
@@ -358,7 +347,7 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
     )
 ```
 
-### 19. `permissions`
+### 18. `permissions`
 Port: `permission` — spatie/laravel-permission named permissions per guard.
 
 ```sql
@@ -370,7 +359,7 @@ CREATE TABLE IF NOT EXISTS permissions (
   )
 ```
 
-### 20. `personal_access_tokens`
+### 19. `personal_access_tokens`
 Ports: `sanctum` and `laravel-socialite-callback` — both run the **same** statement (Sanctum's migration verbatim, `created_at`/`updated_at` included), so whichever port calls `ensureSchema()` first provisions the table both then insert into. `sanctum` writes seven columns and updates two of them; the socialite port inserts five and leaves the timestamps NULL.
 
 ```sql
@@ -388,7 +377,7 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
   )
 ```
 
-### 21. `posts`
+### 20. `posts`
 Port: `spatie-query-builder` — demo posts for filtering/sorting via spatie/laravel-query-builder.
 
 ```sql
@@ -401,7 +390,7 @@ CREATE TABLE IF NOT EXISTS posts (
     )
 ```
 
-### 22. `pulse_aggregates`
+### 21. `pulse_aggregates`
 Port: `pulse` (`GET /pulse`) — pre-aggregated Pulse metrics per period/path (requests, errors, avg duration).
 
 ```sql
@@ -415,7 +404,7 @@ CREATE TABLE IF NOT EXISTS pulse_aggregates (
      )
 ```
 
-### 23. `pulse_entries`
+### 22. `pulse_entries`
 Port: `pulse` (`POST /pulse/record`, `GET /pulse`) — raw Pulse entries (one request/error datapoint per row).
 
 ```sql
@@ -431,7 +420,7 @@ CREATE INDEX IF NOT EXISTS pulse_entries_recorded_at_idx
      ON pulse_entries (recorded_at)
 ```
 
-### 24. `pusher_events`
+### 23. `pusher_events`
 Port: `pusher` — persisted broadcast events for the Pusher channel fallback.
 
 ```sql
@@ -444,7 +433,7 @@ CREATE TABLE IF NOT EXISTS pusher_events (
     )
 ```
 
-### 25. `role_has_permissions`
+### 24. `role_has_permissions`
 Port: `permission` — spatie/laravel-permission role↔permission pivot.
 
 ```sql
@@ -455,7 +444,7 @@ CREATE TABLE IF NOT EXISTS role_has_permissions (
   )
 ```
 
-### 26. `roles`
+### 25. `roles`
 Port: `permission` — spatie/laravel-permission named roles per guard.
 
 ```sql
@@ -467,7 +456,7 @@ CREATE TABLE IF NOT EXISTS roles (
   )
 ```
 
-### 27. `sessions`
+### 26. `sessions`
 Port: `sanctum-spa-cookie` — server-side session rows carrying the CSRF token for SPA-cookie auth.
 
 ```sql
@@ -480,7 +469,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     )
 ```
 
-### 28. `scout_search_log`
+### 27. `scout_search_log`
 Port: `scout-meilisearch` — search-query log (index + query + hit count) for Scout Meilisearch.
 
 ```sql
@@ -493,7 +482,7 @@ CREATE TABLE IF NOT EXISTS scout_search_log (
     )
 ```
 
-### 29. `sitemap_urls`
+### 28. `sitemap_urls`
 Port: `spatie-sitemap` — URLs tracked for sitemap generation via spatie/laravel-sitemap.
 
 ```sql
@@ -506,7 +495,7 @@ CREATE TABLE IF NOT EXISTS sitemap_urls (
     )
 ```
 
-### 30. `slugs`
+### 29. `slugs`
 Port: `sluggable` — slug history per (table, column) for spatie/laravel-sluggable.
 
 ```sql
@@ -520,7 +509,7 @@ CREATE TABLE IF NOT EXISTS slugs (
     )
 ```
 
-### 31. `state_models`
+### 30. `state_models`
 Port: `spatie-model-states` — demo models whose `state` column is a validated state-machine value.
 
 ```sql
@@ -532,7 +521,7 @@ CREATE TABLE IF NOT EXISTS state_models (
     )
 ```
 
-### 32. `subscription_items`
+### 31. `subscription_items`
 Port: `cashier-stripe` — Cashier Stripe per-price subscription line items.
 
 ```sql
@@ -551,7 +540,7 @@ CREATE TABLE IF NOT EXISTS subscription_items (
   )
 ```
 
-### 33. `subscriptions`
+### 32. `subscriptions`
 Port: `cashier-stripe` — Cashier Stripe subscription records per user.
 
 ```sql
@@ -572,7 +561,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   )
 ```
 
-### 34. `taggables`
+### 33. `taggables`
 Port: `tags` — spatie/laravel-tags polymorphic tag↔model pivot.
 
 ```sql
@@ -584,7 +573,7 @@ CREATE TABLE IF NOT EXISTS taggables (
     )
 ```
 
-### 35. `tags`
+### 34. `tags`
 Port: `tags` — spatie/laravel-tags named tags per type.
 
 ```sql
@@ -598,7 +587,7 @@ CREATE TABLE IF NOT EXISTS tags (
     )
 ```
 
-### 36. `translatable_posts`
+### 35. `translatable_posts`
 Port: `spatie-translatable` — demo posts storing per-locale JSON strings for spatie/laravel-translatable.
 
 ```sql
@@ -611,7 +600,7 @@ CREATE TABLE IF NOT EXISTS translatable_posts (
     )
 ```
 
-### 37. `users` (6 variants)
+### 36. `users` (6 variants)
 The `users` table is created independently by seven auth ports, each provisioning its own demo shape — six distinct statements, since `sanctum` and `jwt-auth` carry the same one. `IF NOT EXISTS` means whichever port runs first on a fresh DB wins; the others become no-ops. Documented as separate variants:
 
 **(a) `sanctum`**
@@ -692,7 +681,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 ```
 
-### 38. `webhook_calls` (2 variants)
+### 37. `webhook_calls` (2 variants)
 Two different ports create a table with the **same name but different schemas** — a real collision risk on a shared D1 binding, since `IF NOT EXISTS` means the first writer's shape wins.
 
 **(a) `webhook-client`** (`POST /webhooks/{name}`) — outbound dispatch log (spatie/laravel-webhook-client):
@@ -723,7 +712,7 @@ CREATE TABLE IF NOT EXISTS webhook_calls (
  );
 ```
 
-### 39. `webpush_subscriptions`
+### 38. `webpush_subscriptions`
 Port: `webpush-notification` (`POST /notify/webpush`) — Web Push VAPID endpoint subscriptions (endpoint + client keys).
 
 ```sql
@@ -737,7 +726,7 @@ CREATE TABLE IF NOT EXISTS webpush_subscriptions (
 CREATE INDEX IF NOT EXISTS webpush_subscriptions_endpoint_idx ON webpush_subscriptions (endpoint)
 ```
 
-### 40. `paddle_customers`
+### 39. `paddle_customers`
 Port: `cashier-paddle` — Cashier Paddle customer records.
 
 ```sql
@@ -752,7 +741,7 @@ CREATE TABLE IF NOT EXISTS paddle_customers (
   )
 ```
 
-### 41. `paddle_subscriptions`
+### 40. `paddle_subscriptions`
 Port: `cashier-paddle` — Cashier Paddle subscription records.
 
 ```sql
@@ -773,7 +762,7 @@ CREATE TABLE IF NOT EXISTS paddle_subscriptions (
   )
 ```
 
-### 42. `paddle_transactions`
+### 41. `paddle_transactions`
 Port: `cashier-paddle` — Cashier Paddle transaction receipts.
 
 ```sql
@@ -791,7 +780,7 @@ CREATE TABLE IF NOT EXISTS paddle_transactions (
   )
 ```
 
-### 43. `channel_memberships`
+### 42. `channel_memberships`
 Port: `echo` — the edge's stand-in for `Broadcast::channel()`: one row per (user, channel) pair the broadcast-auth endpoint may authorize.
 
 ```sql
@@ -803,7 +792,7 @@ CREATE TABLE IF NOT EXISTS channel_memberships (
   )
 ```
 
-### 44. `invoices`
+### 43. `invoices`
 Port: `xendit-webhook` — every accepted Xendit invoice callback, stored so a re-delivered callback is idempotent.
 
 ```sql
@@ -815,7 +804,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   )
 ```
 
-### 45. `job_metrics`
+### 44. `job_metrics`
 Port: `horizon-metrics` — one row per job event (`POST /horizon/record`), read back as the JSON summary; indexed on `queue`.
 
 ```sql
@@ -831,7 +820,7 @@ CREATE INDEX IF NOT EXISTS job_metrics_queue_idx
      ON job_metrics (queue)
 ```
 
-### 46. `mollie_payments`
+### 45. `mollie_payments`
 Port: `mollie-webhook` — the payment state the receiver re-fetches from the Mollie API and upserts (the callback itself carries no status).
 
 ```sql
@@ -851,7 +840,7 @@ CREATE TABLE IF NOT EXISTS mollie_payments (
     )
 ```
 
-### 47. `tenants`
+### 46. `tenants`
 Port: `multitenancy` — the morph map's hard tenant table (key/name + a `data_json` payload): create a tenant, then resolve + boot it.
 
 ```sql
@@ -864,7 +853,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     )
 ```
 
-### 48. `transactions`
+### 47. `transactions`
 Port: `midtrans-webhook` — the Midtrans notification ledger, keyed by `order_id` and written `INSERT OR IGNORE`, so a re-delivery is idempotent.
 
 ---
