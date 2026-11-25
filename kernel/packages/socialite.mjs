@@ -7,9 +7,9 @@
 // Parity target: laravel/socialite v5.31.0 builds the redirect URL and stores
 // the `state` in the session, then verifies it on the callback. Workers have no
 // PHP session; we carry `state` in an HttpOnly cookie holding a 40-char random
-// nonce (unguessable, NOT signed - there is no MAC; the D1 row beside it is the
-// second check) AND a
-// `lw_oauth_state` D1 row so the callback can check either (defense in depth).
+// nonce (unguessable, NOT signed - there is no MAC). The cookie is the only
+// store: the callback checks it against the `state` the provider returned, so
+// there is no D1 row to write, prune, or consume.
 
 import { randomString } from './token.mjs';
 import { parseCookieHeader } from '../cookies.mjs';
@@ -88,9 +88,8 @@ export function randomState() {
 
 const COOKIE_NAME = 'oauth_state';
 
-// The window a `state` is worth remembering: the cookie's Max-Age, and the age
-// at which `rememberState` prunes the D1 row (one constant so the two cannot
-// drift - a row outliving its cookie is dead weight in D1).
+// How long the `state` nonce is worth accepting on a callback: the cookie's
+// Max-Age, declared once so redirect and browser agree.
 const STATE_TTL_SECONDS = 600;
 
 export function stateCookie(state, { maxAgeSeconds = STATE_TTL_SECONDS, secure = true } = {}) {
@@ -106,29 +105,4 @@ export function readStateCookie(ctx) {
   // nests PHP-style `name[]=` cookies, which a string cookie is not.
   const state = parseCookieHeader(cookie)[COOKIE_NAME];
   return typeof state === 'string' ? state : null;
-}
-
-// Persist the state so the callback can double-check when the cookie is absent
-// (cross-domain or a privacy browser). One row per state; short-lived - the row
-// is pruned once it is older than the cookie's own window, because a flow whose
-// callback never comes (a bot hitting `/auth/{provider}/redirect`, a closed tab)
-// otherwise leaves it behind for good.
-export async function rememberState(env, state) {
-  await env.DB.prepare(
-    `CREATE TABLE IF NOT EXISTS lw_oauth_state (
-      state TEXT PRIMARY KEY,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`
-  ).run();
-  await env.DB.prepare(
-    `DELETE FROM lw_oauth_state WHERE created_at < datetime('now', '-${STATE_TTL_SECONDS} seconds')`
-  ).run();
-  await env.DB.prepare('INSERT INTO lw_oauth_state (state) VALUES (?1)').bind(state).run();
-}
-
-export async function consumeState(env, state) {
-  const row = await env.DB.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1')
-    .bind(state).first();
-  if (row) await env.DB.prepare('DELETE FROM lw_oauth_state WHERE state = ?1').bind(state).run();
-  return !!row;
 }
