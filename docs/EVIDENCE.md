@@ -1027,3 +1027,27 @@ docs-counts PASS: README counts match the code (118 constructs, 47/47 facades, c
 $ node tools/pack-gate.mjs
 pack-gate OK: 118 runtime files reached from build.mjs + bin/laravel-workers.mjs (+7 explicit) + 17 README-linked docs shipped (214 files in the tarball; local links checked in 17 Markdown files)
 ```
+
+## Post-fix CPU residual sweep (2026-11-25, deployed `1eaaffee`)
+
+The two-controller CPU pass (`@lw-precompute` on `DashboardController@hash`, one D1 fetch
+in `DataController@index`) closed the only routes with observed production 503 failures
+(`docs/EVIDENCE.md:643-653`): `/auth/hash` 10/10 503 and `/data/index` 5/10 in the
+pre-fix probe. "Phase B" there means that limited CPU pass, not the separate line-by-line
+audit sweep in `notes/PLAYBOOK.local.md` G.6/G.49.
+
+A post-fix `wrangler tail` sweep drove every GET route in the built route table 3 times
+(89 routes, 267 requests) against the deployed custom domain and parsed the platform's
+own `cpuTime`/`outcome`. Tail captured 34 request events across 33 routes; among those
+events, 0 had `outcome=exceededCpu` and 0 had HTTP 503. A focused 30-request tail on the
+two hottest routes in the coarse Node proxy found:
+
+```text
+GET /edge/cache   n=20, cpu p50/p95/max 16/36/36 ms, outcome=ok, status=200
+GET /data/writes  n=11, cpu p50/p95/max 8/17/17 ms, outcome=ok, status=200
+```
+
+Neither produced `exceededCpu` or 503. Both are stateful cache/D1 write paths, so
+`@lw-precompute` would change their semantics; no further route was optimized. The
+`npm run cpu` numbers remain a coarse `process.cpuUsage()` proxy and are not cited as
+workerd CPU. Version stays `0.5.1`; no tag or publish.
