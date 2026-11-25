@@ -52,9 +52,13 @@ const STEP_FIXES = {
 
 // Genuine PHP-vs-worker differences found by the full run. Each entry is backed
 // by the observed bodies/statuses; expectStatus is only declared when BOTH sides
-// answer that status (the harness checks it on both).
+// answer that status (the harness checks it on both). When the statuses differ,
+// declare expectPhpStatus and expectJsStatus instead so the harness can validate
+// each side separately.
 const DIVERGENCES = {
   '/analytics': {
+    expectPhpStatus: 200,
+    expectJsStatus: 422,
     why: "PHP route is an empty closure (200, empty body); the compiled analytics port requires GA4_PROPERTY_ID and answers 422 without that binding",
   },
   '/architecture': {
@@ -66,6 +70,8 @@ const DIVERGENCES = {
     why: 'prerendered static page carries relative internal URLs (href="/") where PHP renders absolute http://localhost URLs; build-time URL rewriting, not app output',
   },
   '/auth/jwt/user': {
+    expectPhpStatus: 200,
+    expectJsStatus: 401,
     why: 'PHP route is an empty closure (200, empty body); the compiled JWT port rejects an anonymous request with 401 Unauthenticated',
   },
   '/d/': {
@@ -89,6 +95,8 @@ const DIVERGENCES = {
     why: 'PHP route is an empty closure (200, empty body); the compiled horizon-metrics port answers a JSON per-queue metrics summary',
   },
   '/img/x': {
+    expectPhpStatus: 200,
+    expectJsStatus: 500,
     why: 'PHP route is an empty closure (200, empty body); the compiled image port answers 500 because CF_IMAGE_RESIZING_ZONE is not bound in the shadow harness',
   },
   '/localization': {
@@ -101,6 +109,8 @@ const DIVERGENCES = {
   },
 
   '/misc/http': {
+    expectPhpStatus: 500,
+    expectJsStatus: 200,
     why: "PHP's outbound HTTP call fails in the CLI oracle and Laravel renders a 500 page; the compiled HTTP port answers 200 JSON 'unconfigured' because no HTTP_UPSTREAM/allowlist is bound",
   },
   '/nonexistent-route-for-404': {
@@ -120,6 +130,8 @@ const DIVERGENCES = {
     why: 'the earlier compiled /horizon/metrics step lazily created job_metrics + job_metrics_queue_idx in D1 (ports/horizon-metrics.mjs ensureSchema); PHP never creates them, so the table lists differ',
   },
   '/ports/passport/authorize': {
+    expectPhpStatus: 200,
+    expectJsStatus: 400,
     why: 'PHP controller returns the JSON stub (200); the compiled Passport port validates the OAuth client and answers 400 invalid_client with no client_id',
   },
   '/ports/pulse': {
@@ -131,9 +143,13 @@ const DIVERGENCES = {
     why: 'PHP controller returns the JSON stub (transport: text/event-stream); the compiled realtime port emits an actual SSE stream',
   },
   '/ports/socialite/authorize': {
+    expectPhpStatus: 200,
+    expectJsStatus: 302,
     why: 'PHP controller returns the JSON stub (200); the compiled Socialite port performs the provider redirect (302 with signed state)',
   },
   '/ports/socialite/callback': {
+    expectPhpStatus: 200,
+    expectJsStatus: 400,
     why: 'PHP controller returns the JSON stub (200); the compiled Socialite port verifies state and answers 400 OAuth state mismatch when the authorize-leg cookie is absent',
   },
   '/pulse': {
@@ -150,9 +166,13 @@ const DIVERGENCES = {
   },
 
   '/site-search': {
+    expectPhpStatus: 200,
+    expectJsStatus: 422,
     why: 'PHP route is an empty closure (200, empty body); the compiled search port requires the q query parameter and answers 422 when it is absent',
   },
   '/tenants/acme': {
+    expectPhpStatus: 200,
+    expectJsStatus: 404,
     why: 'PHP route is an empty closure (200, empty body); the compiled tenants port looks the tenant up in D1 and answers 404 "tenant not found" when it is absent',
   },
 };
@@ -192,6 +212,8 @@ for (const uri of uris) {
   if (fix.headers) parts.push(`headers: ${JSON.stringify(fix.headers)}`);
   if (divergence.why) parts.push("expect: 'diverges'");
   if (divergence.expectStatus !== undefined) parts.push(`expectStatus: ${divergence.expectStatus}`);
+  if (divergence.expectPhpStatus !== undefined) parts.push(`expectPhpStatus: ${divergence.expectPhpStatus}`);
+  if (divergence.expectJsStatus !== undefined) parts.push(`expectJsStatus: ${divergence.expectJsStatus}`);
   if (divergence.why) parts.push(`why: ${q(divergence.why)}`);
   lines.push(`    { ${parts.join(', ')} },`);
 }

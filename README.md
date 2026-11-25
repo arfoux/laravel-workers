@@ -21,7 +21,7 @@ That is the whole setup: nothing to install (`npm i -D laravel-workers` only if 
 
 A plan is the whole deploy on paper: the worker name, the account a real run would target, the D1 action and identity, the schema decision, the files it would touch and the cloud calls it would make — and it stops on the things a real run would stop on. Ran without `--mode 3`, `--plan` previews mode 1 (build only), which is why the line above passes it.
 
-**What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. The 55-case Blade corpus is checked **byte-identical against PHP 8.3 on your machine**; the shadow replay records remaining divergences instead of hiding them. The build fails on unaccounted routes and refused constructs. Published 0.5.1 had one skipped-controller gap (P7); it is **fixed on main after 0.5.1, not yet published** — see [docs/EVIDENCE.md](docs/EVIDENCE.md).
+**What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. The 55-case Blade corpus is checked **byte-identical against PHP 8.3 on your machine**; the shadow replay records remaining divergences instead of hiding them. For non-scaffold builds, the build fails on unaccounted routes and refused constructs. Published 0.5.1 had one skipped-controller gap (P7); it is **fixed on main after 0.5.1, not yet published** — see [docs/EVIDENCE.md](docs/EVIDENCE.md).
 
 ```
 Laravel app (your machine)                Cloudflare Worker (request time)
@@ -55,7 +55,7 @@ Needs: PHP **≥ 8.3 on the build machine only**, Node ≥ 22, a Laravel ≥ 10 
 | Command | What it does |
 |---|---|
 | `deploy --plan [--mode 2|3] [--check]` | preview: no build, no app/config/cloud writes, no prompts; `--mode 3` previews the deploy (plain `--plan` is mode 1 = build only); `--check` requires mode ≥ 2 and adds read-only account/D1 checks using temporary scratch files that are cleaned up |
-| `build` | compile to `dist/` — no cloud, strict (an unaccounted route fails the build); `--scaffold` writes `501` stubs |
+| `build` | compile to `dist/` — no cloud; for non-scaffold builds, strict (an unaccounted route fails the build); `--scaffold` writes `501` stubs |
 | `deploy` | build → (D1) → deploy; `--mode 1\|2\|3`, `--d1-auto`, `--d1-id <uuid>`, `--skip-schema`, `--yes` |
 | `status` | the recorded deploy state: worker, account, URL, deployed-at, D1 name/id, schema |
 | `doctor [--cloud]` | preflight: PHP, vendor, wrangler, deploy state |
@@ -83,7 +83,7 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 | **D1 + storage** | query builder (`where(fn)`, `join`/`group`/`having`/`distinct`, `whereDate`…, `sum`/`avg`/`chunk`, `upsert`, D1-safe param binding), D1-backed cache at request time (KV is build-time/simple-cache only), `Storage::put/get/exists/delete` (default disk = D1 blob store, R2 when bound), multipart uploads + the `file` rule |
 | **Framework bits** | `Gate`/policies compiled at build time, policy `before()` honoured (global `Gate::before()` is refused), `Event::dispatch` (listeners compiled, synchronous), `paginate()` → byte-identical Tailwind links, `Mail::to()->send()`, the schedule dumped to `dist/cron.json` + the `scheduled` handler |
 
-**Refused at build time** — never answered wrongly, each with an escape hatch (recipes in **[docs/PACKAGE-PORTS.md](docs/PACKAGE-PORTS.md)**): `<x-...>` components and controller code outside the transpiler subset → a `ports/*.mjs` handler · `Queue::push()` → CF Queues + a consumer you write, or a D1 table a cron reads · `Cache::tags()` · CORS config · a named non-default `Storage::disk()` → bind R2 · a `config()` group the app has not declared → declare it in `registry.json` · an `auth.guards.*` driver you registered in PHP → a guard port. `npx laravel-workers build --scaffold` writes a `501` stub for every route that needs one.
+**Refused at build time for non-scaffold builds** — never answered wrongly, each with an escape hatch (recipes in **[docs/PACKAGE-PORTS.md](docs/PACKAGE-PORTS.md)**): `<x-...>` components and controller code outside the transpiler subset → a `ports/*.mjs` handler · `Queue::push()` → CF Queues + a consumer you write, or a D1 table a cron reads · `Cache::tags()` · CORS config · a named non-default `Storage::disk()` → bind R2 · a `config()` group the app has not declared → declare it in `registry.json` · an `auth.guards.*` driver you registered in PHP → a guard port. `npx laravel-workers build --scaffold` writes a `501` stub for every route that needs one.
 
 ### Honest limits
 

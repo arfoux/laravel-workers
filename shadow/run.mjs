@@ -13,17 +13,21 @@
 //   --build       run `build.mjs --strict` in the app first (fail loud)
 //   --json        print the machine-readable report (to stderr — see below)
 //
-// Environment:
 //   PHP_BIN                 the PHP binary (default: `php`)
 //   LW_SHADOW_MIN_COVERAGE  the byte-identical floor, 0..1 (default: 1). A
 //                           non-numeric value is refused rather than silently
 //                           disabling the gate; `0` disables it on purpose.
+//   LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE
+//                           floor for documented divergences whose status is
+//                           validated on BOTH sides, 0..1 (default: 0 = off).
+//                           Refuses a non-numeric value like the floor above.
 //   LW_DBG / LW_DBG_BODY    debug dumps to stderr
 //
 // A scenario file exports { name, steps, fixtures?, user? }:
 //   steps[]    { label, method, uri, jar?, headers?, form?, json?, query?,
 //                multipart?, expect?: 'match' | 'diverges', why?,
-//                shape?, expectStatus?, expectHeader?, expectBody? }
+//                shape?, expectStatus?, expectPhpStatus?, expectJsStatus?,
+//                expectHeader?, expectBody? }
 //   fixtures[] { sql } — rows inserted before the steps (both sides see them)
 //   user       { id, email, password, password_hash? } — the seeded auth user
 //   env        { NAME: value } — bindings the WORKER sees (a port that reads a
@@ -33,6 +37,10 @@
 // A step may carry:
 //   shape        true — compare the JSON STRUCTURE (key sets), not the bytes
 //   expectStatus the status the step must answer (both sides)
+//   expectPhpStatus / expectJsStatus
+//                the status EACH side must answer — use both together to
+//                prove a documented divergence (PHP 200, worker 422). One
+//                alone is enforced but is not a "status-validated" divergence.
 //   expectHeader { name: value } headers the step must answer
 //   expectBody   a substring the body must contain
 //
@@ -56,6 +64,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, copyFileSync, writeFileS
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { statusExpectations, divergenceStatusCoverage, verdictGates } from './status-expectations.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const ORACLE = path.join(ROOT, 'tools', 'php-shadow-oracle.php');
@@ -785,13 +794,12 @@ async function main() {
         shapeOk = re.test(String(phpBody ?? '')) && re.test(String(j.body ?? ''));
       }
       const statusOk = p.status === j.status;
-      // A step may declare the status both sides must answer (`expectStatus`).
-      // It is what makes a documented divergence *provable*: the bodies of the
-      // error pages differ (a Laravel framework asset), but the status must be
-      // Laravel's.
-      const expectStatusOk =
-        step.expectStatus === undefined ||
-        (p.status === step.expectStatus && j.status === step.expectStatus);
+      // A step may declare the status both sides must answer (`expectStatus`)
+      // or a status PER SIDE (`expectPhpStatus` / `expectJsStatus`). This is
+      // what makes a documented divergence *provable*: the bodies of the
+      // error pages differ, but the statuses must be the ones the step names.
+      const { ok: expectStatusOk, validated: expectStatusValidated } =
+        statusExpectations(step, p.status, j.status);
       // A step may declare the headers both sides must carry (`expectHeader`:
       // { name: value }). The 405 carries the Allow header (the methods the URI
       // accepts) - the same list Laravel's router answers.
@@ -826,6 +834,10 @@ async function main() {
         statusOk && headerDiff.length === 0 && body.equal && expectBodyOk && expectStatusOk && expectHeaderOk &&
         mailsEqual && expectMailsOk;
       const expected = step.expect || 'match';
+      const gates = verdictGates({
+        expected, shapeOk, statusOk, headerDiff,
+        expectBodyOk, expectStatusOk, expectHeaderOk, expectMailsOk,
+      });
       let verdict;
       if (ok) {
         // #412: `body.equal` is true for a BYTE match AND for a JSON-structural
@@ -838,15 +850,17 @@ async function main() {
           structural++;
         }
         matched++;
-      } else if (shapeOk && statusOk && headerDiff.length === 0 && expectBodyOk) {
+      } else if (gates.shapeVerified) {
         // The body is random by construction (a bcrypt digest): both sides match
-        // the declared shape, so the step is verified — but not byte-identical.
+        // the declared shape AND every declared status/header/mail expectation,
+        // so the step is verified — but not byte-identical.
         verdict = 'shape';
         shaped++;
         matched++;
-      } else if (expected === 'diverges' && expectStatusOk && expectHeaderOk) {
+      } else if (gates.knownDivergence) {
         // A known divergence: the bodies differ (a Laravel framework asset),
-        // but the status and the declared headers are the ones Laravel answers.
+        // but the status and the declared headers are the ones Laravel answers,
+        // and any declared body/mail expectations still hold.
         verdict = 'diverges (known)';
         diverged++;
       } else {
@@ -862,6 +876,10 @@ async function main() {
         phpStatus: p.status,
         jsStatus: j.status,
         statusOk,
+        expectStatus: step.expectStatus,
+        expectPhpStatus: step.expectPhpStatus,
+        expectJsStatus: step.expectJsStatus,
+        expectStatusValidated,
         expectBodyOk,
         expectBody: step.expectBody ?? null,
         headerDiff: headerDiff.map((k) => ({ name: k, php: ph[k], js: jh[k] })),
@@ -878,6 +896,7 @@ async function main() {
       });
     }
 
+    const statusCoverage = divergenceStatusCoverage(results);
     const report = {
       app: appRoot,
       scenario: scenarioFile,
@@ -899,6 +918,9 @@ async function main() {
       // Every step is accounted for: identical, shape-verified, documented, or
       // unexplained.
       accounted: scenario.steps.length ? (matched + diverged) / scenario.steps.length : 1,
+      // Documented divergences whose status is proven on BOTH sides, over all
+      // documented divergences. 0/0 is reported as a 0 ratio, not 1.
+      divergenceStatusCoverage: statusCoverage,
       results,
     };
 
@@ -953,7 +975,8 @@ async function main() {
           `${structural} json-equivalent, ` +
           `${diverged} documented divergence(s), ${failed} unexplained — byte-identical ` +
           `step coverage ${(report.coverage * 100).toFixed(0)}% (accounted ${(report.accounted * 100).toFixed(0)}%) ` +
-          `[scenario steps, not code lines]`
+          `[scenario steps, not code lines]; divergence status validated ` +
+          `${statusCoverage.validated}/${statusCoverage.total}`
       );
     }
     // The gate: a run that is "green" only because steps were silently
@@ -987,7 +1010,31 @@ async function main() {
           `${diverged} documented divergence(s)\n`,
       );
     }
-    process.exit(failed || !coverageOk ? 1 : 0);
+    // A documented divergence with no status expectation is only "explained",
+    // not proven: the bodies differ and nothing pins the statuses. This
+    // SEPARATE floor is off by default (0); a typo is refused rather than
+    // silently disabling it, exactly like LW_SHADOW_MIN_COVERAGE above.
+    const rawStatusFloor = process.env.LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE;
+    let minStatusCoverage = 0;
+    if (rawStatusFloor !== undefined && rawStatusFloor !== '') {
+      minStatusCoverage = Number(rawStatusFloor);
+      if (!Number.isFinite(minStatusCoverage) || minStatusCoverage < 0 || minStatusCoverage > 1) {
+        process.stderr.write(
+          `shadow FAILED: LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE must be a number in 0..1 (got ${JSON.stringify(rawStatusFloor)})\n`
+        );
+        process.exit(2);
+      }
+    }
+    const statusCoverageOk = statusCoverage.ratio >= minStatusCoverage;
+    if (!statusCoverageOk) {
+      process.stderr.write(
+        `shadow FAILED: divergence status coverage ${statusCoverage.validated}/${statusCoverage.total} ` +
+          `(${(statusCoverage.ratio * 100).toFixed(0)}%) is below the floor ${(minStatusCoverage * 100).toFixed(0)}% ` +
+          `(LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE) — a divergence needs expectStatus or BOTH ` +
+          `expectPhpStatus/expectJsStatus\n`
+      );
+    }
+    process.exit(failed || !coverageOk || !statusCoverageOk ? 1 : 0);
   } finally {
     try {
       rmSync(work, { recursive: true, force: true });

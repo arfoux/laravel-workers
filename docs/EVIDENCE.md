@@ -422,8 +422,21 @@ shadow: 71/100 byte-identical, 0 shape-verified, 0 json-equivalent,
         29 documented divergence(s), 0 unexplained — byte-identical step coverage 71% (accounted 100%)
 ```
 
-With the default floor the same run exits 1 with `below the floor 100%` — honest, because
-29 steps are not byte-identical. The initial run failed in the PHP oracle at `POST /login`:
+**Re-run 2026-11-25 (supersedes the numbers above).** Same cwd and scenario, exact command:
+
+```text
+LW_SHADOW_MIN_COVERAGE=0 node shadow/run.mjs --app "C:/Users/HP/Documents/vscode/lw-showcase" --scenarios shadow/scenarios/lw-showcase.mjs
+shadow: 73/100 byte-identical, 0 shape-verified, 0 json-equivalent,
+        27 documented divergence(s), 0 unexplained — byte-identical step coverage 73% (accounted 100%)
+EXIT=0
+```
+
+The 2026-11-16 block above stays as the historical measurement. The optional status-coverage
+gate was off in this run (`LW_SHADOW_MIN_COVERAGE=0`); the verdict remains PARTIAL, not a
+status-validated parity claim.
+
+With the default floor either run exits 1 with `below the floor 100%` — honest, because
+29 (2026-11-16) / 27 (2026-11-25) steps are not byte-identical. The initial run failed in the PHP oracle at `POST /login`:
 a jar-less GET ran before the bootstrap step, leaving a session row without `$lastToken`, so
 `@token` resolution threw. Moving the bootstrap GET to step 1 fixed the harness ordering (not
 the product). `/routing/intended` needed the bootstrapped jar and `/ports/request` needed a
@@ -501,9 +514,11 @@ grep -n '"uri": "/edge/upload"\|"POST /edge/upload"' dist/src/routes.generated.m
 `build_exit=0` and `coverage: all 131 route(s) handled`. The refusal is intentional
 (`compiler/src/transpiler.mjs:322-325`), but `build.mjs:3411-3413` logs and continues: no port
 stub and no failing status for that route. Consequence on the local 0.5.1 worker:
-`POST /edge/upload` → **405**, while Laravel's PHP route answers it. This contradicts
-`README.md:24` ("Anything the compiler cannot handle fails the build — nothing silently wrong
-ships") and `README.md:54,82`.
+`POST /edge/upload` → **405**, while Laravel's PHP route answers it. This contradicts the
+published-0.5.1 non-scaffold-build claims `README.md:24` ("Anything the compiler cannot
+handle fails the build — nothing silently wrong ships") and `README.md:54,82`; those claims
+are now scoped to non-scaffold builds in the current README (the `--scaffold` path writes a
+visible 501 stub instead).
 
 `PUT`/`POST /ports/blob` → 405 is **not** a defect: `routes/web.php:266` declares GET only and
 compiled `dist/src/routes.generated.mjs:1414-1427` registers `GET`/`HEAD`; the 405 is correct parity.
@@ -512,7 +527,7 @@ compiled `dist/src/routes.generated.mjs:1414-1427` registers `GET`/`HEAD`; the 4
 
 These are **new** findings from a line-by-line critical review and full-app shadow replay, not regressions
 of P1–P4. None was changed in the working tree; each needs its own decision/PR. P7 above is a fourth,
-directly observed counterexample to the "nothing silently wrong ships" claim.
+directly observed counterexample to the "nothing silently wrong ships" claim for non-scaffold builds.
 
 
 ### A. `route()` query values may contain a raw `/` (concrete, verified)
@@ -874,6 +889,25 @@ exit 0
 These two matched routes were the concrete root causes recorded earlier for `/misc/collection`
 (string-key array writes) and `/routing` (`Route::has()` with `buildRt(null, {routeMap})`). This
 replay is stronger than the older 71/100, 29-divergence measurement in the same fixture.
+
+### Divergence status proof (opt-in gate)
+
+`expectStatus` pins one status on both sides. A documented divergence where PHP answers 200 and
+the worker answers 422/401/404 needs the two-sided form `expectPhpStatus` + `expectJsStatus`;
+the nine previously bare divergences in `shadow/scenarios/lw-showcase.mjs` now carry both. The
+separate floor `LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE=1` makes that an auditable gate without
+changing the byte-identical floor.
+
+```text
+$ LW_SHADOW_MIN_COVERAGE=0 LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE=1 node shadow/run.mjs --app "C:/Users/HP/Documents/vscode/lw-showcase" --scenarios shadow/scenarios/lw-showcase.mjs
+73/100 byte-identical, 0 shape-verified, 0 json-equivalent, 27 documented divergence(s), 0 unexplained — byte-identical step coverage 73% (accounted 100%) [scenario steps, not code lines]; divergence status validated 27/27
+exit 0
+
+$ # throwaway copy with one status pair removed, same strict floor
+73/100 byte-identical, 0 shape-verified, 0 json-equivalent, 27 documented divergence(s), 0 unexplained — byte-identical step coverage 73% (accounted 100%) [scenario steps, not code lines]; divergence status validated 26/27
+shadow FAILED: divergence status coverage 26/27 (96%) is below the floor 100% (LW_SHADOW_MIN_DIVERGENCE_STATUS_COVERAGE) — a divergence needs expectStatus or BOTH expectPhpStatus/expectJsStatus
+exit 1
+```
 
 ### Null-coalescing parity
 
