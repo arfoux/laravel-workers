@@ -23,6 +23,7 @@
 //   4. INVALID UTF-8. `json_decode("\"\xff\"")` is NULL (a warning); PHP's JSON
 //      only carries valid UTF-8. The reader answers NULL too.
 
+import { ownSet } from './own-key.mjs';
 import {
   byteStringFromUtf8,
   toByteString,
@@ -168,7 +169,10 @@ function parseObject(st, level) {
     skipWs(st);
     const value = parseValue(st, level + 1);
     if (!Object.prototype.hasOwnProperty.call(out, key)) order.push(key);
-    out[key] = value;
+    // A JSON key is data, never a prototype write. `__proto__` is the one key
+    // whose assignment calls Object.prototype's setter instead of creating an
+    // own property; own-key.mjs:18-25 makes all document keys ordinary data.
+    ownSet(out, key, value);
     skipWs(st);
     const ch = st.s[st.i];
     if (ch === ',') {

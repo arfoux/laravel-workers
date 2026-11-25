@@ -15,6 +15,15 @@ different commit and is not valid evidence for shipped behavior.
 
 Version stays `0.5.1`; no tag, publish, deploy, commit or PR in this change set.
 
+### Silent-wrong-answer fixes from the line-by-line sweep (2026-11-26, still 0.5.1)
+
+- A JSON `__proto__` key is now written with `ownSet` (`kernel/php-json-ordered.mjs:26,171-175`). An assignment used to call `Object.prototype`'s setter: the key vanished from `Object.keys()` and the decoded bag acquired a client-controlled prototype, so `$request->input('__proto__')` differed from PHP's array.
+- `Arr::dot()` keeps a `__lwObject`-tagged stdClass whole (`kernel/arr.mjs:175-183`) instead of flattening its properties; PHP's `is_array(new stdClass)` is false, the rule already used by `Arr::flatten()`.
+- The FormRequest dump reads `rules()` from the method's declaring file (`tools/formrequest-dump.php:160-176`) and refuses unreadable source. An inherited `rules()` previously got an empty source slice, so a `unique()->ignore($this->user()->id)` was evaluated with no request and baked `ignore(NULL)` into the rule.
+- `verify --json` now runs the same field checks as text mode (`tools/verify-s0.php:157-160`); only the verdict channel changes (stderr), and stdout stays one JSON value with the same keys.
+
+Four new regression tests fail on the parent code and pass here (28/28 in the four targeted suites). Full local proof: `npm test` 2355 tests / 2301 pass / 0 fail / 54 app-dependent skips, corpus 55/55, `gate --strict`, bench, syntax (335 ESM + 49 PHP) and pack gate all pass. Version stays `0.5.1`.
+
 ### Close the three residual port findings (2026-11-25, still 0.5.1)
 
 - **OAuth `state` is cookie-only.** `kernel/packages/socialite.mjs` no longer creates,

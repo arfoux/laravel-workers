@@ -56,3 +56,13 @@ test('Arr::dot — Arr.php:185 (flatten with dots, prepend, depth)', () => {
   assert.deepEqual({ ...arr.dot({ a: 1 }, 'p.') }, { 'p.a': 1 });
   assert.deepEqual({ ...arr.dot({ a: { b: { c: 1 } } }, '', 1) }, { 'a.b': { c: 1 } });
 });
+
+test('Arr::dot keeps a __lwObject-tagged value whole (PHP stdClass is not an array)', () => {
+  // collections.mjs:902-917 sets the rule: `is_array(new stdClass)` is false,
+  // so Arr::dot() must not walk a tagged object's properties.
+  const std = { __lwObject: true, b: 1 };
+  const out = arr.dot({ a: std, c: 2 });
+  assert.deepEqual({ ...out }, { a: std, c: 2 });
+  assert.deepEqual(Object.keys(out), ['a', 'c']);
+  assert.equal(out['a.b'], undefined);
+});

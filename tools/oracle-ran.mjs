@@ -57,6 +57,11 @@ DEFAULT_FILES.push(path.join('tools', 'tests', 'redirect-coverage.test.mjs'));
 // representative subset and drives the emitted ports on that ctx; without an app
 // it skips, so the gate runs it for real here.
 DEFAULT_FILES.push(path.join('tools', 'tests', 'packages-wiring.test.mjs'));
+
+// The dump's inherited-rules check is PHP-only (no Laravel app), so the `test`
+// job has no PHP and would silently skip it. Run it in this PHP job: the gate's
+// skipped!==0 assertion keeps the regression honest.
+DEFAULT_FILES.push(path.join('tools', 'tests', 'formrequest-inherited.test.mjs'));
 const files = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES;
 
 const app = oracleAppRoot();
