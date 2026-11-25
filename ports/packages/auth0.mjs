@@ -6,8 +6,9 @@
 // }
 //
 // What runs at the edge (parity with the Auth0 quickstart's `/callback`):
-//   • the client sends { code } — the authorization code Auth0 redirected back
-//     with (and optionally the `state` the app stashed);
+//   • the client sends { code, state? } — the authorization code Auth0
+//     redirected back with, and the `state` the app stashed if it wants us to
+//     check CSRF;
 //   • the handler POSTs the standard `authorization_code` grant to
 //     `https://{AUTH0_DOMAIN}/oauth/token` with the client credentials and the
 //     `redirect_uri` the authorize step used;
@@ -27,14 +28,18 @@
 //   AUTH0_AUDIENCE      (optional — the API identifier, sent as `audience`)
 //
 // Reuses `kernel/packages/notify-http.mjs` (`resolveFetch`, `formUrlEncoded`,
-// `jsonPort`) so tests can inject a fake fetch. No D1 — the callback is a pure
-// token exchange.
+// `jsonPort`) so tests can inject a fake fetch. No D1 — when `state` is sent,
+// CSRF is checked against the caller's `oauth_state` cookie only; without
+// `state` the callback stays a pure token exchange and validating CSRF is the
+// CALLER's responsibility.
 //
 // Free tier: exactly 1 outbound subrequest per callback. The token response is
 // never logged (it carries bearer credentials).
 
 import { resolveFetch, jsonPort, formUrlEncoded } from '../../kernel/packages/notify-http.mjs';
 import { normalizePortCtx } from '../../kernel/packages/port-ctx.mjs';
+import { readStateCookie } from '../../kernel/packages/socialite.mjs';
+import { verifyState } from '../../kernel/packages/oauth.mjs';
 
 function auth0Provider(env) {
   const domain = String(env.AUTH0_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
@@ -59,6 +64,15 @@ function auth0Provider(env) {
 // POST /auth/auth0/callback — {code} → Auth0 token response
 export async function handleCallback(ctx, env) {
   const body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+
+  // CSRF: when the caller sends `state`, demand the cookie the authorize leg
+  // planted. `verifyState` is constant-time and rejection happens before any
+  // token fetch. With no `state`, this stays a pure exchange and validating
+  // CSRF is the caller's responsibility.
+  const state = typeof body.state === 'string' ? body.state.trim() : '';
+  if (state && !verifyState(readStateCookie(ctx), state)) {
+    return jsonPort({ error: 'invalid state' }, 401);
+  }
   const code = typeof body.code === 'string' ? body.code.trim() : '';
   if (!code) {
     return jsonPort({ error: 'invalid_request', message: 'The code field is required.' }, 400);

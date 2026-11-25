@@ -9,11 +9,10 @@
 //   • the shapes' mapUser flattening of the raw sub/email JSON,
 //   • the unconfigured null returns (missing creds / missing location / unknown),
 //   • and (reachability) that the generic laravel-socialite-redirect route
-//     actually serves an extra provider, with a 400 for a name in neither table.
+//     serves an extra provider with a 302 and a state cookie — no D1 binding.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FakeD1 } from './_fake-d1.mjs';
 import { resolveProviderExtra } from '../../kernel/packages/socialite-providers.mjs';
 import redirect from '../../ports/packages/laravel-socialite-redirect.mjs';
 
@@ -151,9 +150,9 @@ test('resolveProviderExtra: unknown provider returns null even with creds', () =
 // The module is only worth its lines if a request can reach it, so drive
 // laravel-socialite-redirect with provider=azure (a shape the core
 // `resolveProvider` table does not carry) and assert the 302 the browser gets.
-test('route: azure resolves through the generic redirect port', async () => {
+// No DB binding is supplied: the state must be fully carried by the cookie.
+test('route: azure resolves through the generic redirect port with a state cookie', async () => {
   const env = {
-    DB: new FakeD1(),
     AZURE_TENANT: 'contoso',
     AZURE_CLIENT_ID: 'az-id',
     AZURE_CLIENT_SECRET: 'az-secret',
@@ -172,18 +171,20 @@ test('route: azure resolves through the generic redirect port', async () => {
   assert.equal(loc.origin + loc.pathname, 'https://login.microsoftonline.com/contoso/oauth2/v2.0/authorize');
   assert.equal(loc.searchParams.get('client_id'), 'az-id');
   assert.equal(loc.searchParams.get('redirect_uri'), 'https://app.test/auth/azure/callback');
-  assert.ok(loc.searchParams.get('state'));
+  const state = loc.searchParams.get('state');
+  assert.ok(state);
+  assert.match(res.headers['set-cookie'], /^oauth_state=/);
+  assert.match(res.headers['set-cookie'], new RegExp(state));
 });
 
 test('route: a name in NEITHER table is still a 400', async () => {
-  const env = { DB: new FakeD1() };
   const res = await redirect(
     {
       params: { provider: 'notaprovider' },
       query: {},
       request: new Request('https://app.test/auth/notaprovider/redirect'),
     },
-    env
+    {}
   );
   assert.equal(res.status, 400);
 });

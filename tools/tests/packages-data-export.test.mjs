@@ -12,7 +12,6 @@ import excelHandler, { csvFromRows } from '../../ports/packages/maatwebsite-exce
 import redirectHandler from '../../ports/packages/laravel-socialite-redirect.mjs';
 import callbackHandler from '../../ports/packages/laravel-socialite-callback.mjs';
 import { ensureSchema as ensureExcelSchema } from '../../ports/packages/maatwebsite-excel.mjs';
-import { rememberState } from '../../kernel/packages/socialite.mjs';
 import { FakeD1 } from './_fake-d1.mjs';
 
 // Build a ctx object matching the port contract.
@@ -245,7 +244,7 @@ const PROVIDER_ENV = {
   GITHUB_REDIRECT_URI: 'https://app.test/auth/github/callback',
 };
 
-test('socialite redirect: 302 to authorize URL with state cookie + stored state', async () => {
+test('socialite redirect: 302 to authorize URL with state cookie only', async () => {
   const db = new FakeD1();
   const res = await redirectHandler(
     makeCtx({ method: 'GET', params: { provider: 'github' } }),
@@ -262,9 +261,8 @@ test('socialite redirect: 302 to authorize URL with state cookie + stored state'
   // state cookie set
   assert.match(res.headers['set-cookie'], /oauth_state=/);
   assert.match(res.headers['set-cookie'], new RegExp(state));
-  // state persisted in D1
-  const rows = await db.prepare('SELECT state FROM lw_oauth_state WHERE state = ?1').bind(state).all();
-  assert.equal(rows.results.length, 1);
+  // the cookie is the only state store — no D1 table is created
+  assert.equal(db.tables.has('lw_oauth_state'), false);
 });
 
 test('socialite redirect: unconfigured provider -> 400', async () => {
@@ -329,14 +327,13 @@ test('socialite callback: happy path -> verifies state, exchanges code, logs in'
 
 test('socialite callback: bad state -> 401 before any provider HTTP call', async () => {
   const db = new FakeD1();
-  // the redirect leg ran first and planted some state row (production path);
-  // nothing is stored for this request's `forged`.
-  await rememberState({ DB: db }, 'st_from-a-prior-flow');
+  // a prior flow's cookie cannot authorize a forged `state` (no D1 fallback)
   let called = false;
   const fetchImpl = async () => { called = true; return { ok: true, json: async () => ({}) }; };
   const res = await callbackHandler(
     makeCtx({
       params: { provider: 'github' },
+      headers: { cookie: 'oauth_state=st_from-a-prior-flow' },
       query: { code: 'c', state: 'forged' },
       fetchImpl,
     }),
@@ -347,23 +344,19 @@ test('socialite callback: bad state -> 401 before any provider HTTP call', async
   assert.equal(called, false); // never touched the provider
 });
 
-test('socialite callback: state valid via D1 row even without cookie', async () => {
+test('socialite callback: a state with no matching cookie is a 401', async () => {
   const db = new FakeD1();
-  const red = await redirectHandler(
-    makeCtx({ params: { provider: 'github' } }),
-    { DB: db, ...PROVIDER_ENV, randomBytes: fixedRandom }
-  );
-  const state = new URL(red.headers.location).searchParams.get('state');
-
-  const fetchImpl = async (url) => (url === 'https://github.com/login/oauth/access_token'
-    ? { ok: true, status: 200, json: async () => ({ access_token: 't' }) }
-    : { ok: true, status: 200, json: async () => ({ id: 7, name: 'X', email: 'x@e.com', login: 'x', avatar_url: '' }) });
-
-  // no cookie header — callback must fall back to the stored state row
+  const state = 'st_nocookie';
+  let called = false;
+  const fetchImpl = async () => { called = true; return { ok: true, json: async () => ({}) }; };
+  // The redirect leg planted the state in a cookie; a callback that lost that
+  // cookie must be rejected even though the users/tokens tables exist.
   const res = await callbackHandler(
     makeCtx({ params: { provider: 'github' }, query: { code: 'c', state }, fetchImpl, randomBytes: fixedRandom }),
     { DB: db, ...PROVIDER_ENV }
   );
-  assert.equal(res.status, 200);
-  assert.equal(JSON.parse(res.body).user.provider_id, '7');
+  assert.equal(res.status, 401);
+  assert.equal(JSON.parse(res.body).error, 'invalid state');
+  assert.equal(called, false);
+  assert.equal(db.tables.has('lw_oauth_state'), false);
 });
