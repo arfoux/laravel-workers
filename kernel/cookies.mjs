@@ -53,9 +53,10 @@ export function rawUrlEncode(str) {
 export function rawUrlDecode(str) {
   const s = String(str);
   const bytes = [];
+  const encoder = new TextEncoder();
   for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c === 0x25 /* % */ && i + 2 < s.length) {
+    const cp = s.codePointAt(i);
+    if (cp === 0x25 /* % */ && i + 2 < s.length) {
       // PHP's rawurldecode() (ext/standard/url.c): BOTH characters must be
       // hex digits, otherwise the '%' stays literal. parseInt() alone accepts
       // the prefix of an invalid pair ("%1x" -> 0x01, "%z1" -> 0x01), which
@@ -68,12 +69,12 @@ export function rawUrlDecode(str) {
         continue;
       }
     }
-    if (c < 0x100) {
-      bytes.push(c);
-    } else {
-      // Non-ASCII char in the source string: UTF-8 encode it (PHP strings are
-      // byte arrays; the wire value is what matters).
-      for (const b of new TextEncoder().encode(String.fromCharCode(c))) bytes.push(b);
+    if (cp < 0x80) bytes.push(cp);
+    else {
+      // PHP sees UTF-8 bytes on the wire, not UTF-16 code units: encode the
+      // whole code point so a surrogate pair becomes one four-byte sequence.
+      for (const b of encoder.encode(String.fromCodePoint(cp))) bytes.push(b);
+      if (cp > 0xffff) i++;
     }
   }
   return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));

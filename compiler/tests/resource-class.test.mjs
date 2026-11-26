@@ -167,6 +167,42 @@ class ProbeResource extends JsonResource
   );
 });
 
+test('resource: a later buildRt() cannot overwrite a resource\'s request', async () => {
+  const res = compile(
+    `<?php
+namespace App\\Http\\Resources;
+use Illuminate\\Http\\Request;
+use Illuminate\\Http\\Resources\\Json\\JsonResource;
+class RequestResource extends JsonResource
+{
+    public function toArray(Request $request)
+    {
+        return ['id' => $this->id, 'who' => $request->query('who')];
+    }
+}
+`,
+    'RequestResource'
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  const dir = mkdtempSync(join(tmpdir(), 'lw-resource-scope-'));
+  const mod = join(dir, 'classes.generated.mjs');
+  writeFileSync(mod, res.code, 'utf8');
+  const classes = (await import(pathToFileURL(mod).href)).classes;
+  const request = (who) => ({
+    input: () => undefined,
+    all: () => ({}),
+    header: () => null,
+    query: (key) => (key === 'who' ? who : null),
+  });
+  const rtA = buildRt({}, { http: { request: request('A') }, classes });
+  const resourceA = rtA.newClass('App\\Http\\Resources\\RequestResource', [{ id: 1 }]);
+  const rtB = buildRt({}, { http: { request: request('B') }, classes });
+  const resourceB = rtB.newClass('App\\Http\\Resources\\RequestResource', [{ id: 2 }]);
+  await Promise.resolve();
+  assert.equal(rtA.toResponse(resourceA).body, '{"data":{"id":1,"who":"A"}}');
+  assert.equal(rtB.toResponse(resourceB).body, '{"data":{"id":2,"who":"B"}}');
+});
+
 test('resource: withResponse() and jsonOptions() reach the runtime (#854/#855)', async () => {
   // Laravel hands the app's hook the response it built and the flags it asked
   // for (ResourceResponse.php:36-49). Both used to be dropped: the hook was
