@@ -47,8 +47,11 @@ try {
                 else $commandName = basename($command);
             }
 
-            // A Cloudflare Cron Trigger uses the standard 5-field cron (UTC). The
-            // "@daily"-style aliases and the seconds field are not supported.
+            // A Cloudflare Cron Trigger uses the standard 5-field cron. UTC
+            // mapping is done downstream by build.mjs:1567-1570 via
+            // tools/schedule-utc.mjs, so a non-UTC Laravel timezone is not a
+            // reason to mark the event untriggerable here.
+            // The "@daily"-style aliases and the seconds field are not supported.
             $triggerable = true;
             $reason = null;
             if ($expression === null || $expression === '') {

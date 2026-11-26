@@ -25,6 +25,8 @@ PHP 8.3 is only needed for the oracle parity tests: put `php` on `PATH`, or set
 `PHP_BIN` to the binary. Those tests need a real Laravel app (11+ / 13.x) with
 `vendor/` installed:
 
+The oracle parity baseline is Laravel 13: `Str::is()` accepts `ignore_case` from 11.x, but the oracle and `kernel/str.mjs` encode the Laravel 12/13 regex flags (`su`/`isu`). Newline-bearing patterns therefore diverge on Laravel 11; keep CI parity on the pinned 13.x skeleton.
+
 ```bash
 export LW_LARAVEL_APP=/path/to/laravel-app        # or a parity-app/ directory
 ```
