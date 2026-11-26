@@ -83,6 +83,9 @@ $ctorDump = function (string $fqcn) use ($app, $isAppClass): array {
 $classes = [];
 foreach (array_slice($argv, 1) as $fqcn) {
     $fqcn = ltrim((string) $fqcn, '\\');
+    // The build only asks about instantiable Gate callbacks (build.mjs:2633-2646);
+    // interfaces and traits are intentionally excluded here. Use tools/event-dump.php
+    // for interface/trait metadata.
     if ($fqcn === '' || ! class_exists($fqcn)) continue;
     $rc = new ReflectionClass($fqcn);
     $file = $rc->getFileName();

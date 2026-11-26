@@ -20,6 +20,9 @@ require_once __DIR__ . '/_root.php';
 //   {
 //     "app_root": "...",                    // or env LW_LARAVEL_APP
 //     "stris": [{ "pattern": "...", "value": "...", "ignore_case": false }],
+//     NOTE: ignore_case is supported from Laravel 11.x, but this oracle and
+//     kernel/str.mjs encode Laravel 12/13 regex flags (su/isu); newline-bearing
+//     patterns diverge on Laravel 11. CI parity stays on 13.x.
 //     "qs": ["b=2&a=1", ...],
 //     "middleware": {
 //       "cases": [{

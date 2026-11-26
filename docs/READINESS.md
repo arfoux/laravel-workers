@@ -92,7 +92,7 @@ This guide maps every Laravel 13.x documentation page to a clear verdict:
 | queues | RUNS WITH DECLARED GAPS | **wired** (M28): the worker hands the queue adapter to the handler (a port can push); the `Queue::push(SomeJob::class)` facade fails loud — the job would never run at the edge: the worker has no queue handler, so nothing consumes the queue binding, and the binding carries a JSON body, not a PHP job (the runtime throws the same). The paths that work: a Cloudflare Queues binding with a consumer you write (a limited version is on the Workers free plan; the paid plan charges per operation), or a D1 table the cron trigger reads (a port handler writes the row — the edge has no producer for it). The job class is not compiled either → port; CF Queues (a limited version on the Workers free plan; the paid plan charges per operation) / D1 queue padanan |
 | rate-limiting | RUNS WITH DECLARED GAPS | D1 counters (KV driver pending); throttle build-gated |
 | readme | NOT APPLICABLE AT EDGE | meta |
-| redis | NEEDS PADANAN (PORT) | KV/D1 drivers; Upstash REST optional |
+| redis | NEEDS PADANAN (PORT) | KV/D1 drivers; Upstash REST optional. `kernel/redis.mjs` is a library-level D1 implementation, not reachable from compiled `Cache::store('redis')` routes (build forces `cache.driver=database`). |
 | releases | NOT APPLICABLE AT EDGE | meta; pin 13.x policy |
 | requests | RUNS WITH DECLARED GAPS | kernel request subset |
 | responses | RUNS WITH DECLARED GAPS | kernel responses + SSE |

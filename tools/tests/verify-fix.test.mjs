@@ -192,6 +192,22 @@ test('absent dump still SKIPs with exit 0', phpSkip, () => {
     rmSync(app, { recursive: true, force: true });
   }
 });
+test('--json with no dump emits one JSON SKIP verdict and keeps exit 0', phpSkip, () => {
+  const app = makeApp({ withDump: false });
+  try {
+    const r = runVerify(app, ['--json']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.stdout.trim().split('\n').length, 1, 'stdout must be exactly one JSON line');
+    const json = JSON.parse(r.stdout);
+    assert.equal(json.status, 'SKIP');
+    assert.equal(json.checks, 0);
+    assert.match(json.reason, /no S0 dump/);
+    assert.equal(json.candidates.length, 2);
+    assert.match(r.stderr, /VERIFY-S0: SKIP/);
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
+});
 
 test('CLI still SKIPs when no Laravel vendor is present', () => {
   const empty = mkdtempSync(join(tmpdir(), 'lw-verify-skip-'));

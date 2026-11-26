@@ -19,6 +19,11 @@ $request = Illuminate\Http\Request::create('/', 'GET');
 $response = $kernel->handle($request);
 $kernel->terminate($request, $response);
 
+$jsonMode = in_array('--json', $argv, true);
+$say = $jsonMode
+    ? static function (string $msg): void { fwrite(STDERR, $msg . "\n"); }
+    : static function (string $msg): void { echo $msg . "\n"; };
+
 $dumpCandidates = [
     $root . '/edge/.cache/welcome.compiled.json',
     $root . '/.cache/laravel-workers/welcome.compiled.json',
@@ -28,7 +33,18 @@ foreach ($dumpCandidates as $candidate) {
     if (is_file($candidate)) { $dumpPath = $candidate; break; }
 }
 if ($dumpPath === null) {
-    echo "VERIFY-S0: SKIP (no S0 dump at " . implode(' or ', $dumpCandidates) . " — run a build with a views map first)\n";
+    $reason = 'no S0 dump at ' . implode(' or ', $dumpCandidates) . ' — run a build with a views map first';
+    if ($jsonMode) {
+        echo json_encode([
+            'status' => 'SKIP',
+            'checks' => 0,
+            'reason' => $reason,
+            'candidates' => $dumpCandidates,
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
+        fwrite(STDERR, "VERIFY-S0: SKIP ({$reason})\n");
+    } else {
+        echo "VERIFY-S0: SKIP ({$reason})\n";
+    }
     exit(0);
 }
 $dump = json_decode(file_get_contents($dumpPath), true);
@@ -146,13 +162,8 @@ $recomputed['urls'] = $urls === [] ? new stdClass() : $urls;
 $recomputed['app_version'] = $app->version();
 $recomputed['vfs'] = $files;
 
-// --- output channels --------------------------------------------------------
-// --json keeps stdout to exactly one JSON value; verdict lines move to stderr,
-// but the registry gate below still runs before either is emitted.
-$jsonMode = in_array('--json', $argv, true);
-$say = $jsonMode
-    ? static function (string $msg): void { fwrite(STDERR, $msg . "\n"); }
-    : static function (string $msg): void { echo $msg . "\n"; };
+// Output channels are defined before the dump check so --json SKIP also
+// emits exactly one JSON value; see :22-33.
 
 // --- compare ----------------------------------------------------------------
 $pass = 0; $fail = 0;
