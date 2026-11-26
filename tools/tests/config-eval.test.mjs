@@ -9,7 +9,7 @@
 // rule 2: "A function that is NOT implemented ... is REFUSED BY NAME").
 //
 // Two halves, both from fixtures/config-eval/:
-//   * the EXPRESSION corpus (cases.json, oracle.php): 231 expressions evaluated
+//   * the EXPRESSION corpus (cases.json, oracle.php): 236 expressions evaluated
 //     by real PHP and by the fold, compared on value AND array key order, plus
 //     the `refused` map that pins the fold's refusals by reason — a refusal that
 //     is not listed fails, so "answering undefined silently" (the bug class that

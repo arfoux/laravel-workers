@@ -35,6 +35,7 @@ export async function verifyJwtSignature(token, { alg, algorithm, importKey }) {
   } catch {
     return null;
   }
+  if (!header || typeof header !== 'object' || Array.isArray(header)) return null;
   if (header.alg !== alg) return null;
   const key = await importKey();
   let ok = false;

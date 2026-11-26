@@ -1,7 +1,7 @@
 // tools/tests/inflect.test.mjs — Str::singular()/Str::plural() against the PHP
 // oracle (Laravel 13.37 + doctrine/inflector 2.x).
 //
-// The fixture is a dump of the real Pluralizer over ~180 words x {word, word+s,
+// The fixture is a dump of the real Pluralizer over 716 words x {word, word+s,
 // UPPER, Capitalized}; every entry must match byte for byte, which is what
 // `Route::resource()` relies on for its wildcard names.
 import test from 'node:test';

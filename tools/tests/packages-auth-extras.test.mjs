@@ -209,6 +209,16 @@ test('jwt-auth: /auth/jwt/user rejects expired, tampered and missing tokens', as
   const wrongAlg = await signHs256({ alg: 'none', typ: 'JWT' }, { sub: '1', exp: now + 600 }, env.JWT_SECRET);
   const wrongAlgRes = await jwtAuth({ request: makeReq('GET', '/auth/jwt/user', { headers: { authorization: `Bearer ${wrongAlg}` } }), params: {} }, env);
   assert.equal(wrongAlgRes.status, 401, 'alg=none must not be accepted');
+
+  // A header segment that decodes to JSON `null` must stay a 401, not a 500
+  // from dereferencing `header.alg` (kernel/packages/jwt.mjs:38).
+  const nullHeader = await jwtAuth({
+    request: makeReq('GET', '/auth/jwt/user', {
+      headers: { authorization: 'Bearer bnVsbA.e30.c2ln' },
+    }),
+    params: {},
+  }, env);
+  assert.equal(nullHeader.status, 401, 'a JSON-null JWS header must be rejected as malformed');
 });
 
 // ---- firebase-php-jwt: verify (JWK form) --------------------------------------

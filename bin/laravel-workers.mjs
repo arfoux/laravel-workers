@@ -208,10 +208,19 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
     console.error('laravel-workers verify: tools/verify-s0.php not found in package.');
     process.exit(1);
   }
-  const vendorInApp = existsSync(join(appRoot, 'vendor', 'autoload.php'));
-  const vendorInParent = existsSync(join(dirname(pkgDir), 'vendor', 'autoload.php'));
-  if (!vendorInApp && !vendorInParent) {
-    console.log('VERIFY-S0: SKIP (no Laravel vendor/ found — run from your Laravel app root via npx laravel-workers verify).');
+  const verifyArgs = process.argv.slice(3);
+  const jsonMode = verifyArgs.includes('--json');
+  const vendorDir = process.env.LW_VENDOR_DIR;
+  const vendorCandidates = vendorDir
+    ? [join(vendorDir, 'autoload.php'), join(vendorDir, 'vendor', 'autoload.php')]
+    : [join(appRoot, 'vendor', 'autoload.php'), join(dirname(pkgDir), 'vendor', 'autoload.php')];
+  if (!vendorCandidates.some((p) => existsSync(p))) {
+    const reason = vendorDir
+      ? `LW_VENDOR_DIR="${vendorDir}" has no autoload.php`
+      : 'no Laravel vendor/ found — run from your Laravel app root via npx laravel-workers verify';
+    const message = `VERIFY-S0: SKIP (${reason})`;
+    if (jsonMode) console.log(JSON.stringify({ status: 'SKIP', checks: 0, reason }));
+    else console.log(message);
     process.exit(0);
   }
   // Boot with the same resolver build and doctor use: `php` alone misses machines
@@ -230,7 +239,7 @@ if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'tes
     console.error(e.message);
     process.exit(1);
   }
-  run(phpBin, [verifyPath, ...process.argv.slice(3)], { cwd: appRoot, env: { ...process.env, LW_APP_ROOT: appRoot } });
+  run(phpBin, [verifyPath, ...verifyArgs], { cwd: appRoot, env: { ...process.env, LW_APP_ROOT: appRoot } });
 } else if (cmd === 'deploy') {
   runTool('tools/deploy.mjs', process.argv.slice(3));
 } else if (cmd === 'status') {

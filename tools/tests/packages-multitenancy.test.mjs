@@ -46,6 +46,7 @@ test('anonymous: both routes are 401 and write/read nothing', async () => {
   );
   assert.equal(created.status, 401);
   assert.equal(JSON.parse(created.body).message, 'Unauthenticated.');
+  assert.equal(created.headers['cache-control'], 'no-store');
 
   const read = await handler(
     makeCtx({ method: 'GET', url: 'http://worker.test/tenants/acme', params: { tenantKey: 'acme' }, user_id: null }),

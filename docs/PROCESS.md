@@ -16,7 +16,7 @@ repository's pipeline or a **default** you may override with a reason.
 - **Hard** — violating it breaks a real thing (a broken release, a red CI, a dead npm link).
   Every "must"/"never" that is marked *hard* is backed by a concrete failure we hit; if you
   think it does not apply, re-read the *why* before overriding.
-- **Default** — a convention (branch names, how many commits, `--rebase`, `gh` vs the web UI).
+- **Default** — a convention (branch names, how many commits, `--merge`, `gh` vs the web UI).
   Take it when you have no reason not to; deviate freely when you do, and say why in the PR.
 
 If a rule here ever turns out to be wrong, **fix the rule** (and its *why*) in the same change.
@@ -31,7 +31,7 @@ A process doc that lies is worse than none.
 | an "identical to PHP" claim needs an oracle probe | hard | the whole product is byte parity; a guess ships a divergence |
 | work on a branch, land via a PR | default | a trivial one-line docs fix may go straight to `main` |
 | few thematic commits | default | fewer chances to forget a file; two is the usual shape |
-| `gh pr merge --rebase` | default | keeps this repo's history linear; squash is fine if you prefer |
+| `gh pr merge --merge` | default | user-approved normal merge; never rebase, squash or delete a branch without explicit approval |
 | explicit `git add <path>` | default | `-A` is fine in a clean tree; it is a hazard only in a dirty one |
 
 ## 1. The release contract
@@ -98,7 +98,7 @@ git checkout -b <topic>          # default: work on a branch
 git push -u origin <topic>
 gh pr create --base main --head <topic>
 # wait for the checks; merge only when they are green
-gh pr merge <n> --rebase --delete-branch
+gh pr merge <n> --merge
 git checkout main && git pull --ff-only
 ```
 
@@ -112,8 +112,8 @@ Why a PR and not "push to main, then tag":
   moves and **before** a tag exists.
 - Pushing straight to `main` and tagging immediately means a red job is discovered *after* the
   tag is public.
-- `--rebase` keeps `main` linear (this repository's history is linear) without collapsing your
-  logical commits into one squash.
+- `--merge` records the topic branch's commits as one merge commit; never rebase, squash or delete
+  the remote branch unless the user explicitly asks for that specific action.
 
 ## 4. Commit hygiene
 

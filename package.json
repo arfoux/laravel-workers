@@ -1,6 +1,6 @@
 {
   "name": "laravel-workers",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Compile your Laravel app to a tiny JS bundle that runs on Cloudflare Workers. No PHP at the edge, no WASM, no cold-start drama — pure V8 isolates (measured 5 ms CPU p50 / 41 ms p95 on the reference machine), D1, Blade → JS.",
   "keywords": [
     "laravel",
@@ -43,6 +43,7 @@
     "compiler/runtime",
     "kernel",
     "src",
+    "ports",
     "tools",
     "shadow",
     "docs",

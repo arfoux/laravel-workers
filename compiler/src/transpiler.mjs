@@ -2900,7 +2900,7 @@ function txCall(node) {
       }
       if (MODEL_LACKS[canon]) {
         // Laravel has no such Model method (a BadMethodCallException there).
-        throw mkErr('LW003', MODEL_LACKS[meth] + PORT_HINT, node.loc, PORT_HINT);
+        throw mkErr('LW003', MODEL_LACKS[canon] + PORT_HINT, node.loc, PORT_HINT);
       }
       if (!MODEL_INSTANCE_METHODS.has(canon)) {
         throw mkErr(

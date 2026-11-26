@@ -6,7 +6,7 @@ name: app-check
 #
 #   jobs:
 #     check:
-#       uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v1
+#       uses: arfoux/laravel-workers/.github/workflows/app-check.yml@v0.5.1
 #       permissions:
 #         contents: read
 #         pull-requests: write   # Verdict comment
@@ -117,7 +117,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           set -o pipefail
-          npx laravel-workers build ${{ inputs.build-args }} 2>&1 | tee edge-build.log
+          npx laravel-workers build ${{ inputs.build-args }} 2>&1 | tee "$GITHUB_WORKSPACE/edge-build.log"
 
       # Verdict ships in this repo and is released with these workflows: the
       # caller pins the exact release ref (@v0.5.1) and both stay in step.
@@ -139,7 +139,7 @@ jobs:
         if: always()
         uses: arfoux/laravel-workers/action/verdict@v0.5.1
         with:
-          log: ${{ inputs.working-directory }}/edge-build.log
+          log: edge-build.log
           token: ${{ steps.verdict-token.outputs.token || '' }}
 
       - name: Check code style

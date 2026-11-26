@@ -1,4 +1,4 @@
-import { normalizePortCtx, guardUserId, jsonResponse } from '../../kernel/packages/port-ctx.mjs';
+import { normalizePortCtx, guardUserId, jsonResponse, unauthorized } from '../../kernel/packages/port-ctx.mjs';
 
 // Port of spatie/laravel-multitenancy v4 — multi-tenancy on the edge.
 //
@@ -37,7 +37,8 @@ export function ensureSchema(env) {
   ).run();
 }
 
-// port-ctx owns the envelope; this port sends no cache-control.
+// port-ctx owns the envelope; tenant responses are deliberately cacheable,
+// but the authentication floor uses the shared no-store 401.
 const json = (status, payload, headers = {}) =>
   jsonResponse(status, payload, { noStore: false, headers });
 
@@ -118,7 +119,7 @@ export default async function handle(ctx, env) {
   // here has no tenant<->user link (spatie's doesn't either), so WHICH tenants a
   // caller may see stays an app-side authorization decision; the floor this port
   // enforces is that an anonymous request gets nothing.
-  if ((await guardUserId(ctx)) == null) return json(401, { message: 'Unauthenticated.' });
+  if ((await guardUserId(ctx)) == null) return unauthorized();
 
   try {
     await ensureSchema({ DB: db });
