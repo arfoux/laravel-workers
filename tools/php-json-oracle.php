@@ -20,6 +20,7 @@
 //   {"t":"d","v":"1.5"}            float (string; "NAN"/"INF"/"-INF" supported)
 //   {"t":"s","v":"str"}            string
 //   {"t":"a","v":{...}} or [...]   array (object form preserves key order)
+//   {"t":"o","v":{...}}            stdClass (property names preserved)
 
 function fromTagged($t)
 {

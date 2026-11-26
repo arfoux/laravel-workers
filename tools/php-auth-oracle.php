@@ -23,6 +23,9 @@ require_once __DIR__ . '/_root.php';
 //       "password_hash": "$2y$...", "remember_token": null
 //     },
 //     "guard": "web",
+//     "session_name": "laravel_session",  // Store ctor cookie name
+//     "session_lifetime": 120,            // ArraySessionHandler minutes
+//     "serialization": "json" | "php",    // Store ctor serialization (default "json")
 //     "session_id": "40-char"|null,       // Store ctor id
 //     "session_seed": {...}|null,         // attributes put() right after start()
 //     "cookies": {"name":"value"}|{},     // Request cookies (recaller resumption)

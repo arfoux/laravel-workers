@@ -34,7 +34,9 @@ require_once __DIR__ . '/_root.php';
 // Output (stdout JSON):
 //   {
 //     "results": [{ "all": <json_encode(Store::all())>, "id": ..., "token": ...,
-//                   "started": bool, "has_ret": bool, "ret": <json_encode(ret)> }, ...],
+//                   "started": bool, "has_ret": bool,
+//                   "threw": null|{"class":...,"message":...},
+//                   "ret": <json_encode(ret)> }, ...],
 //     "all": ..., "id": ..., "token": ...,
 //     "queue": [cookieOut...],           // cookie mode
 //     "payload": "...", "written_id": "...", "destroyed_ids": [...],  // store mode
@@ -164,47 +166,54 @@ foreach ($input['ops'] ?? [] as $step) {
     $args = $step;
     $hasRet = true;
     $ret = null;
+    $threw = null;
 
-    switch ($op) {
-        case 'get':              $ret = $store->get(...$args); break;
-        case 'put':              $store->put(...$args); $hasRet = false; break;
-        case 'putAll':           $store->put($args[0]); $hasRet = false; break;
-        case 'pull':             $ret = $store->pull(...$args); break;
-        case 'remove':           $ret = $store->remove(...$args); break;
-        case 'push':             $store->push(...$args); $hasRet = false; break;
-        case 'increment':        $ret = $store->increment(...$args); break;
-        case 'decrement':        $ret = $store->decrement(...$args); break;
-        case 'flash':            $store->flash(...$args); $hasRet = false; break;
-        case 'now':              $store->now(...$args); $hasRet = false; break;
-        case 'reflash':          $store->reflash(); $hasRet = false; break;
-        case 'keep':             $store->keep(...$args); $hasRet = false; break;
-        case 'ageFlashData':     $store->ageFlashData(); $hasRet = false; break;
-        case 'flashInput':       $store->flashInput($args[0]); $hasRet = false; break;
-        case 'forget':           $store->forget($args[0]); $hasRet = false; break;
-        case 'flush':            $store->flush(); $hasRet = false; break;
-        case 'replace':          $store->replace($args[0]); $hasRet = false; break;
-        case 'has':              $ret = $store->has(...$args); break;
-        case 'exists':           $ret = $store->exists(...$args); break;
-        case 'missing':          $ret = $store->missing(...$args); break;
-        case 'hasAny':           $ret = $store->hasAny(...$args); break;
-        case 'only':             $ret = $store->only($args[0]); break;
-        case 'except':           $ret = $store->except($args[0]); break;
-        case 'hasOldInput':      $ret = $store->hasOldInput(...$args); break;
-        case 'getOldInput':      $ret = $store->getOldInput(...$args); break;
-        case 'token':            $ret = $store->token(); break;
-        case 'regenerateToken':  $store->regenerateToken(); $hasRet = false; break;
-        case 'getId':            $ret = $store->getId(); break;
-        case 'setId':            $store->setId($args[0]); $hasRet = false; break;
-        case 'regenerate':       $ret = $store->regenerate(...$args); break;
-        case 'migrate':          $ret = $store->migrate(...$args); break;
-        case 'invalidate':       $ret = $store->invalidate(); break;
-        case 'setPreviousUrl':   $store->setPreviousUrl($args[0]); $hasRet = false; break;
-        case 'setPreviousRoute': $store->setPreviousRoute($args[0]); $hasRet = false; break;
-        case 'previousUrl':      $ret = $store->previousUrl(); break;
-        case 'previousRoute':    $ret = $store->previousRoute(); break;
-        default:
-            fwrite(STDERR, "php-session-oracle: unknown op {$op}\n");
-            exit(2);
+    try {
+        switch ($op) {
+            case 'get':              $ret = $store->get(...$args); break;
+            case 'put':              $store->put(...$args); $hasRet = false; break;
+            case 'putAll':           $store->put($args[0]); $hasRet = false; break;
+            case 'pull':             $ret = $store->pull(...$args); break;
+            case 'remove':           $ret = $store->remove(...$args); break;
+            case 'push':             $store->push(...$args); $hasRet = false; break;
+            case 'increment':        $ret = $store->increment(...$args); break;
+            case 'decrement':        $ret = $store->decrement(...$args); break;
+            case 'flash':            $store->flash(...$args); $hasRet = false; break;
+            case 'now':              $store->now(...$args); $hasRet = false; break;
+            case 'reflash':          $store->reflash(); $hasRet = false; break;
+            case 'keep':             $store->keep(...$args); $hasRet = false; break;
+            case 'ageFlashData':     $store->ageFlashData(); $hasRet = false; break;
+            case 'flashInput':       $store->flashInput($args[0]); $hasRet = false; break;
+            case 'forget':           $store->forget($args[0]); $hasRet = false; break;
+            case 'flush':            $store->flush(); $hasRet = false; break;
+            case 'replace':          $store->replace($args[0]); $hasRet = false; break;
+            case 'has':              $ret = $store->has(...$args); break;
+            case 'exists':           $ret = $store->exists(...$args); break;
+            case 'missing':          $ret = $store->missing(...$args); break;
+            case 'hasAny':           $ret = $store->hasAny(...$args); break;
+            case 'only':             $ret = $store->only($args[0]); break;
+            case 'except':           $ret = $store->except($args[0]); break;
+            case 'hasOldInput':      $ret = $store->hasOldInput(...$args); break;
+            case 'getOldInput':      $ret = $store->getOldInput(...$args); break;
+            case 'token':            $ret = $store->token(); break;
+            case 'regenerateToken':  $store->regenerateToken(); $hasRet = false; break;
+            case 'getId':            $ret = $store->getId(); break;
+            case 'setId':            $store->setId($args[0]); $hasRet = false; break;
+            case 'regenerate':       $ret = $store->regenerate(...$args); break;
+            case 'migrate':          $ret = $store->migrate(...$args); break;
+            case 'invalidate':       $ret = $store->invalidate(); break;
+            case 'setPreviousUrl':   $store->setPreviousUrl($args[0]); $hasRet = false; break;
+            case 'setPreviousRoute': $store->setPreviousRoute($args[0]); $hasRet = false; break;
+            case 'previousUrl':      $ret = $store->previousUrl(); break;
+            case 'previousRoute':    $ret = $store->previousRoute(); break;
+            default:
+                fwrite(STDERR, "php-session-oracle: unknown op {$op}\n");
+                exit(2);
+        }
+    } catch (Throwable $e) {
+        $hasRet = false;
+        $ret = null;
+        $threw = ['class' => get_class($e), 'message' => $e->getMessage()];
     }
 
     $results[] = [
@@ -213,6 +222,7 @@ foreach ($input['ops'] ?? [] as $step) {
         'token' => $store->token(),
         'started' => $store->isStarted(),
         'has_ret' => $hasRet,
+        'threw' => $threw,
         'ret' => json_encode($ret),
     ];
 }

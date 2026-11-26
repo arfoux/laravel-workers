@@ -20,6 +20,49 @@ const dumpPath = join(pkgDir, 'tools', 'formrequest-dump.php');
 const phpOk = spawnSync(PHP, ['-r', 'echo PHP_VERSION;'], { stdio: 'ignore' }).status === 0;
 const phpSkip = phpOk ? false : `no PHP interpreter (${PHP})`;
 
+const REQUEST_STATE_CASES = [
+  {
+    label: 'existing $this->user()',
+    refuse: true,
+    line: "        return ['email' => ['unique:users,email,' . $this->user()->id]];",
+  },
+  {
+    label: '$this -> user ()',
+    refuse: true,
+    line: "        return ['email' => ['unique:users,email,' . $this -> user ()->id]];",
+  },
+  {
+    label: "app('request')",
+    refuse: true,
+    line: "        return ['email' => ['unique:users,email,' . app('request')]];",
+  },
+  {
+    label: 'app("request")',
+    refuse: true,
+    line: `        return ['email' => ['unique:users,email,' . app("request")]];`,
+  },
+  {
+    label: 'user (',
+    refuse: true,
+    line: "        return ['email' => ['unique:users,email,' . user ('id')]];",
+  },
+  {
+    label: 'auth (',
+    refuse: true,
+    line: "        return ['email' => ['unique:users,email,' . auth ('id')]];",
+  },
+  {
+    label: 'request (',
+    refuse: true,
+    line: "        return ['email' => ['unique:users,email,' . request ('id')]];",
+  },
+  {
+    label: "app('config') is ordinary static code",
+    refuse: false,
+    line: "        return ['email' => ['unique:users,email,' . app('config')]];",
+  },
+];
+
 test('formrequest dump refuses inherited rules() that read request state', { skip: phpSkip }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'lw-formrequest-inherited-'));
   try {
@@ -42,28 +85,19 @@ test('formrequest dump refuses inherited rules() that read request state', { ski
         '    public function user() { return (object) ["id" => 7]; }',
         '  }',
         '}',
-        'namespace { function config($key, $default = null) { return \'default\'; } }',
-        '',
-      ].join('\n')
-    );
-    writeFileSync(
-      parent,
-      [
-        '<?php',
-        'namespace LwTest;',
-        'use Illuminate\\Foundation\\Http\\FormRequest;',
-        'class BaseRequest extends FormRequest {',
-        pad,
-        '    public function rules(): array {',
-        "        return ['email' => ['unique:users,email,' . $this->user()->id]];",
-        '    }',
+        'namespace {',
+        "  function config($key, $default = null) { return 'default'; }",
+        "  function app($key = null) { return '1'; }",
+        "  function user($key = null) { return '1'; }",
+        "  function auth($key = null) { return '1'; }",
+        "  function request($key = null) { return '1'; }",
         '}',
         '',
       ].join('\n')
     );
     // The child declares no method: its file has only a handful of lines,
     // while the parent's start line is past line 40. Reading the child file
-    // with the parent's line numbers can never see `$this->user()`.
+    // with the parent's line numbers can never see the request-state idiom.
     writeFileSync(
       child,
       [
@@ -87,14 +121,35 @@ test('formrequest dump refuses inherited rules() that read request state', { ski
       ].join('\n')
     );
 
-    const raw = execFileSync(PHP, [driver, stub, dumpPath, child], {
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    const [entry] = JSON.parse(raw);
-    assert.equal(entry.fqcn, 'LwTest\\ChildRequest');
-    assert.match(entry.error ?? '', /^rules\(\) reads request state/);
-    assert.deepEqual(entry.rules, [], 'a refused class carries no baked rules');
+    for (const { label, refuse, line } of REQUEST_STATE_CASES) {
+      writeFileSync(
+        parent,
+        [
+          '<?php',
+          'namespace LwTest;',
+          'use Illuminate\\Foundation\\Http\\FormRequest;',
+          'class BaseRequest extends FormRequest {',
+          pad,
+          '    public function rules(): array {',
+          line,
+          '    }',
+          '}',
+          '',
+        ].join('\n')
+      );
+      const raw = execFileSync(PHP, [driver, stub, dumpPath, child], {
+        encoding: 'utf8',
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      const [entry] = JSON.parse(raw);
+      assert.equal(entry.fqcn, 'LwTest\\ChildRequest', label);
+      if (refuse) {
+        assert.match(entry.error ?? '', /^rules\(\) reads request state/, `${label} must be refused`);
+        assert.deepEqual(entry.rules, [], `${label}: a refused class carries no baked rules`);
+      } else {
+        assert.equal(entry.error, null, `${label} must not be refused`);
+      }
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
