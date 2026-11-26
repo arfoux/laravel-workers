@@ -43,6 +43,14 @@ export const UNREACHABLE = [
   'tools/status.mjs',
 ];
 
+// docs/PACKAGE-PORTS.md tells readers to copy handlers out of ports/packages/.
+// They are not runtime imports, so the walk above cannot see them; these two
+// anchors fail the gate if the whole directory is dropped from files[].
+export const REFERENCE_PORTS = [
+  'ports/packages/apple-signin.mjs',
+  'ports/packages/multitenancy.mjs',
+];
+
 // Files the published README links to. A dead link in the npm page is a
 // documentation bug the same way a missing module is a build bug.
 //
@@ -275,7 +283,7 @@ if (isMain) {
 
   const shipped = packFiles(cwd);
   const modules = runtimeFiles(repoRoot);
-  const required = [...modules, ...UNREACHABLE].sort();
+  const required = [...modules, ...UNREACHABLE, ...REFERENCE_PORTS].sort();
   const missing = required.filter((f) => !shipped.has(f));
   const missingDocs = REQUIRED_DOCS.filter((f) => !shipped.has(f));
   const mdFiles = [...shipped].filter((f) => f.toLowerCase().endsWith('.md'));
@@ -291,7 +299,7 @@ if (isMain) {
 
   console.log(
     `pack-gate OK: ${modules.length} runtime files reached from ${ENTRY.join(' + ')} ` +
-      `(+${UNREACHABLE.length} explicit) + ${REQUIRED_DOCS.length} README-linked docs shipped ` +
+      `(+${UNREACHABLE.length + REFERENCE_PORTS.length} explicit) + ${REQUIRED_DOCS.length} README-linked docs shipped ` +
       `(${shipped.size} files in the tarball; local links checked in ${mdFiles.length} Markdown files)`,
   );
 }

@@ -6,7 +6,7 @@ name: app-deploy
 #   jobs:
 #     ship:
 #       if: github.ref == 'refs/heads/main'
-#       uses: arfoux/laravel-workers/.github/workflows/app-deploy.yml@v1
+#       uses: arfoux/laravel-workers/.github/workflows/app-deploy.yml@v0.5.1
 #       secrets: inherit        # APP_KEY, CLOUDFLARE_API_TOKEN
 #       with:
 #         app-url: https://my-app.example.workers.dev
@@ -64,7 +64,6 @@ jobs:
       group: app-deploy-${{ github.repository }}
       cancel-in-progress: false
     env:
-      APP_KEY: ${{ secrets.APP_KEY }}
       # Env wins over .env for the config dump, so production values live here
       # and never in a committed file.
       APP_ENV: production
@@ -72,7 +71,6 @@ jobs:
       APP_URL: ${{ inputs.app-url }}
       CACHE_STORE: ${{ vars.EDGE_CACHE_STORE || 'database' }}
       LOG_LEVEL: ${{ vars.EDGE_LOG_LEVEL || 'warning' }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Checkout
@@ -110,6 +108,8 @@ jobs:
       - name: Deploy (build + D1 + schema + deploy)
         working-directory: ${{ inputs.working-directory }}
         env:
+          APP_KEY: ${{ secrets.APP_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SCHEMA: ${{ inputs.schema }}
         run: |
           set -o pipefail
@@ -120,12 +120,12 @@ jobs:
             *)     echo "schema must be '', 'skip' or 'apply'"; exit 2 ;;
           esac
           npx laravel-workers deploy --mode "${{ inputs.mode }}" --yes $SCHEMA_ARG \
-            ${{ inputs.build-args }} 2>&1 | tee deploy.log
+            ${{ inputs.build-args }} 2>&1 | tee "$GITHUB_WORKSPACE/edge-build.log"
 
       # Same verdict in the job summary; no PR comment on a merge.
       - name: Verdict (summary)
         if: always()
         uses: arfoux/laravel-workers/action/verdict@v0.5.1
         with:
-          log: ${{ inputs.working-directory }}/deploy.log
+          log: edge-build.log
           comment: 'false'

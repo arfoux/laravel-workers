@@ -129,7 +129,7 @@ test('CLI verify routes through the shared resolver and forwards flags', () => {
     src.indexOf("} else if (cmd === 'deploy') {")
   );
   assert.match(branch, /resolvePhp\(\{ requirement: phpRequirement \}\)/);
-  assert.match(branch, /run\(phpBin, \[verifyPath, \.\.\.process\.argv\.slice\(3\)\]/);
+  assert.match(branch, /run\(phpBin, \[verifyPath, \.\.\.verifyArgs\]/);
   assert.doesNotMatch(branch, /process\.env\.PHP_BIN \|\| 'php'/);
 });
 
@@ -217,6 +217,37 @@ test('CLI still SKIPs when no Laravel vendor is present', () => {
     assert.match(r.stdout + r.stderr, /VERIFY-S0: SKIP/);
   } finally {
     rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test('CLI --json skip is one JSON verdict on stdout', () => {
+  const empty = mkdtempSync(join(tmpdir(), 'lw-verify-json-skip-'));
+  try {
+    const r = runCli(empty, ['--json']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.stdout.trim().split('\n').length, 1, 'stdout must be exactly one JSON line');
+    const json = JSON.parse(r.stdout);
+    assert.equal(json.status, 'SKIP');
+    assert.equal(json.checks, 0);
+    assert.match(json.reason, /no Laravel vendor/);
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test('CLI honors LW_VENDOR_DIR when the app has no local vendor', phpSkip, () => {
+  const app = makeApp({ withDump: false });
+  const externalVendor = mkdtempSync(join(tmpdir(), 'lw-verify-vendor-'));
+  try {
+    const autoload = readFileSync(join(app, 'vendor', 'autoload.php'));
+    writeFileSync(join(externalVendor, 'autoload.php'), autoload);
+    rmSync(join(app, 'vendor'), { recursive: true, force: true });
+    const r = runCli(app, [], { LW_VENDOR_DIR: externalVendor });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /VERIFY-S0: SKIP \(no S0 dump/, 'must reach the PHP verifier, not the CLI vendor skip');
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+    rmSync(externalVendor, { recursive: true, force: true });
   }
 });
 
