@@ -3,13 +3,11 @@ The change-by-change record of laravel-workers (M1–M70 and the A-series audit 
 
 ## v0.5.2 — verdict reads real build logs, reference ports ship, and the sweep's verified fixes land (2026-11-27)
 
-Everything in this section is **unreleased**. Published `npx --yes laravel-workers@0.5.1`
-(npm `gitHead 7c73223e…`) still has the old behavior; the local `v0.5.1` tag points at a
-different commit and is not valid evidence for shipped behavior.
+This section is the release record for `0.5.2`. It lists the changes that land in this version; the README carries the currently published npm version.
 
 ### 0.5.2 sweep closeout (2026-11-27)
 
-Everything below was written while the local version was still `0.5.1`; the bump to `0.5.2` happened only after the structure sweep and the line-by-line sweep closed. Published `npx --yes laravel-workers@0.5.1` (npm `gitHead 7c73223e…`) still has the old behavior. **No `v0.5.2` tag has been created and nothing has been published or deployed.**
+The structure sweep and the line-by-line sweep closed before the version bump. The fixes below are part of `0.5.2`; earlier releases do not carry them.
 
 - `docs/PROCESS.md` no longer teaches rebase: the default is `gh pr merge <n> --merge`, and rebase/squash/branch deletion need an explicit request.
 - `action/verdict` always reads `edge-build.log` from the workspace root. `app-check.yml` and `app-deploy.yml` now tee that file, pass `log: edge-build.log`, use real `@v0.5.1` header examples, and scope `APP_KEY` / `CLOUDFLARE_API_TOKEN` to the deploy step. A build log in a working directory is no longer misread as "BUILD FAILED".
@@ -24,6 +22,16 @@ Everything below was written while the local version was still `0.5.1`; the bump
 Verification: the targeted regressions for the JWT header, CLI verify vendor/JSON paths, multitenancy 401, and pack gate pass, together with `npm test`, `npm run test:corpus`, `node tools/gate.mjs --strict`, `npm run bench`, syntax checks and `node tools/pack-gate.mjs` on the final commit. The local `lw-showcase` app was rebuilt from this checkout and its smoke/sweep/shadow gates re-run; exact counts are recorded in `notes/PLAYBOOK.local.md`.
 
 Deferred with evidence in the 2026-11-27 ledger row (no behavior change made here): Apple `state` binding for the form_post callback, controller `$this->property` instance semantics, PHP-only oracle suites that self-skip in CI, the FormRequest comment false-refusal and schema fallback quote-splitting (both fail-closed), cookie-prefix constant-time comparison, token alphabet bias, `docs-counts.mjs` self-comparison wording, 25 unused `.error.json` fixtures, and S10 helper duplication. A `boot-e-types.txt` size-drift claim was refuted: the file and `cases.json` both say 27 bytes.
+
+### Re-audit gap closure (2026-11-27)
+
+- `CHANGELOG.md` is now release-safe: `publish.yml:276-280` extracts this section verbatim after the tag and registries exist, so the text records the release without predicting publication state.
+- Compiled `JsonResource` / `ResourceCollection` instances keep the request of the `buildRt()` that created them. A later `buildRt()` (a second concurrent request) can no longer redirect an awaited resource's `$request`; the module provider stays only the fallback for instances built outside a runtime.
+- `kernel/cookies.mjs` `rawUrlDecode()` UTF-8-encodes whole code points: a literal `😀` cookie value no longer decays to two replacement characters.
+- `kernel/encrypter.mjs` converts WebCrypto errors after a valid MAC into `DecryptError`, so a malformed IV/ciphertext no longer escapes the cookie/CSRF catch blocks as a raw `DOMException`.
+- `docs/PACKAGE-PORTS.md`, `docs/CLAIM-COVERAGE.md` and `MAP.md` drop the stale "no stream body contract" rationale, fix the gap evidence anchor, and record the current test counts.
+
+Deferred with evidence: `kernel/router.mjs` `rawurldecode()` leaves invalid `%FF` escapes literal where PHP emits byte `ff`; any rewrite must also decide how an invalid UTF-8 byte maps onto a JS string, so it is not silently changed here. `docs/CLAIM-COVERAGE.md:78`'s "original audit" 18/13/3 subtotal is left as a historical figure.
 
 ### Claim-coverage refresh and row-32 scope correction (2026-11-26, still 0.5.1)
 

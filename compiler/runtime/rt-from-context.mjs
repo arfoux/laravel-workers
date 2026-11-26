@@ -442,11 +442,10 @@ export function buildRt(context, opts = {}) {
   };
   rt.request = () => (liveRequest || noHttp('request'));
   rt.session = () => (liveSession || noHttp('session'));
-  // Laravel's `app('request')`: the ambient request a JsonResource resolves
-  // through at json_encode() time (JsonResource::jsonSerialize() ->
-  // resolve($request = null)). Each buildRt() republishes it, so a view's own
-  // rt or a static snapshot never leaves a stale request behind - without an
-  // HTTP context the lookup fails loud, exactly like the container would.
+  // Global fallback for resources constructed outside a runtime (kernel unit
+  // tests). Compiled resources capture a per-runtime resolver instead, so an
+  // awaited controller cannot inherit a later buildRt()'s request. Without an
+  // HTTP context the fallback still fails loud, exactly like the container.
   setRequestProvider(() => (liveRequest || noHttp('request')));
   // The app's validation messages (the app's own lang file wins over the
   // framework's copy, exactly like Laravel's translator - the same helper the
@@ -855,6 +854,10 @@ export function buildRt(context, opts = {}) {
     // A mailable extends Laravel's Mailable: the compiled class gets the
     // kernel's base (the fluent surface + the payload).
     const built = entry.ctor(Array.isArray(args) ? args : [], deps);
+    // A resource must keep the request of the runtime that built it. A module
+    // global would let a later buildRt() overwrite it between creation and
+    // jsonSerialize() on an awaited controller path.
+    const requestResolver = () => (liveRequest || noHttp('request'));
     const obj =
       entry.base === 'mailable'
         ? Object.assign(new Mailable(), built)
@@ -865,7 +868,7 @@ export function buildRt(context, opts = {}) {
               // is INHERITED by the app's resource (a resource declares only
               // toArray()), so the wrapped value is the first constructor
               // argument - the compiled class has no constructor of its own.
-              Object.assign(new JsonResource(Array.isArray(args) ? args[0] : undefined), built)
+              Object.assign(new JsonResource(Array.isArray(args) ? args[0] : undefined, requestResolver), built)
             : entry.base === 'resourceCollection'
               ? // `Illuminate\Http\Resources\Json\ResourceCollection::__construct($resource)`
                 // - the app's `PostCollection extends ResourceCollection {}` IS a
@@ -873,7 +876,7 @@ export function buildRt(context, opts = {}) {
                 // class-name convention when the app declares none), so wrapping
                 // it in a plain JsonResource would answer the raw models where
                 // Laravel answers the resources.
-                Object.assign(new ResourceCollection(Array.isArray(args) ? args[0] : undefined), built)
+                Object.assign(new ResourceCollection(Array.isArray(args) ? args[0] : undefined, undefined, requestResolver), built)
               : built;
     // The runtime: a mailable renders its view through it (`__lwMail`).
     Object.defineProperty(obj, '__rt', { value: rt, enumerable: false, configurable: true });

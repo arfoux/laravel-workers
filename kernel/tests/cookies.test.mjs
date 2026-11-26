@@ -77,6 +77,10 @@ test('rawUrlDecode is PHP rawurldecode() semantics (no plus-to-space)', () => {
   assert.equal(rawUrlDecode('%1x'), '%1x');
   assert.equal(rawUrlDecode('%x1'), '%x1');
   assert.equal(rawUrlDecode('%1'), '%1');
+  // A literal non-ASCII value is UTF-8 bytes on the wire, not two UTF-16
+  // code units; a surrogate pair must survive as one code point.
+  assert.equal(rawUrlDecode('😀'), '😀');
+  assert.equal(rawUrlDecode('ü'), 'ü');
   // Round-trip
   const s = '{"iv":"a+b/c=","value":"ü"}';
   assert.equal(rawUrlDecode(rawUrlEncode(s)), s);

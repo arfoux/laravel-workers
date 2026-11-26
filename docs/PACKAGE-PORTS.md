@@ -97,8 +97,8 @@ on the resolved verb + path. Every row below except `localization` (a middleware
 
 | Slug | Route(s) | Notes / substitution |
 |---|---|---|
-| `ai-sdk` | `POST /ai/chat` | Non-streaming `generate()` only — the SSE stream is a runtime gap (no ReadableStream body contract). Tools dispatch via `env.ai_tool_runners`. |
-| `mcp` | `POST /mcp` | JSON-RPC 2.0 (`initialize` / `tools/list` / `tools/call` / `prompts/list`). STDIO + SSE transports refused — a Worker has no child process and no stream body yet. |
+| `ai-sdk` | `POST /ai/chat` | Non-streaming `generate()` only — the SSE handler is not ported. The runtime now accepts `ReadableStream` bodies (`kernel/router.mjs:551-565`, `tools/tests/packages-streaming-runtime.test.mjs`), so the remaining gap is port implementation, not a transport contract. Tools dispatch via `env.ai_tool_runners`. |
+| `mcp` | `POST /mcp` | JSON-RPC 2.0 (`initialize` / `tools/list` / `tools/call` / `prompts/list`). STDIO needs a child process (unavailable in a Worker); the SSE handler is not ported even though `ReadableStream` bodies are supported. |
 | `pulse` | `GET /pulse`, `POST /pulse/record` | Dashboard is a JSON aggregation over `pulse_entries` (`?range=<minutes>`), not the HTML UI. |
 | `bugsnag` | `POST /bugsnag/notify` | 1:1 transport swap of the notify API POST. |
 | `webhook-client` | `POST /webhooks/{name}` | Receiving side: HMAC-SHA256 verify (constant-time) before the D1 write; unverified calls are never stored. |

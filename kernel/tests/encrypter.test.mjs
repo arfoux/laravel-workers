@@ -61,6 +61,28 @@ test('encrypter malformed payload is a DecryptException, not a SyntaxError', asy
   await bad('!!!not-base64!!!'); // atob throws
 });
 
+test('encrypter MAC-valid malformed IV is DecryptException, not DOMException', async () => {
+  const payload = await encryptString('hi', key);
+  const obj = JSON.parse(atob(payload));
+  obj.iv = btoa(String.fromCharCode(1, 2, 3));
+  const hmacKey = await crypto.subtle.importKey(
+    'raw',
+    Uint8Array.from(atob(key), (c) => c.charCodeAt(0)),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode(obj.iv + obj.value));
+  obj.mac = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  const err = await decryptString(btoa(JSON.stringify(obj)), key).then(
+    () => null,
+    (e) => e
+  );
+  assert.ok(err, 'expected a rejection');
+  assert.equal(err.name, 'DecryptException');
+  assert.equal(err.phpClass, 'Illuminate\\Contracts\\Encryption\\DecryptException');
+});
+
 test('encrypter tampered MAC/tag fails', async () => {
   const payload = await encryptString('mac-test', key);
   const json = atob(payload);

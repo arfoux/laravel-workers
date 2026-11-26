@@ -88,10 +88,17 @@ export async function decryptString(payloadBase64, keyBase64) {
     throw new DecryptError('MAC invalid');
   }
 
-  const iv = b64DecodeToBytes(payload.iv);
-  const ctBytes = b64DecodeToBytes(payload.value);
-  const ptBuf = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, aesKey, ctBytes);
-  return new TextDecoder().decode(ptBuf);
+  try {
+    const iv = b64DecodeToBytes(payload.iv);
+    const ctBytes = b64DecodeToBytes(payload.value);
+    const ptBuf = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, aesKey, ctBytes);
+    return new TextDecoder().decode(ptBuf);
+  } catch {
+    // A MAC-valid envelope can still carry a malformed IV/ciphertext: WebCrypto
+    // throws a raw DOMException here, which the cookie/CSRF callers do not
+    // catch (they catch DecryptError only).
+    throw new DecryptError('The payload is invalid.');
+  }
 }
 
 // Convenience sync-ish wrappers not possible (crypto.subtle is async). Export async only.

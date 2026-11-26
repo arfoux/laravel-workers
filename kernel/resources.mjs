@@ -317,7 +317,7 @@ export class JsonResource {
   // wrapper key (JsonResource.php:55).
   static forceWrapping = false;
 
-  constructor(resource) {
+  constructor(resource, requestResolver = null) {
     this.resource = resource;
     // The additional metadata of the response (JsonResource.php:42).
     this.additionalData = [];
@@ -327,6 +327,7 @@ export class JsonResource {
     // the property proxy REPLACES the prototype below (a Proxy of
     // JsonResource.prototype is not JsonResource.prototype).
     Object.defineProperty(this, '__lwResource', { value: true, enumerable: false });
+    Object.defineProperty(this, '__lwRequestResolver', { value: requestResolver, enumerable: false, configurable: true });
     installPropertyProxy(this);
   }
 
@@ -398,12 +399,13 @@ export class JsonResource {
    * resource, filtered (the missing values dropped, the merged values folded
    * into the parent).
    *
-   * `$request ?: Container::getInstance()->make('request')`: a caller that
-   * passes no request (jsonSerialize, an explicit `$resource->resolve()`)
-   * gets the request the application is handling.
+   * `$request ?: the owning runtime's request`: a resource built by a compiled
+   * controller keeps the request of that buildRt(), so a later buildRt() cannot
+   * redirect it. Instances built outside a runtime still use the module's
+   * current request provider (the kernel's own unit tests).
    */
   resolve(request) {
-    const req = request ? request : currentRequest();
+    const req = request ? request : this.__lwRequestResolver ? this.__lwRequestResolver() : currentRequest();
     const data = this.resolveResourceData(req);
     return this.filter(toArrayOf(data));
   }
@@ -660,8 +662,8 @@ export class JsonResource {
  * Illuminate\Http\Resources\Json\ResourceCollection
  */
 export class ResourceCollection extends JsonResource {
-  constructor(resource, collects) {
-    super(resource);
+  constructor(resource, collects, requestResolver = null) {
+    super(resource, requestResolver);
     this.collects = collects || null;
     this.collection = null;
   }
