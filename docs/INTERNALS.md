@@ -22,7 +22,7 @@ kernel/                   Workers-native runtime (request time, 0 PHP)
   tests/                   the suite across kernel + compiler + tools (see npm test)
 
 tools/                    build-time PHP + JS helpers (boot the real app)
-  schema-compile.php       migrations → in-memory SQLite → D1 DDL (driver-agnostic)
+  schema-compile.php       migrations → in-memory SQLite → D1 DDL (driver-agnostic); pragma warnings on STDERR, LW_SCHEMA_PRAGMA_FAIL is test-only
   compile-view.php         phase worker: view batches, recursive `make()` closure
   model-dump.php  constants-dump.php  formrequest-dump.php  policy-dump.php
   metadata-phase.php       ONE boot: recursive models + policies + FormRequests

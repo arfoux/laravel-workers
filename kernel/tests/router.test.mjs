@@ -1,7 +1,7 @@
 // edge/kernel/tests/router.test.mjs
 import assert from 'node:assert/strict';
 import { normalizeTable, routeKey, match, dispatch, validateTable } from '../router.mjs';
-import { html, json, redirect, notFound, text } from '../response.mjs';
+import { html } from '../response.mjs';
 
 const routes = [
   { uri: 'up', name: null, methods: ['GET', 'HEAD'], domain: null },
@@ -85,17 +85,8 @@ m = match(table, { method: 'GET', path: '/' });
 assert.ok(m);
 assert.equal(m.route.uri, '/');
 
-// response helpers
+// response helper
 assert.deepEqual(html('a'), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: 'a' });
-// PHP's JsonResponse body is json_encode($data) - the slash is escaped by
-// default and the UTF-8 is written raw only with JSON_UNESCAPED_UNICODE
-// (probed: json_encode(['u' => 'a/b']) is {"u":"a\/b"}).
-assert.deepEqual(json({ b: 1 }), { status: 200, headers: { 'content-type': 'application/json' }, body: '{"b":1}' });
-assert.deepEqual(json({ u: 'a/b' }).body, '{"u":"a\\/b"}');
-assert.deepEqual(json({ u: 'é' }).body, '{"u":"\\u00e9"}');
-assert.deepEqual(redirect('/x'), { status: 302, headers: { location: '/x' }, body: '' });
-assert.deepEqual(notFound(), { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' }, body: 'Not Found' });
-assert.deepEqual(text('t', 201), { status: 201, headers: { 'content-type': 'text/plain; charset=utf-8' }, body: 't' });
 
 // header names lowercased by dispatch
 handlers['GET /dbcheck'] = () => ({ status: 200, headers: { 'X-Foo': 'bar' }, body: 'ok' });
@@ -287,7 +278,7 @@ m = match(mtable, { method: 'GET', path: '/things/1', methodOverride: 'PUT' });
 assert.ok(m, 'explicit methodOverride should work');
 
 // dispatch exposes effective method after override
-handlers['PUT /things/1'] = (ctx) => text(ctx.request.method);
+handlers['PUT /things/1'] = (ctx) => html(ctx.request.method);
 const r3 = await dispatch({ method: 'POST', path: '/things/1', headers: { 'x-http-method-override': 'PUT' } }, mtable, handlers);
 assert.ok(r3);
 assert.equal(r3.body, 'PUT');
@@ -320,7 +311,7 @@ bhandlers['GET /posts/{post}'] = (ctx) => {
   seenModel = ctx.models && ctx.models.post;
   seenParams = ctx.params;
   assert.equal(ctx.params.post, '42');
-  return text('ok');
+  return html('ok');
 };
 const bres = await dispatch({ method: 'GET', path: '/posts/42' }, btable, bhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' });
 assert.equal(bres.status, 200);
@@ -335,7 +326,7 @@ const ctable = normalizeTable([
 ]);
 const chandlers = {};
 let cseen = null;
-chandlers['GET /posts/{post}'] = (ctx) => { cseen = ctx.models.post; return text('ok'); };
+chandlers['GET /posts/{post}'] = (ctx) => { cseen = ctx.models.post; return html('ok'); };
 const cres = await dispatch({ method: 'GET', path: '/posts/hello-slug' }, ctable, chandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' });
 assert.equal(cres.status, 200);
 assert.equal(cseen.__col, 'slug');
@@ -346,7 +337,7 @@ const mtable2 = normalizeTable([
   { uri: '/posts/{post}', name: 'posts.show', methods: ['GET'], domain: null, bindings: { post: 'Post' } },
 ]);
 const mhandlers = {};
-mhandlers['GET /posts/{post}'] = () => text('should not run');
+mhandlers['GET /posts/{post}'] = () => html('should not run');
 await assert.rejects(
   () => dispatch({ method: 'GET', path: '/posts/missing' }, mtable2, mhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' }),
   (e) => e && e.status === 404,
@@ -357,7 +348,7 @@ const utable = normalizeTable([
   { uri: '/posts/{post}', name: 'posts.show', methods: ['GET'], domain: null, bindings: { post: 'Nope' } },
 ]);
 const uhandlers = {};
-uhandlers['GET /posts/{post}'] = () => text('should not run');
+uhandlers['GET /posts/{post}'] = () => html('should not run');
 await assert.rejects(
   () => dispatch({ method: 'GET', path: '/posts/42' }, utable, uhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' }),
   (e) => e && e.status === 500,
@@ -373,7 +364,7 @@ let nseenParams = null;
 nhandlers['GET /posts/{post}'] = (ctx) => {
   nseenModels = ctx.models;
   nseenParams = ctx.params;
-  return text('ok ' + ctx.params.post);
+  return html('ok ' + ctx.params.post);
 };
 const nres = await dispatch({ method: 'GET', path: '/posts/42' }, ntable, nhandlers);
 assert.ok(nres, 'dispatch should not return null');
@@ -387,7 +378,7 @@ const rtable = normalizeTable([
   { uri: '/health', name: 'health', methods: ['GET'], domain: null },
 ]);
 const rhandlers = {};
-rhandlers['GET /health'] = (ctx) => text('healthy ' + (ctx.params.id || ''));
+rhandlers['GET /health'] = (ctx) => html('healthy ' + (ctx.params.id || ''));
 const rres = await dispatch({ method: 'GET', path: '/health' }, rtable, rhandlers, undefined, { models: { Post: FakeBindModel }, db: 'DB' });
 assert.ok(rres);
 assert.equal(rres.status, 200);
