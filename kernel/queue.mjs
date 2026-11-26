@@ -17,7 +17,7 @@ export function createQueue({ binding } = {}) {
           backoffMs,
           delaySeconds: Math.ceil(delayMs / 1000),
         };
-        await binding.send(body);
+        await binding.send(body, { delaySeconds: Math.min(86400, Math.max(0, body.delaySeconds)) });
         return body;
       },
       hasBinding: true,

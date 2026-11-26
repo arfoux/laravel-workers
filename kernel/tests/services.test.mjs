@@ -52,10 +52,12 @@ test('queue memory push/pop', async () => {
 });
 test('queue binding send', async () => {
   const sent = [];
-  const binding = { async send(m){ sent.push(m); } };
+  const binding = { async send(m, o){ sent.push({ body: m, options: o }); } };
   const q = createQueue({ binding });
-  const j = await q.push('emails', { to: 'a' });
-  assert.equal(sent[0].queue, 'emails');
+  const j = await q.push('emails', { to: 'a' }, { delayMs: 1500 });
+  assert.equal(sent[0].body.queue, 'emails');
+  assert.equal(sent[0].body.delaySeconds, 2);
+  assert.deepEqual(sent[0].options, { delaySeconds: 2 });
   assert.equal(j.payload.to, 'a');
   assert.equal(await q.pop(), null);
 });
