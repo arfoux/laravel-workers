@@ -95,6 +95,18 @@ test('phpJsonDecodeOrdered matches json_decode($s, true) byte-for-byte', () => {
     assert.equal(got, expected[i], `case ${i}: ${doc}`);
   });
 });
+test('exponent floats match PHP by value, not by canonical dump spelling', () => {
+  // PHP's json_encode writes 1.0e+20 / -0.0; JS String() writes the plain
+  // decimal 100000000000000000000 / 0. Both are the same double, so compare
+  // values here instead of changing the oracle's canonical string format.
+  const docs = ['1e20', '-0.0'];
+  const expected = runOracle(docs);
+  [1e20, -0].forEach((v, i) => {
+    const got = phpJsonDecodeOrdered(Buffer.from(docs[i], 'latin1'));
+    const phpValue = Number(expected[i].replace(/^num\(/, '').replace(/\)$/, ''));
+    assert.ok(Object.is(got, phpValue), `case ${i}: ${docs[i]} — PHP dump ${expected[i]}`);
+  });
+});
 
 test('invalid UTF-8 in the document answers NULL, like PHP', () => {
   const expected = runOracle([Buffer.from([0x22, 0xff, 0x22]).toString('latin1')]);

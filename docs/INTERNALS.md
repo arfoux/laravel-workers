@@ -26,8 +26,9 @@ tools/                    build-time PHP + JS helpers (boot the real app)
   compile-view.php         phase worker: view batches, recursive `make()` closure
   model-dump.php  constants-dump.php  formrequest-dump.php  policy-dump.php
   metadata-phase.php       ONE boot: recursive models + policies + FormRequests
-  event-dump.php  class-dump.php  schedule-dump.php
+  event-dump.php  class-dump.php  schedule-dump.php  (legacy PHP; build uses the .mjs variants)
   routes-dump.mjs  config-dump.mjs  constants-dump.mjs  (pure JS re-implementations)
+  timezone-ids.php         re-run with --write after a PHP/zoneinfo upgrade
   build-cache.mjs          SHA-256 content key for the unchanged-input fast path
   deploy.mjs  lw-state.mjs  status.mjs  doctor.mjs  run.mjs   the guided deploy CLI + per-app state
   jsonc.mjs  cloud-account.mjs   JSONC span edits + Cloudflare account selection
