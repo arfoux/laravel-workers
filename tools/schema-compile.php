@@ -89,6 +89,21 @@ $escape = static function (string $name): string {
     return str_replace("'", "''", $name);
 };
 
+// Test-only seam: LW_SCHEMA_PRAGMA_FAIL=table_info,index_list,... makes the
+// named pragma throw so the warning/fallback paths are exercised without
+// needing a broken SQLite. Never set by build.mjs or a normal deploy.
+$forcedPragmas = array_values(array_filter(
+    array_map('trim', explode(',', (string) getenv('LW_SCHEMA_PRAGMA_FAIL'))),
+    static fn (string $name): bool => $name !== ''
+));
+$pragmaSelect = static function (string $name, string $sql) use ($forcedPragmas) {
+    if (in_array($name, $forcedPragmas, true)) {
+        throw new RuntimeException("forced pragma failure: {$name} (LW_SCHEMA_PRAGMA_FAIL)");
+    }
+
+    return DB::select($sql);
+};
+
 $parseColumns = static function (string $sql): array {
     if (!preg_match('/\((.*)\)/s', $sql, $match)) {
         return [];
@@ -157,7 +172,7 @@ foreach ($tables as $table) {
 
     $columns = [];
     try {
-        foreach (DB::select("SELECT * FROM pragma_table_info('$escaped')") as $column) {
+        foreach ($pragmaSelect('table_info', "SELECT * FROM pragma_table_info('$escaped')") as $column) {
             $columns[] = [
                 'cid' => (int) $column->cid,
                 'name' => (string) $column->name,
@@ -168,6 +183,7 @@ foreach ($tables as $table) {
             ];
         }
     } catch (Throwable $e) {
+        fwrite(STDERR, "schema-compile: WARNING pragma_table_info failed for {$name}: " . $e->getMessage() . "; parsing columns from CREATE TABLE instead\n");
         $columns = $parseColumns((string) $table->sql);
     }
     if (!$columns) {
@@ -176,14 +192,15 @@ foreach ($tables as $table) {
 
     $indexes = [];
     try {
-        foreach (DB::select("SELECT * FROM pragma_index_list('$escaped')") as $index) {
+        foreach ($pragmaSelect('index_list', "SELECT * FROM pragma_index_list('$escaped')") as $index) {
             $indexName = (string) $index->name;
             $indexColumns = [];
             try {
-                foreach (DB::select("SELECT * FROM pragma_index_info('" . $escape($indexName) . "')") as $info) {
+                foreach ($pragmaSelect('index_info', "SELECT * FROM pragma_index_info('" . $escape($indexName) . "')") as $info) {
                     $indexColumns[] = (string) $info->name;
                 }
             } catch (Throwable $e) {
+                fwrite(STDERR, "schema-compile: WARNING pragma_index_info failed for {$indexName}: " . $e->getMessage() . "; index columns omitted\n");
             }
             $indexes[] = [
                 'name' => $indexName,
@@ -198,11 +215,12 @@ foreach ($tables as $table) {
             ];
         }
     } catch (Throwable $e) {
+        fwrite(STDERR, "schema-compile: WARNING pragma_index_list failed for {$name}: " . $e->getMessage() . "; NO indexes emitted for this table\n");
     }
 
     $foreignKeys = [];
     try {
-        foreach (DB::select("SELECT * FROM pragma_foreign_key_list('$escaped')") as $fk) {
+        foreach ($pragmaSelect('foreign_key_list', "SELECT * FROM pragma_foreign_key_list('$escaped')") as $fk) {
             $foreignKeys[] = [
                 'id' => (int) $fk->id,
                 'seq' => (int) $fk->seq,
@@ -215,6 +233,7 @@ foreach ($tables as $table) {
             ];
         }
     } catch (Throwable $e) {
+        fwrite(STDERR, "schema-compile: WARNING pragma_foreign_key_list failed for {$name}: " . $e->getMessage() . "; FK metadata omitted\n");
     }
 
     $out['tables'][] = [
