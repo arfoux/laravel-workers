@@ -174,7 +174,7 @@ $isHook = static function (ReflectionClass $rc, string $method) use ($methodBody
             $rm->getStartLine() - 1,
             $rm->getEndLine() - $rm->getStartLine() + 1
         ));
-        if (preg_match('/\$this->|\$request\b|\bauth\(|\buser\(|\brequest\(/', $rulesSrc)) {
+        if (preg_match('/\$this\h*->|\$request\b|\bauth\h*\(|\buser\h*\(|\brequest\h*\(|(?<![\w$])app\h*\(\h*([\'"])request\1\h*\)/', $rulesSrc)) {
             $entry['error'] =
                 'rules() reads request state — the build would evaluate it with NO request (a ' .
                 'unique()->ignore($this->user()->id) becomes ignore(NULL) and rejects the row itself). ' .

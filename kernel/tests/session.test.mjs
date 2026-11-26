@@ -322,6 +322,25 @@ for (const serialization of ['json', 'php']) {
   });
 }
 
+test('oracle reports a throwing Store op as JSON with threw', { skip: noApp }, () => {
+  // remove($key) needs one argument; calling it with none raises
+  // ArgumentCountError inside the switch. The oracle must still emit its
+  // stdout JSON envelope instead of dying with a PHP fatal.
+  const oracle = runOracle({
+    mode: 'store',
+    serialization: 'json',
+    id: FIXED_ID,
+    ops: [['remove']],
+    save: false,
+  });
+
+  assert.equal(oracle.results.length, 1);
+  assert.equal(oracle.results[0].has_ret, false);
+  assert.equal(oracle.results[0].ret, 'null');
+  assert.equal(oracle.results[0].threw.class, 'ArgumentCountError');
+  assert.match(oracle.results[0].threw.message, /remove/);
+});
+
 test('flash lifecycle unit: gapped PHP array shapes', async () => {
   const store = new PhpSessionStore({ handler: new RecordingHandler() });
   store.now('x', 1);
