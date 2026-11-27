@@ -150,6 +150,7 @@ const REPORTER_FILE = APP ? path.join(APP, 'app', 'Services', 'LwBindingReporter
 const JOB_FILE = APP ? path.join(APP, 'app', 'Jobs', 'LwBindingProbeJob.php') : null;
 const PROVIDER_FILE = APP ? path.join(APP, 'app', 'Providers', 'AppServiceProvider.php') : null;
 let providerBackup = null;
+const createdFiles = [];
 
 const BINDINGS = [
   '        $this->app->bind(\\App\\Support\\AbstractReporter::class, \\App\\Services\\LwBindingReporter::class);',
@@ -166,12 +167,17 @@ const skipReason = !APP
 
 function installFixtures() {
   if (!APP) return;
-  if (!existsSync(REPORTER_FILE)) writeFileSync(REPORTER_FILE, REPORTER);
-  if (!existsSync(JOB_FILE)) writeFileSync(JOB_FILE, JOB);
+  if (!existsSync(REPORTER_FILE)) {
+    writeFileSync(REPORTER_FILE, REPORTER);
+    createdFiles.push(REPORTER_FILE);
+  }
+  if (!existsSync(JOB_FILE)) {
+    writeFileSync(JOB_FILE, JOB);
+    createdFiles.push(JOB_FILE);
+  }
   // The bindings go into the app's REGISTERED provider (Laravel boots it, so
   // the PHP oracle sees them in the container).
   const src = readFileSync(PROVIDER_FILE, 'utf8');
-  providerBackup = src;
   const marker = '    public function register(): void';
   const at = src.indexOf(marker);
   // `bindingFixtureSkip` (module scope) already turned this into a SKIP: the
@@ -182,15 +188,19 @@ function installFixtures() {
   if (at === -1) return;
   const open = src.indexOf('{', at);
   const close = src.indexOf('}', open);
-  writeFileSync(PROVIDER_FILE, src.slice(0, close) + '\n' + BINDINGS + '\n' + src.slice(close));
+  const next = src.slice(0, close) + '\n' + BINDINGS + '\n' + src.slice(close);
+  if (next === src) return;
+  if (providerBackup === null) providerBackup = src;
+  writeFileSync(PROVIDER_FILE, next);
 }
 
 function removeFixtures() {
   if (!APP) return;
-  if (REPORTER_FILE) rmSync(REPORTER_FILE, { force: true });
-  if (JOB_FILE) rmSync(JOB_FILE, { force: true });
-  if (PROVIDER_FILE && providerBackup !== null) writeFileSync(PROVIDER_FILE, providerBackup);
-  providerBackup = null;
+  for (const file of createdFiles.splice(0)) rmSync(file, { force: true });
+  if (providerBackup !== null) {
+    writeFileSync(PROVIDER_FILE, providerBackup);
+    providerBackup = null;
+  }
 }
 
 after(removeFixtures);

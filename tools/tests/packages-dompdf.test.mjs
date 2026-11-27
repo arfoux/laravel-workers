@@ -152,11 +152,12 @@ test('dompdf: cf-browser-rendering without CF_ACCOUNT_ID is a 500 before fetch',
 
 // ---- Error mapping ---------------------------------------------------------
 
-test('dompdf: non-2xx from the provider is surfaced verbatim', async () => {
+test('dompdf: a non-2xx from the provider becomes 502 JSON, not upstream bytes', async () => {
   const fetchImpl = makePdfFetch(401, new ArrayBuffer(0), { contentType: 'text/html' });
   const res = await dompdf(pdfCtx({ html: '<p>x</p>' }), { fetchImpl, PDF_API_KEY: 'bad' });
-  assert.equal(res.status, 401);
-  assert.equal(typeof res.body, 'string');
+  assert.equal(res.status, 502);
+  assert.equal(res.headers['content-type'], 'application/json');
+  assert.match(res.body, /pdf upstream responded 401:/);
 });
 
 test('dompdf: a thrown fetch becomes a 502, never an unhandled reject', async () => {

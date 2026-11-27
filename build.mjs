@@ -32,6 +32,7 @@ import {
   guardProblemMessage,
   guardPortsModuleSource,
 } from './tools/ports.mjs';
+import { applyMiddlewarePorts } from './tools/middleware-ports.mjs';
 import { BLOB_DDL, BLOB_TABLE } from './kernel/storage.mjs';
 import { validateTable } from './kernel/router.mjs';
 import { ADVISORY, BLOCK, DECLARED, isBuildEnvDbFailure, renderReadiness, sweepAppSources } from './tools/readiness.mjs';
@@ -126,10 +127,8 @@ let PHP = 'php';
 // keeps a content-addressed copy instead. Either way the helpers and artisan
 // read the same override, so nothing below has to know which it is.
 let vendorDir = process.env.LW_VENDOR_DIR ? resolve(process.env.LW_VENDOR_DIR) : null;
-if (vendorDir) {
-  const ok = existsSync(join(vendorDir, 'autoload.php')) || existsSync(join(vendorDir, 'vendor/autoload.php'));
-  if (!ok) fail(`LW_VENDOR_DIR is set to "${process.env.LW_VENDOR_DIR}" but no autoload.php was found there (looked for <dir>/autoload.php and <dir>/vendor/autoload.php)`);
-}
+// The check lives below, beside `fail`: calling `fail` before its declaration
+// throws a TDZ ReferenceError on exactly the path it exists to handle.
 // Child PHP processes inherit this: artisan needs it, and the tools/*.php helpers
 // read it through tools/_root.php.
 // `dbSandboxPath` (set below, before the first boot) points at the build-time
@@ -289,6 +288,14 @@ const fail = (msg) => {
   console.error(renderReadiness(findings, { dist: relPath(distFinal) }));
   process.exit(1);
 };
+
+// LW_VENDOR_DIR is checked here, after `fail` exists: on a bad vendor dir the
+// guard records a BLOCK finding, discards staging and prints the readiness
+// banner before exiting 1.
+if (vendorDir) {
+  const ok = existsSync(join(vendorDir, 'autoload.php')) || existsSync(join(vendorDir, 'vendor/autoload.php'));
+  if (!ok) fail(`LW_VENDOR_DIR is set to "${process.env.LW_VENDOR_DIR}" but no autoload.php was found there (looked for <dir>/autoload.php and <dir>/vendor/autoload.php)`);
+}
 
 // Resolve the interpreter that can boot THIS app.
 //
@@ -4025,27 +4032,7 @@ try {
 // Worker, so on a `snapshot`/`unhandled` route it would never run — the asset
 // bundle (or a 404) answers the request before any JS. That is a silent
 // no-op exactly like the bug this seam exists to close, so the build stops.
-for (const [route, slugs] of middlewarePortsMap) {
-  if (registryEntry(ignoreMap, route)) {
-    fail(
-      `registry.json declares ${route} in BOTH "middlewarePorts" and "ignore" — the middleware cannot wrap a route the edge does not serve.`
-    );
-  }
-  const entry = routeTable.find((e) => e.uri === route);
-  if (!entry) {
-    fail(
-      `registry.json "middlewarePorts" names ${route}, but the route table has no such route — the path must match route:list exactly.`
-    );
-  }
-  if (entry.kind === 'snapshot' || entry.kind === 'unhandled' || entry.kind === 'ignore') {
-    fail(
-      `registry.json "middlewarePorts" wraps ${route}, but that route has no request-time handler (kind '${entry.kind}').\n` +
-        '  A middleware port runs in the Worker, so the route needs a compiled controller or a "ports" handler behind it: ' +
-        'give it one, or drop the "middlewarePorts" entry.'
-    );
-  }
-  entry.middlewarePorts = slugs;
-}
+applyMiddlewarePorts(routeTable, middlewarePortsMap, (route) => !!registryEntry(ignoreMap, route), fail);
 
 // ---------- 5a. middleware audit ----------
 // The app's own GLOBAL stack: anything the compiled kernel does not run is

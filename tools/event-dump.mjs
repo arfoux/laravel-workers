@@ -14,6 +14,8 @@ import {
 // a constructor default recorded by the dump is what a compiled class defaults
 // its parameter to, so the raw php-parser text must be read PHP's way.
 import { phpNumberLiteral } from './php-funcs.mjs';
+// Listener contract flags (comments/strings cannot fake an implements clause).
+import { flagsOf } from './event-flags.mjs';
 
 // The positional app root wins over `LW_APP_ROOT`: the PHP oracle reads
 // `$argv[1]` only, and the build passes the app positionally too — an ambient
@@ -426,14 +428,6 @@ for (const f of dedupeByShortName(appClassFiles('Mail'))) {
     for (const v of views) mailViewsFinal.push(v);
   }
 }
-
-// The app's event/listener map (static): explicit $listen + auto-discovery.
-// The listeners' flags (queued/broadcast/afterCommit) via contract match.
-const flagsOf = (src) => ({
-  queued: /ShouldQueue/.test(src || ''),
-  broadcast: /ShouldBroadcast/.test(src || ''),
-  afterCommit: /ShouldDispatchAfterCommit/.test(src || ''),
-});
 
 const addListenerEnv = (evName, listener, srcFile) => {
   let src = '';

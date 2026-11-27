@@ -11,7 +11,7 @@
 //   php -r "var_dump(!'0', !'', !0, !'0.0', !'x', !null);"
 //     -> bool(true) bool(true) bool(true) bool(false) bool(false) bool(true)
 //   php -r "class F { const NEG = -'5'; const ARR = [1]; } var_dump(F::NEG, F::ARR);"
-//     -> int(-5) array(1) { [0]=> int(1) }   (both OUT of the fold: see below)
+//     -> int(-5) array(1) { [0]=> int(1) }   (ARR is OUT of the fold: see below)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -53,10 +53,11 @@ test('a class constant folds `!` with PHP truthiness (`!\'0\'` is true)', () => 
 
 });
 
-test('a constant the scalar folder cannot answer stays OUT of the dump (LW002 later, never a wrong value)', () => {
-  const c = foldConstants(["  const NEG = -'5';", '  const ARR = [1];', "  const OK = 'v';"].join('\n'));
+test('a numeric-string unary folds like PHP; an unmodellable shape stays OUT of the dump', () => {
+  const c = foldConstants(["  const NEG = -'5';", "  const POS = +'5';", '  const ARR = [1];', "  const OK = 'v';"].join('\n'));
   assert.equal(c.OK, 'v');
-  assert.equal(Object.prototype.hasOwnProperty.call(c, 'NEG'), false, "PHP: -'5' is int(-5)");
+  assert.equal(c.NEG, -5, "PHP: -'5' is int(-5)");
+  assert.equal(c.POS, 5, "PHP: +'5' is int(5)");
   assert.equal(Object.prototype.hasOwnProperty.call(c, 'ARR'), false);
 });
 
@@ -99,18 +100,17 @@ test('numeric literals fold as PHP reads them, and the bitwise ops are 64-bit', 
   assert.equal(c.DOWN, 128);
 });
 
-test('a bitwise or literal shape the fold refuses is dropped, never rounded', () => {
+test('64-bit shifts and oversized literals fold when JS can hold them exactly', () => {
   const c = foldConstants(
     ["  const TOO_FAR = 1 << 64;", '  const UNSAFE = 1 << 62;', '  const HUGE = 99999999999999999999;', "  const OK = 'v';"].join('\n')
   );
   assert.equal(c.OK, 'v');
-  // PHP answers 0 for `1 << 64`, 4611686018427387904 for `1 << 62` and a FLOAT
-  // for the oversized literal. None of the three is a JS number this fold can
-  // hold exactly, so each constant stays OUT (LW002 later) - a stopped build,
-  // never a wrong value.
-  for (const k of ['TOO_FAR', 'UNSAFE', 'HUGE']) {
-    assert.equal(Object.prototype.hasOwnProperty.call(c, k), false, k + ' must stay out of the dump');
-  }
+  // PHP answers 0 for `1 << 64`, 4611686018427387904 for `1 << 62` and the
+  // FLOAT 1.0E+20 for `99999999999999999999` - all three are exactly held by
+  // a JS number, so the fold emits them instead of dropping the constants.
+  assert.equal(c.TOO_FAR, 0);
+  assert.equal(c.UNSAFE, 4611686018427387904);
+  assert.equal(c.HUGE, 1e20);
 });
 
 // Audit #701: `enum` was not a recognized declaration kind in `parsePhpFile`
