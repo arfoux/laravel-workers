@@ -16,14 +16,18 @@ import { classPropertyKeys } from './classes.mjs';
 // `$this->property` reads and any other `$this` use in a route/helper body.
 // A property-only method still needs the controller instance: emitting `__self`
 // only when a helper is reachable left `rt.prop(__self, ...)` undeclared.
-function collectThisRefs(node, properties = new Set(), state = { used: false }) {
+function collectThisRefs(node, properties = new Set(), state = { used: false }, callee = false) {
   if (!node || typeof node !== 'object') return state.used;
   if (Array.isArray(node)) {
     for (const n of node) collectThisRefs(n, properties, state);
     return state.used;
   }
   if (node.kind === 'variable' && node.name === 'this') state.used = true;
+  // `$this->x()` calls the METHOD x(); PHP keeps methods and properties in
+  // separate namespaces. The callee must mark `$this` used but must not enter
+  // readProperties: a typed `$x` without a default is never read by the call.
   if (
+    !callee &&
     (node.kind === 'propertylookup' ||
       node.kind === 'nullsafepropertylookup' ||
       node.kind === 'nullsafeproperty') &&
@@ -37,7 +41,9 @@ function collectThisRefs(node, properties = new Set(), state = { used: false }) 
   for (const key of Object.keys(node)) {
     if (key === 'loc' || key === 'kind') continue;
     const v = node[key];
-    if (v && typeof v === 'object') collectThisRefs(v, properties, state);
+    if (v && typeof v === 'object') {
+      collectThisRefs(v, properties, state, node.kind === 'call' && key === 'what');
+    }
   }
   return state.used;
 }

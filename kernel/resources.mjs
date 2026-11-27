@@ -191,9 +191,6 @@ function classNameOf(instance) {
 // convention (`UserCollection` -> `User`, else `UserResource`).
 function collectsClassOf(collection) {
   if (collection.collects) return collection.collects;
-  // The compiled convention marker set by `newClass()` - prefer the concrete
-  // collection's resolver: the module global is overwritten by every buildRt().
-  if (collection.__lwCollects) return collection.__lwCollects;
   const name = classNameOf(collection);
   if (!name.endsWith('Collection')) return null;
   const stem = name.slice(0, name.length - 'Collection'.length);

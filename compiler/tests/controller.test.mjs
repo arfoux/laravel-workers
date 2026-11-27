@@ -560,6 +560,19 @@ test('emit: a property/method collision keeps PHP\'s two namespaces', () => {
   assert.match(res.code, /__self\.x\(rt\)/);
 });
 
+test('emit: a method call on $this does not read a same-named typed property', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    private string $label;\n' +
+    '    public function demo() { return response($this->label()); }\n' +
+    '    private function label() { return "m"; }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.deepEqual(res.errors, []);
+  assert.match(res.code, /__self\.label\(rt\)/);
+});
+
 test('emit: a constructor plus a $this property read fails loud (LW002)', () => {
   const src = '<?php\n' +
     'namespace App\\Http\\Controllers;\n' +
