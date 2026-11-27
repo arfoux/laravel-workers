@@ -134,7 +134,7 @@ export const arr = {
     for (const k of keysOf(array)) {
       if (wanted.has(String(k))) {
         order.push(String(k));
-        out[k] = itemAt(array, k);
+        ownSet(out, k, itemAt(array, k));
       }
     }
     Object.defineProperty(out, '__lwOrder', { value: order, enumerable: false });

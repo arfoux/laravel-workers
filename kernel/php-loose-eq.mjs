@@ -29,9 +29,10 @@
 // imported back here). It defaults to "not a Collection".
 
 /** True for values PHP compares as numbers (numbers plus numeric strings). */
+const DECIMAL_NUMERIC_STRING = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*$/;
 export const isNumericForLooseEq = (v) =>
   typeof v === 'number' ||
-  (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v)));
+  (typeof v === 'string' && DECIMAL_NUMERIC_STRING.test(v));
 
 /**
  * PHP's `(bool)` cast: the falsy strings are exactly `''` and `'0'`, `-0.0` is

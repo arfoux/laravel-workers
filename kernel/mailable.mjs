@@ -20,7 +20,7 @@
 // subject, html, text }. The html (and the text) are the compiled views
 // (the runtime renders them with the mailable's data - Laravel's
 // buildViewData(): the PUBLIC properties merged with the with() data).
-import { copyOwn } from './own-key.mjs';
+import { copyOwn, ownSet } from './own-key.mjs';
 
 export class Mailable {
   constructor() {
@@ -165,13 +165,17 @@ function publicMap(mailable, key) {
   return v && typeof v === 'object' && !Array.isArray(v) ? v : undefined;
 }
 
-// The mailable's PUBLIC properties (Laravel's buildViewData()).
-function publicProperties(mailable) {
-  const out = {};
+// The mailable's PUBLIC properties (Laravel's buildViewData(): the with() data
+// first, then the PUBLIC fields; compiled methods are never view data).
+export function publicProperties(mailable) {
+  const viewData = mailable.__viewData !== undefined ? mailable.__viewData : publicMap(mailable, 'viewData');
+  const out = copyOwn(viewData || {});
   for (const key of Object.keys(mailable)) {
     if (key.startsWith('__')) continue;
     if (['viewData', 'view', 'textView', 'subject', 'from', 'to', 'cc', 'bcc', 'replyTo', 'html', 'text', 'build'].includes(key)) continue;
-    out[key] = mailable[key];
+    const value = mailable[key];
+    if (typeof value === 'function') continue;
+    ownSet(out, key, value);
   }
   return out;
 }

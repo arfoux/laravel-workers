@@ -465,7 +465,7 @@ function jsonPrettyPrint(json) {
 // object, so every level of the map is written the same way.
 function phpJsonEncodeMapAsObject(v, opts) {
   if (v === null || typeof v !== 'object') return phpJsonEncode(v, opts);
-  const keys = Object.keys(v);
+  const keys = orderedKeysOf(v);
   return (
     '{' +
     keys.map((k) => phpJsonEncode(String(k)) + ':' + phpJsonEncodeMapAsObject(v[k], opts)).join(',') +
@@ -482,7 +482,9 @@ function jsonForceObject(v) {
   }
   if (v !== null && typeof v === 'object') {
     const o = {};
-    for (const k of Object.keys(v)) o[k] = jsonForceObject(v[k]);
+    const keys = orderedKeysOf(v);
+    for (const k of keys) o[k] = jsonForceObject(v[k]);
+    Object.defineProperty(o, '__lwOrder', { value: keys, enumerable: false });
     return o;
   }
   return v;

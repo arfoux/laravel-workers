@@ -35,17 +35,23 @@ function matchScore(url, currentPath) {
   if (urlN !== '' && urlN !== '/' && curN.startsWith(urlN + '/')) return 1;
   return 0;
 }
+// A prefix match and a deeper prefix match share score 1; the longer URL is
+// the more specific one. Equal length keeps the first node (depth-first).
+const specificity = (url) => String(url || '').length;
 
 // Mark the best-matching node (most specific wins; ties broken by the first
 // in depth-first order) and every ancestor on the path to it as active.
 function markActive(nodes, currentPath) {
   let best = null;
   let bestScore = -1;
+  let bestSpecificity = -1;
   const walk = (list, chain) => {
     for (const node of list) {
       const score = matchScore(node.url, currentPath);
-      if (score >= 1 && score >= bestScore) {
+      const spec = specificity(node.url);
+      if (score >= 1 && (score > bestScore || (score === bestScore && spec > bestSpecificity))) {
         bestScore = score;
+        bestSpecificity = spec;
         best = chain.concat(node);
       }
       walk(node.children, chain.concat(node));
@@ -107,11 +113,14 @@ export function breadcrumbs(items, currentPath) {
     : [];
   let trail = [];
   let bestScore = -1;
+  let bestSpecificity = -1;
   const walk = (nodes, chain) => {
     for (const node of nodes) {
       const score = matchScore(node.url, currentPath);
-      if (score >= 1 && score >= bestScore) {
+      const spec = specificity(node.url);
+      if (score >= 1 && (score > bestScore || (score === bestScore && spec > bestSpecificity))) {
         bestScore = score;
+        bestSpecificity = spec;
         trail = chain.concat(node);
       }
       walk(node.children, chain.concat(node));
