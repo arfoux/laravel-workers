@@ -16,18 +16,33 @@ import { classPropertyKeys } from './classes.mjs';
 // `$this->property` reads and any other `$this` use in a route/helper body.
 // A property-only method still needs the controller instance: emitting `__self`
 // only when a helper is reachable left `rt.prop(__self, ...)` undeclared.
-function collectThisRefs(node, properties = new Set(), state = { used: false }, callee = false) {
+// A property on the left of an assignment (including the compound forms) is a
+// WRITE, not a read; `isset`/`empty`/`??` are OPTIONAL reads — PHP answers
+// false/null instead of throwing on an uninitialized typed property — so
+// neither requires a declared default.
+function collectThisRefs(
+  node,
+  properties = new Set(),
+  state = { used: false },
+  callee = false,
+  write = false,
+  optional = false
+) {
   if (!node || typeof node !== 'object') return state.used;
   if (Array.isArray(node)) {
-    for (const n of node) collectThisRefs(n, properties, state);
+    for (const n of node) collectThisRefs(n, properties, state, callee, write, optional);
     return state.used;
   }
   if (node.kind === 'variable' && node.name === 'this') state.used = true;
   // `$this->x()` calls the METHOD x(); PHP keeps methods and properties in
   // separate namespaces. The callee must mark `$this` used but must not enter
   // readProperties: a typed `$x` without a default is never read by the call.
+  // An assignment target is likewise a write, and an optional read does not
+  // demand a default.
   if (
     !callee &&
+    !write &&
+    !optional &&
     (node.kind === 'propertylookup' ||
       node.kind === 'nullsafepropertylookup' ||
       node.kind === 'nullsafeproperty') &&
@@ -38,11 +53,24 @@ function collectThisRefs(node, properties = new Set(), state = { used: false }, 
     const name = node.offset && node.offset.name;
     if (typeof name === 'string') properties.add(name);
   }
+  const optionalBody =
+    optional ||
+    node.kind === 'isset' ||
+    node.kind === 'empty' ||
+    (node.kind === 'bin' && node.type === '??');
   for (const key of Object.keys(node)) {
     if (key === 'loc' || key === 'kind') continue;
     const v = node[key];
     if (v && typeof v === 'object') {
-      collectThisRefs(v, properties, state, node.kind === 'call' && key === 'what');
+      // The flags describe the DIRECT child only: a method callee or an
+      // assignment target (and its destructuring wrappers) is not inherited by
+      // the grandchildren, while an optional context is.
+      const childCallee = node.kind === 'call' && key === 'what';
+      const childWrite =
+        ((node.kind === 'assign' || node.kind === 'assignref') && key === 'left') ||
+        (write && node.kind === 'list' && key === 'items') ||
+        (write && node.kind === 'entry' && key === 'value');
+      collectThisRefs(v, properties, state, childCallee, childWrite, optionalBody);
     }
   }
   return state.used;
@@ -290,9 +318,9 @@ function collectUses(children) {
   return uses;
 }
 
-// The names a body calls on itself (`$this->name(...)`). The helpers the route
-// method reaches are the only ones this handler can compile - the closure of
-// these calls over the class's own methods.
+// The names a body calls on itself (`$this->name(...)`, `$this?->name(...)`).
+// The helpers the route method reaches are the only ones this handler can
+// compile - the closure of these calls over the class's own methods.
 function collectThisCalls(node, out = new Set()) {
   if (!node || typeof node !== 'object') return out;
   if (Array.isArray(node)) {
@@ -302,7 +330,13 @@ function collectThisCalls(node, out = new Set()) {
   if (
     node.kind === 'call' &&
     node.what &&
-    node.what.kind === 'propertylookup' &&
+    // php-parser uses `nullsafepropertylookup` for `$this?->m()` (and the older
+    // `nullsafeproperty` spelling appears in other parsers/versions). Without
+    // these the helper was never marked reachable and the emitted `__self`
+    // called a method it never carried.
+    (node.what.kind === 'propertylookup' ||
+      node.what.kind === 'nullsafepropertylookup' ||
+      node.what.kind === 'nullsafeproperty') &&
     node.what.what &&
     node.what.what.kind === 'variable' &&
     node.what.what.name === 'this'

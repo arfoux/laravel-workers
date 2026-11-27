@@ -66,11 +66,12 @@ const ASSIGN_HELPER = { '+': 'rt.add', '-': 'rt.sub', '.': 'rt.concat', '*': 'rt
 const LOG_LEVELS = new Set(['info', 'warning', 'error', 'debug', 'notice']);
 // The Mail facade methods that compile (the padanan is the mailer: log/noop/resend).
 // The methods that deliver are async at the edge — the compiled code awaits them.
-// The mailer's surface: the kernel's PendingMail implements to/cc/bcc/replyTo and
-// send(). The rest (raw, html, queue, later) is refused by BOTH guards below and
-// by the kernel itself (`ADAPTER_REFUSED`, kernel/service-adapters.mjs) — a mail
-// without its body, or one that never leaves, is a wrong answer.
-const MAIL_SYNC = new Set(['to', 'cc', 'bcc']);
+// The mailer's surface: the kernel's PendingMail implements to/cc/bcc/replyTo/
+// subject and send(). The rest (raw, html, queue, later) is refused by BOTH
+// guards below and by the kernel itself (`ADAPTER_REFUSED`,
+// kernel/service-adapters.mjs) — a mail without its body, or one that never
+// leaves, is a wrong answer.
+const MAIL_SYNC = new Set(['to', 'cc', 'bcc', 'replyTo', 'subject']);
 // The Mailable's fluent surface (Laravel's Illuminate\Mail\Mailable): the
 // compiled mailable extends the kernel's base, so these methods exist there.
 const MAILABLE_METHODS = new Set([
@@ -1812,6 +1813,11 @@ function txGate(node, meth) {
   // Gate::define() one. The policy metadata still carries the global lists
   // (`definedAbilities`/`definitions`), so the same lookup answers it.
   const pol = policies.get(subjectFqcn || '__global__') || (globalOnly ? policies.get('__global__') : null);
+  // A SUBJECT check resolves against the subject's policy, but a GLOBAL
+  // Gate::define() ability is dumped under the reserved `__global__` key (the
+  // per-model meta carries only the global ability NAMES). Consult both so a
+  // two-arg check of a global ability answers exactly like the one-arg path.
+  const globals = policies.get('__global__') || (pol && pol.__global__) || null;
   if (!pol && globalOnly) {
     throw mkErr(
       'LW003',
@@ -1861,11 +1867,21 @@ function txGate(node, meth) {
       PORT_HINT
     );
   }
-  if ((pol.definedAbilities || []).indexOf(ability) !== -1) {
+  // The ability may be global even when the check has a subject: the subject
+  // policy's metadata lists the global ability NAMES, but the callback lives
+  // under `__global__`. Accept either list; take the definition from the
+  // globals first (that is where the build dumps string callbacks).
+  if (
+    (pol.definedAbilities || []).indexOf(ability) !== -1 ||
+    (globals && (globals.definedAbilities || []).indexOf(ability) !== -1)
+  ) {
     // A GLOBAL Gate::define() ability. A `'Class@method'` string callback is
     // compiled (the kernel's gate calls it); a CLOSURE is app code the build
     // cannot take, so the route stays blocked with a reason that says so.
-    const def = (pol.definitions || {})[ability] || null;
+    const def =
+      (globals && globals.definitions && globals.definitions[ability]) ||
+      (pol.definitions || {})[ability] ||
+      null;
     if (!def || def.kind !== 'string' || !def.callback) {
       throw mkErr(
         'LW002',
@@ -1889,6 +1905,9 @@ function txGate(node, meth) {
       );
     }
     CTX.usedGate = true;
+    // As in the one-argument path: `rt.gateGlobal` builds the callback CLASS
+    // from the compiled registry, so the emitted handler needs LW_CLASSES.
+    CTX.usedClasses = true;
     // The kernel's gate answers a GLOBAL ability through `rt.gateGlobal`: the
     // callback is a compiled class method, so the runtime needs the class
     // registry (`classes`) and the ability's definition. It is ASYNC (it
@@ -1898,13 +1917,14 @@ function txGate(node, meth) {
     const globalCall =
       'rt.gateGlobal(' + JSON.stringify(ability) + ', ' + (subjectExpr || 'null') + ')';
     // NOTE: `meth === 'denies'` is spelled out here on purpose. `deny` is
-    // declared later in this function (line ~1418); reading it from inside
-    // this block would hit its temporal dead zone and throw a ReferenceError.
-    return txAwait(
-      meth === 'denies' ? '!' + globalCall : globalCall,
-      node,
-      meth === 'denies' ? 'Gate::denies()' : 'Gate::allows()'
-    );
+    // declared later in this function; reading it from inside this block would
+    // hit its temporal dead zone and throw a ReferenceError.
+    // `txAwait` wraps the WHOLE expression as `(await <expr>)`, so the negation
+    // must sit INSIDE its own await: `(await !promise)` negates the promise
+    // (always false) and then awaits a boolean.
+    return meth === 'denies'
+      ? txAwait('!(await ' + globalCall + ')', node, 'Gate::denies()')
+      : txAwait(globalCall, node, 'Gate::allows()');
   }
   if (pol.hasMagicCall) {
     throw mkErr(
@@ -2868,14 +2888,18 @@ function txCall(node) {
       }
       return txAwait(obj + '.' + STORAGE_ASYNC[meth] + '(' + args + ')', node, 'Storage::disk()->' + meth + '()');
     }
-    // `Mail::to($u)->send($m)` — the fluent form. The send is async at the
-    // edge, so the compiled code awaits it (a promise must never leak).
+    // `Mail::to($u)->cc($c)->send($m)` — the fluent form. The recipients and
+    // the envelope are sync; the send is async at the edge, so the compiled
+    // code awaits it (a promise must never leak).
     if (CTX && CTX.controller && MAIL_FACADE_RE.test(obj)) {
+      if (MAIL_SYNC.has(meth)) {
+        return obj + '.' + meth + '(' + args + ')';
+      }
       if (!MAIL_ASYNC.has(meth)) {
         throw mkErr(
           'LW002',
           'the pending mail method ' + meth + '() is not supported — ' + mailRefusedWhy(meth) +
-            ' allowed: ' + [...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
+            ' allowed: ' + [...MAIL_SYNC, ...MAIL_ASYNC].join(', ') + '; ' + PORT_HINT,
           node.loc,
           PORT_HINT
         );

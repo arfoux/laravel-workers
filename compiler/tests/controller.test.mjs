@@ -1610,8 +1610,8 @@ class C {
 
 test('emit: a relation read as a property fails loud (LW003)', () => {
   const src = String.raw`<?php
-namespace App\\Http\\Controllers;
-use App\\Models\\Post;
+namespace App\Http\Controllers;
+use App\Models\Post;
 class C {
     public function show($id)
     {

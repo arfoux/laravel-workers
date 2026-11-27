@@ -128,6 +128,7 @@ if (cmd === 'extract' && batchPath) {
   if (!method) usageError('missing --method');
   const absFile = path.resolve(process.cwd(), file);
   if (!fs.existsSync(absFile)) usageError('file not found: ' + absFile);
+  if (!fs.statSync(absFile).isFile()) usageError('not a file: ' + absFile);
   const source = fs.readFileSync(absFile, 'utf8');
 
   if (cmd === 'extract') {
@@ -140,6 +141,7 @@ if (cmd === 'extract' && batchPath) {
     if (!metaPath) usageError('emit requires --meta <file.json>');
     if (!outPath) usageError('emit requires --out <file.mjs>');
     const meta = readJsonFile(metaPath, 'meta');
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) usageError('meta JSON must be a non-null object: ' + metaPath);
     const res = emitController(source, method, meta);
     if (res.errors.length) fail(res.errors);
     const absOut = path.resolve(process.cwd(), outPath);
