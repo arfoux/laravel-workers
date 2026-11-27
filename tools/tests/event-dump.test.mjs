@@ -30,7 +30,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -146,9 +146,35 @@ class LwBindingProbeJob
 }
 `;
 
+const EVENT = `<?php
+
+namespace App\\Events;
+
+class PostPublished
+{
+}
+`;
+
+const LISTENER = `<?php
+
+namespace App\\Listeners;
+
+use App\\Events\\PostPublished;
+
+class LwProbeListener
+{
+    public function handle(PostPublished $event)
+    {
+    }
+}
+`;
+
 const REPORTER_FILE = APP ? path.join(APP, 'app', 'Services', 'LwBindingReporter.php') : null;
 const JOB_FILE = APP ? path.join(APP, 'app', 'Jobs', 'LwBindingProbeJob.php') : null;
 const PROVIDER_FILE = APP ? path.join(APP, 'app', 'Providers', 'AppServiceProvider.php') : null;
+const EVENT_FILE = APP ? path.join(APP, 'app', 'Events', 'PostPublished.php') : null;
+const LISTENER_FILE = APP ? path.join(APP, 'app', 'Listeners', 'LwProbeListener.php') : null;
+const createdDirs = [];
 let providerBackup = null;
 const createdFiles = [];
 
@@ -165,15 +191,29 @@ const skipReason = !APP
     '- the event dump test is skipped'
   : bindingFixtureSkip();
 
+function ensureDir(file) {
+  const dir = path.dirname(file);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+    createdDirs.push(dir);
+  }
+}
+
 function installFixtures() {
   if (!APP) return;
-  if (!existsSync(REPORTER_FILE)) {
-    writeFileSync(REPORTER_FILE, REPORTER);
-    createdFiles.push(REPORTER_FILE);
-  }
-  if (!existsSync(JOB_FILE)) {
-    writeFileSync(JOB_FILE, JOB);
-    createdFiles.push(JOB_FILE);
+  // Installed by the test, not supplied by the app skeleton: CI runs these
+  // probes against a bare Laravel app with no Jobs/Events/Listeners.
+  for (const [file, src] of [
+    [REPORTER_FILE, REPORTER],
+    [JOB_FILE, JOB],
+    [EVENT_FILE, EVENT],
+    [LISTENER_FILE, LISTENER],
+  ]) {
+    if (!existsSync(file)) {
+      ensureDir(file);
+      writeFileSync(file, src);
+      createdFiles.push(file);
+    }
   }
   // The bindings go into the app's REGISTERED provider (Laravel boots it, so
   // the PHP oracle sees them in the container).
@@ -197,6 +237,7 @@ function installFixtures() {
 function removeFixtures() {
   if (!APP) return;
   for (const file of createdFiles.splice(0)) rmSync(file, { force: true });
+  for (const dir of createdDirs.splice(0).reverse()) rmSync(dir, { recursive: true, force: true });
   if (providerBackup !== null) {
     writeFileSync(PROVIDER_FILE, providerBackup);
     providerBackup = null;
@@ -246,23 +287,28 @@ test('event-dump: the port matches the PHP oracle byte for byte', { skip: skipRe
 });
 
 test('event-dump: the positional app root wins over a stray LW_APP_ROOT', { skip: skipReason }, () => {
-  // The PHP oracle reads `$argv[1]` only. The port used to read `LW_APP_ROOT`
-  // FIRST, so an ambient `LW_APP_ROOT` (the documented way to point the other
-  // dump tools at an app) silently redirected this dump to a different app than
-  // the caller named - and the parity test above then compared two different
-  // apps byte for byte. Point `LW_APP_ROOT` at a directory that is NOT a Laravel
-  // app: with the bug the dump reads the decoy and finds no event, with the fix
-  // the positional argument is honoured.
-  const decoy = os.tmpdir();
-  const out = JSON.parse(
-    execFileSync(process.execPath, [dumpMjs, APP], {
-      encoding: 'utf8',
-      env: { ...process.env, LW_APP_ROOT: decoy },
-    })
-  );
-  const file = String(out.events['App\\Events\\PostPublished']?.file || '').replace(/\\/g, '/');
-  assert.ok(
-    file.startsWith(APP.replace(/\\/g, '/')),
-    `the dump must read the positional app (${APP}), not the LW_APP_ROOT decoy (got ${file || '<no PostPublished event>'})`
-  );
+  installFixtures();
+  try {
+    // The PHP oracle reads `$argv[1]` only. The port used to read `LW_APP_ROOT`
+    // FIRST, so an ambient `LW_APP_ROOT` (the documented way to point the other
+    // dump tools at an app) silently redirected this dump to a different app than
+    // the caller named - and the parity test above then compared two different
+    // apps byte for byte. Point `LW_APP_ROOT` at a directory that is NOT a Laravel
+    // app: with the bug the dump reads the decoy and finds no event, with the fix
+    // the positional argument is honoured.
+    const decoy = os.tmpdir();
+    const out = JSON.parse(
+      execFileSync(process.execPath, [dumpMjs, APP], {
+        encoding: 'utf8',
+        env: { ...process.env, LW_APP_ROOT: decoy },
+      })
+    );
+    const file = String(out.events['App\\Events\\PostPublished']?.file || '').replace(/\\/g, '/');
+    assert.ok(
+      file.startsWith(APP.replace(/\\/g, '/')),
+      `the dump must read the positional app (${APP}), not the LW_APP_ROOT decoy (got ${file || '<no PostPublished event>'})`
+    );
+  } finally {
+    removeFixtures();
+  }
 });
