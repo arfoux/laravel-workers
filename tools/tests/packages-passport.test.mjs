@@ -106,6 +106,33 @@ test('passport: PKCE S256 challenge == base64url(sha256(verifier)) and verifies'
   assert.equal(await verifyPkce(verifier, challenge, 'plain'), false); // only S256
 });
 
+test('passport: generateCodeVerifier maps every accepted byte uniformly', () => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const counts = new Map();
+  for (let b = 0; b < 198; b += 1) {
+    let calls = 0;
+    const verifier = generateCodeVerifier((n) => {
+      calls += 1;
+      assert.equal(n, 64);
+      const arr = new Uint8Array(n);
+      arr.fill(calls === 1 ? 255 : b);
+      return arr;
+    });
+    assert.equal(calls, 2);
+    assert.equal(verifier.length, 64);
+    counts.set(verifier[0], (counts.get(verifier[0]) || 0) + 1);
+  }
+  assert.equal(counts.size, alphabet.length);
+  assert.ok([...counts.values()].every((n) => n === 3), 'each character must have exactly three accepted bytes');
+});
+
+test('passport: generateCodeVerifier throws on a permanently rejecting RNG', () => {
+  assert.throws(
+    () => generateCodeVerifier((n) => new Uint8Array(n).fill(255)),
+    /rejected too many draws/
+  );
+});
+
 // ---------------------------------------------------------------------------
 // JWKS
 // ---------------------------------------------------------------------------

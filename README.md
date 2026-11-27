@@ -37,7 +37,7 @@ For contrast: running PHP itself at the edge (Octane, WASM, a warm PHP host) boo
 ```
 constructs   54 compile · 57 fail loud · 7 documented   (118 audited)
 facades      47/47 classified (100%)
-blade corpus 55/55 byte-identical vs PHP 8.3
+blade corpus 55 cases in manifest (parity: npm run test:corpus)
 docs         105/105 pages with a verdict
 ```
 <!-- readme-counts:end -->

@@ -174,7 +174,23 @@ $isHook = static function (ReflectionClass $rc, string $method) use ($methodBody
             $rm->getStartLine() - 1,
             $rm->getEndLine() - $rm->getStartLine() + 1
         ));
-        if (preg_match('/\$this\h*->|\$request\b|\bauth\h*\(|\buser\h*\(|\brequest\h*\(|(?<![\w$])app\h*\(\h*([\'"])request\1\h*\)/', $rulesSrc)) {
+        // The raw source slice still contains comments and string literals.
+        // A note like `// use $this->user() ...` must not skip a static route;
+        // keep a bare 'request' literal so app('request') is still detected.
+        $checkSrc = '';
+        foreach (@token_get_all('<?php ' . $rulesSrc) ?: [] as $t) {
+            if (is_array($t)) {
+                if (in_array($t[0], [T_COMMENT, T_DOC_COMMENT, T_ENCAPSED_AND_WHITESPACE], true)
+                    || ($t[0] === T_CONSTANT_ENCAPSED_STRING && strtolower(trim($t[1], "'\"")) !== 'request')) {
+                    $checkSrc .= ' ';
+                    continue;
+                }
+                $checkSrc .= $t[1];
+            } else {
+                $checkSrc .= $t;
+            }
+        }
+        if (preg_match('/\$this\h*->|\$request\b|\bauth\h*\(|\buser\h*\(|\brequest\h*\(|(?<![\w$])app\h*\(\h*([\'"])request\1\h*\)/', $checkSrc)) {
             $entry['error'] =
                 'rules() reads request state — the build would evaluate it with NO request (a ' .
                 'unique()->ignore($this->user()->id) becomes ignore(NULL) and rejects the row itself). ' .

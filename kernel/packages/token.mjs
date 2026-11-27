@@ -17,14 +17,26 @@ const ALPHANUMERIC = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 // default-parameter reference loses the receiver (ERR_INVALID_THIS), so wrap it.
 const defaultRandomBytes = (arr) => crypto.getRandomValues(arr);
 
+// Rejection sampling keeps the 62-character alphabet uniform: 256 is not a
+// multiple of 62, so a plain `% 62` over-represents 8 characters by 25%.
+// A broken injected RNG that never yields an accepted byte must fail loudly
+// rather than spin forever.
+const RANDOM_LIMIT = ALPHANUMERIC.length * Math.floor(256 / ALPHANUMERIC.length); // 248
+const MAX_DRAWS = 1024;
+
 // Laravel `Str::random(length)` — a uniformly random alphanumeric string.
 // `randomBytes` is injected so a caller (the compiled runtime) can pin the RNG;
 // production callers omit it and get WebCrypto's CSPRNG.
 export function randomString(length = 40, randomBytes = defaultRandomBytes) {
-  const bytes = new Uint8Array(length);
-  randomBytes(bytes);
   let out = '';
-  for (let i = 0; i < length; i += 1) out += ALPHANUMERIC[bytes[i] % ALPHANUMERIC.length];
+  for (let draws = 0; out.length < length; draws += 1) {
+    if (draws >= MAX_DRAWS) throw new Error('randomString: randomBytes rejected too many draws');
+    const bytes = new Uint8Array(length - out.length);
+    randomBytes(bytes);
+    for (const b of bytes) {
+      if (b < RANDOM_LIMIT && out.length < length) out += ALPHANUMERIC[b % ALPHANUMERIC.length];
+    }
+  }
   return out;
 }
 

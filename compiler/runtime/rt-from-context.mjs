@@ -853,7 +853,7 @@ export function buildRt(context, opts = {}) {
     }
     // A mailable extends Laravel's Mailable: the compiled class gets the
     // kernel's base (the fluent surface + the payload).
-    const built = entry.ctor(Array.isArray(args) ? args : [], deps);
+    const built = entry.ctor(Array.isArray(args) ? args : [], deps, rt);
     // A resource must keep the request of the runtime that built it. A module
     // global would let a later buildRt() overwrite it between creation and
     // jsonSerialize() on an awaited controller path.

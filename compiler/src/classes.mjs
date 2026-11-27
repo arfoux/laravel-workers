@@ -315,6 +315,40 @@ const MAILABLE_FIELDS = new Set([
   'text',
 ]);
 
+// The PHP source may declare `public $who` and `public function who()` - two
+// namespaces in PHP, one in the compiled object. Collect the declared and
+// promoted property names that must move to a private key, including the
+// mailable base fields the kernel already keeps under `__name`.
+function classPropertyKeys(classNode, opts) {
+  const names = new Set();
+  const methods = new Set();
+  for (const member of classMembers(classNode)) {
+    if (!member) continue;
+    if (member.kind === 'propertystatement') {
+      for (const prop of member.properties || []) {
+        const name = prop && nodeName(prop.name);
+        if (name) names.add(name);
+      }
+    }
+    if (member.kind === 'method') {
+      const methodName = nodeName(member.name);
+      if (!member.isStatic && methodName) methods.add(methodName);
+      if (methodName === '__construct') {
+        for (const p of member.arguments || []) {
+          if (!p || !(p.visibility || p.flags)) continue; // a promoted property
+          const name = typeof p.name === 'string' ? p.name : nodeName(p.name);
+          if (name) names.add(name);
+        }
+      }
+    }
+  }
+  const map = new Map();
+  for (const name of names) {
+    if (methods.has(name) || (opts.mailable && MAILABLE_FIELDS.has(name))) map.set(name, '__' + name);
+  }
+  return map;
+}
+
 // Typed properties the __construct ASSIGNS (`$this->who = ...`) are fine in PHP
 // (the ctor runs before any method reads them). Collect their names so the
 // property loop below can CARRY them instead of refusing the whole class (#682).
@@ -441,7 +475,7 @@ function compileConstructor(fqcn, classNode, opts) {
     ? 'Object.assign(__self, { ' +
       declared
         .map((d) => {
-          const key = opts.mailable && MAILABLE_FIELDS.has(d.name) ? '__' + d.name : d.name;
+          const key = opts.propertyKeys && opts.propertyKeys.has(d.name) ? opts.propertyKeys.get(d.name) : d.name;
           return JSON.stringify(key) + ': ' + d.js;
         })
         .join(', ') +
@@ -449,7 +483,7 @@ function compileConstructor(fqcn, classNode, opts) {
     : '';
   if (!ctor) {
     return {
-      js: '(args, deps) => {\n    const __self = {};\n    ' + declaredJs + '    return __self;\n  }',
+      js: '(args, deps, rt) => {\n    const __self = {};\n    ' + declaredJs + '    return __self;\n  }',
       deps,
     };
   }
@@ -537,13 +571,13 @@ function compileConstructor(fqcn, classNode, opts) {
     const dep = depOf.get(i);
     if (dep) {
       // The injected service: the edge hands it over.
-      props.push('      ' + JSON.stringify(name) + ': deps[' + JSON.stringify(name) + ']');
+      props.push('      ' + JSON.stringify(opts.propertyKeys && opts.propertyKeys.has(name) ? opts.propertyKeys.get(name) : name) + ': deps[' + JSON.stringify(name) + ']');
       continue;
     }
     const fb = promotedFallback(fqcn, name, i, p, fallbackOf);
     if (fb.error) return fb;
     const fallback = fb.js;
-    props.push('      ' + JSON.stringify(name) + ': (args[' + i + '] === undefined ? ' + fallback + ' : args[' + i + '])');
+    props.push('      ' + JSON.stringify(opts.propertyKeys && opts.propertyKeys.has(name) ? opts.propertyKeys.get(name) : name) + ': (args[' + i + '] === undefined ? ' + fallback + ' : args[' + i + '])');
   }
   const promoted = props.length ? '{\n' + props.join(',\n') + ',\n    }' : '{}';
   // A constructor with an EMPTY body (`public function __construct() {}` - what
@@ -553,10 +587,10 @@ function compileConstructor(fqcn, classNode, opts) {
   // only holds the PROMOTED properties, so it dropped the declared ones and the
   // mailable sent a null view at request time.
   if (!hasBody) {
-    if (!declared.length) return { js: '(args, deps) => (' + promoted + ')', deps };
+    if (!declared.length) return { js: '(args, deps, rt) => (' + promoted + ')', deps };
     return {
       js:
-        '(args, deps) => {\n    const __self = ' +
+        '(args, deps, rt) => {\n    const __self = ' +
         promoted +
         ';\n    ' +
         declaredJs +
@@ -589,6 +623,9 @@ function compileConstructor(fqcn, classNode, opts) {
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
     // A mailable: the fluent surface of Laravel's Mailable.
     mailable: !!opts.mailable,
+    // A PHP property that collided with a method (or a mailable base field):
+    // the ctor body and the method bodies must read/write the same private key.
+    propertyKeys: opts.propertyKeys,
     // The constructor builds its own object.
     thisVar: '__self',
     // The services the constructor injected (`$this->mailer`): their async
@@ -621,7 +658,7 @@ function compileConstructor(fqcn, classNode, opts) {
   }
   return {
     js:
-      'function (args, deps) {\n' +
+      'function (args, deps, rt) {\n' +
       '    const __self = ' + promoted + ';\n' +
       (declaredJs ? '    ' + declaredJs : '') +
       (bindings.length ? bindings.join('\n') + '\n' : '') +
@@ -913,6 +950,9 @@ function compileMethod(fqcn, methodNode, opts) {
     classMethods: opts.classMethods instanceof Set ? opts.classMethods : new Set(),
     // A mailable: the fluent surface of Laravel's Mailable.
     mailable: !!opts.mailable,
+    // A PHP property moved to a private key (a method-name collision): reads
+    // and writes in this method must use the same key as the ctor.
+    propertyKeys: opts.propertyKeys,
     // A FormRequest: the request surface of the kernel's base.
     formRequest: !!opts.formRequest,
     // A resource: its toArray()/with() take the request.
@@ -1326,6 +1366,10 @@ export function compileClasses(dump, opts = {}) {
     // A FormRequest: the request surface of the kernel's base (the hooks).
     options.formRequest = info.kind === 'formRequest';
     options.resource = info.kind === 'resource';
+    // PHP's property/method namespaces collide on one JS object. Compute the
+    // private keys BEFORE the ctor and every method compile, so both sides
+    // agree on where a colliding property lives.
+    options.propertyKeys = classPropertyKeys(classNode, options);
     const ctor = compileConstructor(fqcn, classNode, options);
     if (ctor.error) {
       errors.push({ class: fqcn, message: ctor.error, code: ctor.code });

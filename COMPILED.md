@@ -218,11 +218,12 @@ paths, drives the load, reads the platform's numbers and *asserts* them:
   auth/guest middleware, so the rate limiter still answers when a later
   middleware short-circuits).
 - **CI:** the oracle parity needs a real Laravel app, so the `test` job (no app) *skips*
-  those tests — the report says "skipped" with the reason, never "green by omission".
-  The `parity` job creates a fresh Laravel app, points `LW_LARAVEL_APP` at it and runs
-  the oracle parity for real (auth, cache, csrf, session, rate limiter); the two
-  route-level parity tests (the 11-step web pipeline and the Breeze login flow) need the
-  fixture app's routes and run against it locally.
+  those tests — the report says "skipped" with the reason. PHP is present in `test`;
+  it is the app that is absent. The `parity` job creates a fresh Laravel app, points
+  `LW_LARAVEL_APP` at it and runs the oracle parity for real (auth, cache, csrf,
+  session, rate limiter); the two route-level parity tests (the 11-step web
+  pipeline and the Breeze login flow) need the fixture app's routes and run
+  against it locally.
 
 ### 1.4 Runtime completeness (corpus-driven, continuous)
 - Arrays (ordered maps) — done; references → cells; int64 → BigInt discipline + overflow fail-loud

@@ -50,7 +50,7 @@ const blockText = [
   '```',
   `constructs   ${counts.ok} compile · ${counts.fail} fail loud · ${counts.build} documented   (${counts.total} audited)`,
   `facades      ${counts.facades}/${counts.facadeTotal} classified (${counts.facadePct}%)`,
-  `blade corpus ${counts.corpus}/${counts.corpus} byte-identical vs PHP 8.3`,
+  `blade corpus ${counts.corpus} cases in manifest (parity: npm run test:corpus)`,
   `docs         ${counts.docs}/${counts.docs} pages with a verdict`,
   '```',
 ].join('\n');

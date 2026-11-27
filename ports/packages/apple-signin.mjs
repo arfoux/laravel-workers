@@ -37,6 +37,8 @@
 import { normalizePortCtx, jsonResponse as json } from '../../kernel/packages/port-ctx.mjs';
 import { mintClientSecret, decodeIdToken, APPLE_TOKEN_URL } from '../../kernel/packages/apple.mjs';
 import { resolveFetch, formUrlEncoded } from '../../kernel/packages/notify-http.mjs';
+import { readStateCookie } from '../../kernel/packages/socialite.mjs';
+import { verifyState } from '../../kernel/packages/oauth.mjs';
 
 
 // Apple's form body is urlencoded. normalizePortCtx surfaces the JSON bag only;
@@ -105,6 +107,15 @@ export async function handleCallback(ctx, env) {
   const code = typeof fields.code === 'string' ? String(fields.code).trim() : '';
   if (!code) {
     return json(422, { error: 'no authorization code in the callback body' });
+  }
+
+  // Apple posts `state` back in the form body. Socialite verifies it against
+  // the `oauth_state` cookie before the token exchange; skip nothing and mint
+  // nothing when it is missing or mismatched.
+  const state = typeof fields.state === 'string' ? fields.state : '';
+  const stateCtx = { request: originalRequest || {} };
+  if (!state || !verifyState(readStateCookie(stateCtx), state)) {
+    return json(401, { error: 'invalid state' });
   }
   const userField = parseUser(fields.user);
 

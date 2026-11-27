@@ -76,7 +76,12 @@ function makeFetch(status, jsonBody) {
   return fetchImpl;
 }
 
-const okCtx = (body = {}) => ({ body, query: {}, params: {} });
+const okCtx = (body = {}, cookie = 'oauth_state=csrf-ok') => ({
+  body,
+  query: {},
+  params: {},
+  request: { headers: { get: (name) => (String(name).toLowerCase() === 'cookie' ? cookie : null) } },
+});
 
 const TEAM_ID = 'TEAM99ABCD';
 const CLIENT_ID = 'com.example.worker';
@@ -193,6 +198,7 @@ test('apple-signin: form_post callback exchanges the code and returns the user',
   };
   const ctx = okCtx({
     code: 'authcode-abc',
+    state: 'csrf-ok',
     id_token: idToken,
     user: JSON.stringify({ name: { firstName: 'Ada', lastName: 'Lovelace' }, email: 'ada@privaterelay.appleid.com' }),
   });
@@ -231,7 +237,7 @@ test('apple-signin: decodes the id_token the token endpoint returns', async () =
   const idToken = await signJwt({ alg: 'ES256', kid: KEY_ID }, appleClaims, kp.privateKey);
   const fetchImpl = makeFetch(200, { access_token: 'at', id_token: idToken });
   const env = { fetchImpl, APPLE_TEAM_ID: TEAM_ID, APPLE_CLIENT_ID: CLIENT_ID, APPLE_P8_PRIVATE_KEY: p8 };
-  const res = await appleSignin(okCtx({ code: 'c1' }), env);
+  const res = await appleSignin(okCtx({ code: 'c1', state: 'csrf-ok' }), env);
   assert.equal(res.status, 200);
   const out = JSON.parse(res.body);
   assert.equal(out.user.id, appleClaims.sub);
@@ -250,7 +256,7 @@ test('apple-signin: a swapped form id_token cannot pick the account signed in', 
   );
   const fetchImpl = makeFetch(200, { access_token: 'at', id_token: realToken });
   const env = { fetchImpl, APPLE_TEAM_ID: TEAM_ID, APPLE_CLIENT_ID: CLIENT_ID, APPLE_P8_PRIVATE_KEY: p8 };
-  const res = await appleSignin(okCtx({ code: 'c1', id_token: swapped }), env);
+  const res = await appleSignin(okCtx({ code: 'c1', state: 'csrf-ok', id_token: swapped }), env);
   assert.equal(res.status, 200);
   const out = JSON.parse(res.body);
   assert.equal(out.user.id, appleClaims.sub);
@@ -267,7 +273,7 @@ test('apple-signin: missing code is a 422 and never reaches the token endpoint',
 
 test('apple-signin: missing config is a 500 and never reaches the token endpoint', async () => {
   const fetchImpl = makeFetch(200, { access_token: 'at' });
-  const res = await appleSignin(okCtx({ code: 'c1' }), { fetchImpl, APPLE_P8_PRIVATE_KEY: 'x' });
+  const res = await appleSignin(okCtx({ code: 'c1', state: 'csrf-ok' }), { fetchImpl, APPLE_P8_PRIVATE_KEY: 'x' });
   assert.equal(res.status, 500);
   assert.equal(fetchImpl.calls.length, 0);
 });
@@ -276,7 +282,7 @@ test('apple-signin: a failing token exchange surfaces Apple\'s error', async () 
   const { p8 } = await makeP8();
   const fetchImpl = makeFetch(400, { error: 'invalid_client', error_description: 'secret expired' });
   const env = { fetchImpl, APPLE_TEAM_ID: TEAM_ID, APPLE_CLIENT_ID: CLIENT_ID, APPLE_P8_PRIVATE_KEY: p8 };
-  const res = await appleSignin(okCtx({ code: 'bad' }), env);
+  const res = await appleSignin(okCtx({ code: 'bad', state: 'csrf-ok' }), env);
   assert.equal(res.status, 400);
   const out = JSON.parse(res.body);
   assert.equal(out.error, 'secret expired', "Apple's error_description is surfaced verbatim");
@@ -289,7 +295,27 @@ test('apple-signin: a thrown fetch (network) is a 502, never an unhandled reject
     throw new Error('socket hang up');
   };
   const env = { fetchImpl, APPLE_TEAM_ID: TEAM_ID, APPLE_CLIENT_ID: CLIENT_ID, APPLE_P8_PRIVATE_KEY: p8 };
-  const res = await appleSignin(okCtx({ code: 'c1' }), env);
+  const res = await appleSignin(okCtx({ code: 'c1', state: 'csrf-ok' }), env);
   assert.equal(res.status, 502);
   assert.match(JSON.parse(res.body).error, /unreachable/);
+});
+
+test('apple-signin: missing state is a 401 and never reaches the token endpoint', async () => {
+  const { p8 } = await makeP8();
+  const fetchImpl = makeFetch(200, { access_token: 'at' });
+  const env = { fetchImpl, APPLE_TEAM_ID: TEAM_ID, APPLE_CLIENT_ID: CLIENT_ID, APPLE_P8_PRIVATE_KEY: p8 };
+  const res = await appleSignin(okCtx({ code: 'c1' }, ''), env);
+  assert.equal(res.status, 401);
+  assert.match(JSON.parse(res.body).error, /invalid state/);
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test('apple-signin: a state mismatching the cookie is a 401 and never reaches the token endpoint', async () => {
+  const { p8 } = await makeP8();
+  const fetchImpl = makeFetch(200, { access_token: 'at' });
+  const env = { fetchImpl, APPLE_TEAM_ID: TEAM_ID, APPLE_CLIENT_ID: CLIENT_ID, APPLE_P8_PRIVATE_KEY: p8 };
+  const ctx = okCtx({ code: 'c1', state: 'csrf-ok' }, 'oauth_state=wrong');
+  const res = await appleSignin(ctx, env);
+  assert.equal(res.status, 401);
+  assert.equal(fetchImpl.calls.length, 0);
 });

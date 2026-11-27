@@ -107,7 +107,7 @@ class WithBody
     OPTIONS
   );
   assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
-  assert.match(res.code, /ctor: function \(args, deps\)/);
+  assert.match(res.code, /ctor: function \(args, deps, rt\)/);
   assert.match(res.code, /const __self = \{/);
   assert.match(res.code, /rt\.propSet\(__self, "doubled"/);
   assert.match(res.code, /return __self;/);
@@ -1683,11 +1683,12 @@ class Assigned
 `);
   const ok = compileClasses({ events: {}, classes: { 'App\\Mail\\Assigned': { file: assigned, kind: 'mailable' } } }, OPTIONS);
   assert.equal(ok.errors.length, 0, JSON.stringify(ok.errors));
-  // The property declaration carries the field as `undefined` (the "not yet
-  // initialised" state) and the ctor's assignment fills it through the runtime
-  // setter — the two halves of the carry, both pinned.
-  assert.match(ok.code, /"who": undefined/);
-  assert.match(ok.code, /rt\.propSet\(__self, "who", "x"\)/);
+  // A PHP property and a method may share a name; the compiled object may
+  // not. The field lands on a private key and BOTH the ctor assignment and
+  // the method read use it, so the prototype method stays callable and the
+  // value survives the round trip.
+  assert.match(ok.code, /"__who": undefined/);
+  assert.match(ok.code, /rt\.propSet\(__self, "__who", "x"\)/);
 
   // A typed property assigned only CONDITIONALLY is still a read-before-init
   // risk, but a plain always-run ctor assignment is the sound case. A nested /
@@ -1703,4 +1704,30 @@ class Nested
 `);
   const okNested = compileClasses({ events: {}, classes: { 'App\\Mail\\Nested': { file: nested, kind: 'mailable' } } }, OPTIONS);
   assert.equal(okNested.errors.length, 0, JSON.stringify(okNested.errors));
+});
+
+test('classes: a property and a method with the same PHP name stay distinct', async () => {
+  const file = classFile('Clash', `<?php
+namespace App\\Support;
+class Clash
+{
+    public $who = 'property';
+    public function __construct() { $this->who = 'ctor'; }
+    public function who() { return $this->who; }
+}
+`);
+  const res = compileClasses(
+    { events: {}, classes: { 'App\\Support\\Clash': { file } } },
+    { ...OPTIONS, classes: new Set(['App\\Support\\Clash']) }
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  assert.match(res.code, /"__who": "property"/);
+  assert.match(res.code, /rt\.propSet\(__self, "__who", "ctor"\)/);
+  assert.match(res.code, /rt\.prop\(this, "__who"\)/);
+
+  const mod = await compiledModule(res.code);
+  const rt = buildRt(null, { classes: mod.classes });
+  const instance = rt.newClass('App\\Support\\Clash', []);
+  assert.equal(typeof instance.who, 'function');
+  assert.equal(await instance.who(rt), 'ctor');
 });
