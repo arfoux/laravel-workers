@@ -61,6 +61,26 @@ const REQUEST_STATE_CASES = [
     refuse: false,
     line: "        return ['email' => ['unique:users,email,' . app('config')]];",
   },
+  {
+    label: 'comment mentioning $this->user()',
+    refuse: false,
+    line: "        // note: $this->user() is only a comment\n        return ['email' => 'required'];",
+  },
+  {
+    label: "comment mentioning app('request')",
+    refuse: false,
+    line: "        /* app('request') is only a note */\n        return ['email' => 'required'];",
+  },
+  {
+    label: "string mentioning app('request')",
+    refuse: false,
+    line: `        return ['note' => "app('request') is a hint", 'email' => 'required'];`,
+  },
+  {
+    label: 'interpolated real $this->user()',
+    refuse: true,
+    line: `        return ['email' => "unique:users,email,{$this->user()->id}"];`,
+  },
 ];
 
 test('formrequest dump refuses inherited rules() that read request state', { skip: phpSkip }, () => {

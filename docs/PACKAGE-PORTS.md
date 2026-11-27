@@ -115,7 +115,7 @@ on the resolved verb + path. Every row below except `localization` (a middleware
 | `auth0` | `POST /auth/auth0/callback` | Stops at the `authorization_code` token exchange; when the caller sends `state`, it is verified against the `oauth_state` cookie before any fetch, otherwise CSRF validation belongs to the caller. Compose with `firebase-php-jwt` for offline `id_token` verify. |
 | `glide` | `GET /img/{path}` | Transform delegated to Cloudflare Image Resizing (`/cdn-cgi/image`) — no GD/Imagick. `w` is required (422 without it). |
 | `analytics` | `GET /analytics` | spatie/laravel-analytics run-report over the GA4 Data API; a Google service account mints the Bearer token. Query-driven (`metrics`, `dimensions`, `dateRange`), not the Laravel dashboard UI. |
-| `apple-signin` | `POST /auth/apple/callback` | Socialite Apple `form_post` callback: the one-time `code` is exchanged at Apple's token endpoint; the identity comes from that exchange. |
+| `apple-signin` | `POST /auth/apple/callback` | Socialite Apple `form_post` callback: the one-time `code` is exchanged at Apple's token endpoint; the identity comes from that exchange. The posted `state` is checked against the `oauth_state` cookie before any fetch (401 on mismatch). |
 | `dompdf` | `POST /pdf/generate` | Substitution, not 1:1 — an external renderer returns the PDF bytes base64; there is no PHP Dompdf engine at the edge. |
 | `flare` | `POST /flare/report` | Flare report transport; a caller-supplied `stacktrace` replaces PHP's local capture. |
 | `horizon-metrics` | `GET /horizon/metrics`, `POST /horizon/record` | D1 `job_metrics` per-queue aggregation and a JSON dashboard in place of Horizon's Redis UI. |

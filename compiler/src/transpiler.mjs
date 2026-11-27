@@ -357,7 +357,7 @@ function tx(node) {
           }
         }
       }
-      return 'rt.prop(' + tx(node.what) + ', ' + JSON.stringify(name) + ')';
+      return 'rt.prop(' + tx(node.what) + ', ' + JSON.stringify(thisPropKey(name, node.what)) + ')';
     }
     // `$a?->b` — PHP's nullsafe property access. The receiver is evaluated
     // once; a null/undefined receiver short-circuits the WHOLE chain to null
@@ -369,7 +369,7 @@ function tx(node) {
     case 'nullsafepropertylookup': {
       const name = node.offset && node.offset.name;
       if (typeof name !== 'string') throw mkErr('LW002', 'unsupported property access', node.loc);
-      return 'rt.nsprop(' + tx(node.what) + ', ' + JSON.stringify(name) + ')';
+      return 'rt.nsprop(' + tx(node.what) + ', ' + JSON.stringify(thisPropKey(name, node.what)) + ')';
     }
     case 'bin':
       return txBin(node);
@@ -738,6 +738,18 @@ let LOCAL_VARS = [];
 // controller method body. It enables: model query chains, redirect()/response()->json(),
 // view()/abort()/compact(), and await-based async codegen for D1 queries.
 let CTX = null;
+// PHP keeps properties and methods in separate namespaces; the compiled class
+// object has one. When the class compiler renames a colliding property onto a
+// private key, `$this->name` must read/write that key - not the prototype
+// method that rt.newClass() binds under the public name.
+function thisPropKey(name, what) {
+  if (CTX && CTX.propertyKeys && what && what.kind === 'variable' && what.name === 'this') {
+    const mapped = CTX.propertyKeys.get(name);
+    if (mapped) return mapped;
+  }
+  return name;
+}
+
 // The VIEW compile context: a view IS a compile context (Laravel's views call the
 // HTTP helpers - `@csrf` compiles to `echo csrf_field();`, forms read
 // `old('x')`), so the CTX-gated helpers resolve to rt.* there instead of being
@@ -3443,7 +3455,7 @@ function txAssignExpr(node) {
     const name = left.offset && left.offset.name;
     if (typeof name !== 'string') throw mkErr('LW002', 'unsupported property assignment', node.loc);
     if (op !== '=') throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
-    return '(rt.propSet(' + tx(left.what) + ', ' + JSON.stringify(name) + ', ' + right + '))';
+    return '(rt.propSet(' + tx(left.what) + ', ' + JSON.stringify(thisPropKey(name, left.what)) + ', ' + right + '))';
   }
   throw mkErr('LW002', 'unsupported assignment target', node.loc);
 }
@@ -3503,7 +3515,7 @@ function txAssignStatement(node) {
     const name = left.offset && left.offset.name;
     if (typeof name !== 'string') throw mkErr('LW002', 'unsupported property assignment', node.loc);
     if (op !== '=') throw mkErr('LW002', 'unsupported assignment operator ' + op, node.loc);
-    return 'rt.propSet(' + tx(left.what) + ', ' + JSON.stringify(name) + ', ' + right + ');';
+    return 'rt.propSet(' + tx(left.what) + ', ' + JSON.stringify(thisPropKey(name, left.what)) + ', ' + right + ');';
   }
   throw mkErr('LW002', 'unsupported assignment target', node.loc);
 }
@@ -3893,6 +3905,9 @@ export function transpileControllerMethod(bodyChildren, opts = {}) {
     formRequest: !!opts.formRequest,
     // The name `$this` compiles to (a constructor builds its own object).
     thisVar: opts.thisVar || null,
+    // PHP property names that collided with a compiled method (or a base-class
+    // field) and the private key they were moved to.
+    propertyKeys: opts.propertyKeys instanceof Map ? opts.propertyKeys : new Map(),
     // The model alias of each model variable (var -> alias/fqcn).
     modelAlias: new Map(),
     // The FQCN of each model variable (var -> FQCN): the Gate check needs it

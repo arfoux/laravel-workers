@@ -17,6 +17,7 @@ import * as lemonsqueezy from '../../ports/packages/lemonsqueezy.mjs';
 import {
   bearerToken,
   createPersonalAccessToken,
+  randomString,
 } from '../../kernel/packages/token.mjs';
 import { FakeD1 } from './_fake-d1.mjs';
 
@@ -127,6 +128,30 @@ test('sanctum: createPersonalAccessToken parity — stored = sha256(plain)', asy
   const digest = await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(plain));
   const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
   assert.equal(row.token, hex);
+});
+
+test('sanctum: randomString maps every accepted byte uniformly and rejects the rest', () => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const counts = new Map();
+  for (let b = 0; b < 248; b += 1) {
+    let calls = 0;
+    const out = randomString(1, (arr) => {
+      calls += 1;
+      arr[0] = calls === 1 ? 255 : b; // first byte rejected, second accepted
+    });
+    assert.equal(calls, 2, `byte ${b} must accept on the second draw`);
+    assert.equal(out.length, 1);
+    counts.set(out, (counts.get(out) || 0) + 1);
+  }
+  assert.equal(counts.size, alphabet.length);
+  assert.ok([...counts.values()].every((n) => n === 4), 'each character must have exactly four accepted bytes');
+});
+
+test('sanctum: randomString throws on a permanently rejecting RNG', () => {
+  assert.throws(
+    () => randomString(1, (arr) => arr.fill(255)),
+    /rejected too many draws/
+  );
 });
 
 test('sanctum: DELETE one token revokes only that id (scoped to owner)', async () => {

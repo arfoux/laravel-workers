@@ -58,8 +58,8 @@ const oraclePath = path.resolve(testsDir, '..', '..', 'tools', 'php-http-pipelin
 const PHP = process.env.PHP_BIN || 'php';
 const APP_ROOT = oracleAppRoot();
 // The PHP oracle parity tests need a real Laravel app (PHP 8.3 + vendor/).
-// Without one they SKIP (the CI `test` job has no app; the `e2e` job points
-// LW_LARAVEL_APP at the app it creates and runs them for real).
+// Without one they SKIP; no CI job currently runs this file against an app.
+// `parity` runs the other PHP oracles through tools/oracle-ran.mjs.
 const noApp = APP_ROOT ? false : oracleSkip('http.test.mjs');
 
 const FREEZE_MS = 1792336827000;

@@ -3433,7 +3433,16 @@ const COMPILABLE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
           // A paginator in the method + the kinds of the data the views get.
           usesPaginator: !!p.meta.usesPaginator,
           viewDataKinds: p.meta.viewDataKinds || {},
-          routeParams: (p.route.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1).replace(/[?*]$/, '')),
+          routeParams: (() => {
+            const names = (s) => (String(s || '').match(/\{([^}]+)\}/g) || []).map((m) => m.slice(1, -1).replace(/[?*]$/, ''));
+            const seen = [];
+            // Symfony's RouteCompiler orders host variables before path ones;
+            // the router already binds both into ctx.params.
+            for (const name of [...names(metaForRoute(p.route).domain), ...names(p.route)]) {
+              if (!seen.includes(name)) seen.push(name);
+            }
+            return seen;
+          })(),
           models: (() => {
             // The models this route uses: the classes in the body + the
             // model-bound parameters (the implicit route-model binding).

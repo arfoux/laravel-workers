@@ -1,6 +1,6 @@
 // edge/kernel/tests/router.test.mjs
 import assert from 'node:assert/strict';
-import { normalizeTable, routeKey, match, dispatch, validateTable } from '../router.mjs';
+import { normalizeTable, routeKey, match, allowedMethods, dispatch, validateTable } from '../router.mjs';
 import { html } from '../response.mjs';
 
 const routes = [
@@ -54,6 +54,16 @@ assert.equal(match(table, { method: 'GET', path: '/nope' }), null);
 
 // unknown method -> null (DELETE not registered)
 assert.equal(match(table, { method: 'DELETE', path: '/up' }), null);
+
+// Laravel's ValidatePathEncoding rejects a path whose rawurldecode()d bytes are
+// malformed UTF-8; the route regex carries `u`, so no parameter is ever bound.
+for (const bad of ['%FF', '%C3%28', '%80', 'a%FFb']) {
+  assert.equal(match(table, { method: 'GET', path: `/storage/${bad}` }), null, bad);
+  assert.deepEqual(allowedMethods(table, { method: 'GET', path: `/storage/${bad}` }), [], bad);
+}
+assert.equal(match(table, { method: 'GET', path: '/storage/hello%20world.txt' }).params.path, 'hello world.txt');
+assert.match(match(table, { method: 'GET', path: '/storage/%C3%A9' }).params.path, /é/);
+assert.match(match(table, { method: 'GET', path: '/storage/%25FF' }).params.path, /%FF/);
 
 // specificity / param: storage/{path} captures one segment only
 m = match(table, { method: 'GET', path: '/storage/a/b' });

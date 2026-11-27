@@ -82,11 +82,21 @@ export async function verifyPkce(verifier, challenge, method = 'S256') {
 }
 
 // RFC 7636 §4.1: code_verifier is 43-128 chars from a high-entropy alphabet.
-// We mint from CSPRNG bytes mapped into [A-Za-z0-9-._~].
+// 256 is not a multiple of 66, so map accepted bytes only and retry the rest;
+// the cap turns a broken injected RNG into an error instead of a hang.
+const VERIFIER_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+const VERIFIER_LIMIT = VERIFIER_ALPHABET.length * Math.floor(256 / VERIFIER_ALPHABET.length); // 198
+const VERIFIER_LENGTH = 64;
+
 export function generateCodeVerifier(randomBytes = (n) => crypto.getRandomValues(new Uint8Array(n))) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-  const bytes = randomBytes(64);
   let out = '';
-  for (const b of bytes) out += alphabet[b % alphabet.length];
+  for (let draws = 0; out.length < VERIFIER_LENGTH; draws += 1) {
+    if (draws >= 1024) throw new Error('generateCodeVerifier: randomBytes rejected too many draws');
+    const supplied = randomBytes(VERIFIER_LENGTH - out.length);
+    const bytes = supplied instanceof Uint8Array ? supplied : new Uint8Array(supplied);
+    for (const b of bytes) {
+      if (b < VERIFIER_LIMIT && out.length < VERIFIER_LENGTH) out += VERIFIER_ALPHABET[b % VERIFIER_ALPHABET.length];
+    }
+  }
   return out;
 }

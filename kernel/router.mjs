@@ -369,15 +369,36 @@ function hostMatches(route, host) {
   return domainToRegex(route.domain).test(h);
 }
 
-// PHP's rawurldecode(): the percent escapes are decoded, an invalid escape
-// is left alone.
+// PHP's rawurldecode(): valid `%XX` escapes become bytes, invalid escapes stay
+// literal. Laravel's ValidatePathEncoding rejects the request when the decoded
+// bytes are not valid UTF-8 (the route regex has the `u` flag), so a malformed
+// byte must make the router return "no match" instead of passing it as a param.
+function isHexDigit(c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 function rawurldecode(path) {
   try {
     return decodeURIComponent(path);
   } catch {
-    return path.replace(/%[0-9A-Fa-f]{2}/g, (m) => {
-      try { return decodeURIComponent(m); } catch { return m; }
-    });
+    // PHP leaves non-hex escapes alone; rebuild the byte string before the
+    // fatal UTF-8 check so `%zz` stays a literal percent sign.
+    const bytes = [];
+    for (let i = 0; i < path.length; i += 1) {
+      if (path[i] === '%' && i + 2 < path.length && isHexDigit(path[i + 1]) && isHexDigit(path[i + 2])) {
+        bytes.push(parseInt(path.slice(i + 1, i + 3), 16));
+        i += 2;
+        continue;
+      }
+      const cp = path.codePointAt(i);
+      if (cp > 0xffff) i += 1;
+      for (const b of new TextEncoder().encode(String.fromCodePoint(cp))) bytes.push(b);
+    }
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes));
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -417,6 +438,7 @@ function methodMatches(route, method) {
 export function match(table, req) {
   const method = resolveMethod(req);
   const path = requestPath(req);
+  if (path === null) return null;
 
   const host = req && (req.host || req.hostname);
   const tbl = Array.isArray(table) ? table : (table && table.routes) || [];
@@ -457,6 +479,7 @@ const ROUTER_VERBS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'
 export function allowedMethods(table, req) {
   const method = resolveMethod(req);
   const path = requestPath(req);
+  if (path === null) return [];
   const host = req && (req.host || req.hostname);
   const tbl = Array.isArray(table) ? table : (table && table.routes) || [];
   const verbs = [];

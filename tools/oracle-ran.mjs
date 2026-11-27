@@ -58,9 +58,9 @@ DEFAULT_FILES.push(path.join('tools', 'tests', 'redirect-coverage.test.mjs'));
 // it skips, so the gate runs it for real here.
 DEFAULT_FILES.push(path.join('tools', 'tests', 'packages-wiring.test.mjs'));
 
-// The dump's inherited-rules check is PHP-only (no Laravel app), so the `test`
-// job has no PHP and would silently skip it. Run it in this PHP job: the gate's
-// skipped!==0 assertion keeps the regression honest.
+// The dump's inherited-rules check needs PHP but no Laravel app. PHP is on
+// every CI runner (including `test`); keep it in this oracle gate so the
+// skipped!==0 assertion catches any accidental app/platform skip.
 DEFAULT_FILES.push(path.join('tools', 'tests', 'formrequest-inherited.test.mjs'));
 const files = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_FILES;
 
