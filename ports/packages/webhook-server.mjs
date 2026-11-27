@@ -16,9 +16,9 @@ import { hmacSha256Base64 as signPayload } from '../../kernel/hmac.mjs';
 // Edge notes:
 //   - Laravel's default HTTP transport is a blocking Guzzle request; here it is
 //     a Workers `fetch` subrequest (the only way out from the edge).
-//   - Each call is recorded in a D1 `webhook_calls` table (url, payload,
+//   - Each call is recorded in a D1 `webhook_server_calls` table (url, payload,
 //     signature, response status/body, error) so the package's "latest calls"
-//     debugging surface stays available.
+//     debugging surface stays available. Distinct from the client port's table.
 //
 // Route wiring: registry.json → "ports": { "/webhook-server/send": "webhook-server" }
 //
@@ -29,7 +29,7 @@ import { hmacSha256Base64 as signPayload } from '../../kernel/hmac.mjs';
 
 export async function ensureSchema(env) {
   await env.DB.prepare(
-    `CREATE TABLE IF NOT EXISTS webhook_calls (
+    `CREATE TABLE IF NOT EXISTS webhook_server_calls (
        id INTEGER PRIMARY KEY AUTOINCREMENT,
        uuid TEXT,
        url TEXT NOT NULL,
@@ -113,7 +113,7 @@ export default async function handle(ctx, env) {
       const tags = body.tags == null ? null : typeof body.tags === 'string' ? body.tags : JSON.stringify(body.tags);
       const res = await env.DB
         .prepare(
-          `INSERT INTO webhook_calls
+          `INSERT INTO webhook_server_calls
              (uuid, url, payload, signature, headers, tags, response_status, response_body, error, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )

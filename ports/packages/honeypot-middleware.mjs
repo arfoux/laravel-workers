@@ -36,8 +36,11 @@ export default async function handle(ctx, env) {
   }
 
   const body = ctx.body || {};
-  const envMin = env && Number(env.HONEYPOT_MIN_DELTA_MS);
-  const minDeltaMs = Number.isFinite(envMin) ? envMin : 1000;
+  // Parse the raw env value: `Number(undefined)` is NaN but `Number('')` and
+  // `Number(null)` are 0, which would silently disable the time guard.
+  const rawMin = env && env.HONEYPOT_MIN_DELTA_MS;
+  const parsedMin = rawMin == null || String(rawMin).trim() === '' ? NaN : Number(rawMin);
+  const minDeltaMs = Number.isFinite(parsedMin) && parsedMin > 0 ? parsedMin : 1000;
 
   const result = validateHoneypot(body, minDeltaMs);
 

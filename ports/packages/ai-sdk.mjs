@@ -167,6 +167,9 @@ export default async function handle(ctx, env) {
   const toolDefs = tools.filter((t) => t && t.name);
   const maxTokens = options.max_tokens || 1024;
   const maxRounds = Number.isInteger(options.max_rounds) ? options.max_rounds : 16;
+  if (maxRounds < 1) {
+    return jsonPort({ error: 'body.options.max_rounds must be an integer >= 1' }, 422);
+  }
   const doFetch = resolveFetch(env);
 
   // Provider round-trip: translate unified -> provider wire, POST, parse back.
@@ -219,6 +222,12 @@ export default async function handle(ctx, env) {
     }
   } catch (err) {
     return jsonPort({ error: String((err && err.message) || err) }, 502);
+  }
+
+  // Every round dispatched another tool call: no assistant answer to return and
+  // nothing worth persisting. Fail loudly instead of answering with empty text.
+  if (final === null) {
+    return jsonPort({ error: `tool loop did not settle within ${maxRounds} rounds` }, 502);
   }
 
   const assistant = (final && final.message) || { role: 'assistant', content: '' };
