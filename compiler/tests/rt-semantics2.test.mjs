@@ -26,13 +26,19 @@ test('rt-semantics2: the Carbon stub is JsonSerializable and compares by instant
   assert.equal(phpJsonEncode({ at: n }), '{"at":' + json + '}');
   assert.match(phpJsonEncode(rt.today()), /^"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z"$/);
   assert.match(rt.today().toDateTimeString(), / 00:00:00$/);
-  // PHP: $n == $n->toDateTimeString() => true (Carbon's __toString), and two
-  // DateTimeInterface values compare BY INSTANT: $n > $n->subHour() => true.
+  // PHP: Carbon's add/sub methods MUTATE the receiver and return the same
+  // instance (verified against app-breeze/vendor/autoload.php). Therefore
+  // `$n > $n->subHours(1)` is FALSE: both operands are the mutated object.
+  // Compare a copy taken before the mutation, or compare the result with a
+  // fresh copy, as the assertions below do.
   assert.equal(rt.looseEq(n, n.toString()), true);
-  assert.equal(rt.gt(n, n.subHours(1)), true);
+  const before = n.copy();
+  const shifted = n.subHours(1);
+  assert.equal(shifted, n, 'Carbon mutators return the same instance');
+  assert.equal(rt.gt(before, n), true);
   assert.equal(rt.gte(n, n), true);
-  assert.equal(rt.lt(n.subDays(1), n), true);
-  assert.equal(rt.gt(n, n.addDays(1)), false);
+  assert.equal(rt.lt(n.copy().subDays(1), n), true);
+  assert.equal(rt.gt(n, n.copy().addDays(1)), false);
 });
 
 test('rt-semantics2: in_array walks the values of a PHP assoc array', () => {

@@ -97,11 +97,16 @@ export default async function handle(ctx, env) {
       if (!TRANSLATABLE_COLUMNS.includes(column)) {
         return json(400, { error: `column '${column}' is not translatable` });
       }
-      const sql =
-        `SELECT * FROM translatable_posts WHERE json_extract(${column}, '$.${locale}') LIKE ? ORDER BY id`;
-      const rows = await env.DB.prepare(sql).bind(`%${q}%`).all();
+      if (!LOCALES.includes(locale)) {
+        return json(400, { error: `locale '${locale}' is not supported` });
+      }
+      // column is allowlisted above; the locale path is a bound value so a
+      // crafted query string can never alter the SQL (e.g. "nl') OR 1=1 --").
+      const sql = `SELECT * FROM translatable_posts WHERE json_extract(${column}, ?) LIKE ? ORDER BY id`;
+      const params = [`$.${locale}`, `%${q}%`];
+      const rows = await env.DB.prepare(sql).bind(...params).all();
       const data = (rows.results || []).map((r) => resolveRow(r, locale));
-      return json(200, { query: { column, locale, q, sql }, data });
+      return json(200, { query: { column, locale, q, sql, params }, data });
     }
 
     // Collection

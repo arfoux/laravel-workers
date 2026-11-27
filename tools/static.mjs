@@ -463,6 +463,66 @@ export function parsedOf(file) {
 }
 
 /**
+ * The class-constant folder's number reader. `phpNumberLiteral()` is the canon
+ * for safe integers; when it refuses an oversized literal, PHP would have read
+ * a FLOAT (`99999999999999999999` is 1.0E+20), so re-read the raw text in its
+ * own base and keep it if the JS number is finite. Octal must not be mistaken
+ * for decimal here; NaN/Infinity and invalid shapes stay refusals.
+ */
+function phpNumberLiteralFold(raw) {
+  const n = phpNumberLiteral(raw);
+  if (n !== null) return n;
+  const s = String(raw).replace(/_/g, '');
+  let m;
+  if ((m = /^0[xX]([0-9a-fA-F]+)$/.exec(s))) {
+    const f = Number.parseInt(m[1], 16);
+    return Number.isFinite(f) ? f : null;
+  }
+  if ((m = /^0[bB]([01]+)$/.exec(s))) {
+    const f = Number.parseInt(m[1], 2);
+    return Number.isFinite(f) ? f : null;
+  }
+  if ((m = /^0[oO]([0-7]+)$/.exec(s))) {
+    const f = Number.parseInt(m[1], 8);
+    return Number.isFinite(f) ? f : null;
+  }
+  if (/^0[0-7]+$/.test(s)) {
+    const f = Number.parseInt(s, 8);
+    return Number.isFinite(f) ? f : null;
+  }
+  const f = Number(s);
+  return Number.isFinite(f) ? f : null;
+}
+
+/**
+ * PHP's 64-bit shifts. `phpBinaryOp()` is the config fold's canon, but it
+ * refuses a shift count >= 64 and a result above JSON number safety, while
+ * PHP answers the former (0 for `<<`, sign-fill for `>>`) and emits a result
+ * such as `1 << 62` when a JS number can hold it exactly. Anything that would
+ * round silently stays a refusal: the constant is left OUT, never baked wrong.
+ */
+function phpShiftOp(type, l, r) {
+  let left;
+  let count;
+  try {
+    left = phpUnaryOp('+', l);
+    count = phpUnaryOp('+', r);
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(left) || !Number.isFinite(count)) return null;
+  left = Math.trunc(left);
+  count = Math.trunc(count);
+  if (count < 0) return null; // PHP raises ArithmeticError
+  if (left > 9223372036854775807 || left < -9223372036854775808) return null;
+  if (count >= 64) return type === '<<' ? 0 : (left < 0 ? -1 : 0);
+  const big = BigInt(left);
+  const res = type === '<<' ? BigInt.asIntN(64, big << BigInt(count)) : big >> BigInt(count);
+  const n = Number(res);
+  return BigInt(n) === res ? n : null;
+}
+
+/**
  * Evaluate a PHP class-constant expression to a scalar, or null (== PHP's
  * "not a scalar" filter). Node kinds follow php-parser 3.x.
  * ctx: { appDir, selfConstants, parsed } — selfConstants is the map of the
@@ -482,17 +542,22 @@ export function evalConstantExpr(node, ctx, depth = 0, stack = []) {
       // php-parser keeps the RAW literal text, so `Number()` answered 17 for
       // the OCTAL `017` (PHP: 15) and NaN for `1_000` (PHP: 1000) — and a
       // constant's folded value is what a compiled controller reads (#798).
-      // `phpNumberLiteral()` is the canon (hex/bin/oct/underscore, and null for
-      // an integer outside JSON number safety), the same reader the config fold
-      // uses.
-      return phpNumberLiteral(node.value);
+      // `phpNumberLiteral()` is the canon for hex/bin/oct/underscore and safe
+      // integers; the local wrapper also keeps an oversized literal as PHP's
+      // FLOAT when JS can hold it (`99999999999999999999` -> 1e20).
+      return phpNumberLiteralFold(node.value);
     case 'string':
       return node.value;
     case 'unary':
       if (node.type === '-' || node.type === '+') {
         const v = evalConstantExpr(node.what, ctx, depth + 1, stack);
-        if (typeof v !== 'number') return null;
-        return node.type === '-' ? -v : v;
+        // PHP casts the operand to a number FIRST: `-'5'` is int(-5), not a
+        // refusal. `phpUnaryOp()` is the same canon the config path uses.
+        try {
+          return phpUnaryOp(node.type, v);
+        } catch {
+          return null;
+        }
       }
       if (node.type === '!') {
         const v = evalConstantExpr(node.what, ctx, depth + 1, stack);
@@ -500,11 +565,11 @@ export function evalConstantExpr(node, ctx, depth = 0, stack = []) {
         // through phpBool(), this one still answered JS's `!'0'` = false).
         return v == null ? null : !phpBool(v);
       }
-      // `-'5'`, an array literal and every other shape this scalar folder does
-      // not know answer null, so `collectConstants()` leaves the constant OUT
-      // of the dump and the transpiler refuses the read with LW002 ("class
-      // constant X::Y is not available at the edge") - a stopped build, never a
-      // wrong value.
+      // An array literal and every other shape this scalar folder does not know
+      // answer null, so `collectConstants()` leaves the constant OUT of the
+      // dump and the transpiler refuses the read with LW002 ("class constant
+      // X::Y is not available at the edge") - a stopped build, never a wrong
+      // value.
       return null;
     case 'bin':
     case 'binary': {
@@ -529,10 +594,12 @@ export function evalConstantExpr(node, ctx, depth = 0, stack = []) {
         // PHP's bitwise and shift operators are 64-bit; JS's are 32-bit, so
         // `1 << 40` folded to 256 where PHP answers 1099511627776 (#798). The
         // canon `phpBinaryOp()` (the config fold's own operator table) does
-        // them in BigInt and refuses what a 64-bit int cannot hold — a refusal
-        // drops the constant (LW002 later) rather than baking a wrong value.
+        // them in BigInt. Shifts need the local 64-bit reader as well: PHP
+        // answers `1 << 64` with 0 and `1 << 62` with an exactly representable
+        // JS number, while the canon refuses both.
         case '<<':
         case '>>':
+          return phpShiftOp(node.type, l, r);
         case '&':
         case '|':
         case '^':

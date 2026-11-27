@@ -314,6 +314,18 @@ const EXPECTED = {
     "ok": true,
     "value": "{\n    \"a\": 1,\n    \"b\": [\n        1,\n        2\n    ],\n    \"c\": {\n        \"d\": \"e\"\n    }\n}"
   },
+  "toPrettyJson_nested": {
+    "ok": true,
+    "value": "[\n    [\n        1,\n        2\n    ],\n    {\n        \"x\": 3\n    }\n]"
+  },
+  "toPrettyJson_empty_array": {
+    "ok": true,
+    "value": "{\n    \"a\": 1,\n    \"c\": []\n}"
+  },
+  "toPrettyJson_flags": {
+    "ok": true,
+    "value": "{\n    \"u\": \"a/b\",\n    \"e\": \"é\"\n}"
+  },
   "toJson_flags": {
     "ok": true,
     "value": "{\"u\":\"a\\/b\",\"e\":\"é\"}"
@@ -1358,6 +1370,9 @@ const MORE_CASES = {
   toJson_pretty: () => make({ a: 1 }).toJson(128),
   toJson_force_object: () => make([1, 2]).toJson(16),
   toJson_hex: () => make({ a: '<b>&"' }).toJson(1 | 2 | 4 | 8),
+  toPrettyJson_nested: () => make([make([1, 2]), make({ x: 3 })]).toPrettyJson(),
+  toPrettyJson_empty_array: () => make({ a: 1, c: [] }).toPrettyJson(),
+  toPrettyJson_flags: () => make({ u: 'a/b', e: 'é' }).toPrettyJson(256 | 64),
 };
 
 test("collection methods: PHP's own answer, case by case", () => {

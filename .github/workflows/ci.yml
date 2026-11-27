@@ -118,6 +118,34 @@ jobs:
           cp .env.example .env
           php artisan key:generate
           php artisan migrate --force
+      - name: Create the event-dump binding fixtures
+        # tools/tests/event-dump.test.mjs installs its own reporter/job/provider
+        # bindings, but the two App\Support types those fixtures type-hint must
+        # exist first. Without them the oracle SKIPs and the gate's skipped!==0
+        # check would fail. Laravel 13.11 ships the `register(): void` provider
+        # the test edits and restores.
+        run: |
+          cd parity-app
+          mkdir -p app/Support app/Services
+          cat > app/Support/AbstractReporter.php <<'PHP'
+          <?php
+
+          namespace App\Support;
+
+          abstract class AbstractReporter
+          {
+          }
+          PHP
+          cat > app/Support/ListenerContract.php <<'PHP'
+          <?php
+
+          namespace App\Support;
+
+          interface ListenerContract
+          {
+              public function handle($payload);
+          }
+          PHP
       - run: npm install
       - name: PHP oracle parity (auth, cache, csrf, session, rate limiter)
         # tools/oracle-ran.mjs runs the set itself and asserts the summary: exit

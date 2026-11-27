@@ -11,9 +11,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { extractZip } from '../zip.mjs';
 
@@ -164,7 +164,8 @@ test('refuses an entry that escapes the destination (Zip Slip)', () => {
     writeFileSync(zipPath, makeZip([{ name: '../../evil.txt', data: 'pwned' }]));
     const out = join(dir, 'out');
     assert.throws(() => extractZip(zipPath, out), /escapes the destination/);
-    assert.equal(readdirSync(dir).includes('evil.txt'), false);
+    // `../../evil.txt` escapes the sandbox into os.tmpdir(), not <dir>/evil.txt.
+    assert.equal(existsSync(resolve(out, '../../evil.txt')), false);
   } finally {
     done();
   }

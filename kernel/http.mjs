@@ -112,7 +112,16 @@ const isStrTrimSpace = (ch) => {
   return STR_TRIM_INVISIBLE.has(ch);
 };
 /** Illuminate\Support\Str::trim($value) — no charlist argument. */
-export function phpTrim(value) {
+export function phpTrim(value, charlist = null) {
+  if (charlist !== null) {
+    const trimChars = new Set(Array.from(charlist));
+    const chars = String(value).split('');
+    let i = 0;
+    let j = chars.length;
+    while (i < j && trimChars.has(chars[i])) i += 1;
+    while (j > i && trimChars.has(chars[j - 1])) j -= 1;
+    return chars.slice(i, j).join('');
+  }
   const chars = String(value).split('');
   let i = 0;
   let j = chars.length;
@@ -638,11 +647,20 @@ export function buildRequest(raw, options = {}) {
   // is `input()`, which unions the query bag in (`inputUnion`); oracle:
   // `filled('flag')` is true for `POST /x?flag=1`. A file-only key is absent
   // from the input, so it reads as an empty string (oracle: filled('avatar') =
-  // false for a multipart upload).
-  const isEmptyString = (key) => {
-    const v = dataGet(inputUnion(), key, null);
-    return typeof v !== 'boolean' && !Array.isArray(v) && String(v == null ? '' : v).trim() === '';
+  // false for a multipart upload). Laravel's `blank()` uses PHP's trim()
+  // charlist (" \t\n\r\0\x0B"), NOT Str::trim's Unicode-aware list.
+  const isBlankValue = (v) => {
+    if (v === null || v === undefined) return true;
+    if (typeof v === 'string') return phpTrim(v, STR_TRIM_DEFAULT) === '';
+    if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return false;
+    if (Array.isArray(v)) return v.length === 0;
+    if (typeof v === 'object' && typeof v.count === 'function') return v.count() === 0;
+    if ((typeof v === 'object' || typeof v === 'function') && typeof v.toString === 'function') {
+      return phpTrim(v.toString(), STR_TRIM_DEFAULT) === '';
+    }
+    return false;
   };
+  const isEmptyString = (key) => isBlankValue(dataGet(inputUnion(), key, null));
 
   const request = {
     realMethod: () => rawMethod,

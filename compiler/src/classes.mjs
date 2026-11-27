@@ -319,7 +319,10 @@ const MAILABLE_FIELDS = new Set([
 // namespaces in PHP, one in the compiled object. Collect the declared and
 // promoted property names that must move to a private key, including the
 // mailable base fields the kernel already keeps under `__name`.
-function classPropertyKeys(classNode, opts) {
+// The private key must be unique among ALL keys on the object: a declared
+// `$__foo` keeps its own name, so a colliding `$foo` cannot also land on
+// `__foo`.
+export function classPropertyKeys(classNode, opts = {}) {
   const names = new Set();
   const methods = new Set();
   for (const member of classMembers(classNode)) {
@@ -343,8 +346,38 @@ function classPropertyKeys(classNode, opts) {
     }
   }
   const map = new Map();
+  // Mailable fields have a FIXED private key: kernel/mailable.mjs reads
+  // `__view`, `__subject`, ..., so that key wins over a declared `$__view`.
+  const fixed = new Map();
+  if (opts.mailable) {
+    for (const name of names) {
+      if (MAILABLE_FIELDS.has(name)) fixed.set(name, '__' + name);
+    }
+  }
+  // A name kept under its own key occupies that key on the instance; so does
+  // every method (rt.newClass binds them on the object). A declared name that
+  // occupies a mailable field's fixed key must move instead.
+  const fixedKeys = new Set(fixed.values());
+  const mustMove = new Set();
   for (const name of names) {
-    if (methods.has(name) || (opts.mailable && MAILABLE_FIELDS.has(name))) map.set(name, '__' + name);
+    if (methods.has(name) || fixed.has(name) || fixedKeys.has(name)) mustMove.add(name);
+  }
+  const taken = new Set(methods);
+  for (const name of names) if (!mustMove.has(name)) taken.add(name);
+  // Fixed keys first: they are the kernel's private fields.
+  for (const [name, key] of fixed) {
+    map.set(name, key);
+    taken.add(key);
+  }
+  // Every other moved name picks the first unused `__...` prefix. Reserve the
+  // pick before the next one, so two properties never share an internal key.
+  for (const name of names) {
+    if (!mustMove.has(name) || map.has(name)) continue;
+    let prefix = '__';
+    while (taken.has(prefix + name)) prefix += '_';
+    const key = prefix + name;
+    taken.add(key);
+    map.set(name, key);
   }
   return map;
 }
@@ -397,6 +430,16 @@ function compileConstructor(fqcn, classNode, opts) {
   const props = [];
   const deps = [];
   const params = ctor ? ctor.arguments || [] : [];
+  for (const p of params) {
+    const complex = complexTypeOf(p && p.type);
+    if (complex) {
+      return complexTypeRefusal(
+        fqcn,
+        'the constructor parameter $' + (nodeName(p && p.name) || '?'),
+        p.type
+      );
+    }
+  }
   // The declared properties (`public int $sent = 0;`): the instance carries
   // them, like PHP does. A property without a default stays undefined (PHP
   // leaves it uninitialized - reading it is an error there too).
@@ -808,6 +851,30 @@ function typeNameOf(typeNode) {
   return null;
 }
 
+// A union/intersection type node has no `.name`, so `typeNameOf()` answered
+// null and the parameter compiled UNTYPED: null, an array or an object would
+// be accepted where PHP throws a TypeError. The emitted methods carry no type
+// checks, so refuse the declaration with LW002 instead of widening PHP's
+// signature (the same reason covers constructor parameters, where the type
+// also decides dependency resolution).
+function complexTypeOf(typeNode) {
+  if (!typeNode || typeof typeNode !== 'object') return null;
+  if (typeNode.kind !== 'uniontype' && typeNode.kind !== 'intersectiontype') return null;
+  const sep = typeNode.kind === 'uniontype' ? '|' : '&';
+  const parts = (typeNode.types || []).map((t) => (t && (t.name || t.raw)) || '?');
+  return parts.join(sep) || typeNode.kind;
+}
+
+function complexTypeRefusal(fqcn, where, typeNode) {
+  return {
+    error:
+      where + ' declares the ' + complexTypeOf(typeNode) + ' union/intersection type — the compiled rung emits ' +
+      'no PHP type checks (null, an array or an object would be accepted where PHP throws a TypeError), ' +
+      'so ' + fqcn + ' is refused',
+    code: 'LW002',
+  };
+}
+
 function compileMethod(fqcn, methodNode, opts) {
   const name = nodeName(methodNode.name);
   if (methodNode.isStatic) {
@@ -821,11 +888,15 @@ function compileMethod(fqcn, methodNode, opts) {
     return {
       name: nodeName(p && p.name),
       type: type && !BUILTIN_TYPES.has(type.toLowerCase()) ? type : null,
+      typeNode: p && p.type ? p.type : null,
       variadic: !!(p && p.variadic),
       byRef: !!(p && (p.byref ?? p.byRef)),
     };
   });
   for (const p of params) {
+    if (complexTypeOf(p.typeNode)) {
+      return complexTypeRefusal(fqcn, 'the parameter $' + p.name + ' of ' + name + '()', p.typeNode);
+    }
     if (p.variadic) return { error: 'the method ' + fqcn + '::' + name + '() has a variadic parameter', code: 'LW002' };
     if (p.byRef) return { error: 'the method ' + fqcn + '::' + name + '() has a by-reference parameter', code: 'LW002' };
     // The type of the parameter (a leading backslash is PHP's own syntax:
@@ -1342,6 +1413,28 @@ export function compileClasses(dump, opts = {}) {
         code: 'LW002',
       });
       continue;
+    }
+
+    // Laravel's Dispatcher calls `handle($event)` on a CLASS listener; an
+    // `__invoke()` is a route action, not a listener entry point. rt.event.
+    // dispatch() throws "has no handle() method" if such a listener ships, so
+    // refuse it at build time. The alternative - emitting a handle() that
+    // forwards to __invoke - would invent a Laravel method the app did not
+    // declare; compile-time refusal is the chosen contract, documented here.
+    if (options.listeners.has(fqcn)) {
+      const hasHandle = classMembers(classNode).some(
+        (m) => m && m.kind === 'method' && !m.isStatic && nodeName(m.name) === 'handle'
+      );
+      if (!hasHandle) {
+        errors.push({
+          class: fqcn,
+          message:
+            'the listener ' + fqcn + ' has no handle() method — a class listener must declare handle($event); ' +
+            'the compiled dispatcher would throw at dispatch time where Laravel calls handle()',
+          code: 'LW002',
+        });
+        continue;
+      }
     }
     // The namespace + the imports of the file (a type written short resolves
     // through them).

@@ -438,6 +438,10 @@ export function inspectD1Target(text, databaseRef) {
   };
 }
 
+// A D1 id is a hex UUID: Cloudflare prints it upper-case, a wrangler config
+// may carry the very same id lower-case. Compare canonically so a renamed
+// binding still counts as "already applied" instead of triggering a rewrite.
+const sameD1Id = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 /**
  * Update the D1 id (and the placeholder's database_name when needed).
  * Returns { text, status, changed } with the same statuses as inspectD1Target
@@ -461,7 +465,7 @@ export function updateWranglerD1Id(text, databaseRef, databaseId) {
     }
     const next = applyEdits(text, edits);
     const check = inspectD1Target(next, databaseRef);
-    if (check.status !== 'ok' || check.id !== databaseId || check.name !== databaseRef) {
+    if (check.status !== 'ok' || !sameD1Id(check.id, databaseId) || check.name !== databaseRef) {
       return { text, status: 'invalid-result', changed: false };
     }
     return { text: next, status: 'set', changed: true };
@@ -473,11 +477,11 @@ export function updateWranglerD1Id(text, databaseRef, databaseId) {
   // would otherwise report no-entry and stop a deploy whose binding is correct.
   if (info.status !== 'ok') {
     const own = inspectOnlyD1(text);
-    if (own.status === 'ok' && own.id === databaseId) return { text, status: 'already', changed: false };
+    if (own.status === 'ok' && sameD1Id(own.id, databaseId)) return { text, status: 'already', changed: false };
     return { text, status: info.status, changed: false };
   }
 
-  if (info.id === databaseId) return { text, status: 'already', changed: false };
+  if (sameD1Id(info.id, databaseId)) return { text, status: 'already', changed: false };
 
   const next = applyEdits(text, [{
     start: info.idNode.start,
@@ -485,7 +489,7 @@ export function updateWranglerD1Id(text, databaseRef, databaseId) {
     replacement: JSON.stringify(databaseId),
   }]);
   const check = inspectD1Target(next, databaseRef);
-  if (check.status !== 'ok' || check.id !== databaseId) {
+  if (check.status !== 'ok' || !sameD1Id(check.id, databaseId)) {
     return { text, status: 'invalid-result', changed: false };
   }
   return { text: next, status: 'updated', changed: true };

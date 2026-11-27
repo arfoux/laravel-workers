@@ -203,6 +203,65 @@ class RequestResource extends JsonResource
   assert.equal(rtB.toResponse(resourceB).body, '{"data":{"id":2,"who":"B"}}');
 });
 
+test('resource: a lazily mapped collection keeps its own runtime after buildRt()', async () => {
+  // The collection was created in rtA but its items are built later; a module
+  // global resolver would let rtB build them and `request()` inside toArray()
+  // would answer B where Laravel answers the request that owns the collection.
+  const dir = mkdtempSync(join(tmpdir(), 'lw-collection-scope-'));
+  const resourceFile = join(dir, 'ScopedResource.php');
+  writeFileSync(
+    resourceFile,
+    `<?php
+namespace App\\Http\\Resources;
+use Illuminate\\Http\\Request;
+use Illuminate\\Http\\Resources\\Json\\JsonResource;
+class ScopedResource extends JsonResource
+{
+    public function toArray(Request $request)
+    {
+        return ['id' => $this->id, 'arg' => $request->query('who'), 'live' => request()->query('who')];
+    }
+}
+`,
+    'utf8'
+  );
+  const collectionFile = join(dir, 'ScopedCollection.php');
+  writeFileSync(
+    collectionFile,
+    `<?php
+namespace App\\Http\\Resources;
+use Illuminate\\Http\\Resources\\Json\\ResourceCollection;
+class ScopedCollection extends ResourceCollection {}
+`,
+    'utf8'
+  );
+  const res = compileClasses(
+    {
+      events: {},
+      classes: {
+        'App\\Http\\Resources\\ScopedResource': { file: resourceFile, kind: 'resource' },
+        'App\\Http\\Resources\\ScopedCollection': { file: collectionFile, kind: 'resource' },
+      },
+    },
+    OPTIONS
+  );
+  assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+  const mod = join(dir, 'classes.generated.mjs');
+  writeFileSync(mod, res.code, 'utf8');
+  const classes = (await import(pathToFileURL(mod).href)).classes;
+  const request = (who) => ({
+    input: () => undefined,
+    all: () => ({}),
+    header: () => null,
+    query: (key) => (key === 'who' ? who : null),
+  });
+  const rtA = buildRt({}, { http: { request: request('A') }, classes });
+  const collectionA = rtA.newClass('App\\Http\\Resources\\ScopedCollection', [[{ id: 1 }]]);
+  buildRt({}, { http: { request: request('B') }, classes });
+  assert.equal(rtA.toResponse(collectionA).body, '{"data":[{"id":1,"arg":"A","live":"A"}]}');
+  assert.equal(JSON.stringify(collectionA.jsonSerialize()), '[{"id":1,"arg":"A","live":"A"}]');
+});
+
 test('resource: withResponse() and jsonOptions() reach the runtime (#854/#855)', async () => {
   // Laravel hands the app's hook the response it built and the flags it asked
   // for (ResourceResponse.php:36-49). Both used to be dropped: the hook was

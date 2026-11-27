@@ -58,6 +58,23 @@ DEFAULT_FILES.push(path.join('tools', 'tests', 'redirect-coverage.test.mjs'));
 // it skips, so the gate runs it for real here.
 DEFAULT_FILES.push(path.join('tools', 'tests', 'packages-wiring.test.mjs'));
 
+// Two more kernel suites compare against the app's PHP before they answer.
+// Both self-skip without LW_LARAVEL_APP, so the regular `test` job cannot
+// prove them; the parity job has the app, and this gate's skipped!==0 check
+// keeps them from silently dropping out. Verified with the local app:
+//   LW_LARAVEL_APP=<app> node --test kernel/tests/http.test.mjs kernel/tests/validator.test.mjs
+//   -> tests 138, pass 138, fail 0, skipped 0.
+DEFAULT_FILES.push(path.join('kernel', 'tests', 'http.test.mjs'));
+DEFAULT_FILES.push(path.join('kernel', 'tests', 'validator.test.mjs'));
+
+// The event-dump port is compared byte for byte with tools/event-dump.php.
+// Its container-binding fixtures need two app classes; the parity job creates
+// them (ci.yml) and Laravel 13.11 ships the `register(): void` provider the
+// probe edits. Without either prerequisite the test SKIPs, so the gate runs it
+// for real. Verified with the local app: standalone 3/3, full gate 216/216,
+// 0 skipped.
+DEFAULT_FILES.push(path.join('tools', 'tests', 'event-dump.test.mjs'));
+
 // The dump's inherited-rules check needs PHP but no Laravel app. PHP is on
 // every CI runner (including `test`); keep it in this oracle gate so the
 // skipped!==0 assertion catches any accidental app/platform skip.

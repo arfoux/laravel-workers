@@ -114,6 +114,18 @@ export default async function handle(ctx, env = {}) {
   }
 
   const status = resp && typeof resp.status === 'number' ? resp.status : 0;
+  // An upstream JSON error is not a PDF: never hand its bytes back as base64
+  // binary. Surface it as a port error with a short, single-line excerpt.
+  if (status >= 400) {
+    let detail = '';
+    try {
+      detail = resp && typeof resp.text === 'function' ? await resp.text() : '';
+    } catch {
+      detail = '';
+    }
+    const short = String(detail).replace(/\s+/g, ' ').trim().slice(0, 200);
+    return jsonError(502, `pdf upstream responded ${status}: ${short}`);
+  }
   const headers = {};
   if (resp && resp.headers && typeof resp.headers.forEach === 'function') {
     resp.headers.forEach((value, key) => {

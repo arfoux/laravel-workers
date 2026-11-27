@@ -145,7 +145,8 @@ test('translatable: search whereTranslationLike via json_extract', async () => {
   await trHandler(makeCtx('POST', '/translatable', { body: { title: { nl: 'Laravel wachtrij' } } }), e);
   const res = await trHandler(makeCtx('GET', '/translatable-search', { query: 'column=title&locale=en&q=laravel' }), e);
   const p = JSON.parse(res.body);
-  assert.equal(p.query.sql.includes("json_extract(title, '$.en') LIKE ?"), true);
+  assert.equal(p.query.sql.includes('json_extract(title, ?) LIKE ?'), true);
+  assert.deepEqual(p.query.params, ['$.en', '%laravel%']);
   assert.equal(p.data.length, 1); // only 'Laravel tips' matches en LIKE %laravel%
   assert.equal(p.data[0].title, 'Laravel tips');
 });

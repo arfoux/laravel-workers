@@ -395,7 +395,7 @@ const soleFilterFor = (key, operator, value, argCount) => {
 };
 
 /** Values of an arrayable-ish argument: Collection, array, object or scalar. */
-import { phpJsonEncode, phpJsonEncodeWithFlags } from './php-json.mjs';
+import { phpJsonEncode, phpJsonEncodeWithFlags, JSON_PRETTY_PRINT } from './php-json.mjs';
 import { phpJsonDecodeOrdered } from './php-json-ordered.mjs';
 import { ownSet, ownGet } from './own-key.mjs';
 // `combine()` coerces its keys with PHP's string cast before the array-key rule.
@@ -685,31 +685,6 @@ const phpRound = (value, places = 0) => {
   tmp = phpRoundHelper(tmp, 14 - Math.floor(Math.log10(Math.abs(tmp))));
   tmp = halfAwayRound(tmp);
   return decimals < 0 ? tmp * factor : tmp / factor;
-};
-
-/**
- * `json_encode($value, JSON_PRETTY_PRINT)`: PHP's pretty printer - FOUR-space
- * indentation and `"key": value`, not JSON.stringify's two spaces. Verified
- * byte for byte against PHP 8.3 on lists, keyed arrays, empty array/object,
- * nested depth, escaped slashes and unicode.
- */
-const phpJsonPretty = (value, depth = 0) => {
-  if (Array.isArray(value)) {
-    if (value.length === 0) return '[]';
-    const pad = '    '.repeat(depth + 1);
-    return '[\n' + value.map((item) => pad + phpJsonPretty(item, depth + 1)).join(',\n') + '\n' + '    '.repeat(depth) + ']';
-  }
-  if (value !== null && typeof value === 'object') {
-    const keys = Object.keys(value);
-    if (keys.length === 0) return '{}';
-    const pad = '    '.repeat(depth + 1);
-    return (
-      '{\n' +
-      keys.map((key) => pad + phpJsonEncode(key) + ': ' + phpJsonPretty(value[key], depth + 1)).join(',\n') +
-      '\n' + '    '.repeat(depth) + '}'
-    );
-  }
-  return phpJsonEncode(value);
 };
 
 /**
@@ -3232,8 +3207,8 @@ export class Collection {
    * $options)` - PHP's pretty printer, i.e. FOUR-space indentation and
    * `"key": value` (not JSON.stringify's two spaces).
    */
-  toPrettyJson() {
-    return phpJsonPretty(this.all());
+  toPrettyJson(options = 0) {
+    return phpJsonEncodeWithFlags(this.all(), JSON_PRETTY_PRINT | options);
   }
 
   // ---- slicing, mutation, windowing -------------------------------------

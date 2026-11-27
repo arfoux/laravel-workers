@@ -13,7 +13,7 @@
 // never produced by Laravel's session payloads; everything else round-trips
 // byte-for-byte.
 
-import { isPlainObject } from './own-key.mjs';
+import { isPlainObject, ownSet } from './own-key.mjs';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -242,7 +242,7 @@ function readValue(bytes, state) {
     if (listLike) return pairs.map(([, v]) => v);
     const obj = {};
     for (const [key, value] of pairs) {
-      obj[typeof key === 'number' ? String(key) : key] = value;
+      ownSet(obj, typeof key === 'number' ? String(key) : key, value);
     }
     // PHP's array keeps its INSERTION order; a JS object enumerates an
     // integer-like key first, so a payload PHP wrote as `['a' => 1, 3 => 'x']`

@@ -12,7 +12,7 @@ Where more than one module creates the same name with a different column set, th
 
 **Totals**
 - `CREATE TABLE IF NOT EXISTS` statements the code runs: **54**
-- Distinct table names: **47**
+- Distinct table names: **48**
 - Explicit indexes (`CREATE INDEX IF NOT EXISTS`): **6**
 
 <!-- port-catalog:totals:end -->
@@ -63,7 +63,7 @@ The `Status` column this file used to carry (**NEW** = introduced by the port fl
 | 34 | `tags` | `tags` | — |
 | 35 | `translatable_posts` | `spatie-translatable` | — |
 | 36 | `users` (6 variants) | `fortify-confirmation`, `fortify-two-factor`, `jwt-auth`, `laravel-socialite-callback`, `maatwebsite-excel`, `sanctum-spa-cookie`, `sanctum` | — |
-| 37 | `webhook_calls` (2 variants) | `webhook-client`, `webhook-server` | — |
+| 37 | `webhook_calls` | `webhook-client` | — |
 | 38 | `webpush_subscriptions` | `webpush-notification` | `webpush_subscriptions_endpoint_idx` |
 | 39 | `paddle_customers` | `cashier-paddle` | — |
 | 40 | `paddle_subscriptions` | `cashier-paddle` | — |
@@ -74,6 +74,7 @@ The `Status` column this file used to carry (**NEW** = introduced by the port fl
 | 45 | `mollie_payments` | `mollie-webhook` | — |
 | 46 | `tenants` | `multitenancy` | — |
 | 47 | `transactions` | `midtrans-webhook` | — |
+| 48 | `webhook_server_calls` | `webhook-server` | — |
 
 <!-- port-catalog:summary:end -->
 
@@ -681,35 +682,17 @@ CREATE TABLE IF NOT EXISTS users (
 );
 ```
 
-### 37. `webhook_calls` (2 variants)
-Two different ports create a table with the **same name but different schemas** — a real collision risk on a shared D1 binding, since `IF NOT EXISTS` means the first writer's shape wins.
+### 37. `webhook_calls`
+Port: `webhook-client` (`POST /webhooks/{name}`) — outbound dispatch log (spatie/laravel-webhook-client). The inbound `webhook-server` port uses the separate `webhook_server_calls` table below.
 
-**(a) `webhook-client`** (`POST /webhooks/{name}`) — outbound dispatch log (spatie/laravel-webhook-client):
 ```sql
 CREATE TABLE IF NOT EXISTS webhook_calls (
-  id TEXT PRIMARY KEY,
-  name TEXT,
-  payload TEXT,
-  exception TEXT,
-  processed_at TEXT
-);
-```
-
-**(b) `webhook-server`** (`POST /webhook-server/send`) — inbound webhook log:
-```sql
-CREATE TABLE IF NOT EXISTS webhook_calls (
-   id INTEGER PRIMARY KEY AUTOINCREMENT,
-   uuid TEXT,
-   url TEXT NOT NULL,
-   payload TEXT,
-   signature TEXT,
-   headers TEXT,
-   tags TEXT,
-   response_status INTEGER,
-   response_body TEXT,
-   error TEXT,
-   created_at TEXT NOT NULL
- );
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    payload TEXT,
+    exception TEXT,
+    processed_at TEXT
+  )
 ```
 
 ### 38. `webpush_subscriptions`
@@ -868,10 +851,29 @@ CREATE TABLE IF NOT EXISTS transactions (
      )
 ```
 
+### 48. `webhook_server_calls`
+Port: `webhook-server` (`POST /webhook-server/send`) — inbound webhook call log, keyed by an integer autoincrement id and storing the verbatim signed payload, response and error.
+
+```sql
+CREATE TABLE IF NOT EXISTS webhook_server_calls (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       uuid TEXT,
+       url TEXT NOT NULL,
+       payload TEXT,
+       signature TEXT,
+       headers TEXT,
+       tags TEXT,
+       response_status INTEGER,
+       response_body TEXT,
+       error TEXT,
+       created_at TEXT NOT NULL
+     )
+```
+
 ## Caveats
 
 1. **`users` shape drift.** Seven ports each `CREATE TABLE IF NOT EXISTS users` with different columns — six distinct statements (`sanctum` and `jwt-auth` carry the same one). On a fresh database the first port to call `ensureSchema()` fixes the schema; later ports silently accept it. Combining an auth port that needs `two_factor_secret` with one that only provisions `(id,name,email,password)` will leave the 2FA column missing. Use one owning port's schema, or define `users` at the app level.
-2. **`webhook_calls` name collision.** `webhook-client` and `webhook-server` both create `webhook_calls` with incompatible primary keys (`TEXT` vs `INTEGER`) and column sets. Running both ports against the same D1 binding will make one of them fail at insert time. Rename one (e.g. `webhook_server_calls`) or namespace by port.
+2. **`webhook_calls` vs `webhook_server_calls`.** The collision is resolved: `webhook-client` owns `webhook_calls` (TEXT id) and `webhook-server` owns `webhook_server_calls` (INTEGER id). Both can run on the same D1 binding without one port's `IF NOT EXISTS` fixing the other port's shape.
 3. **`lw_webhook_events` is kernel-owned.** Kernel `webhook` is the only creator; `cashier-paddle`, `cashier-stripe` and `lemonsqueezy` insert into it as their replay guard. The Summary's `Port(s)` column lists creators, so a kernel-only row is not an omission.
 4. **Best-effort indexes.** The Summary's `Explicit indexes` column is the code's own count; `ai-sdk` wraps its `CREATE INDEX` in `try/catch` so minimal SQL fakes that don't parse index DDL still persist rows.
 

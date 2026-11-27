@@ -137,7 +137,7 @@ if (cmd === '--version' || cmd === '-v') {
 }
 
 
-if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'test:hash' || cmd === 'test:validator' || cmd === 'test:services' || cmd === 'test:budget' || cmd === 'test:corpus' || cmd === 'bench' || cmd === 'check:docs') {
+if (cmd === 'test' || cmd === 'test:db' || cmd === 'test:sqlite' || cmd === 'test:hash' || cmd === 'test:validator' || cmd === 'test:services' || cmd === 'test:budget' || cmd === 'test:corpus' || cmd === 'test:shadow' || cmd === 'test:pack' || cmd === 'test:str' || cmd === 'bench' || cmd === 'check:docs') {
   console.error(`laravel-workers: developer tasks run via the package.json scripts (npm test / npm run bench / npm run check:docs / npm run test:corpus), not through the CLI. Run from the laravel-workers checkout.`);
   process.exit(2);
 } else if (cmd === 'init') {

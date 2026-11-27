@@ -12,7 +12,13 @@ function lw_dump($v)
     if ($v === null) return 'NULL';
     if (is_bool($v)) return $v ? 'bool(true)' : 'bool(false)';
     if (is_int($v)) return 'num(' . $v . ')';
-    if (is_float($v)) return 'num(' . json_encode($v) . ')';
+    if (is_float($v)) {
+        if (is_nan($v)) return 'num(NaN)';
+        if (is_infinite($v)) return $v > 0 ? 'num(Infinity)' : 'num(-Infinity)';
+        // json_encode(INF|NAN) is `false`, which used to emit a malformed
+        // `num()`. A plain PHP float string is what the JS mirror parses.
+        return 'num(' . (string) $v . ')';
+    }
     if (is_string($v)) return 'str:' . bin2hex($v);
     if (is_array($v)) {
         $parts = [];

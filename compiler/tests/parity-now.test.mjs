@@ -29,6 +29,9 @@ const now = rt.now();
 const U = '1709219045';
 const U_NUM = 1709219045;
 
+// Carbon mutators mutate the receiver (PHP Carbon 3), so every mutating check
+// starts from a fresh `now()` instead of reusing the instance formatted above.
+const fresh = () => rt.now();
 let total = 0, passed = 0, failed = 0;
 function check(name, got, expected) {
   total++;
@@ -60,20 +63,20 @@ check("format a", now.format('a'), 'pm');
 // 11: A
 check("format A", now.format('A'), 'PM');
 // 12: addDays(1)
-check("addDays(1) -> 2024-03-01", now.addDays(1).format('Y-m-d'), '2024-03-01');
-check("addDays(1) Y-m-d H:i:s", now.addDays(1).format('Y-m-d H:i:s'), '2024-03-01 15:04:05');
+check("addDays(1) -> 2024-03-01", fresh().addDays(1).format('Y-m-d'), '2024-03-01');
+check("addDays(1) Y-m-d H:i:s", fresh().addDays(1).format('Y-m-d H:i:s'), '2024-03-01 15:04:05');
 // 13: subDays(1)
-check("subDays(1) -> 2024-02-28", now.subDays(1).format('Y-m-d'), '2024-02-28');
+check("subDays(1) -> 2024-02-28", fresh().subDays(1).format('Y-m-d'), '2024-02-28');
 // 14: addHours(24) == addDays(1)
-check("addHours(24) -> 2024-03-01", now.addHours(24).format('Y-m-d H:i:s'), '2024-03-01 15:04:05');
+check("addHours(24) -> 2024-03-01", fresh().addHours(24).format('Y-m-d H:i:s'), '2024-03-01 15:04:05');
 // 15: timestamp
-check("timestamp", now.timestamp, U_NUM);
+check("timestamp", fresh().timestamp, U_NUM);
 // 16: getTimestamp()
-check("getTimestamp()", now.getTimestamp(), U_NUM);
+check("getTimestamp()", fresh().getTimestamp(), U_NUM);
 // 17: toDateString()
-check("toDateString()", now.toDateString(), '2024-02-29');
+check("toDateString()", fresh().toDateString(), '2024-02-29');
 // 18: toDateTimeString()
-check("toDateTimeString()", now.toDateTimeString(), '2024-02-29 15:04:05');
+check("toDateTimeString()", fresh().toDateTimeString(), '2024-02-29 15:04:05');
 
 console.log(`1..${total}`);
 console.log(`# passed ${passed}/${total}`);

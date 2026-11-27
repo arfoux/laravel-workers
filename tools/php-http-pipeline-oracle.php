@@ -26,6 +26,7 @@ require_once __DIR__ . '/_root.php';
 //   POST /__probe/login   -> {ok, user, token} (attempt with email/password from the form)
 //   POST /__probe/logout  -> {ok, user, token}
 //   GET  /login           -> named `login` (the guest/auth redirect target)
+//   GET  /dashboard        -> named `dashboard` (the guest redirect target)
 
 $input = lw_oracle_input('php-http-pipeline-oracle');
 
@@ -111,6 +112,12 @@ $router = $app->make('router');
 $router->get('/login', function () {
     return response('login');
 })->name('login');
+// The JS pipeline's synthetic route table carries a named `dashboard` route.
+// Register it here too so a bare Laravel skeleton (no app route) still resolves
+// `guest` to /dashboard on both sides.
+$router->get('/dashboard', function () {
+    return response('dashboard');
+})->name('dashboard');
 $router->middleware('web')->get('/__probe/state', $probe);
 $router->middleware('web')->post('/__probe/state', $probe);
 // Every probe JSON body carries the *current* session token so the driver can

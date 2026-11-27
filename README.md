@@ -21,7 +21,7 @@ That is the whole setup: nothing to install (`npm i -D laravel-workers` only if 
 
 A plan is the whole deploy on paper: the worker name, the account a real run would target, the D1 action and identity, the schema decision, the files it would touch and the cloud calls it would make — and it stops on the things a real run would stop on. Ran without `--mode 3`, `--plan` previews mode 1 (build only), which is why the line above passes it.
 
-**What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. The 55-case Blade corpus is checked **byte-identical against PHP 8.3 on your machine**; the shadow replay records remaining divergences instead of hiding them. For non-scaffold builds, the build fails on unaccounted routes and refused constructs. Published 0.5.1 had one skipped-controller gap (P7); it is **fixed on main after 0.5.1, not yet published** — see [docs/EVIDENCE.md](docs/EVIDENCE.md).
+**What this is.** A build-time compiler, not a runtime. Your Laravel app stays the source of truth on your machine; `laravel-workers build` turns Blade, routes, models and config into a small ESM bundle, and a Cloudflare Worker runs that bundle as pure JS against D1. The 55-case Blade corpus is checked **byte-identical to checked-in expectations captured from PHP 8.3** — it does not require PHP on your machine; live parity against a local Laravel app is `npm run test:shadow`. For non-scaffold builds, the build fails on unaccounted routes and refused constructs. Published 0.5.1 had one skipped-controller gap (P7); it is **fixed on main after 0.5.1, not yet published** — see [docs/EVIDENCE.md](docs/EVIDENCE.md).
 
 ```
 Laravel app (your machine)                Cloudflare Worker (request time)
@@ -74,7 +74,7 @@ The short version. Per construct: **[COMPILED.md](COMPILED.md)**. The map: **[MA
 
 | Area | Today |
 |---|---|
-| **Blade** | layouts, sections, includes, conditionals, loops, `@switch`, ternary/`??`, `e()`, `__()`, casts — the 55-case corpus is byte-identical to the PHP 8.3 oracle; data-rendering pages are not proven byte-identical |
+| **Blade** | layouts, sections, includes, conditionals, loops, `@switch`, ternary/`??`, `e()`, `__()`, casts — the 55-case corpus matches checked-in expectations captured from PHP 8.3 (live parity: `npm run test:shadow`); data-rendering pages are not proven byte-identical |
 | **Router** | `{param}`/`{param?}`, a param inside text in one segment, domains, `->where()` (Symfony's `RouteCompiler`), `fallback`, redirects, auto `OPTIONS`, 405 with the app's error view, `ValidatePathEncoding` → 400 before the router. In Laravel 13 `{param*}` is literal text, not a catch-all |
 | **Controllers** | `GET/POST/PUT/PATCH/DELETE`, class-method resolution, simple `Request`/FormRequest injection, `response()`/`json()`, `redirect()->intended()`, session rotation, class constants; conditional FormRequest rule objects are refused (LW003) |
 | **Eloquent** | `find`/`where*`/`orderBy*` + `first`/`get`/`count`/`pluck`, `hasMany`/`belongsTo` from the compiled model dump (`hasOne` works in the kernel but is not dumped yet), `create`/`updateOrCreate`/`firstOrCreate`, `fillable` + mutators + casts (`json`, `decimal:N`, `hashed`), `refresh`/`increment`, soft deletes, route-model binding |

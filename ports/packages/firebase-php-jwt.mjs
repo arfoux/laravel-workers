@@ -146,9 +146,11 @@ async function loadKeys(env, fetchImpl) {
 
 // --- claim checks ------------------------------------------------------------
 
-function claimsOk(payload, projectId) {
+export function claimsOk(payload, projectId) {
   const nowSec = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp === 'number' && payload.exp <= nowSec) return 'token has expired';
+  if (payload.exp === undefined || payload.exp === null) return 'token has no expiration';
+  if (!Number.isFinite(payload.exp)) return 'token has non-numeric expiration';
+  if (payload.exp <= nowSec) return 'token has expired';
   if (typeof payload.iat === 'number' && payload.iat > nowSec + 60) return 'token used before issued';
   const iss = `https://securetoken.google.com/${projectId}`;
   if (payload.iss !== iss) return 'token has wrong issuer';

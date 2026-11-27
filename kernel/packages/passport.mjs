@@ -29,7 +29,7 @@ export async function importPublicKey(pemSpki) {
 
 // Sign an arbitrary JSON payload as an RS256 JWT. `kid` is optional but
 // Passport sets it so /oauth/jwks can be keyed by the same id.
-export async function signJwt(payload, privatePem, { kid, now = Math.floor(Date.now() / 1000) } = {}) {
+export async function signJwt(payload, privatePem, { kid } = {}) {
   const header = { alg: 'RS256', typ: 'JWT', ...(kid ? { kid } : {}) };
   const signingInput = `${b64url(enc.encode(JSON.stringify(header)))}.${b64url(enc.encode(JSON.stringify(payload)))}`;
   const key = await importPrivateKey(privatePem);

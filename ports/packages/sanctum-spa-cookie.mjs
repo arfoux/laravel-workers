@@ -123,7 +123,8 @@ async function userById(env, id) {
 // GET /sanctum/csrf-cookie — mint + set the XSRF-TOKEN cookie (stateless).
 export async function handleCsrf(ctx, env) {
   const token = randomString(40);
-  return json(204, {}, { 'set-cookie': csrfCookie(token) });
+  // Workers reject a 204 whose body is non-empty; the cookie is the payload.
+  return { status: 204, body: '', headers: { 'set-cookie': csrfCookie(token) } };
 }
 
 // POST /sanctum/spa/login — CSRF + email/password → session cookies.

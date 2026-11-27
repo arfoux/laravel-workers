@@ -168,9 +168,11 @@ export function setResourceResolver(fn) {
   resourceResolver = typeof fn === 'function' ? fn : null;
 }
 
-function resolveResourceClass(name) {
-  if (!resourceResolver) return null;
-  const found = resourceResolver(name);
+function resolveResourceClass(name, collection) {
+  const perRuntime = collection && collection.__lwResourceResolver;
+  const find = typeof perRuntime === 'function' ? perRuntime : resourceResolver;
+  if (!find) return null;
+  const found = find(name);
   return found === undefined ? null : found;
 }
 
@@ -192,9 +194,11 @@ function collectsClassOf(collection) {
   const name = classNameOf(collection);
   if (!name.endsWith('Collection')) return null;
   const stem = name.slice(0, name.length - 'Collection'.length);
-  const found = resolveResourceClass(stem) || resolveResourceClass(stem + 'Resource');
+  const found = resolveResourceClass(stem, collection) || resolveResourceClass(stem + 'Resource', collection);
   if (found) return found;
-  if (!resourceResolver) {
+  const hasResolver =
+    typeof (collection && collection.__lwResourceResolver) === 'function' || typeof resourceResolver === 'function';
+  if (!hasResolver) {
     throw new Error(
       'the resource collection ' + name +
         ' collects a class the edge cannot resolve (the runtime must register the compiled ' +
@@ -207,13 +211,17 @@ function collectsClassOf(collection) {
 // Build one item of a collection: the collects class is a constructor (a
 // compiled `class X extends JsonResource`) or a factory (the runtime's
 // `newClass`).
-function instantiateCollects(collects, item) {
+function instantiateCollects(collects, item, requestResolver) {
   if (typeof collects !== 'function') {
     throw new Error('the collected resource class is not a class - the edge cannot build it');
   }
   if (collects === JsonResource || collects.prototype instanceof JsonResource) {
-    return new collects(item);
+    // An explicit `$collects` is a constructor: give it the owner's request
+    // resolver, not the module global that a later runtime overwrites.
+    return new collects(item, requestResolver);
   }
+  // A function from the runtime registry already closes over that runtime's
+  // `newClass`.
   return collects(item);
 }
 
@@ -662,10 +670,15 @@ export class JsonResource {
  * Illuminate\Http\Resources\Json\ResourceCollection
  */
 export class ResourceCollection extends JsonResource {
-  constructor(resource, collects, requestResolver = null) {
+  constructor(resource, collects, requestResolver = null, resourceResolver = null) {
     super(resource, requestResolver);
     this.collects = collects || null;
     this.collection = null;
+    Object.defineProperty(this, '__lwResourceResolver', {
+      value: resourceResolver,
+      enumerable: false,
+      configurable: true,
+    });
   }
 
   // The mapped items (CollectsResources::collectResource() -
@@ -676,7 +689,7 @@ export class ResourceCollection extends JsonResource {
     const collects = collectsClassOf(this);
     const items = itemsOf(this.resource);
     this.collection = collects
-      ? items.map((item) => instantiateCollects(collects, item))
+      ? items.map((item) => instantiateCollects(collects, item, this.__lwRequestResolver))
       : items.slice();
     return this.collection;
   }

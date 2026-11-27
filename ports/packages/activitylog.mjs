@@ -116,21 +116,33 @@ export default async function handle(ctx, env) {
     }
 
     const q = ctx.query || {};
-    const limit = Math.min(Number(q.limit) || 50, 200);
-    const hasCauser = q.causer_id != null;
-    const sql = hasCauser
-      ? 'SELECT * FROM activity_log WHERE causer_id = ? ORDER BY created_at DESC, id DESC LIMIT ?'
-      : 'SELECT * FROM activity_log ORDER BY created_at DESC, id DESC LIMIT ?';
-    const rows = await env.DB
-      .prepare(sql)
-      .bind(...(hasCauser ? [String(q.causer_id), limit] : [limit]))
-      .all();
+    let limit = 50;
+    if (q.limit != null && String(q.limit).trim() !== '') {
+      limit = Number(q.limit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        return json(400, { error: 'limit must be an integer between 1 and 200' });
+      }
+    }
+    // Filter in SQL (before LIMIT) with bound values: post-filtering the
+    // limited rows silently returned fewer activities than the caller asked for.
+    const where = [];
+    const params = [];
+    for (const [key, column] of [
+      ['causer_id', 'causer_id'],
+      ['subject_type', 'subject_type'],
+      ['subject_id', 'subject_id'],
+      ['event', 'event'],
+      ['log_name', 'log_name'],
+    ]) {
+      if (q[key] != null) {
+        where.push(`${column} = ?`);
+        params.push(String(q[key]));
+      }
+    }
+    const sql = `SELECT * FROM activity_log${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
+    const rows = await env.DB.prepare(sql).bind(...params, limit).all();
 
-    let activities = rows.results || [];
-    if (q.subject_type) activities = activities.filter((a) => a.subject_type === q.subject_type);
-    if (q.subject_id != null) activities = activities.filter((a) => a.subject_id === String(q.subject_id));
-    if (q.event) activities = activities.filter((a) => a.event === q.event);
-    if (q.log_name) activities = activities.filter((a) => a.log_name === q.log_name);
+    const activities = rows.results || [];
 
     return json(200, { activities: activities.map(deserializeProps) });
   } catch (err) {

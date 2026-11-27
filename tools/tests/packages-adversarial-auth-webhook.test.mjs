@@ -71,9 +71,9 @@ async function seedUser(env, { email = 'ada@example.com', password = 'correct-ho
     .run();
 }
 
-// The `webhook_calls` rows a port stored, straight out of SQLite. Both webhook
-// ports create their own table via `ensureSchema`, so an untouched DB has none.
+// Each webhook port creates its own D1 table via `ensureSchema`.
 const storedCalls = (db) => db.tables.get('webhook_calls') || [];
+const storedServerCalls = (db) => db.tables.get('webhook_server_calls') || [];
 
 // Sign base64(HMAC-SHA256(secret, message)) — the spatie webhook signature.
 async function hmacB64(secret, message) {
@@ -453,7 +453,7 @@ test('webhook-server ADV: an injection-laden payload is signed as-is (unescaped)
   assert.notEqual(sigFromHeader, createHmac('sha256', SERVER_SECRET).update(sentBody + 'x').digest('base64'));
 
   // The stored row carries the same verbatim payload + matching signature.
-  const rows = storedCalls(db);
+  const rows = storedServerCalls(db);
   assert.equal(rows.length, 1);
   const stored = rows[0];
   assert.equal(stored.payload, sentBody, 'stored payload is the exact bytes sent');

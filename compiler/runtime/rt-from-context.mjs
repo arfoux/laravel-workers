@@ -136,9 +136,21 @@ export function buildRt(context, opts = {}) {
 
   // ---- phpNumStr (PHP-style float formatting) ----
   const phpNumStr = (v) => {
-    if (Number.isInteger(v)) return String(v);
-    const s = v.toPrecision(14);
-    return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
+    if (!Number.isFinite(v)) return String(v);
+    // PHP's precision=14: scientific notation at 1e14 / 1e-5 and beyond, a
+    // mantissa with AT LEAST one decimal digit (`1.0E+14`), and a signed,
+    // unpadded exponent (`E-5`, not `E-05`). Below those thresholds the value
+    // stays in fixed notation with 14 significant digits and trailing zeros
+    // trimmed (1/3 -> '0.33333333333333').
+    const [mant, exp] = v.toExponential(13).split('e');
+    const power = Number(exp);
+    const short = mant.replace(/0+$/, '').replace(/\.$/, '');
+    if (power >= 14 || power <= -5) {
+      return (short.includes('.') ? short : short + '.0') + 'E' + (power >= 0 ? '+' : '') + power;
+    }
+    let s = v.toPrecision(14);
+    if (s.includes('e')) s = phpNumStr(Number(s));
+    return s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
   };
 
   // ---- rt.echo (PHP echo semantics) ----
@@ -812,7 +824,7 @@ export function buildRt(context, opts = {}) {
   // (`PostCollection` -> `PostResource`): CollectsResources::collects()
   // resolves the name through the compiled registry, so the runtime hands
   // the resource layer the same constructor `newClass` builds.
-  setResourceResolver((name) => {
+  const resourceResolverForRuntime = (name) => {
     const wanted = String(name).replace(/^\\+/, '');
     let key = classesMap[wanted] ? wanted : null;
     if (!key) {
@@ -829,7 +841,10 @@ export function buildRt(context, opts = {}) {
     }
     if (!key) return undefined;
     return (item) => rt.newClass(key, [item]);
-  });
+  };
+  // The module resolver stays for resources built outside a runtime; the
+  // per-collection stamp carries this runtime's function to lazy items.
+  setResourceResolver(resourceResolverForRuntime);
 
   rt.newClass = (fqcn, args) => {
     const entry = classesMap[String(fqcn)];
@@ -876,7 +891,7 @@ export function buildRt(context, opts = {}) {
                 // class-name convention when the app declares none), so wrapping
                 // it in a plain JsonResource would answer the raw models where
                 // Laravel answers the resources.
-                Object.assign(new ResourceCollection(Array.isArray(args) ? args[0] : undefined, undefined, requestResolver), built)
+                Object.assign(new ResourceCollection(Array.isArray(args) ? args[0] : undefined, undefined, requestResolver, resourceResolverForRuntime), built)
               : built;
     // The runtime: a mailable renders its view through it (`__lwMail`).
     Object.defineProperty(obj, '__rt', { value: rt, enumerable: false, configurable: true });
@@ -1322,14 +1337,22 @@ export function buildRt(context, opts = {}) {
   const isObj = (v) => v !== null && typeof v === 'object';
   // PHP's array functions type-check their argument: a stdClass raises
   // TypeError("<fn>(): Argument #<n> ($<name>) must be of type <type>, stdClass
-  // given") (probed on PHP 8.3; the message is PHP's own). Only a TAGGED
-  // stdClass raises - a PHP array (list or assoc) and a kernel instance pass.
+  // given") (probed on PHP 8.3; the message is PHP's own). A tagged stdClass
+  // raises; a PHP array (list or assoc), a Countable kernel instance and an
+  // explicitly nullable argument pass. Every scalar fails (PHP 8 no longer
+  // coerces scalars for these internal functions).
   const requireArrayArg = (name, pos, varName, type, v) => {
     if (v !== null && typeof v === 'object' && v.__lwObject === true) {
       throw new TypeError(
         name + '(): Argument #' + pos + ' ($' + varName + ') must be of type ' + type + ', stdClass given'
       );
     }
+    if (v !== null && typeof v === 'object') return;
+    if (type.startsWith('?') && v === null) return;
+    const given = typeof v === 'function' ? 'Closure' : phpTypeName(v);
+    throw new TypeError(
+      name + '(): Argument #' + pos + ' ($' + varName + ') must be of type ' + type + ', ' + given + ' given'
+    );
   };
   const arrValues = (v) => {
     if (!isObj(v)) return [];
@@ -1436,7 +1459,7 @@ export function buildRt(context, opts = {}) {
     hasStringKeyedArray(v, new WeakSet()) ? normalizePhpArrays(v, new WeakSet()) : v;
   rt.array_keys = (arr) => {
     requireArrayArg('array_keys', 1, 'array', 'array', arr);
-    return isObj(arr) ? rt.phpKeys(arr).map((k) => (/^\d+$/.test(k) ? Number(k) : k)) : [];
+    return isObj(arr) ? rt.phpKeys(arr).map((k) => phpArrayKey(k)) : [];
   };
   rt.array_values = (arr) => {
     requireArrayArg('array_values', 1, 'array', 'array', arr);
@@ -1453,10 +1476,10 @@ export function buildRt(context, opts = {}) {
     for (const a of arrs) {
       if (!isObj(a)) continue;
       for (const k of rt.phpKeys(a)) {
-        if (/^(?:0|[1-9]\d*)$/.test(String(k))) {
+        const key = phpArrayKey(k);
+        if (typeof key === 'number') {
           pairs.push([next++, a[k]]);
         } else {
-          const key = String(k);
           const at = positions.get(key);
           if (at === undefined) {
             positions.set(key, pairs.length);
@@ -1723,10 +1746,10 @@ export function buildRt(context, opts = {}) {
   // ---- byte-oriented string helpers (PHP length semantics) ----
   const utf8 = new TextEncoder();
   const utf8d = new TextDecoder();
-  const byteLen = (s) => utf8.encode(String(s)).length;
-  rt.strlen = (s) => (s == null ? 0 : byteLen(s));
+  const byteLen = (s) => utf8.encode(phpStrCast(s)).length;
+  rt.strlen = (s) => byteLen(s);
   rt.substr = (s, start, len) => {
-    const bytes = utf8.encode(s == null ? '' : String(s));
+    const bytes = utf8.encode(phpStrCast(s));
     const n = bytes.length;
     let st = Number(start) | 0;
     if (st < 0) st = Math.max(n + st, 0);
@@ -1740,7 +1763,7 @@ export function buildRt(context, opts = {}) {
     if (end > n) end = n;
     return utf8d.decode(bytes.slice(st, end));
   };
-  rt.str_repeat = (s, n) => String(s == null ? '' : s).repeat(Math.max(0, Number(n) | 0));
+  rt.str_repeat = (s, n) => phpStrCast(s).repeat(Math.max(0, Number(n) | 0));
   rt.str_contains = (h, n, ci) => {
     const hay = String(h == null ? '' : h);
     const needle = String(n);
@@ -1774,7 +1797,7 @@ export function buildRt(context, opts = {}) {
     return x === '' ? '' : x[0].toLowerCase() + x.slice(1);
   };
   rt.str_pad = (s, len, pad, type) => {
-    const x = String(s == null ? '' : s);
+    const x = phpStrCast(s);
     const target = Math.max(0, Number(len) | 0);
     const cur = byteLen(x);
     if (cur >= target) return x;
@@ -1868,7 +1891,7 @@ export function buildRt(context, opts = {}) {
     if (typeof v === 'boolean') return v;
     if (typeof v === 'number') return v !== 0;
     if (typeof v === 'string') return v !== '' && v !== '0';
-    if (Array.isArray(v)) return v.length !== 0;
+    if (Array.isArray(v)) return rt.phpKeys(v).length !== 0;
     if (typeof v === 'object') {
       // PHP: an OBJECT is always true (even an empty stdClass); an assoc ARRAY
       // is true only when it has elements.
@@ -2442,11 +2465,27 @@ export function buildRt(context, opts = {}) {
     const off = Number(offset) | 0;
     const o = off < 0 ? Math.max(a.length + off, 0) : off;
     if (length === undefined || length === null) return a.slice(o);
-    return a.slice(o, o + Math.max(0, Number(length) | 0));
+    // A negative length is an END OFFSET measured from the end of the array,
+    // not a negative count: array_slice([1,2,3], 0, -1) answers [1,2].
+    const len = Number(length) | 0;
+    if (len < 0) return a.slice(o, Math.max(0, a.length + len));
+    return a.slice(o, o + len);
   };
   rt.array_reverse = (arr) => {
     requireArrayArg('array_reverse', 1, 'array', 'array', arr);
-    return arrValues(arr).slice().reverse();
+    // PHP reverses the KEY/VALUE pairs: string keys survive, integer keys are
+    // reindexed (the default preserve_keys=false), and the non-enumerable
+    // marker keeps a mixed-key result in PHP order.
+    const pairs = [];
+    for (const k of rt.phpKeys(arr)) pairs.push([phpArrayKey(k), arr[k]]);
+    pairs.reverse();
+    const reindexed = [];
+    let next = 0;
+    for (const [k, v] of pairs) {
+      reindexed.push([typeof k === 'number' ? next++ : k, v]);
+    }
+    if (reindexed.every(([k], i) => k === i)) return reindexed.map(([, v]) => v);
+    return rt.assoc(reindexed);
   };
   rt.array_unique = (arr) => {
     const out = [];
@@ -2464,7 +2503,15 @@ export function buildRt(context, opts = {}) {
   rt.array_flip = (arr) => {
     requireArrayArg('array_flip', 1, 'array', 'array', arr);
     const o = {};
-    if (isObj(arr)) for (const k of Object.keys(arr)) o[phpToStr(arr[k])] = /^\d+$/.test(k) ? Number(k) : k;
+    const order = [];
+    if (isObj(arr)) for (const k of rt.phpKeys(arr)) {
+      // Values become keys (PHP canonicalizes them like any array key: '01'
+      // stays a string, '-1' becomes int -1); the old key becomes the value.
+      const key = String(phpArrayKey(phpToStr(arr[k])));
+      if (!Object.prototype.hasOwnProperty.call(o, key)) order.push(key);
+      o[key] = phpArrayKey(k);
+    }
+    Object.defineProperty(o, '__lwOrder', { value: order, enumerable: false });
     return o;
   };
   // PHP's array_filter(): the surviving items KEEP their keys (a list with a
@@ -2475,13 +2522,12 @@ export function buildRt(context, opts = {}) {
   // object so rt.phpKeys/the encoder keep PHP's insertion order and emit a
   // JSON array when the keys turn out to be 0..n-1.
   rt.array_filter = (arr, cb, mode) => {
-    const isList = Array.isArray(arr);
-    const keys = isList ? arr.map((_, i) => i) : isObj(arr) ? rt.phpKeys(arr) : [];
+    const keys = isObj(arr) ? rt.phpKeys(arr) : [];
     const out = {};
     const order = [];
     for (const k of keys) {
       const v = arr[k];
-      const phpKey = isList || /^\d+$/.test(String(k)) ? Number(k) : k;
+      const phpKey = phpArrayKey(k);
       let keep;
       if (typeof cb === 'function') {
         if (mode === 2) keep = rt.truthy(cb(phpKey));
@@ -2688,10 +2734,13 @@ function makeCarbon(date, tz = APP_TZ) {
       getTimezone() { return tz; },
       get timestamp() { return Math.floor(d.getTime() / 1000); },
       getTimestamp() { return Math.floor(d.getTime() / 1000); },
-      addDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() + Number(n)); return makeCarbon(nd, tz); },
-      subDays(n) { const nd = new Date(d.getTime()); nd.setUTCDate(nd.getUTCDate() - Number(n)); return makeCarbon(nd, tz); },
-      addHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() + Number(n)); return makeCarbon(nd, tz); },
-      subHours(n) { const nd = new Date(d.getTime()); nd.setUTCHours(nd.getUTCHours() - Number(n)); return makeCarbon(nd, tz); },
+      // Carbon's date arithmetic MUTATES the instance and returns it: after
+      // `$n->subHour()` the original `$n` already holds the shifted instant,
+      // so `$n > $n->subHour()` is false. Only copy()/clone() make a new date.
+      addDays(n) { d.setUTCDate(d.getUTCDate() + Number(n)); return api; },
+      subDays(n) { d.setUTCDate(d.getUTCDate() - Number(n)); return api; },
+      addHours(n) { d.setUTCHours(d.getUTCHours() + Number(n)); return api; },
+      subHours(n) { d.setUTCHours(d.getUTCHours() - Number(n)); return api; },
       copy() { return makeCarbon(new Date(d.getTime()), tz); },
       clone() { return makeCarbon(new Date(d.getTime()), tz); },
       // Carbon::locale($locale) — sets the locale for the NEXT translatedFormat()

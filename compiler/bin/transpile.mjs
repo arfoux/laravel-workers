@@ -12,7 +12,13 @@ let outPath = null;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--json') jsonMode = true;
-  else if (a === '--out') { outPath = args[++i]; }
+  else if (a === '--out') {
+    outPath = args[++i];
+    if (!outPath) {
+      console.error(JSON.stringify([{ code: 'LW004', message: '--out requires a file path', line: 0, column: 0, hint: '' }]));
+      process.exit(2);
+    }
+  }
   else if (!input) input = a;
   else { console.error(JSON.stringify([{ code: 'LW004', message: 'unexpected arg ' + a, line: 0, column: 0, hint: '' }])); process.exit(1); }
 }
@@ -53,6 +59,7 @@ if (errors && errors.length) {
 
 if (outPath) {
   const absOut = path.resolve(process.cwd(), outPath);
+  fs.mkdirSync(path.dirname(absOut), { recursive: true });
   const tmp = absOut + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, code, 'utf8');
   fs.renameSync(tmp, absOut);

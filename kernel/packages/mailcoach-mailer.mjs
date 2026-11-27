@@ -92,6 +92,8 @@ export async function sendMail(params, env = {}) {
     from,
     cc,
     bcc,
+    store,
+    fake,
     token,
     baseUrl,
   } = params || {};
@@ -128,7 +130,7 @@ export async function sendMail(params, env = {}) {
       accept: 'application/json',
     },
     body: JSON.stringify(
-      buildMailcoachBody({ template, replacing, to, subject, html, from, cc, bcc }),
+      buildMailcoachBody({ template, replacing, to, subject, html, from, cc, bcc, store, fake }),
     ),
   };
 

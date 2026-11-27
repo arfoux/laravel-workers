@@ -6,7 +6,7 @@
 // (`tools/tests/_fake-d1.mjs`), so we can assert the call was logged. Assertions cover:
 //   - the target URL + POST + signature/timestamp headers the handler builds,
 //   - the signature is a valid base64 HMAC-SHA256 over the sent raw body,
-//   - the call is persisted to `webhook_calls`,
+//   - the call is persisted to `webhook_server_calls` (distinct from the client port's `webhook_calls`),
 //   - validation guards (missing `url` → 422; missing secret → 500) short-circuit
 //     before any fetch.
 // No network — the target "endpoint" is the stubbed fetch.
@@ -23,7 +23,7 @@ import { FakeD1 } from './_fake-d1.mjs';
 const okCtx = (body) => ({ body, query: {}, params: {}, user_id: 1 });
 
 // The rows the handler logged, straight out of SQLite ([] before ensureSchema).
-const storedRows = (db) => db.tables.get('webhook_calls') || [];
+const storedRows = (db) => db.tables.get('webhook_server_calls') || [];
 
 const makeDb = async () => {
   const db = new FakeD1();
@@ -84,7 +84,7 @@ test('webhook-server: signature header is valid base64 HMAC-SHA256 of the body',
   assert.match(call.init.headers['webhook-timestamp'], /^\d+$/);
 });
 
-test('webhook-server: records the call in D1 webhook_calls', async () => {
+test('webhook-server: records the call in D1 webhook_server_calls', async () => {
   const fetchImpl = makeFetch(200, { ok: true, id: 'rc_1' });
   const db = await makeDb();
   const payload = { n: 1 };
