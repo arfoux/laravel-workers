@@ -80,7 +80,7 @@ const ROWS = {
   ],
 };
 
-function compile(forcedPragma = '') {
+function compile(forcedPragma = '', rows = ROWS) {
   const root = mkdtempSync(join(tmpdir(), 'lw-schema-warn-'));
   mkdirSync(join(root, 'bootstrap'), { recursive: true });
   mkdirSync(join(root, 'vendor'), { recursive: true });
@@ -94,7 +94,7 @@ function compile(forcedPragma = '') {
     LW_APP_ROOT: root,
     LW_VENDOR_DIR: '',
     COMPOSER_VENDOR_DIR: '',
-    LW_SCHEMA_STUB_ROWS: JSON.stringify(ROWS),
+    LW_SCHEMA_STUB_ROWS: JSON.stringify(rows),
     LW_SCHEMA_PRAGMA_FAIL: forcedPragma,
   };
   const run = spawnSync(PHP, [SCHEMA_PHP, out], { cwd: root, env, encoding: 'utf8', timeout: 30000 });
@@ -161,4 +161,19 @@ test('a comma-separated seam forces more than one pragma', { skip: !phpOk }, () 
   assert.match(r.stderr, /WARNING pragma_foreign_key_list failed for users/);
   assert.deepEqual(tableOf(r).indexes, []);
   assert.deepEqual(tableOf(r).foreign_keys, []);
+});
+
+test('fallback parser keeps quoted commas and escaped quotes in identifiers', { skip: !phpOk }, () => {
+  const rows = {
+    ...ROWS,
+    "type = 'table'": [
+      {
+        name: 'odd',
+        sql: 'CREATE TABLE "odd" ("a,b" text, "c""d" integer, `e,f` blob, [g,h] real, "note" text default \'a,b\')',
+      },
+    ],
+  };
+  const r = compile('table_info', rows);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(tableOf(r).columns.map((c) => c.name), ['a,b', 'c"d', 'e,f', 'g,h', 'note']);
 });

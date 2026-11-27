@@ -112,8 +112,32 @@ $parseColumns = static function (string $sql): array {
     $parts = [];
     $depth = 0;
     $buf = '';
-    for ($i = 0; $i < strlen($body); $i++) {
+    $quote = null;
+    $len = strlen($body);
+    for ($i = 0; $i < $len; $i++) {
         $ch = $body[$i];
+        if ($quote !== null) {
+            $buf .= $ch;
+            if ($ch === $quote) {
+                if ($quote !== ']' && $i + 1 < $len && $body[$i + 1] === $quote) {
+                    $buf .= $body[$i + 1];
+                    $i++;
+                } else {
+                    $quote = null;
+                }
+            }
+            continue;
+        }
+        if ($ch === '"' || $ch === '`' || $ch === "'") {
+            $quote = $ch;
+            $buf .= $ch;
+            continue;
+        }
+        if ($ch === '[') {
+            $quote = ']';
+            $buf .= $ch;
+            continue;
+        }
         if ($ch === '(') {
             $depth++;
             $buf .= $ch;
@@ -136,10 +160,21 @@ $parseColumns = static function (string $sql): array {
         if (preg_match('/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i', $part)) {
             continue;
         }
-        if (preg_match('/^"([^"]+)"\s+([A-Za-z]+)/', $part, $m) || preg_match('/^`([^`]+)`\s+([A-Za-z]+)/', $part, $m) || preg_match('/^\[([^\]]+)\]\s+([A-Za-z]+)/', $part, $m) || preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z]+)/', $part, $m)) {
+        if (
+            preg_match('/^"((?:[^"]|"")+)"\s+([A-Za-z]+)/', $part, $m) ||
+            preg_match('/^`((?:[^`]|``)+)`\s+([A-Za-z]+)/', $part, $m) ||
+            preg_match('/^\[([^\]]+)\]\s+([A-Za-z]+)/', $part, $m) ||
+            preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z]+)/', $part, $m)
+        ) {
+            $name = $m[1];
+            if (str_starts_with($part, '"')) {
+                $name = str_replace('""', '"', $name);
+            } elseif (str_starts_with($part, '`')) {
+                $name = str_replace('``', '`', $name);
+            }
             $columns[] = [
                 'cid' => count($columns),
-                'name' => $m[1],
+                'name' => $name,
                 'type' => strtoupper($m[2]),
                 'notnull' => (bool) preg_match('/\bNOT\s+NULL\b/i', $part),
                 'default' => null,
