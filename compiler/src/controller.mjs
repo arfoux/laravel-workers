@@ -11,6 +11,57 @@
 //   emitController(source, method, meta) -> the final handler module source.
 import { snake } from '../../kernel/str.mjs';
 import { transpileControllerMethod, uncompiledRuleOf, PORT_HINT, vname } from './transpiler.mjs';
+import { classPropertyKeys } from './classes.mjs';
+
+// `$this->property` reads and any other `$this` use in a route/helper body.
+// A property-only method still needs the controller instance: emitting `__self`
+// only when a helper is reachable left `rt.prop(__self, ...)` undeclared.
+function collectThisRefs(node, properties = new Set(), state = { used: false }) {
+  if (!node || typeof node !== 'object') return state.used;
+  if (Array.isArray(node)) {
+    for (const n of node) collectThisRefs(n, properties, state);
+    return state.used;
+  }
+  if (node.kind === 'variable' && node.name === 'this') state.used = true;
+  if (
+    (node.kind === 'propertylookup' ||
+      node.kind === 'nullsafepropertylookup' ||
+      node.kind === 'nullsafeproperty') &&
+    node.what &&
+    node.what.kind === 'variable' &&
+    node.what.name === 'this'
+  ) {
+    const name = node.offset && node.offset.name;
+    if (typeof name === 'string') properties.add(name);
+  }
+  for (const key of Object.keys(node)) {
+    if (key === 'loc' || key === 'kind') continue;
+    const v = node[key];
+    if (v && typeof v === 'object') collectThisRefs(v, properties, state);
+  }
+  return state.used;
+}
+
+// PHP gives an untyped property without a default the value null; a typed one
+// stays uninitialized and reading it throws. Anything else the build cannot
+// inline must fail loud rather than answer `undefined` silently.
+function controllerPropertyDefaults(classNode) {
+  const out = new Map();
+  for (const member of (classNode && classNode.body) || []) {
+    if (!member || member.kind !== 'propertystatement') continue;
+    for (const prop of member.properties || []) {
+      const name = nodeName(prop && prop.name);
+      if (!name) continue;
+      if (prop.value === undefined || prop.value === null) {
+        out.set(name, prop.type ? { ok: false, typed: true } : { ok: true, value: null });
+        continue;
+      }
+      const lit = literalOf(prop.value);
+      out.set(name, lit.ok ? { ok: true, value: lit.value } : { ok: false });
+    }
+  }
+  return out;
+}
 import { viewFileName } from './view-name.mjs';
 // The number-literal canon (`017` is OCTAL, `1_000` ignores the underscore):
 // the same reader the config/const folders use, so a signature default cannot
@@ -535,6 +586,7 @@ export function extractController(source, methodName) {
     usesMail: bodyHasMail(method.body, uses),
     viewDataKinds,
     methodNode: method,
+    classNode,
   };
 }
 
@@ -984,17 +1036,47 @@ export function emitController(source, methodName, meta = {}) {
       }
     }
   }
+  // The compiled instance carries the class's declared properties. The same
+  // private-key map the class compiler uses keeps a property/method collision
+  // in PHP's two namespaces from colliding on the generated object.
+  const propertyKeys = classPropertyKeys(info.classNode, {});
+  const propertyDefaults = controllerPropertyDefaults(info.classNode);
+  const thisBodies = [info.methodNode, ...[...reachable].map((nm) => helperByName.get(nm))];
+  const readProperties = new Set();
+  let usesThis = false;
+  for (const body of thisBodies) {
+    usesThis = collectThisRefs(body, readProperties, { used: usesThis }) || usesThis;
+  }
+  for (const name of readProperties) {
+    const def = propertyDefaults.get(name);
+    if (!def || def.ok) continue;
+    return {
+      code: null,
+      errors: [
+        lwErr(
+          'LW002',
+          'the controller property $' + name + ' of ' + info.fqcn + ' has ' +
+            (def.typed
+              ? 'no default (PHP leaves a typed property uninitialized and reading it throws)'
+              : 'a default the compiled rung cannot inline') +
+            ' — declare a literal default or ' + PORT_HINT,
+          null,
+          PORT_HINT
+        ),
+      ],
+    };
+  }
   // A constructor is the container's job (it resolves the parameters): the edge
-  // has no container, and a controller whose helper reads a property the
+  // has no container, and a controller whose method reads a property the
   // constructor set would answer a degraded object. Refuse rather than degrade.
-  if (info.hasConstructor && reachable.size) {
+  if (info.hasConstructor && usesThis) {
     return {
       code: null,
       errors: [
         lwErr(
           'LW002',
           `${info.fqcn} declares a constructor — the edge has no container to resolve it, so every ` +
-            `$this->${[...reachable][0]}() would run on an object the constructor never finished building; move the ` +
+            `$this in the compiled method would run on an object the constructor never finished building; move the ` +
             `constructor's work into the helper (or ` + PORT_HINT + ')',
           null,
           PORT_HINT
@@ -1044,6 +1126,7 @@ export function emitController(source, methodName, meta = {}) {
       classMethods: reachable,
       thisVar: '__self',
       classSurface: true,
+      propertyKeys,
       models: modelAliases,
       modelNotCompiled,
       modelRelations,
@@ -1102,6 +1185,7 @@ export function emitController(source, methodName, meta = {}) {
     // `$this` in the route method is the controller instance.
     thisVar: '__self',
     classSurface: true,
+    propertyKeys,
     models: modelAliases,
     modelNotCompiled,
     modelRelations,
@@ -1316,8 +1400,19 @@ export function emitController(source, methodName, meta = {}) {
   // binds them and the caller hands the runtime over (the class compiler's
   // contract — the class registry's methods are `(rt, ...args)`).
   const helperNames = helperCode.map((h) => h.name);
-  if (helperNames.length) {
-    lines.push('    const __self = {};');
+  const selfFields = [...propertyDefaults.entries()]
+    .filter(([, def]) => def.ok)
+    .map(([name, def]) => {
+      const key = propertyKeys.has(name) ? propertyKeys.get(name) : name;
+      return JSON.stringify(key) + ': ' + JSON.stringify(def.value);
+    })
+    .join(', ');
+  if (helperNames.length || usesThis) {
+    // The controller instance: the route method and its helpers are the class's
+    // own methods, and they call each other through `$this` (`__self`). Declared
+    // properties ride on the same object; a property/method collision already
+    // moved to its private key in `propertyKeys`.
+    lines.push('    const __self = { ' + selfFields + ' };');
     // The route method is compiled with the runtime handed over: the entry
     // point wraps it so `load()`/`related()` and a helper's `(rt, ...)` shape
     // are the same here and in the class registry.
@@ -1338,14 +1433,14 @@ export function emitController(source, methodName, meta = {}) {
     lines.push('    const __lwResult = await __self[' + JSON.stringify(methodName) + '](rt);');
     lines.push('    return rt.toResponse(__lwResult);');
   } else {
-  // The body runs in its own function: the value it returns is converted the
-  // way Laravel's Router::toResponse converts it (a string is the body, an
-  // array is JSON, null is an empty 200). A method that returns nothing
-  // answers an empty 200 - Laravel does not fail there.
-  lines.push('    const __lwResult = await (async () => {');
-  if (emitted.code) lines.push(emitted.code);
-  lines.push('    })();');
-  lines.push('    return rt.toResponse(__lwResult);');
+    // The body runs in its own function: the value it returns is converted the
+    // way Laravel's Router::toResponse converts it (a string is the body, an
+    // array is JSON, null is an empty 200). A method that returns nothing
+    // answers an empty 200 - Laravel does not fail there.
+    lines.push('    const __lwResult = await (async () => {');
+    if (emitted.code) lines.push(emitted.code);
+    lines.push('    })();');
+    lines.push('    return rt.toResponse(__lwResult);');
   }
   lines.push('  } catch (e) {');
   lines.push('    if (e && e.lwKernel) throw e;');

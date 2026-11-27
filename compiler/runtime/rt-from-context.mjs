@@ -812,7 +812,7 @@ export function buildRt(context, opts = {}) {
   // (`PostCollection` -> `PostResource`): CollectsResources::collects()
   // resolves the name through the compiled registry, so the runtime hands
   // the resource layer the same constructor `newClass` builds.
-  setResourceResolver((name) => {
+  const resourceResolverForRuntime = (name) => {
     const wanted = String(name).replace(/^\\+/, '');
     let key = classesMap[wanted] ? wanted : null;
     if (!key) {
@@ -829,7 +829,10 @@ export function buildRt(context, opts = {}) {
     }
     if (!key) return undefined;
     return (item) => rt.newClass(key, [item]);
-  });
+  };
+  // The module resolver stays for resources built outside a runtime; the
+  // per-collection stamp carries this runtime's function to lazy items.
+  setResourceResolver(resourceResolverForRuntime);
 
   rt.newClass = (fqcn, args) => {
     const entry = classesMap[String(fqcn)];
@@ -876,7 +879,7 @@ export function buildRt(context, opts = {}) {
                 // class-name convention when the app declares none), so wrapping
                 // it in a plain JsonResource would answer the raw models where
                 // Laravel answers the resources.
-                Object.assign(new ResourceCollection(Array.isArray(args) ? args[0] : undefined, undefined, requestResolver), built)
+                Object.assign(new ResourceCollection(Array.isArray(args) ? args[0] : undefined, undefined, requestResolver, resourceResolverForRuntime), built)
               : built;
     // The runtime: a mailable renders its view through it (`__lwMail`).
     Object.defineProperty(obj, '__rt', { value: rt, enumerable: false, configurable: true });

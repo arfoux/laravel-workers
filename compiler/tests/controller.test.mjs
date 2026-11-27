@@ -534,6 +534,45 @@ test('emit: a controller constructor with a compiled helper fails loud (LW002)',
   assert.match(res.errors[0].message, /constructor/);
 });
 
+test('emit: a declared controller property is carried on the emitted instance', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    private $label = "value";\n' +
+    '    public function demo() { return response($this->label); }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.deepEqual(res.errors, []);
+  assert.match(res.code, /const __self = \{ "label": "value" \};/);
+});
+
+test('emit: a property/method collision keeps PHP\'s two namespaces', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    private $x = "v";\n' +
+    '    public function demo() { return response($this->x() . ":" . $this->x); }\n' +
+    '    private function x() { return "m"; }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.deepEqual(res.errors, []);
+  assert.match(res.code, /const __self = \{ "__x": "v" \};/);
+  assert.match(res.code, /__self\.x\(rt\)/);
+});
+
+test('emit: a constructor plus a $this property read fails loud (LW002)', () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    public function __construct(private readonly string $prefix) {}\n' +
+    '    public function demo() { return response($this->prefix); }\n' +
+    '}\n';
+  const res = emitController(src, 'demo', { routeUri: '/x', routeParams: [], models: [], views: [] });
+  assert.equal(res.code, null);
+  assert.equal(res.errors[0].code, 'LW002');
+  assert.match(res.errors[0].message, /constructor/);
+});
+
 test('emit: a database query inside a closure fails with LW002', () => {
   const res = emitController(SAMPLE, 'badClosure', META_BASE);
   assert.equal(res.code, null);
@@ -2201,6 +2240,43 @@ test('runtime: a $this helper runs on the instance and its model reaches the vie
   const res = await handle(ctxFor({ id: '1' }), { DB: dbWithRow });
   assert.equal(res.status, 200);
   assert.match(res.body, /<h1>Hello Edge<\/h1>/);
+});
+
+test('runtime: a controller property read with no helper keeps its declared value', async () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    private $label = "value";\n' +
+    '    public function demo() { return response($this->label); }\n' +
+    '}\n';
+  const code = emitController(src, 'demo', { ...META_BASE, routeUri: '/p', routeParams: [] });
+  assert.deepEqual(code.errors, []);
+  const file = path.join(tmpRoot, 'src', 'controllers', 'prop-default.mjs');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, code.code);
+  const mod = await import(pathToFileURL(file).href + '?v=prop-default');
+  const res = await mod.default(ctxFor({}), {});
+  assert.equal(res.status, 200);
+  assert.equal(res.body, 'value');
+});
+
+test('runtime: a controller property and a helper share the same instance', async () => {
+  const src = '<?php\n' +
+    'namespace App\\Http\\Controllers;\n' +
+    'class C {\n' +
+    '    private $label = "value";\n' +
+    '    public function demo() { return response($this->label . ":" . $this->suffix()); }\n' +
+    '    private function suffix() { return "h"; }\n' +
+    '}\n';
+  const code = emitController(src, 'demo', { ...META_BASE, routeUri: '/p', routeParams: [] });
+  assert.deepEqual(code.errors, []);
+  const file = path.join(tmpRoot, 'src', 'controllers', 'prop-helper.mjs');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, code.code);
+  const mod = await import(pathToFileURL(file).href + '?v=prop-helper');
+  const res = await mod.default(ctxFor({}), {});
+  assert.equal(res.status, 200);
+  assert.equal(res.body, 'value:h');
 });
 
 test('runtime: a $this helper taking a MODEL receives the model (not undefined)', async () => {

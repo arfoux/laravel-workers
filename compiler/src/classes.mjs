@@ -319,7 +319,7 @@ const MAILABLE_FIELDS = new Set([
 // namespaces in PHP, one in the compiled object. Collect the declared and
 // promoted property names that must move to a private key, including the
 // mailable base fields the kernel already keeps under `__name`.
-function classPropertyKeys(classNode, opts) {
+export function classPropertyKeys(classNode, opts) {
   const names = new Set();
   const methods = new Set();
   for (const member of classMembers(classNode)) {
